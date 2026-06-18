@@ -4,16 +4,16 @@
 
 ## 문서 단일 기준(Sources Of Truth)
 
-| 영역 | 위치 | 규칙 |
-|---|---|---|
-| 제품 범위와 정책 | `docs/01_Product.md` | 요구사항, 제품 경계, 로드맵(roadmap), 비기술 정책 |
-| 아키텍처 색인(Architecture Index) | `docs/02_Architecture.md` | 시스템 경계, 모듈 색인, 계약 위치 |
-| 모듈 설계(Module Design) | `docs/02_Architecture/` | 모듈별 책임, 흐름, 의존성, 리스크 |
-| 계약(Contracts) | `docs/contracts/` | 기계 검증 가능한 DB, API, 메시지 스키마(schema) |
-| 아키텍처 결정(Architecture Decisions) | `docs/ADR/` | 오래 유지되는 결정, 대안, 결과 |
-| 실행 단위(Execution Tasks) | `docs/Task/` | AI가 실행 가능한 작업 문서와 상태 |
-| 검증 증적(Verification Evidence) | `docs/Test/` | 실제 명령, 결과, 수동 확인, 공백 |
-| 인계 기록(Handover History) | `docs/History/` | 변경 요약, 링크, 리스크, 후속 작업 |
+| 영역                              | 위치                        | 규칙                                 |
+| ------------------------------- | ------------------------- | ---------------------------------- |
+| 제품 범위와 정책                       | `docs/01_Product.md`      | 요구사항, 제품 경계, 로드맵(roadmap), 비기술 정책  |
+| 아키텍처 색인(Architecture Index)     | `docs/02_Architecture.md` | 시스템 경계, 모듈 색인, 계약 위치               |
+| 모듈 설계(Module Design)            | `docs/02_Architecture/`   | 모듈별 책임, 흐름, 의존성, 리스크               |
+| 계약(Contracts)                   | `docs/contracts/`         | 기계 검증 가능한 DB, API, 메시지 스키마(schema) |
+| 아키텍처 결정(Architecture Decisions) | `docs/ADR/`               | 오래 유지되는 결정, 대안, 결과                 |
+| 실행 단위(Execution Tasks)          | `docs/Task/`              | AI가 실행 가능한 작업 문서와 상태               |
+| 검증 증적(Verification Evidence)    | `docs/Test/`              | 실제 명령, 결과, 수동 확인, 공백               |
+| 인계 기록(Handover History)         | `docs/History/`           | 변경 요약, 링크, 리스크, 후속 작업              |
 
 ## 규칙
 

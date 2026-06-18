@@ -19,6 +19,12 @@
       "skillPath": "skills/engineering/diagnose/SKILL.md",
       "computedHash": "15939a26f86edec2d4862042b8564e5a062cb81d04e047a0cea6305c8830b5f5"
     },
+    "drawio": {
+      "source": "bahayonghang/drawio-skills",
+      "sourceType": "github",
+      "skillPath": "skills/drawio/SKILL.md",
+      "computedHash": "103e36aa3285707834ed8e5cb82bafaa748fb41ec1678698a333be60173b5cf1"
+    },
     "edit-article": {
       "source": "mattpocock/skills",
       "sourceType": "github",

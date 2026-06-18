@@ -1,5 +1,6 @@
 .superpowers/
 .obsidian/
+.dev/
 .venv/
 node_modules/
 apps/web/dist/

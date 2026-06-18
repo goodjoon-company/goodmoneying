@@ -1,0 +1,17 @@
+{
+  "name": "goodmoneying",
+  "private": true,
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev:api": "PYTHONPATH=apps/api:apps/worker:packages/shared uv run uvicorn goodmoneying_api.main:app --host 127.0.0.1 --port 8000",
+    "dev:web": "npm --workspace apps/web run dev -- --host 127.0.0.1 --port 5173",
+    "test": "npm --workspace apps/web run test",
+    "build": "npm --workspace apps/web run build",
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.57.0"
+  }
+}

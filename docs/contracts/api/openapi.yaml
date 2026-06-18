@@ -59,8 +59,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CollectionTargetsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /v1/market-list:
     get:
       summary: 시장 리스트 조회
@@ -85,6 +89,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InstrumentDetailResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /v1/instruments/{instrumentId}/candles:
     get:
       summary: 캔들 조회
@@ -96,7 +104,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [1m, 3m, 5m, 10m, 15m, 30m, 60m, 240m, 1d, 1w, 1M]
+            enum: [1m, 3m, 5m, 10m, 15m, 30m, 60m, 240m, 1d]
         - name: from
           in: query
           required: true
@@ -116,6 +124,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CandleSeriesResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /v1/instruments/{instrumentId}/ticker-snapshots:
     get:
       summary: 현재가 스냅샷 조회
@@ -185,8 +197,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BackfillPlan"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /v1/backfill/jobs:
     get:
       summary: 백필 작업 목록 조회
@@ -216,8 +232,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BackfillJob"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /v1/backfill/jobs/{jobId}/{action}:
     post:
       summary: 백필 작업 제어
@@ -244,8 +264,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BackfillJob"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /v1/notifications:
     get:
       summary: 알림 이벤트 조회
@@ -264,8 +288,26 @@ components:
       in: header
       name: X-Operator-Token
   responses:
+    BadRequest:
+      description: 요청이 도메인 규칙을 만족하지 않음
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
     Unauthorized:
       description: 운영 토큰이 없거나 올바르지 않음
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: 요청한 리소스가 없음
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ValidationError:
+      description: 요청 형식 검증 실패
       content:
         application/json:
           schema:
@@ -337,7 +379,7 @@ components:
           type: string
     DashboardSummary:
       type: object
-      required: [status, refreshedAt, totals, coverage, alerts]
+      required: [status, refreshedAt, totals, coverage, targets, alerts]
       properties:
         status:
           type: string
@@ -361,6 +403,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CoverageStatus"
+        targets:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectionDashboardTarget"
         alerts:
           type: array
           items:
@@ -383,6 +429,97 @@ components:
         lastSuccessfulAt:
           type: string
           format: date-time
+    CollectionPlan:
+      type: object
+      required: [instrumentId, preset, rangeStartAt, isContinuous, method, displayRange, rangeTimeZone, progressBasis]
+      properties:
+        instrumentId:
+          type: integer
+          format: int64
+        preset:
+          type: string
+        rangeStartAt:
+          type: string
+          format: date-time
+        rangeEndAt:
+          type: [string, "null"]
+          format: date-time
+        isContinuous:
+          type: boolean
+        method:
+          type: string
+        displayRange:
+          type: string
+          example: 2026-01-01 00:00 KST ~ 현재(지속)
+        rangeTimeZone:
+          type: string
+          enum: [KST, UTC]
+        progressBasis:
+          type: string
+    CollectionDataStatus:
+      type: object
+      required: [dataType, label, status, statusLabel, lastSuccessfulAt, progressPercent, missingSegmentCount]
+      properties:
+        dataType:
+          type: string
+          enum: [source_candle, ticker_snapshot, orderbook_summary]
+        label:
+          type: string
+        status:
+          type: string
+          enum: [normal, warning, incident, backfilling]
+        statusLabel:
+          type: string
+        lastSuccessfulAt:
+          type: string
+          format: date-time
+        progressPercent:
+          $ref: "#/components/schemas/DecimalString"
+        missingSegmentCount:
+          type: integer
+    CoverageSegment:
+      type: object
+      required: [dataType, status, offsetPercent, widthPercent, segmentStartAt, segmentEndAt, label]
+      properties:
+        dataType:
+          type: string
+          enum: [source_candle, ticker_snapshot, orderbook_summary]
+        status:
+          type: string
+          enum: [collected, missing, collecting, future]
+        offsetPercent:
+          $ref: "#/components/schemas/DecimalString"
+        widthPercent:
+          $ref: "#/components/schemas/DecimalString"
+        segmentStartAt:
+          type: string
+          format: date-time
+        segmentEndAt:
+          type: string
+          format: date-time
+        label:
+          type: string
+    CollectionDashboardTarget:
+      type: object
+      required: [instrument, overallStatus, overallStatusLabel, plan, dataStatuses, coverageSegments]
+      properties:
+        instrument:
+          $ref: "#/components/schemas/Instrument"
+        overallStatus:
+          type: string
+          enum: [latest_collecting, collecting, warning, incident]
+        overallStatusLabel:
+          type: string
+        plan:
+          $ref: "#/components/schemas/CollectionPlan"
+        dataStatuses:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectionDataStatus"
+        coverageSegments:
+          type: array
+          items:
+            $ref: "#/components/schemas/CoverageSegment"
     CandidateUniverseResponse:
       type: object
       required: [rankedAt, entries]
@@ -415,7 +552,6 @@ components:
       properties:
         instrumentIds:
           type: array
-          minItems: 50
           maxItems: 50
           items:
             type: integer
@@ -440,7 +576,7 @@ components:
             $ref: "#/components/schemas/MarketListRow"
     MarketListRow:
       type: object
-      required: [instrument, tradePrice, accTradePrice24h, qualityStatus]
+      required: [instrument, tradePrice, accTradePrice24h, accTradePrice24hDisplay, qualityStatus]
       properties:
         instrument:
           $ref: "#/components/schemas/Instrument"
@@ -448,6 +584,9 @@ components:
           $ref: "#/components/schemas/DecimalString"
         accTradePrice24h:
           $ref: "#/components/schemas/DecimalString"
+        accTradePrice24hDisplay:
+          type: string
+          description: 화면 표시용 24시간 거래대금. 소수점은 제거한다.
         changeRate:
           $ref: "#/components/schemas/DecimalString"
         tickerCollectedAt:

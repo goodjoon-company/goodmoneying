@@ -12,7 +12,8 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 업비트 수집 파이프라인(Upbit Collection Pipeline)은 M1의 핵심 경계다. 업비트(Upbit) KRW 마켓 데이터를 수집, 저장, 품질 확인, 운영 상태 노출까지 책임진다.
 
 - 후보 유니버스(Candidate Universe) 갱신
-- 활성 수집 대상(Active Collection Target) 50개 유지
+- 활성 수집 대상(Active Collection Target) 최대 50개 유지
+- 코인별 수집 계획(Collection Plan)과 저장된 화면용 수집 상태 View Model 유지
 - 원천 캔들(Source Candle), 현재가 스냅샷(Ticker Snapshot), 호가 요약(Orderbook Summary) 수집
 - 백필(Backfill), 증분 수집(Incremental Collection), 데이터 완전성 검사(Data Completeness Check)
 - 수집 실행(Collection Run), 대상별 수집 결과(Target Collection Result), 결측 구간(Missing Range), 수집 진행률(Collection Coverage) 기록
@@ -34,8 +35,8 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 | 구성요소 | 책임 | 구현 기준 |
 |---|---|---|
 | 수집 워커(Collection Worker) | 업비트 API 호출, rate limit 관리, 수집/백필/완전성 검사 실행 | Python 단일 프로세스 |
-| 운영 서버(Operations Server) | 화면 단위 View Model API, 원천 리소스 API, 쓰기 API, 상태 계산 | FastAPI |
-| 운영 화면 | 대시보드, 수집 대상/설정, 백필 제어, 시장 리스트, 코인 상세 | React, React Query, HTTP 폴링 |
+| 운영 서버(Operations Server) | 화면 단위 View Model API, 원천 리소스 API, 쓰기 API, 저장된 상태 조회 | FastAPI |
+| 운영 화면 | 데이터 수집관리 내비게이션, 대시보드, 수집 대상/설정, 백필 제어, 시장 리스트, 코인 상세 레이어 | React, React Query, HTTP 폴링 |
 | PostgreSQL | 원천 사실, 설정, 품질, 감사, 알림 이벤트 저장 | `docs/contracts/db/schema.sql` |
 
 ## 입력과 출력
@@ -47,12 +48,14 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 - 업비트 일봉 API 응답
 - 업비트 호가 API 응답
 - 운영 화면의 활성 수집 대상 변경
+- 운영 화면의 코인별 수집 계획 변경
 - 운영 화면의 수집 범위 설정 변경
 - 운영 화면의 백필 계획 승인과 제어 명령
 
 ### 출력
 
 - PostgreSQL 원천 사실 테이블
+- PostgreSQL 코인별 수집 계획과 커버리지(Coverage) View Model 테이블
 - 화면 단위 API 응답
 - 내부 안정 계약(Internal Stable Contract)인 원천 리소스 API 응답
 - 감사 로그(Audit Log)
@@ -76,6 +79,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 4. 일봉은 10~30분 주기 또는 하루 마감 후 보정한다.
 5. 모든 API 호출은 워커 내부 전역 rate limiter를 통과한다.
 6. 각 수집은 수집 실행과 대상별 수집 결과를 남긴다.
+7. 수집 또는 배치 시점에 코인별 수집 계획의 기간, 데이터별 최신성, 결측 구간, 구간형 진행 상태를 계산해 저장된 View Model을 갱신한다.
 
 ### 백필
 
@@ -107,11 +111,16 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 
 | 화면 | API 성격 | 자동 갱신 |
 |---|---|---|
-| 운영 상태 대시보드 | 파이프라인 건강도, 최신성, 실패, 결측, 저장량, 수집 진행률 | 10~15초 |
-| 수집 대상/설정 | 후보 유니버스, 활성 수집 대상, 수집 범위 설정, 백필 계획 | 수동 또는 변경 후 갱신 |
-| 백필 작업 | 백필 상태와 제어 | 실행 중 5~10초 |
+| 데이터 수집관리 내비게이션 | 제품 전체 메뉴와 MVP 활성 영역 | 정적 또는 설정 변경 후 갱신 |
+| 운영 상태 대시보드 | 코인별 수집 계획, 파이프라인 건강도, 최신성, 실패, 결측, 저장량, 구간형 진행 상태 | 10~15초 |
+| 수집 대상/설정 | 후보 유니버스, 활성 수집 대상 최대 50개 | 수동 또는 변경 후 갱신 |
+| 백필 작업 | 코인별 아코디언 상세에서 백필 상태와 제어 | 실행 중 5~10초 |
 | 시장 리스트 | 현재가, 거래대금, 등락률, 품질 상태 | 30초 |
-| 코인 상세 | 캔들 차트, 호가 요약, 품질 이력 | 30초 또는 사용자가 켜는 실시간 모드 |
+| 코인 상세 레이어 | 캔들 차트, 호가 요약, 품질 이력 | 30초 또는 사용자가 켜는 실시간 모드 |
+
+운영 상태 대시보드는 수집 대상 코인을 행(row) 단위로 표시한다. 각 행은 코인 전체 상태와 캔들(Candle), 현재가(Ticker), 호가 요약(Orderbook Summary)의 미니 상태를 함께 보여주고, 펼치면 데이터별 그래프, 결측 구간, 수집 계획 수정 버튼, 백필 제어를 표시한다.
+
+화면 시간 표시는 KST(Korea Standard Time)와 UTC(Coordinated Universal Time)를 작은 배지 또는 아이콘(icon)으로 항상 구분한다. 저장과 내부 계산은 UTC 기준이고, 현재(지속) 수집의 진행 상태 기준일은 KST 전일 23:59:59다.
 
 ## 보안과 감사
 

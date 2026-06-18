@@ -65,6 +65,58 @@ CREATE TABLE collection_target_changes (
   CONSTRAINT collection_target_changes_actor_ck CHECK (actor IN ('system', 'local_user'))
 );
 
+CREATE TABLE collection_plans (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  instrument_id BIGINT NOT NULL REFERENCES instruments(id),
+  preset TEXT NOT NULL,
+  range_start_at TIMESTAMPTZ NOT NULL,
+  range_end_at TIMESTAMPTZ,
+  is_continuous BOOLEAN NOT NULL DEFAULT true,
+  method TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT collection_plans_instrument_uk UNIQUE (instrument_id),
+  CONSTRAINT collection_plans_method_ck CHECK (method IN ('safe_restart', 'incremental')),
+  CONSTRAINT collection_plans_status_ck CHECK (status IN ('latest_collecting', 'collecting', 'paused', 'stopped')),
+  CONSTRAINT collection_plans_range_ck CHECK (range_end_at IS NULL OR range_start_at < range_end_at)
+);
+
+CREATE TABLE collection_coverage_snapshots (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  instrument_id BIGINT NOT NULL REFERENCES instruments(id),
+  data_type TEXT NOT NULL,
+  range_start_at TIMESTAMPTZ NOT NULL,
+  range_end_at TIMESTAMPTZ,
+  status TEXT NOT NULL,
+  progress_percent NUMERIC NOT NULL,
+  last_successful_at TIMESTAMPTZ NOT NULL,
+  missing_segment_count INTEGER NOT NULL DEFAULT 0,
+  calculated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT collection_coverage_snapshots_data_type_ck CHECK (data_type IN ('source_candle', 'ticker_snapshot', 'orderbook_summary')),
+  CONSTRAINT collection_coverage_snapshots_status_ck CHECK (status IN ('normal', 'warning', 'incident', 'backfilling')),
+  CONSTRAINT collection_coverage_snapshots_progress_ck CHECK (progress_percent >= 0 AND progress_percent <= 100),
+  CONSTRAINT collection_coverage_snapshots_missing_count_ck CHECK (missing_segment_count >= 0)
+);
+
+CREATE TABLE collection_coverage_segments (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  snapshot_id BIGINT NOT NULL REFERENCES collection_coverage_snapshots(id) ON DELETE CASCADE,
+  data_type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  offset_percent NUMERIC NOT NULL,
+  width_percent NUMERIC NOT NULL,
+  segment_start_at TIMESTAMPTZ NOT NULL,
+  segment_end_at TIMESTAMPTZ NOT NULL,
+  label TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT collection_coverage_segments_data_type_ck CHECK (data_type IN ('source_candle', 'ticker_snapshot', 'orderbook_summary')),
+  CONSTRAINT collection_coverage_segments_status_ck CHECK (status IN ('collected', 'missing', 'collecting', 'future')),
+  CONSTRAINT collection_coverage_segments_percent_ck CHECK (offset_percent >= 0 AND width_percent >= 0 AND offset_percent + width_percent <= 100),
+  CONSTRAINT collection_coverage_segments_range_ck CHECK (segment_start_at < segment_end_at)
+);
+
 CREATE TABLE collection_settings (
   key TEXT PRIMARY KEY,
   value JSONB NOT NULL,
@@ -283,6 +335,9 @@ CREATE INDEX ticker_snapshots_instrument_bucket_idx ON ticker_snapshots (instrum
 CREATE INDEX orderbook_summaries_instrument_bucket_idx ON orderbook_summaries (instrument_id, bucket_at DESC);
 CREATE INDEX collection_runs_started_at_idx ON collection_runs (started_at DESC);
 CREATE INDEX target_collection_results_run_idx ON target_collection_results (collection_run_id, instrument_id);
+CREATE INDEX collection_plans_status_idx ON collection_plans (status, instrument_id);
+CREATE INDEX collection_coverage_snapshots_latest_idx ON collection_coverage_snapshots (instrument_id, data_type, calculated_at DESC);
+CREATE INDEX collection_coverage_segments_snapshot_idx ON collection_coverage_segments (snapshot_id, data_type);
 CREATE INDEX missing_ranges_status_idx ON missing_ranges (status, instrument_id, data_type);
 CREATE INDEX backfill_jobs_status_idx ON backfill_jobs (status, created_at DESC);
 CREATE INDEX audit_logs_created_at_idx ON audit_logs (created_at DESC);

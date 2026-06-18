@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: goodmoneying
+      POSTGRES_USER: goodmoneying
+      POSTGRES_PASSWORD: goodmoneying
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U goodmoneying -d goodmoneying"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      GOODMONEYING_OPERATOR_TOKEN: local-dev-token
+      GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    environment:
+      GOODMONEYING_OPERATOR_TOKEN: local-dev-token
+      GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
+      GOODMONEYING_LIVE_UPBIT: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+
+volumes:
+  postgres-data:

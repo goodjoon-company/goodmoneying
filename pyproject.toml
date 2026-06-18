@@ -1,0 +1,49 @@
+[project]
+name = "goodmoneying"
+version = "0.1.0"
+description = "goodmoneying M1 업비트 수집 운영 MVP"
+requires-python = ">=3.14"
+dependencies = [
+  "fastapi>=0.124.0",
+  "httpx>=0.28.0",
+  "jsonschema>=4.25.0",
+  "psycopg[binary]>=3.3.2",
+  "pydantic>=2.12.0",
+  "pyyaml>=6.0.0",
+  "uvicorn[standard]>=0.38.0",
+]
+
+[dependency-groups]
+dev = [
+  "mypy>=1.19.0",
+  "pytest>=9.0.0",
+  "pytest-cov>=7.0.0",
+  "ruff>=0.14.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["apps/api", "apps/worker", "packages/shared"]
+testpaths = ["tests"]
+markers = [
+  "live: 실제 외부 API를 호출하는 테스트",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["apps/api", "apps/worker", "packages/shared", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.14"
+mypy_path = "apps/api:apps/worker:packages/shared"
+strict = true
+warn_unreachable = true
+warn_unused_ignores = true
+disallow_any_generics = false
+
+[[tool.mypy.overrides]]
+module = ["yaml"]
+ignore_missing_imports = true

@@ -1,0 +1,13 @@
+.git
+.gitignore
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.venv
+**/__pycache__
+**/*.pyc
+apps/web/dist
+apps/web/tsconfig.tsbuildinfo
+node_modules
+playwright-report
+test-results

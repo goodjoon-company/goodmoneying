@@ -1,1 +1,14 @@
 .superpowers/
+.obsidian/
+.venv/
+node_modules/
+apps/web/dist/
+apps/web/node_modules/
+test-results/
+playwright-report/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+apps/web/tsconfig.tsbuildinfo

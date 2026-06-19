@@ -142,6 +142,16 @@ jobs:
       - name: Healthcheck profile
         run: deploy/scripts/healthcheck-profile.sh prod-home
 
+      - name: Load prod-home E2E operator token
+        run: |
+          token="$(ssh -o BatchMode=yes app-server01 "grep '^GOODMONEYING_OPERATOR_TOKEN=' /home/goodjoon/project/goodmoneying/env/app.env | cut -d= -f2-")"
+          if [ -z "$token" ]; then
+            echo "GOODMONEYING_OPERATOR_TOKEN is missing from APP SERVER 01 app.env" >&2
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          echo "E2E_OPERATOR_TOKEN=$token" >> "$GITHUB_ENV"
+
       - name: E2E against prod-home
         env:
           E2E_SKIP_WEBSERVER: "1"

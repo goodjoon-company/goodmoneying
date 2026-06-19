@@ -75,7 +75,7 @@ POSTGRES_PASSWORD=prod-home-example-postgres-password-rotate
 ### APP SERVER 01: `/home/goodjoon/project/goodmoneying/env/app.env`
 
 ```bash
-GOODMONEYING_DATABASE_URL=postgresql://goodmoneying:prod-home-example-postgres-password-rotate@Mac-Mini-M4.local:5432/goodmoneying
+GOODMONEYING_DATABASE_URL=postgresql://goodmoneying:prod-home-example-postgres-password-rotate@100.107.98.22:5432/goodmoneying
 GOODMONEYING_OPERATOR_TOKEN=prod-home-example-operator-token-rotate
 GOODMONEYING_LIVE_UPBIT=1
 ```
@@ -112,7 +112,9 @@ DOCKER_CONFIG=/Users/goodjoon/DATA/applications/goodmoneying/.docker docker logi
 
 Mac Mini M4는 `DOCKER_CONFIG`를 app 전용 경로로 바꾸면 Docker Desktop의 compose 플러그인(plugin)을 자동 탐색하지 못할 수 있다. `deploy-profile.sh`는 배포 전 `/Users/goodjoon/DATA/applications/goodmoneying/.docker/cli-plugins/docker-compose` symlink를 Docker Desktop 번들 compose로 보장한다.
 
-모든 서버는 Tailscale 내부 hostname으로 서로 접근 가능해야 한다.
+APP SERVER 01의 컨테이너 내부에서는 `.local` mDNS hostname이 해석되지 않을 수 있다. `GOODMONEYING_DATABASE_URL`은 Postgres가 바인드된 Tailscale IP를 사용한다.
+
+모든 서버는 Tailscale 내부 주소로 서로 접근 가능해야 한다.
 
 ## 수동 dry-run
 

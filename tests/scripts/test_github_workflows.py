@@ -157,4 +157,8 @@ def test_deploy_workflow_runs_e2e_against_deployed_urls() -> None:
     assert 'E2E_SKIP_WEBSERVER: "1"' in workflow_text
     assert "E2E_API_BASE_URL: http://app-server01:8000" in workflow_text
     assert "E2E_WEB_BASE_URL: http://bmax-ubuntu:8080" in workflow_text
+    assert "Load prod-home E2E operator token" in workflow_text
+    assert "GOODMONEYING_OPERATOR_TOKEN" in workflow_text
+    assert "::add-mask::$token" in workflow_text
+    assert "E2E_OPERATOR_TOKEN=$token" in workflow_text
     assert "npm run e2e" in runs

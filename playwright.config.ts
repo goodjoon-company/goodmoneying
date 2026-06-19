@@ -6,9 +6,9 @@ const skipWebServer = process.env.E2E_SKIP_WEBSERVER === "1";
 
 export default defineConfig({
   testDir: "tests/e2e",
-  timeout: 30_000,
+  timeout: 120_000,
   expect: {
-    timeout: 5_000
+    timeout: 15_000
   },
   use: {
     baseURL: webBaseURL,

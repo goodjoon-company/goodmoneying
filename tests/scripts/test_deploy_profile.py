@@ -410,11 +410,11 @@ def test_healthcheck_script_dry_run_prints_checks() -> None:
 
     assert result.returncode == 0
     assert (
-        "curl -fsS --connect-timeout 5 --max-time 10 "
+        "retry 30 2s curl -fsS --connect-timeout 5 --max-time 10 "
         "http://100.115.38.59:8000/health"
     ) in result.stdout
     assert (
-        "curl -fsS --connect-timeout 5 --max-time 10 http://100.68.208.102:8080/"
+        "retry 30 2s curl -fsS --connect-timeout 5 --max-time 10 http://100.68.208.102:8080/"
     ) in result.stdout
     assert "ssh -o BatchMode=yes -o ConnectTimeout=10" in result.stdout
     assert (

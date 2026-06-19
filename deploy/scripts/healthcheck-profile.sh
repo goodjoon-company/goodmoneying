@@ -26,6 +26,8 @@ source "$RUNNER_DIR/hosts.env"
 
 curl_args=(-fsS --connect-timeout 5 --max-time 10)
 ssh_args=(-o BatchMode=yes -o ConnectTimeout=10)
+retry_attempts="${GOODMONEYING_HEALTHCHECK_RETRIES:-30}"
+retry_interval_seconds="${GOODMONEYING_HEALTHCHECK_RETRY_INTERVAL_SECONDS:-2}"
 api_health_url="$GOODMONEYING_API_INTERNAL_URL/health"
 web_health_url="$GOODMONEYING_WEB_INTERNAL_URL/"
 postgres_check='pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
@@ -34,8 +36,8 @@ postgres_remote_command="PATH=$REMOTE_DOCKER_PATH docker exec goodmoneying-postg
 worker_remote_command="PATH=$REMOTE_DOCKER_PATH docker inspect -f '$worker_check_template' goodmoneying-worker"
 
 commands=(
-  "curl ${curl_args[*]} $api_health_url"
-  "curl ${curl_args[*]} $web_health_url"
+  "retry $retry_attempts ${retry_interval_seconds}s curl ${curl_args[*]} $api_health_url"
+  "retry $retry_attempts ${retry_interval_seconds}s curl ${curl_args[*]} $web_health_url"
   "ssh ${ssh_args[*]} $GOODMONEYING_INFRA_HOST $postgres_remote_command"
   "ssh ${ssh_args[*]} $GOODMONEYING_APP_HOST $worker_remote_command"
 )
@@ -45,8 +47,30 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
-curl "${curl_args[@]}" "$api_health_url" >/dev/null
-curl "${curl_args[@]}" "$web_health_url" >/dev/null
+retry_command() {
+  local label="$1"
+  shift
+  local attempt=1
+  local last_status=0
+  while (( attempt <= retry_attempts )); do
+    if "$@"; then
+      return 0
+    fi
+    last_status=$?
+    printf '대기 중: %s 실패(%d/%d). %s초 뒤 재시도합니다.\n' \
+      "$label" \
+      "$attempt" \
+      "$retry_attempts" \
+      "$retry_interval_seconds" >&2
+    sleep "$retry_interval_seconds"
+    attempt=$((attempt + 1))
+  done
+  printf '오류: %s 확인 실패. 마지막 exit code=%d\n' "$label" "$last_status" >&2
+  return "$last_status"
+}
+
+retry_command "API healthcheck" curl "${curl_args[@]}" "$api_health_url" >/dev/null
+retry_command "Web healthcheck" curl "${curl_args[@]}" "$web_health_url" >/dev/null
 ssh "${ssh_args[@]}" \
   "$GOODMONEYING_INFRA_HOST" \
   "$postgres_remote_command"

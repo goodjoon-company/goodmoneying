@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Python dependencies
+        run: uv sync --frozen
+
+      - name: Node dependencies
+        run: npm ci
+
+      - name: Python lint
+        run: uv run ruff check .
+
+      - name: Python type check
+        run: uv run mypy apps/api apps/worker packages/shared tests
+
+      - name: Python tests
+        run: uv run pytest
+
+      - name: Web tests
+        run: npm test
+
+      - name: Web build
+        run: npm run build
+
+      - name: Docker build api
+        run: docker build -f apps/api/Dockerfile -t goodmoneying-api:ci .
+
+      - name: Docker build worker
+        run: docker build -f apps/worker/Dockerfile -t goodmoneying-worker:ci .
+
+      - name: Docker build web
+        run: docker build -f apps/web/Dockerfile -t goodmoneying-web:ci .

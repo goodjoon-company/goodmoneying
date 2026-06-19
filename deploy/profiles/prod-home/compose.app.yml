@@ -1,12 +1,12 @@
 services:
   api:
-    image: ${GOODMONEYING_API_IMAGE}:${GOODMONEYING_IMAGE_TAG}
+    image: ghcr.io/goodjoon/goodmoneying-api:${GOODMONEYING_IMAGE_TAG}
     container_name: goodmoneying-api
     restart: unless-stopped
     env_file:
       - /opt/goodmoneying/env/app.env
     ports:
-      - "8000:8000"
+      - "100.115.38.59:8000:8000"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)\""]
       interval: 10s
@@ -14,7 +14,7 @@ services:
       retries: 12
 
   worker:
-    image: ${GOODMONEYING_WORKER_IMAGE}:${GOODMONEYING_IMAGE_TAG}
+    image: ghcr.io/goodjoon/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}
     container_name: goodmoneying-worker
     restart: unless-stopped
     env_file:

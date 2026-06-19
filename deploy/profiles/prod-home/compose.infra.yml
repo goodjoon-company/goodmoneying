@@ -6,7 +6,7 @@ services:
     env_file:
       - /opt/goodmoneying/env/infra.env
     ports:
-      - "5432:5432"
+      - "100.107.98.22:5432:5432"
     volumes:
       - /opt/goodmoneying/postgres-data:/var/lib/postgresql/data
     healthcheck:

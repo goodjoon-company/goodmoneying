@@ -1,9 +1,9 @@
 services:
   web:
-    image: ${GOODMONEYING_WEB_IMAGE}:${GOODMONEYING_IMAGE_TAG}
+    image: ghcr.io/goodjoon/goodmoneying-web:${GOODMONEYING_IMAGE_TAG}
     container_name: goodmoneying-web
     restart: unless-stopped
     env_file:
       - /opt/goodmoneying/env/web.env
     ports:
-      - "8080:80"
+      - "100.68.208.102:8080:80"

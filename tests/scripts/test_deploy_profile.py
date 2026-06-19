@@ -65,6 +65,28 @@ def test_prod_home_compose_uses_external_env_files() -> None:
     assert "/opt/goodmoneying/env/web.env" in web["web"]["env_file"]
 
 
+def test_prod_home_compose_binds_ports_to_tailscale_ips() -> None:
+    infra = services(load_compose("compose.infra.yml"))
+    app = services(load_compose("compose.app.yml"))
+    web = services(load_compose("compose.web.yml"))
+
+    assert infra["postgres"]["ports"] == ["100.107.98.22:5432:5432"]
+    assert app["api"]["ports"] == ["100.115.38.59:8000:8000"]
+    assert web["web"]["ports"] == ["100.68.208.102:8080:80"]
+
+
+def test_prod_home_compose_uses_fixed_ghcr_image_names() -> None:
+    app = services(load_compose("compose.app.yml"))
+    web = services(load_compose("compose.web.yml"))
+
+    assert app["api"]["image"] == "ghcr.io/goodjoon/goodmoneying-api:${GOODMONEYING_IMAGE_TAG}"
+    assert (
+        app["worker"]["image"]
+        == "ghcr.io/goodjoon/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}"
+    )
+    assert web["web"]["image"] == "ghcr.io/goodjoon/goodmoneying-web:${GOODMONEYING_IMAGE_TAG}"
+
+
 def test_deploy_script_rejects_unknown_profile() -> None:
     result = run_deploy_script("unknown", "release-abc1234")
 

@@ -17,10 +17,19 @@ def create_upbit_client_from_environment() -> UpbitClient:
     return FixtureUpbitClient()
 
 
+def run_incremental_once(worker: UpbitCollectionWorker) -> int:
+    worker.refresh_candidate_universe()
+    written = worker.collect_incremental()
+    print(f"수집 완료: rows={written}")
+    return written
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="goodmoneying M1 수집 워커")
     parser.add_argument("--database", default=":memory:")
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--loop", action="store_true")
+    parser.add_argument("--interval-seconds", type=float, default=60.0)
     parser.add_argument("--run-backfill-once", action="store_true")
     parser.add_argument("--run-backfill-loop", action="store_true")
     parser.add_argument("--backfill-poll-seconds", type=float, default=5.0)
@@ -42,9 +51,15 @@ def main() -> None:
             written = worker.run_backfill_once()
             print(f"백필 폴링 완료: rows={written}")
             time.sleep(args.backfill_poll_seconds)
-    worker.refresh_candidate_universe()
-    written = worker.collect_incremental()
-    print(f"수집 완료: rows={written}")
+    if args.loop:
+        try:
+            while True:
+                run_incremental_once(worker)
+                time.sleep(args.interval_seconds)
+        except KeyboardInterrupt:
+            print("수집 루프를 종료합니다.")
+            return
+    run_incremental_once(worker)
 
 
 if __name__ == "__main__":

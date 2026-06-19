@@ -9,4 +9,4 @@ RUN pip install --no-cache-dir uv \
   && uv sync --frozen --no-dev
 
 ENV PYTHONPATH=/app/apps/api:/app/apps/worker:/app/packages/shared
-CMD ["uv", "run", "--no-sync", "python", "-m", "goodmoneying_worker.main", "--once"]
+CMD ["uv", "run", "--no-sync", "python", "-m", "goodmoneying_worker.main", "--loop"]

@@ -151,11 +151,17 @@ def test_prod_home_hosts_env_defines_server_specific_data_and_config_paths() -> 
     assert "GOODMONEYING_REMOTE_BASE_DIR=" not in hosts_env
     assert "GOODMONEYING_INFRA_POSTGRES_DATA_DIR=" in hosts_env
     assert "GOODMONEYING_INFRA_CONFIG_DIR=" in hosts_env
+    assert (
+        "GOODMONEYING_INFRA_DOCKER_CONFIG="
+        "/Users/goodjoon/DATA/applications/goodmoneying/.docker"
+    ) in hosts_env
     assert "GOODMONEYING_APP_API_DATA_DIR=" in hosts_env
     assert "GOODMONEYING_APP_WORKER_DATA_DIR=" in hosts_env
     assert "GOODMONEYING_APP_CONFIG_DIR=" in hosts_env
+    assert "GOODMONEYING_APP_DOCKER_CONFIG=/home/goodjoon/.docker" in hosts_env
     assert "GOODMONEYING_WEB_NGINX_CACHE_DIR=" in hosts_env
     assert "GOODMONEYING_WEB_CONFIG_DIR=" in hosts_env
+    assert "GOODMONEYING_WEB_DOCKER_CONFIG=/home/goodjoon/.docker" in hosts_env
     assert "LOG_DIR=" not in hosts_env
 
 
@@ -241,6 +247,9 @@ def test_prod_home_target_local_scripts_use_local_compose_env() -> None:
             assert os.access(path, os.X_OK)
             assert "SCRIPT_DIR=" in text
             assert "deploy.compose.env" in text
+            assert 'source "$COMPOSE_ENV"' in text
+            assert "GOODMONEYING_DOCKER_CONFIG" in text
+            assert "export DOCKER_CONFIG=" in text
             assert "docker compose --env-file" in text
             assert "-f \"$COMPOSE_FILE\"" in text
 
@@ -291,8 +300,18 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
         "'/Users/goodjoon/DATA/applications/goodmoneying/deploy.compose.env'"
     ) in result.stdout
     assert (
+        "DOCKER_CONFIG='/Users/goodjoon/DATA/applications/goodmoneying/.docker' "
+        "PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:$PATH "
+        "docker compose"
+    ) in result.stdout
+    assert (
         "docker compose --env-file "
         "'/home/goodjoon/project/goodmoneying/deploy.compose.env'"
+    ) in result.stdout
+    assert (
+        "DOCKER_CONFIG='/home/goodjoon/.docker' "
+        "PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:$PATH "
+        "docker compose"
     ) in result.stdout
     assert (
         "docker compose --env-file "
@@ -335,6 +354,12 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
     assert (
         "ssh Mac-Mini-M4.local \"printf "
         "'GOODMONEYING_IMAGE_TAG=%s\\n' 'release-def5678' >> "
+        "'/Users/goodjoon/DATA/applications/goodmoneying/deploy.compose.env'\""
+    ) in result.stdout
+    assert (
+        "ssh Mac-Mini-M4.local \"printf "
+        "'GOODMONEYING_DOCKER_CONFIG=%s\\n' "
+        "'/Users/goodjoon/DATA/applications/goodmoneying/.docker' >> "
         "'/Users/goodjoon/DATA/applications/goodmoneying/deploy.compose.env'\""
     ) in result.stdout
     assert (
@@ -414,6 +439,8 @@ def test_start_script_dry_run_uses_target_compose_env_in_start_order() -> None:
         "PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:$PATH "
         "docker compose --env-file"
     ) in result.stdout
+    assert "DOCKER_CONFIG='/Users/goodjoon/DATA/applications/goodmoneying/.docker'" in result.stdout
+    assert "DOCKER_CONFIG='/home/goodjoon/.docker'" in result.stdout
     assert "deploy.compose.env" in result.stdout
     assert "compose.infra.yml' up -d" in result.stdout
     assert "compose.app.yml' up -d" in result.stdout
@@ -432,6 +459,8 @@ def test_stop_script_dry_run_uses_target_compose_env_in_stop_order() -> None:
         "PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:$PATH "
         "docker compose --env-file"
     ) in result.stdout
+    assert "DOCKER_CONFIG='/Users/goodjoon/DATA/applications/goodmoneying/.docker'" in result.stdout
+    assert "DOCKER_CONFIG='/home/goodjoon/.docker'" in result.stdout
     assert "deploy.compose.env" in result.stdout
     assert "compose.web.yml' stop" in result.stdout
     assert "compose.app.yml' stop" in result.stdout

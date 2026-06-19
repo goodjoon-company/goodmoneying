@@ -102,6 +102,14 @@ Mac Mini M4 runner는 macOS Keychain 접근 제한을 피하기 위해 아래 Do
 DOCKER_CONFIG=/Users/goodjoon/DATA/applications/goodmoneying/.docker docker login ghcr.io -u goodjoon-company
 ```
 
+자동 배포와 target-local start/stop도 서버별 Docker config 경로를 명시해서 실행한다. 경로는 [runner/hosts.env](./runner/hosts.env)의 `GOODMONEYING_*_DOCKER_CONFIG`에서 관리한다.
+
+| 서버 | Docker config 경로 |
+|---|---|
+| Mac Mini M4 | `/Users/goodjoon/DATA/applications/goodmoneying/.docker` |
+| APP SERVER 01 | `/home/goodjoon/.docker` |
+| bmax-ubuntu | `/home/goodjoon/.docker` |
+
 모든 서버는 Tailscale 내부 hostname으로 서로 접근 가능해야 한다.
 
 ## 수동 dry-run

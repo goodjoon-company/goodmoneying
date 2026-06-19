@@ -156,7 +156,32 @@ def test_healthcheck_script_dry_run_prints_checks() -> None:
     result = run_healthcheck_script("prod-home")
 
     assert result.returncode == 0
-    assert "curl -fsS http://app-server01:8000/health" in result.stdout
-    assert "curl -fsS http://bmax-ubuntu:8080/" in result.stdout
-    assert "docker exec goodmoneying-postgres pg_isready" in result.stdout
+    assert (
+        "curl -fsS --connect-timeout 5 --max-time 10 "
+        "http://app-server01:8000/health"
+    ) in result.stdout
+    assert (
+        "curl -fsS --connect-timeout 5 --max-time 10 http://bmax-ubuntu:8080/"
+    ) in result.stdout
+    assert "ssh -o BatchMode=yes -o ConnectTimeout=10" in result.stdout
+    assert "docker exec goodmoneying-postgres" in result.stdout
+    assert 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' in result.stdout
     assert "docker inspect -f '{{.State.Running}}' goodmoneying-worker" in result.stdout
+
+
+def test_healthcheck_script_rejects_unknown_profile() -> None:
+    result = run_healthcheck_script("unknown")
+
+    assert result.returncode != 0
+    assert "지원하지 않는 배포 프로필입니다: unknown" in result.stderr
+
+
+def test_healthcheck_script_dry_run_prints_checks_in_order() -> None:
+    result = run_healthcheck_script("prod-home")
+
+    assert result.returncode == 0
+    api_index = result.stdout.index("http://app-server01:8000/health")
+    web_index = result.stdout.index("http://bmax-ubuntu:8080/")
+    postgres_index = result.stdout.index("docker exec goodmoneying-postgres")
+    worker_index = result.stdout.index("goodmoneying-worker")
+    assert api_index < web_index < postgres_index < worker_index

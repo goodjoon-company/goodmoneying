@@ -42,7 +42,7 @@ def test_repository_dashboard_contains_collection_plan_rows_and_segments() -> No
     assert first.overall_status_label == "최신수집중"
     assert first.plan.is_continuous is True
     assert first.plan.range_time_zone == "KST"
-    assert first.plan.display_range.endswith("현재(지속)")
+    assert first.plan.display_range.endswith("~ NOW")
     assert [status.data_type for status in first.data_statuses] == [
         "source_candle",
         "ticker_snapshot",

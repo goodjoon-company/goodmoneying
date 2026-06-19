@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
 from goodmoneying_api.schemas import (
     BackfillJobResponse,
@@ -66,11 +67,12 @@ class OperationsService:
                     instrument=instrument_to_response(entry.instrument),
                     rank=entry.rank,
                     accTradePrice24h=decimal_string(entry.acc_trade_price_24h) or "0",
-                    accTradePrice24hDisplay=str(int(entry.acc_trade_price_24h)),
+                    accTradePrice24hDisplay=format_krw(entry.acc_trade_price_24h),
                     selected=entry.selected,
                     candidateStatus=entry.candidate_status,
                     qualityStatus="normal" if entry.rank <= 50 else "warning",
-                    collectionRangeDisplay="2024-01-01부터 현재",
+                    qualityDetail=quality_detail_for_rank(entry.rank, entry.selected),
+                    collectionRangeDisplay="2024-01-01 00:00 KST ~ NOW",
                 )
                 for entry in entries
             ],
@@ -93,7 +95,7 @@ class OperationsService:
                     instrument=instrument_to_response(row.instrument),
                     tradePrice=decimal_string(row.trade_price) or "0",
                     accTradePrice24h=decimal_string(row.acc_trade_price_24h) or "0",
-                    accTradePrice24hDisplay=row.acc_trade_price_24h_display,
+                    accTradePrice24hDisplay=format_krw(row.acc_trade_price_24h),
                     changeRate=decimal_string(row.change_rate) or "0",
                     tickerCollectedAt=row.ticker_collected_at,
                     orderbookCollectedAt=row.orderbook_collected_at,
@@ -302,6 +304,7 @@ def dashboard_target_to_response(
                 lastSuccessfulAt=status.last_successful_at,
                 progressPercent=decimal_string(status.progress_percent) or "0",
                 missingSegmentCount=status.missing_segment_count,
+                storedRowCount=status.stored_row_count,
             )
             for status in target.data_statuses
         ],
@@ -387,3 +390,14 @@ def format_freshness_label(value: datetime) -> str:
     if total_seconds < 3600:
         return f"{total_seconds // 60}분 전"
     return f"{total_seconds // 3600}시간 전"
+
+
+def format_krw(value: object) -> str:
+    return f"₩{int(Decimal(str(value))):,}"
+
+
+def quality_detail_for_rank(rank: int, selected: bool) -> str:
+    basis = "활성 수집 대상" if selected else "후보 대상"
+    if rank <= 50:
+        return f"품질 정상: 거래대금 순위 {rank}위, {basis}, 최신성/결측/저장량 기준 정상권"
+    return f"품질 주의: 거래대금 순위 {rank}위, {basis}, 기본 수집 대상 밖이라 수동 확인 필요"

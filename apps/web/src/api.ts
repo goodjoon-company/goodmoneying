@@ -47,6 +47,7 @@ export type CollectionDataStatus = {
   lastSuccessfulAt: string;
   progressPercent: string;
   missingSegmentCount: number;
+  storedRowCount: number;
 };
 
 export type CoverageSegment = {
@@ -105,6 +106,7 @@ export type CandidateUniverseEntry = {
   selected: boolean;
   candidateStatus: "in_universe" | "out_of_universe";
   qualityStatus: Status;
+  qualityDetail: string;
   collectionRangeDisplay: string;
 };
 
@@ -176,15 +178,15 @@ export type OperationsSnapshot = {
   dashboard: DashboardSummary;
   candidateEntries: CandidateUniverseEntry[];
   marketRows: MarketListRow[];
-  detail: InstrumentDetail;
+  detail: InstrumentDetail | null;
   candles: Candle[];
   backfillJobs: BackfillJob[];
   notifications: NotificationEvent[];
   source: "api" | "fixture";
 };
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
-const OPERATOR_TOKEN = import.meta.env.VITE_OPERATOR_TOKEN ?? "local-dev-token";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
+const OPERATOR_TOKEN = import.meta.env.VITE_OPERATOR_TOKEN ?? "";
 export const JANUARY_2026_BACKFILL_START = "2026-01-01T00:00:00.000Z";
 export const JANUARY_2026_BACKFILL_END = "2026-02-01T00:00:00.000Z";
 
@@ -197,30 +199,30 @@ async function getJson<T>(path: string): Promise<T> {
 }
 
 export async function loadOperationsSnapshot(): Promise<OperationsSnapshot> {
-  const dashboard = await getJson<DashboardSummary>("/v1/dashboard/summary");
-  const universe = await getJson<{ entries: CandidateUniverseEntry[] }>("/v1/candidate-universe");
-  const market = await getJson<{ rows: MarketListRow[] }>("/v1/market-list");
-  const firstInstrumentId =
-    market.rows.find((row) => row.instrument.marketCode === "KRW-BTC")?.instrument.id ??
-    market.rows[0]?.instrument.id ??
-    universe.entries.find((entry) => entry.instrument.marketCode === "KRW-BTC")?.instrument.id ??
-    universe.entries[0]?.instrument.id;
-  if (firstInstrumentId === undefined) {
-    throw new Error("M1 API has no instrument");
-  }
-  const instrument = await loadInstrumentSnapshot(firstInstrumentId);
-  const jobs = await getJson<{ items: BackfillJob[] }>("/v1/backfill/jobs");
-  const notifications = await getJson<{ items: NotificationEvent[] }>("/v1/notifications");
+  const [dashboard, jobs] = await Promise.all([
+    getJson<DashboardSummary>("/v1/dashboard/summary"),
+    getJson<{ items: BackfillJob[] }>("/v1/backfill/jobs")
+  ]);
   return {
     dashboard,
-    candidateEntries: universe.entries,
-    marketRows: market.rows,
-    detail: instrument.detail,
-    candles: instrument.candles,
+    candidateEntries: [],
+    marketRows: [],
+    detail: null,
+    candles: [],
     backfillJobs: jobs.items,
-    notifications: notifications.items,
+    notifications: dashboard.alerts,
     source: "api"
   };
+}
+
+export async function loadCandidateUniverse(): Promise<CandidateUniverseEntry[]> {
+  const universe = await getJson<{ entries: CandidateUniverseEntry[] }>("/v1/candidate-universe");
+  return universe.entries;
+}
+
+export async function loadMarketList(): Promise<MarketListRow[]> {
+  const market = await getJson<{ rows: MarketListRow[] }>("/v1/market-list");
+  return market.rows;
 }
 
 export async function loadInstrumentSnapshot(
@@ -236,12 +238,15 @@ export async function loadInstrumentSnapshot(
 }
 
 async function sendJson<T>(path: string, method: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json"
+  };
+  if (OPERATOR_TOKEN) {
+    headers["X-Operator-Token"] = OPERATOR_TOKEN;
+  }
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Operator-Token": OPERATOR_TOKEN
-    },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body)
   });
   if (!response.ok) {
@@ -302,17 +307,21 @@ export function demoSnapshot(): OperationsSnapshot {
     instrument,
     rank: index + 1,
     accTradePrice24h: `${100000000000 - index * 1000000}`,
-    accTradePrice24hDisplay: `${100000000000 - index * 1000000}`,
+    accTradePrice24hDisplay: `₩${(100000000000 - index * 1000000).toLocaleString("ko-KR")}`,
     selected: index < 50,
     candidateStatus: "in_universe" as const,
     qualityStatus: index % 9 === 0 ? ("warning" as const) : ("normal" as const),
-    collectionRangeDisplay: "2024-01-01부터 현재"
+    qualityDetail:
+      index % 9 === 0
+        ? "품질 주의: 결측 1구간, 백필 확인 필요"
+        : "품질 정상: 최신성/결측/중복/저장량 기준 정상권",
+    collectionRangeDisplay: "2024-01-01 00:00 KST ~ NOW"
   }));
   const marketRows = instruments.slice(0, 50).map((instrument, index) => ({
     instrument,
     tradePrice: `${1000000 - index * 1250}`,
     accTradePrice24h: `${100000000000 - index * 1000000}`,
-    accTradePrice24hDisplay: `${100000000000 - index * 1000000}`,
+    accTradePrice24hDisplay: `₩${(100000000000 - index * 1000000).toLocaleString("ko-KR")}`,
     changeRate: `${(index % 7) / 100}`,
     tickerCollectedAt: now,
     orderbookCollectedAt: now,
@@ -330,7 +339,8 @@ export function demoSnapshot(): OperationsSnapshot {
         statusLabel: "정상",
         lastSuccessfulAt: now,
         progressPercent: "100",
-        missingSegmentCount: 1
+        missingSegmentCount: 1,
+        storedRowCount: 44640
       },
       {
         dataType: "ticker_snapshot" as const,
@@ -339,7 +349,8 @@ export function demoSnapshot(): OperationsSnapshot {
         statusLabel: "정상",
         lastSuccessfulAt: now,
         progressPercent: "100",
-        missingSegmentCount: 0
+        missingSegmentCount: 0,
+        storedRowCount: 0
       },
       {
         dataType: "orderbook_summary" as const,
@@ -348,7 +359,8 @@ export function demoSnapshot(): OperationsSnapshot {
         statusLabel: "정상",
         lastSuccessfulAt: now,
         progressPercent: "100",
-        missingSegmentCount: 0
+        missingSegmentCount: 0,
+        storedRowCount: 0
       }
     ];
     const rangeStartAt = "2025-12-31T15:00:00.000Z";
@@ -363,7 +375,7 @@ export function demoSnapshot(): OperationsSnapshot {
         rangeEndAt: null,
         isContinuous: true,
         method: "safe_restart",
-        displayRange: "2026-01-01 00:00 KST ~ 현재(지속)",
+        displayRange: "2026-01-01 00:00 KST ~ NOW",
         rangeTimeZone: "KST" as const,
         progressBasis: "현재(지속)은 KST 전일 23:59:59까지 기준"
       },

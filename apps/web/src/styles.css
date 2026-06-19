@@ -377,7 +377,8 @@ h3 {
 }
 
 .panel.full,
-.trend-panel {
+.trend-panel,
+.realtime-panel {
   grid-column: 1 / -1;
 }
 
@@ -415,60 +416,6 @@ h3 {
   font-style: normal;
 }
 
-.ops-chart {
-  min-height: 220px;
-  overflow: hidden;
-  border: 1px solid #243a31;
-  border-radius: 8px;
-  background: linear-gradient(180deg, #10201a, #0f1714);
-}
-
-.ops-chart svg {
-  width: 100%;
-  display: block;
-}
-
-.ops-chart line {
-  stroke: rgb(148 163 184 / 0.12);
-}
-
-.ops-chart .area {
-  fill: url("#coverage-fill");
-  stroke: none;
-}
-
-.ops-chart .line {
-  fill: none;
-  stroke-width: 4;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.ops-chart .primary {
-  stroke: #2fd6a2;
-}
-
-.ops-chart .secondary {
-  stroke: #5b9dff;
-  stroke-width: 3;
-}
-
-.ops-chart .dot.warning {
-  fill: #f1bd4f;
-}
-
-.ops-chart .dot.danger {
-  fill: #ff7268;
-}
-
-.ops-chart > span {
-  display: block;
-  padding: 0 14px 12px;
-  color: #9eaaa2;
-  font-size: 12px;
-  font-weight: 800;
-}
-
 .mini-metrics,
 .detail-stats,
 .orderbook-grid {
@@ -500,14 +447,32 @@ h3 {
 }
 
 .health-item {
-  min-height: 80px;
+  min-height: 58px;
   display: grid;
-  gap: 4px;
-  padding: 13px;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 10px;
 }
 
 .health-item strong {
-  font-size: 20px;
+  font-size: 14px;
+}
+
+.health-item em {
+  grid-column: 2 / -1;
+}
+
+.health-icon.normal {
+  color: #3bd19c;
+}
+
+.health-icon.warning {
+  color: #f1bd4f;
+}
+
+.health-icon.incident {
+  color: #ff786d;
 }
 
 .health-item strong.normal {
@@ -534,7 +499,7 @@ h3 {
 .dashboard-table-head,
 .dashboard-row-button {
   display: grid;
-  grid-template-columns: 1.2fr 94px 170px minmax(150px, 1fr) 1.3fr;
+  grid-template-columns: 1.1fr 1fr 1fr minmax(180px, 0.9fr) 1.2fr;
   gap: 12px;
   align-items: center;
   min-height: 46px;
@@ -599,6 +564,27 @@ h3 {
   color: #ff786d;
 }
 
+.status-stack {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.status-stack strong {
+  color: #edf7ef;
+  font-size: 13px;
+}
+
+.status-stack em {
+  overflow: hidden;
+  color: #9eaaa2;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .coverage-bar,
 .coverage-meter {
   position: relative;
@@ -630,6 +616,42 @@ h3 {
 
 .coverage-segment.future {
   background: #41514a;
+}
+
+.candle-count-meter {
+  position: relative;
+  min-height: 38px;
+  display: grid;
+  place-items: center;
+}
+
+.candle-count-meter .coverage-bar {
+  position: absolute;
+  inset: 13px 0;
+  width: 100%;
+}
+
+.candle-count-meter strong,
+.candle-count-meter em {
+  position: relative;
+  z-index: 1;
+  border-radius: 999px;
+  background: #111916;
+}
+
+.candle-count-meter strong {
+  padding: 2px 8px;
+  color: #edf7ef;
+  font-size: 13px;
+}
+
+.candle-count-meter em {
+  margin-top: 21px;
+  padding: 1px 6px;
+  color: #9eaaa2;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
 }
 
 .coverage-meter {

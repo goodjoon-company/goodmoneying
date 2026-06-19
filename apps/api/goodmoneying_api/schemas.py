@@ -63,6 +63,7 @@ class CollectionDataStatusResponse(BaseModel):
     lastSuccessfulAt: datetime
     progressPercent: str
     missingSegmentCount: int
+    storedRowCount: int
 
 
 class CoverageSegmentResponse(BaseModel):
@@ -125,6 +126,7 @@ class CandidateUniverseEntryResponse(BaseModel):
     selected: bool
     candidateStatus: Literal["in_universe", "out_of_universe"]
     qualityStatus: Literal["normal", "warning", "incident"]
+    qualityDetail: str
     collectionRangeDisplay: str
 
 

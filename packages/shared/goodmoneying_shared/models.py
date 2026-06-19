@@ -123,6 +123,7 @@ class CollectionDataStatus:
     last_successful_at: datetime
     progress_percent: Decimal
     missing_segment_count: int
+    stored_row_count: int
 
 
 @dataclass(frozen=True)

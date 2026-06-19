@@ -136,7 +136,7 @@ jobs:
             export DOCKER_CONFIG='${DOCKER_CONFIG}'
             export DOCKER_HOST='${DOCKER_HOST}'
             export DOCKER_BUILDKIT='${DOCKER_BUILDKIT}'
-            '${RUNNER_DOCKER_BIN}' buildx build --platform '${BUILD_PLATFORMS}' --push --build-arg VITE_API_BASE_URL=http://app-server01:8000 -f apps/web/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG} .
+            '${RUNNER_DOCKER_BIN}' buildx build --platform '${BUILD_PLATFORMS}' --push --build-arg VITE_API_BASE_URL=/api -f apps/web/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG} .
           "
 
       - name: Deploy profile

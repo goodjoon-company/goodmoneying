@@ -49,13 +49,16 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
     assert dashboard.json()["healthChecks"][0]["title"]
     assert universe.status_code == 200
     assert len(universe.json()["entries"]) == 100
-    assert universe.json()["entries"][0]["accTradePrice24hDisplay"].isdigit()
+    assert universe.json()["entries"][0]["accTradePrice24hDisplay"].startswith("₩")
+    assert "," in universe.json()["entries"][0]["accTradePrice24hDisplay"]
     assert universe.json()["entries"][0]["qualityStatus"] in {"normal", "warning", "incident"}
-    assert universe.json()["entries"][0]["collectionRangeDisplay"].endswith("현재")
+    assert universe.json()["entries"][0]["qualityDetail"]
+    assert universe.json()["entries"][0]["collectionRangeDisplay"].endswith(" ~ NOW")
     assert market_list.status_code == 200
     assert len(market_list.json()["rows"]) == 50
     first_market_row = market_list.json()["rows"][0]
-    assert first_market_row["accTradePrice24hDisplay"].isdigit()
+    assert first_market_row["accTradePrice24hDisplay"].startswith("₩")
+    assert "," in first_market_row["accTradePrice24hDisplay"]
     assert first_market_row["coveragePercent"]
     assert first_market_row["storageBytesDisplay"].endswith(("MB", "GB"))
 

@@ -32,18 +32,26 @@ import {
 import {
   createBackfillPlan,
   demoSnapshot,
+  loadCandidateUniverse,
   loadInstrumentSnapshot,
+  loadMarketList,
   loadOperationsSnapshot,
   updateCollectionTargets,
   type Candle,
+  type CandidateUniverseEntry,
   type CollectionDashboardTarget,
   type CoverageSegment,
   type Instrument,
+  type InstrumentDetail,
+  type MarketListRow,
   type OperationsSnapshot,
   type Status
 } from "./api";
 
 type SectionId = "dashboard" | "targets" | "markets";
+
+const EMPTY_CANDIDATE_ENTRIES: CandidateUniverseEntry[] = [];
+const EMPTY_MARKET_ROWS: MarketListRow[] = [];
 
 const menuGroups: {
   title: string;
@@ -143,13 +151,15 @@ function OperationsApp() {
   useEffect(() => {
     if (!query.data) return;
     setSnapshot(query.data);
-    setSelectedInstrumentId((current) => current ?? query.data.detail.instrument.id);
+    setSelectedInstrumentId(
+      (current) => current ?? query.data.dashboard.targets[0]?.instrument.id ?? null
+    );
   }, [query.data]);
 
   const openInstrumentDetail = async (instrumentId: number) => {
     setSelectedInstrumentId(instrumentId);
     setDetailOpen(true);
-    if (!snapshot || snapshot.detail.instrument.id === instrumentId) return;
+    if (!snapshot || snapshot.detail?.instrument.id === instrumentId) return;
     if (import.meta.env.MODE === "test") {
       setSnapshot(selectDemoInstrument(snapshot, instrumentId));
       return;
@@ -236,7 +246,8 @@ function OperationsApp() {
           </div>
           <div className="runtime-pills" aria-label="화면 갱신 기준">
             <span>표시 KST</span>
-            <span>폴링 10-30초</span>
+            <span>폴링 15초</span>
+            <span>마지막 갱신 {formatFreshness(snapshot.dashboard.refreshedAt)}</span>
           </div>
         </section>
 
@@ -278,12 +289,11 @@ function Dashboard({ snapshot }: { snapshot: OperationsSnapshot }) {
         />
       </div>
 
-      <section className="panel trend-panel">
+      <section className="panel realtime-panel">
         <div className="panel-heading">
-          <h2>구간형 수집 진행 상태</h2>
-          <TimeInline value="KST 전일 23:59:59 기준" zone="KST" />
+          <h2>실시간 수집 현황</h2>
+          <TimeInline value={`갱신 ${formatFreshness(snapshot.dashboard.refreshedAt)}`} zone="KST" />
         </div>
-        <OperationalTrendChart targets={snapshot.dashboard.targets} />
         <div className="mini-metrics">
           <MiniMetric label="결측 구간" value={totals.missingRangesOpen.toString()} detail="캔들 결측 기준" />
           <MiniMetric label="백필 대기" value={snapshot.backfillJobs.length.toString()} detail={`예상 요청 ${totals.recentRequestCount.toLocaleString("ko-KR")}`} />
@@ -299,6 +309,7 @@ function Dashboard({ snapshot }: { snapshot: OperationsSnapshot }) {
         <div className="health-list">
           {snapshot.dashboard.healthChecks.map((check) => (
             <article className="health-item" key={check.title}>
+              <StatusIcon status={check.status} />
               <span>{check.title}</span>
               <strong className={check.status}>{check.statusLabel}</strong>
               <em>{check.detail}</em>
@@ -315,9 +326,9 @@ function Dashboard({ snapshot }: { snapshot: OperationsSnapshot }) {
         <div className="dashboard-table">
           <div className="dashboard-table-head">
             <span>코인</span>
-            <span>상태</span>
-            <span>최근성</span>
-            <span>커버리지</span>
+            <span>실시간 수집</span>
+            <span>Backfill</span>
+            <span>가격 분봉</span>
             <span>데이터 상태</span>
           </div>
           {snapshot.dashboard.targets.slice(0, 8).map((target) => (
@@ -340,6 +351,10 @@ function CollectionTargetRow({ target }: { target: CollectionDashboardTarget }) 
   const candleSegments = target.coverageSegments.filter(
     (segment) => segment.dataType === "source_candle"
   );
+  const candleStatus = target.dataStatuses.find((status) => status.dataType === "source_candle");
+  const orderbookStatus = target.dataStatuses.find(
+    (status) => status.dataType === "orderbook_summary"
+  );
   return (
     <article className={`accordion-row ${expanded ? "expanded" : ""}`}>
       <button
@@ -348,11 +363,19 @@ function CollectionTargetRow({ target }: { target: CollectionDashboardTarget }) 
         onClick={() => setExpanded((current) => !current)}
       >
         <InstrumentName instrument={target.instrument} />
-        <span className={`quality ${target.overallStatus === "latest_collecting" ? "normal" : "warning"}`}>
-          {target.overallStatusLabel}
+        <span className="status-stack">
+          <strong>{orderbookStatus?.statusLabel ?? target.overallStatusLabel}</strong>
+          <em>마지막 호가 {formatFreshness(orderbookStatus?.lastSuccessfulAt ?? target.plan.rangeStartAt)}</em>
         </span>
-        <TimeInline value={formatFreshness(target.plan.rangeStartAt)} zone={target.plan.rangeTimeZone} />
-        <CoverageBar segments={candleSegments} />
+        <span className="status-stack">
+          <strong>{formatBackfillRange(target)}</strong>
+          <em>마지막 분봉 {formatFreshness(candleStatus?.lastSuccessfulAt ?? target.plan.rangeStartAt)}</em>
+        </span>
+        <CandleCountMeter
+          count={candleStatus?.storedRowCount ?? 0}
+          progress={candleStatus?.progressPercent ?? "0"}
+          segments={candleSegments}
+        />
         <span className="mini-statuses">
           {target.dataStatuses.map((status) => (
             <em key={status.dataType}>{status.label} {status.statusLabel}</em>
@@ -458,10 +481,19 @@ function PlanEditor({ target }: { target: CollectionDashboardTarget }) {
 
 function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
   const queryClient = useQueryClient();
+  const universeQuery = useQuery({
+    queryKey: ["candidate-universe"],
+    queryFn: loadCandidateUniverse,
+    enabled: snapshot.source === "api"
+  });
+  const entries =
+    snapshot.source === "api"
+      ? universeQuery.data ?? EMPTY_CANDIDATE_ENTRIES
+      : snapshot.candidateEntries;
   const [selectedIds, setSelectedIds] = useState<Set<number>>(
     () =>
       new Set(
-        snapshot.candidateEntries
+        entries
           .filter((entry) => entry.selected)
           .map((entry) => entry.instrument.id)
       )
@@ -469,15 +501,18 @@ function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
   useEffect(() => {
     setSelectedIds(
       new Set(
-        snapshot.candidateEntries
+        entries
           .filter((entry) => entry.selected)
           .map((entry) => entry.instrument.id)
       )
     );
-  }, [snapshot.candidateEntries]);
+  }, [entries]);
   const mutation = useMutation({
     mutationFn: (ids: number[]) => updateCollectionTargets(ids),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["operations"] })
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["operations"] });
+      void queryClient.invalidateQueries({ queryKey: ["candidate-universe"] });
+    }
   });
   const selected = selectedIds.size;
   const canSave = selected <= 50 && !mutation.isPending;
@@ -522,7 +557,8 @@ function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
             <span>품질</span>
             <span>수집 범위</span>
           </div>
-          {snapshot.candidateEntries.slice(0, 100).map((entry) => (
+          {entries.length === 0 ? <p className="helper-text">후보 유니버스를 불러오는 중입니다.</p> : null}
+          {entries.slice(0, 100).map((entry) => (
             <label className="target-row" key={entry.instrument.id}>
               <span>
                 <input
@@ -534,7 +570,9 @@ function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
               </span>
               <InstrumentName instrument={entry.instrument} />
               <strong>{entry.accTradePrice24hDisplay}</strong>
-              <em className={`quality ${entry.qualityStatus}`}>{statusText(entry.qualityStatus)}</em>
+              <em className={`quality ${entry.qualityStatus}`} title={entry.qualityDetail}>
+                {statusText(entry.qualityStatus)}
+              </em>
               <span>{entry.collectionRangeDisplay}</span>
             </label>
           ))}
@@ -562,11 +600,18 @@ function Markets({
   selectedInstrumentId: number | null;
   onSelectInstrument: (instrumentId: number) => void;
 }) {
+  const marketQuery = useQuery({
+    queryKey: ["market-list"],
+    queryFn: loadMarketList,
+    enabled: snapshot.source === "api"
+  });
+  const rows: MarketListRow[] =
+    snapshot.source === "api" ? marketQuery.data ?? EMPTY_MARKET_ROWS : snapshot.marketRows;
   return (
     <section className="panel full">
       <div className="panel-heading">
         <h2>수집 데이터 요약</h2>
-        <span>{snapshot.marketRows.length}개</span>
+        <span>{rows.length}개</span>
       </div>
       <div className="data-table">
         <div className="table-header">
@@ -579,7 +624,8 @@ function Markets({
           <span>저장량</span>
           <span>품질</span>
         </div>
-        {snapshot.marketRows.map((row) => (
+        {rows.length === 0 ? <p className="helper-text">시장 리스트를 불러오는 중입니다.</p> : null}
+        {rows.map((row) => (
           <button
             className={`table-row market-row-button ${
               selectedInstrumentId === row.instrument.id ? "selected" : ""
@@ -612,21 +658,33 @@ function DetailModal({
   snapshot: OperationsSnapshot;
   onClose: () => void;
 }) {
+  if (!snapshot.detail) {
+    return (
+      <div className="modal-backdrop">
+        <section className="detail-modal" role="dialog" aria-label="코인 상세" aria-modal="true">
+          <button className="icon-button close-button" type="button" aria-label="닫기" onClick={onClose}>
+            <X size={18} />
+          </button>
+          <main className="loading-state">코인 상세를 불러오는 중</main>
+        </section>
+      </div>
+    );
+  }
   return (
     <div className="modal-backdrop">
       <section className="detail-modal" role="dialog" aria-label="코인 상세" aria-modal="true">
         <button className="icon-button close-button" type="button" aria-label="닫기" onClick={onClose}>
           <X size={18} />
         </button>
-        <Detail snapshot={snapshot} />
+        <Detail detail={snapshot.detail} candles={snapshot.candles} />
       </section>
     </div>
   );
 }
 
-function Detail({ snapshot }: { snapshot: OperationsSnapshot }) {
-  const candles = useMemo(() => sampleCandles(snapshot.candles, 180), [snapshot.candles]);
-  const instrument = snapshot.detail.instrument;
+function Detail({ detail, candles: rawCandles }: { detail: InstrumentDetail; candles: Candle[] }) {
+  const candles = useMemo(() => sampleCandles(rawCandles, 180), [rawCandles]);
+  const instrument = detail.instrument;
   return (
     <section className="detail-page">
       <h2 className="detail-title"><InstrumentTitle instrument={instrument} /></h2>
@@ -638,24 +696,24 @@ function Detail({ snapshot }: { snapshot: OperationsSnapshot }) {
         <TradingViewCandleChart
           candles={candles}
           instrument={instrument}
-          currentPrice={snapshot.detail.latestTicker.tradePrice}
+          currentPrice={detail.latestTicker.tradePrice}
         />
         <div className="detail-stats">
-          <MiniMetric label="현재가" value={`₩${formatNumber(snapshot.detail.latestTicker.tradePrice)}`} detail={snapshot.detail.tickerFreshnessLabel} />
-          <MiniMetric label="거래대금" value={formatNumber(snapshot.detail.latestTicker.accTradePrice24h)} detail="소수점 생략" />
-          <MiniMetric label="중복 행" value={snapshot.detail.duplicateRows24h.toString()} detail="최근 24시간" />
+          <MiniMetric label="현재가" value={`₩${formatNumber(detail.latestTicker.tradePrice)}`} detail={detail.tickerFreshnessLabel} />
+          <MiniMetric label="거래대금" value={formatNumber(detail.latestTicker.accTradePrice24h)} detail="소수점 생략" />
+          <MiniMetric label="중복 행" value={detail.duplicateRows24h.toString()} detail="최근 24시간" />
         </div>
       </section>
       <section className="panel orderbook-panel">
         <div className="panel-heading">
           <h2>호가 요약</h2>
-          <TimeInline value={snapshot.detail.orderbookFreshnessLabel} zone="KST" />
+          <TimeInline value={detail.orderbookFreshnessLabel} zone="KST" />
         </div>
         <div className="orderbook-grid">
-          <MiniMetric label="최우선 매수" value={formatNumber(snapshot.detail.latestOrderbook.bestBidPrice)} detail={`수량 ${snapshot.detail.latestOrderbook.bestBidSize} ${instrument.baseAsset}`} />
-          <MiniMetric label="최우선 매도" value={formatNumber(snapshot.detail.latestOrderbook.bestAskPrice)} detail={`수량 ${snapshot.detail.latestOrderbook.bestAskSize} ${instrument.baseAsset}`} />
-          <MiniMetric label="스프레드" value={`${snapshot.detail.latestOrderbook.spread}`} detail="정상 범위" />
-          <MiniMetric label="호가 불균형" value={formatPercent(snapshot.detail.latestOrderbook.imbalance10)} detail="매수 잔량 우세" />
+          <MiniMetric label="최우선 매수" value={formatNumber(detail.latestOrderbook.bestBidPrice)} detail={`수량 ${detail.latestOrderbook.bestBidSize} ${instrument.baseAsset}`} />
+          <MiniMetric label="최우선 매도" value={formatNumber(detail.latestOrderbook.bestAskPrice)} detail={`수량 ${detail.latestOrderbook.bestAskSize} ${instrument.baseAsset}`} />
+          <MiniMetric label="스프레드" value={`${detail.latestOrderbook.spread}`} detail="정상 범위" />
+          <MiniMetric label="호가 불균형" value={formatPercent(detail.latestOrderbook.imbalance10)} detail="매수 잔량 우세" />
         </div>
       </section>
     </section>
@@ -752,38 +810,6 @@ function TradingViewCandleChart({
   );
 }
 
-function OperationalTrendChart({ targets }: { targets: CollectionDashboardTarget[] }) {
-  const points = targets.slice(0, 12).map((target, index) => ({
-    x: 24 + index * 76,
-    y: 150 - Number(target.dataStatuses[0]?.progressPercent ?? 0) * 0.9
-  }));
-  const line = points.map((point) => `${point.x},${point.y}`).join(" ");
-  return (
-    <div className="ops-chart" aria-label="구간형 수집 진행 상태 차트">
-      <svg viewBox="0 0 900 220" role="img">
-        <defs>
-          <linearGradient id="coverage-fill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="#24d6a2" stopOpacity="0.35" />
-            <stop offset="100%" stopColor="#24d6a2" stopOpacity="0.03" />
-          </linearGradient>
-        </defs>
-        {Array.from({ length: 8 }, (_, index) => (
-          <line key={`v-${index}`} x1={40 + index * 110} x2={40 + index * 110} y1="18" y2="198" />
-        ))}
-        {Array.from({ length: 4 }, (_, index) => (
-          <line key={`h-${index}`} x1="20" x2="880" y1={40 + index * 46} y2={40 + index * 46} />
-        ))}
-        <polyline points={`20,190 ${line} 880,86 880,198 20,198`} className="area" />
-        <polyline points={line} className="line primary" />
-        <polyline points={points.map((point) => `${point.x},${point.y + 34}`).join(" ")} className="line secondary" />
-        <circle cx="690" cy="82" r="7" className="dot warning" />
-        <circle cx="820" cy="92" r="7" className="dot danger" />
-      </svg>
-      <span>녹색=수집 커버리지, 파랑=저장량, 점=주의/장애 구간</span>
-    </div>
-  );
-}
-
 function CoverageBar({ segments }: { segments: CoverageSegment[] }) {
   return (
     <div className="coverage-bar" aria-label="구간형 진행 상태">
@@ -807,6 +833,34 @@ function CoverageMeter({ value }: { value: string }) {
       <em>{numeric.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}%</em>
     </span>
   );
+}
+
+function CandleCountMeter({
+  count,
+  progress,
+  segments
+}: {
+  count: number;
+  progress: string;
+  segments: CoverageSegment[];
+}) {
+  return (
+    <span className="candle-count-meter" aria-label="저장된 가격 분봉 수">
+      <CoverageBar segments={segments} />
+      <strong>{count.toLocaleString("ko-KR")}</strong>
+      <em>{Number(progress).toLocaleString("ko-KR", { maximumFractionDigits: 1 })}%</em>
+    </span>
+  );
+}
+
+function StatusIcon({ status }: { status: Status }) {
+  if (status === "normal") {
+    return <CheckCircle2 className="health-icon normal" size={18} aria-hidden="true" />;
+  }
+  if (status === "warning") {
+    return <CircleAlert className="health-icon warning" size={18} aria-hidden="true" />;
+  }
+  return <CircleAlert className="health-icon incident" size={18} aria-hidden="true" />;
 }
 
 function InstrumentName({ instrument }: { instrument: Instrument }) {
@@ -868,6 +922,13 @@ function statusText(status: string) {
   return status;
 }
 
+function formatBackfillRange(target: CollectionDashboardTarget) {
+  const candleStatus = target.dataStatuses.find((status) => status.dataType === "source_candle");
+  return `${formatFreshness(target.plan.rangeStartAt)} ~ ${formatFreshness(
+    candleStatus?.lastSuccessfulAt ?? target.plan.rangeStartAt
+  )}`;
+}
+
 function sampleCandles(candles: Candle[], maxCount: number) {
   if (candles.length <= maxCount) return candles;
   const step = candles.length / maxCount;
@@ -878,7 +939,7 @@ function sampleCandles(candles: Candle[], maxCount: number) {
 
 function selectDemoInstrument(snapshot: OperationsSnapshot, instrumentId: number) {
   const row = snapshot.marketRows.find((item) => item.instrument.id === instrumentId);
-  if (!row) return snapshot;
+  if (!row || !snapshot.detail) return snapshot;
   return {
     ...snapshot,
     detail: {

@@ -498,7 +498,7 @@ components:
           type: string
         displayRange:
           type: string
-          example: 2026-01-01 00:00 KST ~ 현재(지속)
+          example: 2026-01-01 00:00 KST ~ NOW
         rangeTimeZone:
           type: string
           enum: [KST, UTC]
@@ -506,7 +506,7 @@ components:
           type: string
     CollectionDataStatus:
       type: object
-      required: [dataType, label, status, statusLabel, lastSuccessfulAt, progressPercent, missingSegmentCount]
+      required: [dataType, label, status, statusLabel, lastSuccessfulAt, progressPercent, missingSegmentCount, storedRowCount]
       properties:
         dataType:
           type: string
@@ -525,6 +525,9 @@ components:
           $ref: "#/components/schemas/DecimalString"
         missingSegmentCount:
           type: integer
+        storedRowCount:
+          type: integer
+          description: 화면 표시용 저장 행 수. source_candle은 저장된 가격 분봉 수를 의미한다.
     CoverageSegment:
       type: object
       required: [dataType, status, offsetPercent, widthPercent, segmentStartAt, segmentEndAt, label]
@@ -589,6 +592,7 @@ components:
         - selected
         - candidateStatus
         - qualityStatus
+        - qualityDetail
         - collectionRangeDisplay
       properties:
         instrument:
@@ -607,6 +611,9 @@ components:
         qualityStatus:
           type: string
           enum: [normal, warning, incident]
+        qualityDetail:
+          type: string
+          description: 품질 배지 hover에 표시할 최신성, 결측, 중복, 저장량 요약.
         collectionRangeDisplay:
           type: string
     UpdateCollectionTargetsRequest:
@@ -657,7 +664,7 @@ components:
           $ref: "#/components/schemas/DecimalString"
         accTradePrice24hDisplay:
           type: string
-          description: 화면 표시용 24시간 거래대금. 소수점은 제거한다.
+          description: 화면 표시용 24시간 거래대금. 통화기호와 천 단위 구분자를 포함한다.
         changeRate:
           $ref: "#/components/schemas/DecimalString"
         tickerCollectedAt:

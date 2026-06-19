@@ -32,7 +32,7 @@ export default defineConfig({
           timeout: 30_000
         },
         {
-          command: `VITE_API_BASE_URL=${apiBaseURL} npm --workspace apps/web run dev -- --host 127.0.0.1 --port 15173`,
+          command: `VITE_API_BASE_URL=${apiBaseURL} VITE_OPERATOR_TOKEN=local-dev-token npm --workspace apps/web run dev -- --host 127.0.0.1 --port 15173`,
           url: webBaseURL,
           reuseExistingServer: false,
           timeout: 30_000

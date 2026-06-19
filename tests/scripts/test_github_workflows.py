@@ -145,7 +145,8 @@ def test_deploy_workflow_pushes_ghcr_and_runs_profile_scripts() -> None:
     ) in workflow_text
     assert "'${RUNNER_DOCKER_BIN}' push ghcr.io" not in workflow_text
     assert (
-        "'${RUNNER_DOCKER_BIN}' buildx build --platform '${BUILD_PLATFORMS}' --push --build-arg VITE_API_BASE_URL=http://app-server01:8000"
+        "'${RUNNER_DOCKER_BIN}' buildx build --platform '${BUILD_PLATFORMS}' "
+        "--push --build-arg VITE_API_BASE_URL=/api"
         in workflow_text
     )
 

@@ -98,6 +98,8 @@ def test_prod_home_readme_documents_required_env_files() -> None:
 
     assert "GOODMONEYING_DATABASE_URL" in readme
     assert "GOODMONEYING_OPERATOR_TOKEN" in readme
+    assert "GOODMONEYING_API_INTERNAL_URL" in readme
+    assert "Nginx 프록시(proxy)" in readme
     assert "GOODMONEYING_INFRA_POSTGRES_DATA_DIR" in readme
     assert "GOODMONEYING_APP_CONFIG_DIR" in readme
     assert "stdout/stderr" in readme
@@ -109,8 +111,10 @@ def test_prod_home_readme_documents_required_env_files() -> None:
 def test_web_dockerfile_accepts_api_base_build_arg() -> None:
     dockerfile = (ROOT / "apps/web/Dockerfile").read_text()
 
-    assert "ARG VITE_API_BASE_URL=http://127.0.0.1:8000" in dockerfile
+    assert "ARG VITE_API_BASE_URL=/api" in dockerfile
     assert "ENV VITE_API_BASE_URL=$VITE_API_BASE_URL" in dockerfile
+    assert "nginx.conf.template" in dockerfile
+    assert "envsubst" in dockerfile
 
 
 def test_prod_home_compose_files_assign_expected_services() -> None:

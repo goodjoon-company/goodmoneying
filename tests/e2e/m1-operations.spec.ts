@@ -37,15 +37,17 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.locator(".metric").filter({ hasText: "활성 수집 대상" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "코인별 수집 상태" })).toBeVisible();
   await expect(page.locator(".dashboard-row-button").first()).toBeVisible();
-  await expect(page.getByText("최신수집중").first()).toBeVisible();
+  await expect(page.getByText("실시간 수집", { exact: true })).toBeVisible();
+  await expect(page.getByText("Backfill")).toBeVisible();
+  await expect(page.getByText("가격 분봉")).toBeVisible();
   await expect(page.getByText("KST").first()).toBeVisible();
   await expect(page.getByText("UTC")).toHaveCount(0);
 
   await page.locator(".dashboard-row-button").first().click();
   await expect(page.getByRole("heading", { name: "수집 계획" })).toBeVisible();
-  await expect(page.getByText("2026-01-01 00:00 KST ~ 현재(지속)").first()).toBeVisible();
+  await expect(page.getByText("2026-01-01 00:00 KST ~ NOW").first()).toBeVisible();
   await expect(page.getByRole("button", { name: "수정" })).toBeVisible();
-  await expect(page.locator(".coverage-segment.missing").first()).toBeVisible();
+  await expect(page.locator(".candle-count-meter").first()).toBeVisible();
 
   await page.getByRole("button", { name: "수집 대상 설정" }).click();
   await expect(page.getByRole("heading", { name: "후보 유니버스 상위 100개" })).toBeVisible();

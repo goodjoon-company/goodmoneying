@@ -84,9 +84,11 @@ GOODMONEYING_LIVE_UPBIT=1
 
 ```bash
 GOODMONEYING_WEB_INTERNAL_URL=http://bmax-ubuntu:8080
+GOODMONEYING_API_INTERNAL_URL=http://app-server01:8000
+GOODMONEYING_OPERATOR_TOKEN=prod-home-example-operator-token-rotate
 ```
 
-Web 정적 앱의 API base URL은 런타임 env가 아니라 Docker build arg로 이미지에 반영된다. `deploy.yml`은 운영 web 이미지 빌드 시 `VITE_API_BASE_URL=http://app-server01:8000`을 주입한다.
+Web 정적 앱의 API base URL은 `/api`로 빌드한다. Nginx 프록시(proxy)는 런타임(runtime) `GOODMONEYING_API_INTERNAL_URL`로 API 서버에 전달하고, `GOODMONEYING_OPERATOR_TOKEN`을 `X-Operator-Token` 헤더(header)로 붙인다. 브라우저 번들(bundle)에는 운영 토큰을 포함하지 않는다.
 
 ## GHCR pull 로그인
 

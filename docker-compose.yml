@@ -44,6 +44,9 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+    environment:
+      GOODMONEYING_API_INTERNAL_URL: http://api:8000
+      GOODMONEYING_OPERATOR_TOKEN: local-dev-token
     ports:
       - "5173:80"
     depends_on:

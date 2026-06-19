@@ -55,6 +55,12 @@ def test_openapi_contract_exposes_m2_collection_dashboard_view_model() -> None:
     market_row = schemas["MarketListRow"]
     assert "accTradePrice24hDisplay" in market_row["required"]
 
+    data_status = schemas["CollectionDataStatus"]
+    assert "storedRowCount" in data_status["required"]
+
+    candidate = schemas["CandidateUniverseEntry"]
+    assert "qualityDetail" in candidate["required"]
+
     request_schema = schemas["UpdateCollectionTargetsRequest"]
     instrument_ids = request_schema["properties"]["instrumentIds"]
     assert instrument_ids["maxItems"] == 50

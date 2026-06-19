@@ -21,14 +21,15 @@ describe("데이터 수집관리 화면", () => {
     expect(await screen.findByRole("heading", { name: "업비트 수집 운영 상태" })).toBeInTheDocument();
     expect(await screen.findByText("활성 수집 대상")).toBeInTheDocument();
     expect(screen.getByText("BTC / KRW")).toBeInTheDocument();
-    expect(screen.getAllByText("최신수집중")[0]).toBeInTheDocument();
+    expect(screen.getAllByText(/마지막 호가/)[0]).toBeInTheDocument();
     expect(screen.getByText("운영 헬스")).toBeInTheDocument();
+    expect(screen.getByText(/마지막 갱신/)).toBeInTheDocument();
     expect(screen.getAllByText("KST")[0]).toBeInTheDocument();
     expect(screen.queryByText("UTC")).not.toBeInTheDocument();
     expect(container.querySelector(".app-shell")).toHaveAttribute("data-theme", "dark");
   });
 
-  it("운영 상태 행을 펼쳐 코인별 수집 계획과 구간형 진행 상태를 표시한다", async () => {
+  it("운영 상태는 코인별 실시간 수집과 Backfill 상태를 동적인 숫자로 표시한다", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -36,15 +37,20 @@ describe("데이터 수집관리 화면", () => {
       expect(screen.getByRole("heading", { name: "업비트 수집 운영 상태" })).toBeInTheDocument()
     );
 
+    expect(screen.queryByText("구간형 수집 진행 상태")).not.toBeInTheDocument();
+    expect(screen.getByText("실시간 수집")).toBeInTheDocument();
+    expect(screen.getByText("Backfill")).toBeInTheDocument();
+    expect(screen.getByText("가격 분봉")).toBeInTheDocument();
+
     await user.click(screen.getByRole("button", { name: /BTC \/ KRW/ }));
 
     expect(await screen.findByText("수집 계획")).toBeInTheDocument();
-    expect(screen.getAllByText("2026-01-01 00:00 KST ~ 현재(지속)")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("2026-01-01 00:00 KST ~ NOW")[0]).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "수정" })).toBeInTheDocument();
     expect(screen.getByText("캔들")).toBeInTheDocument();
     expect(screen.getByText("현재가")).toBeInTheDocument();
     expect(screen.getAllByText("호가 요약")[0]).toBeInTheDocument();
-    expect(document.querySelector(".coverage-segment.missing")).toBeInTheDocument();
+    expect(document.querySelector(".candle-count-meter")).toBeInTheDocument();
   });
 
   it("수집 대상 설정은 최대 50개 후보 선택을 저장한다", async () => {
@@ -61,6 +67,9 @@ describe("데이터 수집관리 화면", () => {
 
     expect(screen.getByText("선택 49/50")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "저장" })).toBeEnabled();
+    expect(screen.getByText(/^₩100,000,000,000/)).toBeInTheDocument();
+    expect(screen.getAllByTitle(/품질/)[0]).toHaveTextContent(/주의|정상/);
+    expect(screen.getAllByText("2024-01-01 00:00 KST ~ NOW")[0]).toBeInTheDocument();
   });
 
   it("시장 리스트에서 코인을 누르면 dimmed 레이어 팝업으로 코인 상세를 표시한다", async () => {

@@ -527,7 +527,12 @@ class SQLiteOperationsRepository:
 
     def collection_dashboard_targets(self) -> list[CollectionDashboardTarget]:
         targets: list[CollectionDashboardTarget] = []
-        for instrument in self.list_active_targets():
+        active_targets = self.list_active_targets()
+        source_candle_counts = self._table_counts_by_instrument(
+            "source_candles",
+            [instrument.id for instrument in active_targets],
+        )
+        for instrument in active_targets:
             coverage = sorted(
                 self.coverage_for(instrument.id),
                 key=lambda item: {
@@ -536,7 +541,10 @@ class SQLiteOperationsRepository:
                     "orderbook_summary": 2,
                 }[item.data_type],
             )
-            data_statuses = [self._collection_data_status(item) for item in coverage]
+            data_statuses = [
+                self._collection_data_status(item, source_candle_counts)
+                for item in coverage
+            ]
             overall_status: Literal["latest_collecting", "warning"] = (
                 "latest_collecting"
                 if all(item.status == "normal" for item in data_statuses)
@@ -574,7 +582,7 @@ class SQLiteOperationsRepository:
                     instrument=instrument,
                     trade_price=ticker.trade_price,
                     acc_trade_price_24h=ticker.acc_trade_price_24h,
-                    acc_trade_price_24h_display=str(int(ticker.acc_trade_price_24h)),
+                    acc_trade_price_24h_display=f"₩{int(ticker.acc_trade_price_24h):,}",
                     change_rate=ticker.change_rate,
                     ticker_collected_at=ticker.collected_at,
                     orderbook_collected_at=orderbook.collected_at,
@@ -965,6 +973,21 @@ class SQLiteOperationsRepository:
             ).fetchone()
         return int(row["count"]) if row else 0
 
+    def _table_counts_by_instrument(self, table: str, instrument_ids: list[int]) -> dict[int, int]:
+        if not instrument_ids:
+            return {}
+        placeholders = ", ".join(["?"] * len(instrument_ids))
+        rows = self._execute(
+            f"""
+            SELECT instrument_id, COUNT(*) AS count
+            FROM {table}
+            WHERE instrument_id IN ({placeholders})
+            GROUP BY instrument_id
+            """,
+            tuple(instrument_ids),
+        ).fetchall()
+        return {int(row["instrument_id"]): int(row["count"]) for row in rows}
+
     def _market_coverage_percent(self, instrument_id: int) -> Decimal:
         coverage = self.coverage_for(instrument_id)
         if not coverage:
@@ -1140,19 +1163,30 @@ class SQLiteOperationsRepository:
             range_end_at=_from_db_time(row["range_end_at"]) if row["range_end_at"] else None,
             is_continuous=bool(row["is_continuous"]),
             method=str(row["method"]),
-            display_range="2026-01-01 00:00 KST ~ 현재(지속)"
+            display_range="2026-01-01 00:00 KST ~ NOW"
             if bool(row["is_continuous"])
             else "2026-01-01 00:00 KST ~ 2026-02-01 00:00 KST",
             range_time_zone="KST",
             progress_basis="현재(지속)은 KST 전일 23:59:59까지 기준",
         )
 
-    def _collection_data_status(self, item: CoverageStatus) -> CollectionDataStatus:
+    def _collection_data_status(
+        self,
+        item: CoverageStatus,
+        source_candle_counts: dict[int, int] | None = None,
+    ) -> CollectionDataStatus:
         labels = {
             "source_candle": "캔들",
             "ticker_snapshot": "현재가",
             "orderbook_summary": "호가 요약",
         }
+        stored_row_count = 0
+        if item.data_type == "source_candle":
+            stored_row_count = (
+                source_candle_counts.get(item.instrument_id)
+                if source_candle_counts is not None
+                else self._table_count("source_candles", item.instrument_id)
+            ) or 0
         return CollectionDataStatus(
             data_type=item.data_type,
             label=labels[item.data_type],
@@ -1161,6 +1195,7 @@ class SQLiteOperationsRepository:
             last_successful_at=item.last_successful_at,
             progress_percent=item.progress_percent,
             missing_segment_count=1 if item.data_type == "source_candle" else 0,
+            stored_row_count=stored_row_count,
         )
 
     def _coverage_segments_for(

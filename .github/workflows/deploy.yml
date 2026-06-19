@@ -32,6 +32,7 @@ jobs:
       DEPLOY_PROFILE: prod-home
       REGISTRY: ghcr.io
       IMAGE_NAMESPACE: goodjoon-company
+      DOCKER_CONFIG: /Users/goodjoon/DATA/applications/goodmoneying/.docker
     steps:
       - uses: actions/checkout@v4
 

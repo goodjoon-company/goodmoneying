@@ -96,6 +96,12 @@ Web 정적 앱의 API base URL은 런타임 env가 아니라 Docker build arg로
 printf '%s' "$CR_PAT" | docker login ghcr.io -u goodjoon-company --password-stdin
 ```
 
+Mac Mini M4 runner는 macOS Keychain 접근 제한을 피하기 위해 아래 Docker config 경로를 사용한다. `.github/workflows/deploy.yml`의 `DOCKER_CONFIG`도 이 경로로 고정한다.
+
+```bash
+DOCKER_CONFIG=/Users/goodjoon/DATA/applications/goodmoneying/.docker docker login ghcr.io -u goodjoon-company
+```
+
 모든 서버는 Tailscale 내부 hostname으로 서로 접근 가능해야 한다.
 
 ## 수동 dry-run

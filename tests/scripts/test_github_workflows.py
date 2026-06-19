@@ -95,6 +95,7 @@ def test_deploy_workflow_has_required_permissions_and_profile_env() -> None:
     assert env["DEPLOY_PROFILE"] == "prod-home"
     assert env["REGISTRY"] == "ghcr.io"
     assert env["IMAGE_NAMESPACE"] == "goodjoon-company"
+    assert env["DOCKER_CONFIG"] == "/Users/goodjoon/DATA/applications/goodmoneying/.docker"
 
 
 def test_deploy_workflow_pushes_ghcr_and_runs_profile_scripts() -> None:

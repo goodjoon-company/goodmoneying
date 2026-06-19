@@ -110,3 +110,14 @@ def test_deploy_workflow_pushes_ghcr_and_runs_profile_scripts() -> None:
     assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG}" in workflow_text
     assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-worker:${IMAGE_TAG}" in workflow_text
     assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG}" in workflow_text
+
+
+def test_deploy_workflow_runs_e2e_against_deployed_urls() -> None:
+    workflow = load_workflow("deploy.yml")
+    workflow_text = (ROOT / ".github/workflows/deploy.yml").read_text()
+    runs = workflow_step_runs(workflow, "deploy")
+
+    assert 'E2E_SKIP_WEBSERVER: "1"' in workflow_text
+    assert "E2E_API_BASE_URL: http://app-server01:8000" in workflow_text
+    assert "E2E_WEB_BASE_URL: http://bmax-ubuntu:8080" in workflow_text
+    assert "npm run e2e" in runs

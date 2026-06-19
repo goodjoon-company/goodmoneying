@@ -62,11 +62,14 @@ jobs:
 
       - name: Prepare runner Docker CLI plugins
         run: |
-          mkdir -p "${DOCKER_CONFIG}/cli-plugins"
-          rm -f "${DOCKER_CONFIG}/cli-plugins/docker-buildx"
-          rm -f "${DOCKER_CONFIG}/cli-plugins/docker-compose"
-          ln -s /Applications/Docker.app/Contents/Resources/cli-plugins/docker-buildx "${DOCKER_CONFIG}/cli-plugins/docker-buildx"
-          ln -s /Applications/Docker.app/Contents/Resources/cli-plugins/docker-compose "${DOCKER_CONFIG}/cli-plugins/docker-compose"
+          ssh -o BatchMode=yes -o ConnectTimeout=10 "${RUNNER_LOGIN_SHELL_HOST}" "
+            set -euo pipefail
+            mkdir -p '${DOCKER_CONFIG}/cli-plugins'
+            rm -f '${DOCKER_CONFIG}/cli-plugins/docker-buildx'
+            rm -f '${DOCKER_CONFIG}/cli-plugins/docker-compose'
+            ln -s /Applications/Docker.app/Contents/Resources/cli-plugins/docker-buildx '${DOCKER_CONFIG}/cli-plugins/docker-buildx'
+            ln -s /Applications/Docker.app/Contents/Resources/cli-plugins/docker-compose '${DOCKER_CONFIG}/cli-plugins/docker-compose'
+          "
 
       - name: Verify runner login shell Docker
         run: |

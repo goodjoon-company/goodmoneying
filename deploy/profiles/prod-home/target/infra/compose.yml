@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:18
+    image: postgres:17
     container_name: goodmoneying-postgres
     restart: unless-stopped
     env_file:

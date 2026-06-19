@@ -119,6 +119,7 @@ def test_prod_home_compose_files_assign_expected_services() -> None:
     web = load_compose("web")
 
     assert set(services(infra)) == {"postgres"}
+    assert services(infra)["postgres"]["image"] == "postgres:17"
     assert set(services(app)) == {"api", "worker"}
     assert set(services(web)) == {"web"}
 

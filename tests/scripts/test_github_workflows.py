@@ -98,6 +98,8 @@ def test_deploy_workflow_has_required_permissions_and_profile_env() -> None:
     assert env["DOCKER_CONFIG"] == "/Users/goodjoon/DATA/applications/goodmoneying/.docker"
     assert env["DOCKER_HOST"] == "unix:///Users/goodjoon/.docker/run/docker.sock"
     assert env["DOCKER_BUILDKIT"] == "0"
+    assert env["RUNNER_LOGIN_SHELL_HOST"] == "goodjoon@Mac-Mini-M4.local"
+    assert env["RUNNER_DOCKER_BIN"] == "/usr/local/bin/docker"
 
 
 def test_deploy_workflow_pushes_ghcr_and_runs_profile_scripts() -> None:
@@ -123,18 +125,21 @@ def test_deploy_workflow_pushes_ghcr_and_runs_profile_scripts() -> None:
     )
     assert 'echo "IMAGE_TAG=release-${GITHUB_SHA::7}" >> "$GITHUB_ENV"' in runs
     assert "python3 --version\nuv --version\nnode --version\nnpm --version\n" in runs
+    assert "Verify runner login shell Docker" in workflow_text
+    assert "ssh -o BatchMode=yes -o ConnectTimeout=10" in workflow_text
     assert "deploy/scripts/deploy-profile.sh prod-home \"${IMAGE_TAG}\"" in runs
     assert "deploy/scripts/healthcheck-profile.sh prod-home" in runs
     assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG}" in workflow_text
     assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-worker:${IMAGE_TAG}" in workflow_text
     assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG}" in workflow_text
-    assert "docker build -f apps/api/Dockerfile" in workflow_text
+    assert "cd '${GITHUB_WORKSPACE}'" in workflow_text
+    assert "'${RUNNER_DOCKER_BIN}' build -f apps/api/Dockerfile" in workflow_text
     assert (
-        "docker push ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG} </dev/null"
+        "'${RUNNER_DOCKER_BIN}' push ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG}"
         in workflow_text
     )
     assert (
-        "docker build --build-arg VITE_API_BASE_URL=http://app-server01:8000"
+        "'${RUNNER_DOCKER_BIN}' build --build-arg VITE_API_BASE_URL=http://app-server01:8000"
         in workflow_text
     )
 

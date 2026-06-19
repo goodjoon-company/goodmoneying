@@ -35,6 +35,8 @@ jobs:
       DOCKER_CONFIG: /Users/goodjoon/DATA/applications/goodmoneying/.docker
       DOCKER_HOST: unix:///Users/goodjoon/.docker/run/docker.sock
       DOCKER_BUILDKIT: "0"
+      RUNNER_LOGIN_SHELL_HOST: goodjoon@Mac-Mini-M4.local
+      RUNNER_DOCKER_BIN: /usr/local/bin/docker
     steps:
       - uses: actions/checkout@v4
 
@@ -56,6 +58,16 @@ jobs:
           uv --version
           node --version
           npm --version
+
+      - name: Verify runner login shell Docker
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=10 "${RUNNER_LOGIN_SHELL_HOST}" "
+            set -euo pipefail
+            export DOCKER_CONFIG='${DOCKER_CONFIG}'
+            export DOCKER_HOST='${DOCKER_HOST}'
+            '${RUNNER_DOCKER_BIN}' version --format '{{.Server.Version}}'
+            '${RUNNER_DOCKER_BIN}' info --format '{{.OSType}}/{{.Architecture}}'
+          "
 
       - name: Python dependencies
         run: uv sync --frozen
@@ -80,18 +92,39 @@ jobs:
 
       - name: Build and push api
         run: |
-          docker build -f apps/api/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG} . </dev/null
-          docker push ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG} </dev/null
+          ssh -o BatchMode=yes "${RUNNER_LOGIN_SHELL_HOST}" "
+            set -euo pipefail
+            cd '${GITHUB_WORKSPACE}'
+            export DOCKER_CONFIG='${DOCKER_CONFIG}'
+            export DOCKER_HOST='${DOCKER_HOST}'
+            export DOCKER_BUILDKIT='${DOCKER_BUILDKIT}'
+            '${RUNNER_DOCKER_BIN}' build -f apps/api/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG} .
+            '${RUNNER_DOCKER_BIN}' push ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG}
+          "
 
       - name: Build and push worker
         run: |
-          docker build -f apps/worker/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-worker:${IMAGE_TAG} . </dev/null
-          docker push ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-worker:${IMAGE_TAG} </dev/null
+          ssh -o BatchMode=yes "${RUNNER_LOGIN_SHELL_HOST}" "
+            set -euo pipefail
+            cd '${GITHUB_WORKSPACE}'
+            export DOCKER_CONFIG='${DOCKER_CONFIG}'
+            export DOCKER_HOST='${DOCKER_HOST}'
+            export DOCKER_BUILDKIT='${DOCKER_BUILDKIT}'
+            '${RUNNER_DOCKER_BIN}' build -f apps/worker/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-worker:${IMAGE_TAG} .
+            '${RUNNER_DOCKER_BIN}' push ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-worker:${IMAGE_TAG}
+          "
 
       - name: Build and push web
         run: |
-          docker build --build-arg VITE_API_BASE_URL=http://app-server01:8000 -f apps/web/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG} . </dev/null
-          docker push ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG} </dev/null
+          ssh -o BatchMode=yes "${RUNNER_LOGIN_SHELL_HOST}" "
+            set -euo pipefail
+            cd '${GITHUB_WORKSPACE}'
+            export DOCKER_CONFIG='${DOCKER_CONFIG}'
+            export DOCKER_HOST='${DOCKER_HOST}'
+            export DOCKER_BUILDKIT='${DOCKER_BUILDKIT}'
+            '${RUNNER_DOCKER_BIN}' build --build-arg VITE_API_BASE_URL=http://app-server01:8000 -f apps/web/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG} .
+            '${RUNNER_DOCKER_BIN}' push ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG}
+          "
 
       - name: Deploy profile
         run: deploy/scripts/deploy-profile.sh prod-home "${IMAGE_TAG}"

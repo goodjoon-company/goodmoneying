@@ -15,7 +15,7 @@
 ![prod-home 배포 실행 흐름](./prod-home-deploy-flow.drawio.svg)
 
 - `release` 브랜치 push 또는 수동 실행(`workflow_dispatch`)은 Mac Mini M4의 GitHub Actions runner에서 `.github/workflows/deploy.yml`을 실행한다.
-- workflow는 검증 후 `api`, `worker`, `web` 이미지를 private GHCR(GitHub Container Registry)에 `release-{short-sha}` 태그(tag)로 push한다.
+- workflow는 검증 후 Mac Mini M4의 로그인 셸(login shell)에 SSH로 들어가 `api`, `worker`, `web` 이미지를 private GHCR(GitHub Container Registry)에 `release-{short-sha}` 태그(tag)로 push한다.
 - runner에서 `deploy/scripts/deploy-profile.sh prod-home "${IMAGE_TAG}"`가 실행되고, `runner/profile.env`와 `runner/hosts.env`를 읽어 서버별 target compose 파일을 복사한 뒤 원격 `docker compose pull`과 `up -d`를 실행한다.
 - 배포 후 runner에서 `deploy/scripts/healthcheck-profile.sh prod-home`이 API, web, PostgreSQL, worker 상태를 점검하고, 통과하면 운영 URL 대상으로 `npm run e2e`를 실행한다.
 
@@ -23,7 +23,7 @@
 
 | 경로 | 주체 | 설명 |
 |---|---|---|
-| `.github/workflows/deploy.yml` | GitHub Actions, Mac Mini M4 runner | release push를 받아 검증, 이미지 빌드, 배포 스크립트 실행 |
+| `.github/workflows/deploy.yml` | GitHub Actions, Mac Mini M4 runner | release push를 받아 검증, Mac Mini 로그인 셸을 통한 이미지 빌드, 배포 스크립트 실행 |
 | `deploy/scripts/*.sh` | Mac Mini M4 runner | profile을 읽고 SSH로 target 서버를 제어하는 공통 스크립트 |
 | `deploy/profiles/prod-home/runner/` | Mac Mini M4 runner | runner가 읽는 profile/env/path 입력값 |
 | `deploy/profiles/prod-home/target/infra/compose.yml` | Mac Mini M4 target | PostgreSQL compose 정의 |

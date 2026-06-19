@@ -117,11 +117,11 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
 
     assert result.returncode == 0
     assert "ssh Mac-Mini-M4.local" in result.stdout
-    assert "docker compose --env-file /opt/goodmoneying/env/infra.env" in result.stdout
+    assert "docker compose --env-file '/opt/goodmoneying/env/infra.env'" in result.stdout
     assert "ssh app-server01" in result.stdout
-    assert "docker compose --env-file /opt/goodmoneying/env/app.env" in result.stdout
+    assert "docker compose --env-file '/opt/goodmoneying/env/app.env'" in result.stdout
     assert "ssh bmax-ubuntu" in result.stdout
-    assert "docker compose --env-file /opt/goodmoneying/env/web.env" in result.stdout
+    assert "docker compose --env-file '/opt/goodmoneying/env/web.env'" in result.stdout
     assert 'ssh Mac-Mini-M4.local "mkdir -p \'/opt/goodmoneying\'"' in result.stdout
     assert (
         f"scp {ROOT}/deploy/profiles/prod-home/compose.infra.yml "

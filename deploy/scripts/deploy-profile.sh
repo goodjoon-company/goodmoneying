@@ -52,7 +52,6 @@ print_remote_compose() {
     "$IMAGE_TAG" \
     "$env_file" \
     "$compose_file"
-  printf '# docker compose --env-file %s\n' "$env_file"
 }
 
 run_remote_compose() {

@@ -24,6 +24,19 @@ def run_deploy_script(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def run_healthcheck_script(*args: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["GOODMONEYING_DEPLOY_DRY_RUN"] = "1"
+    return subprocess.run(
+        ["bash", "deploy/scripts/healthcheck-profile.sh", *args],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+
 def load_compose(name: str) -> Mapping[str, Any]:
     path = ROOT / f"deploy/profiles/prod-home/{name}"
     return cast("Mapping[str, Any]", yaml.safe_load(path.read_text()))
@@ -137,3 +150,13 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
     assert result.stdout.index("ssh app-server01") < result.stdout.index(
         "ssh bmax-ubuntu"
     )
+
+
+def test_healthcheck_script_dry_run_prints_checks() -> None:
+    result = run_healthcheck_script("prod-home")
+
+    assert result.returncode == 0
+    assert "curl -fsS http://app-server01:8000/health" in result.stdout
+    assert "curl -fsS http://bmax-ubuntu:8080/" in result.stdout
+    assert "docker exec goodmoneying-postgres pg_isready" in result.stdout
+    assert "docker inspect -f '{{.State.Running}}' goodmoneying-worker" in result.stdout

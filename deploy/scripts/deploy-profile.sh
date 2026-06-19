@@ -59,6 +59,10 @@ print_remote_compose() {
     "$host" \
     "$remote_hosts_env" \
     "$remote_compose_env"
+  printf 'ssh %s "mkdir -p '\''%s/cli-plugins'\'' && if [ -x /Applications/Docker.app/Contents/Resources/cli-plugins/docker-compose ]; then ln -sf /Applications/Docker.app/Contents/Resources/cli-plugins/docker-compose '\''%s/cli-plugins/docker-compose'\''; fi"\n' \
+    "$host" \
+    "$docker_config" \
+    "$docker_config"
   printf 'ssh %s "printf '\''GOODMONEYING_IMAGE_TAG=%%s\\n'\'' '\''%s'\'' >> '\''%s'\''"\n' \
     "$host" \
     "$IMAGE_TAG" \
@@ -120,6 +124,7 @@ run_remote_compose() {
   done
   scp "$RUNNER_DIR/hosts.env" "$host:$remote_hosts_env"
   ssh "$host" "cp '$remote_hosts_env' '$remote_compose_env'"
+  ssh "$host" "mkdir -p '$docker_config/cli-plugins' && if [ -x /Applications/Docker.app/Contents/Resources/cli-plugins/docker-compose ]; then ln -sf /Applications/Docker.app/Contents/Resources/cli-plugins/docker-compose '$docker_config/cli-plugins/docker-compose'; fi"
   ssh "$host" "printf 'GOODMONEYING_IMAGE_TAG=%s\n' '$IMAGE_TAG' >> '$remote_compose_env'"
   ssh "$host" "printf 'GOODMONEYING_DOCKER_CONFIG=%s\n' '$docker_config' >> '$remote_compose_env'"
   scp "$TARGET_DIR/$source_compose_file" "$host:$base_dir/$remote_compose_file"

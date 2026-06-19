@@ -357,6 +357,12 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
         "'/Users/goodjoon/DATA/applications/goodmoneying/deploy.compose.env'\""
     ) in result.stdout
     assert (
+        "ln -sf /Applications/Docker.app/Contents/Resources/cli-plugins/"
+        "docker-compose "
+        "'/Users/goodjoon/DATA/applications/goodmoneying/.docker/"
+        "cli-plugins/docker-compose'"
+    ) in result.stdout
+    assert (
         "ssh Mac-Mini-M4.local \"printf "
         "'GOODMONEYING_DOCKER_CONFIG=%s\\n' "
         "'/Users/goodjoon/DATA/applications/goodmoneying/.docker' >> "

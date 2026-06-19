@@ -110,6 +110,8 @@ DOCKER_CONFIG=/Users/goodjoon/DATA/applications/goodmoneying/.docker docker logi
 | APP SERVER 01 | `/home/goodjoon/.docker` |
 | bmax-ubuntu | `/home/goodjoon/.docker` |
 
+Mac Mini M4는 `DOCKER_CONFIG`를 app 전용 경로로 바꾸면 Docker Desktop의 compose 플러그인(plugin)을 자동 탐색하지 못할 수 있다. `deploy-profile.sh`는 배포 전 `/Users/goodjoon/DATA/applications/goodmoneying/.docker/cli-plugins/docker-compose` symlink를 Docker Desktop 번들 compose로 보장한다.
+
 모든 서버는 Tailscale 내부 hostname으로 서로 접근 가능해야 한다.
 
 ## 수동 dry-run

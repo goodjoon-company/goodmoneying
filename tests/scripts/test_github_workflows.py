@@ -81,8 +81,8 @@ def test_deploy_workflow_uses_self_hosted_runner_and_prod_home_concurrency() -> 
     assert "mac-mini-m4" in cast(list[str], job["runs-on"])
     assert job["environment"] == "prod"
     assert job["timeout-minutes"] == 60
-    assert concurrency["group"] == "deploy-prod-home"
-    assert concurrency["cancel-in-progress"] is False
+    assert concurrency["group"] == "deploy-prod-home-v2"
+    assert concurrency["cancel-in-progress"] is True
 
 
 def test_deploy_workflow_has_required_permissions_and_profile_env() -> None:
@@ -96,6 +96,8 @@ def test_deploy_workflow_has_required_permissions_and_profile_env() -> None:
     assert env["REGISTRY"] == "ghcr.io"
     assert env["IMAGE_NAMESPACE"] == "goodjoon-company"
     assert env["DOCKER_CONFIG"] == "/Users/goodjoon/DATA/applications/goodmoneying/.docker"
+    assert env["DOCKER_HOST"] == "unix:///Users/goodjoon/.docker/run/docker.sock"
+    assert env["DOCKER_BUILDKIT"] == "0"
 
 
 def test_deploy_workflow_pushes_ghcr_and_runs_profile_scripts() -> None:
@@ -103,20 +105,38 @@ def test_deploy_workflow_pushes_ghcr_and_runs_profile_scripts() -> None:
     workflow_text = (ROOT / ".github/workflows/deploy.yml").read_text()
     runs = workflow_step_runs(workflow, "deploy")
 
-    assert "docker/login-action@v3" in workflow_text
-    assert "registry: ghcr.io" in workflow_text
+    assert "docker/login-action" not in workflow_text
+    assert 'echo "/Users/goodjoon/.local/bin" >> "$GITHUB_PATH"' in workflow_text
+    assert (
+        'echo "/Users/goodjoon/.nvm/versions/node/v24.14.1/bin" >> "$GITHUB_PATH"'
+        in workflow_text
+    )
+    assert (
+        'echo "/opt/homebrew/opt/python@3.14/libexec/bin" >> "$GITHUB_PATH"'
+        in workflow_text
+    )
+    assert 'echo "/opt/homebrew/bin" >> "$GITHUB_PATH"' in workflow_text
     assert 'echo "/usr/local/bin" >> "$GITHUB_PATH"' in workflow_text
     assert (
         'echo "/Applications/Docker.app/Contents/Resources/bin" >> "$GITHUB_PATH"'
         in workflow_text
     )
     assert 'echo "IMAGE_TAG=release-${GITHUB_SHA::7}" >> "$GITHUB_ENV"' in runs
+    assert "python3 --version\nuv --version\nnode --version\nnpm --version\n" in runs
     assert "deploy/scripts/deploy-profile.sh prod-home \"${IMAGE_TAG}\"" in runs
     assert "deploy/scripts/healthcheck-profile.sh prod-home" in runs
     assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG}" in workflow_text
     assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-worker:${IMAGE_TAG}" in workflow_text
     assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG}" in workflow_text
-    assert "docker build --build-arg VITE_API_BASE_URL=http://app-server01:8000" in workflow_text
+    assert "docker build -f apps/api/Dockerfile" in workflow_text
+    assert (
+        "docker push ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG} </dev/null"
+        in workflow_text
+    )
+    assert (
+        "docker build --build-arg VITE_API_BASE_URL=http://app-server01:8000"
+        in workflow_text
+    )
 
 
 def test_deploy_workflow_runs_e2e_against_deployed_urls() -> None:

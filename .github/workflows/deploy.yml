@@ -14,8 +14,8 @@ on:
           - prod-home
 
 concurrency:
-  group: deploy-prod-home
-  cancel-in-progress: false
+  group: deploy-prod-home-v2
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -33,25 +33,29 @@ jobs:
       REGISTRY: ghcr.io
       IMAGE_NAMESPACE: goodjoon-company
       DOCKER_CONFIG: /Users/goodjoon/DATA/applications/goodmoneying/.docker
+      DOCKER_HOST: unix:///Users/goodjoon/.docker/run/docker.sock
+      DOCKER_BUILDKIT: "0"
     steps:
       - uses: actions/checkout@v4
 
       - name: Set image tag
         run: echo "IMAGE_TAG=release-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.14"
+      - name: Prepare runner PATH
+        run: |
+          echo "/Users/goodjoon/.local/bin" >> "$GITHUB_PATH"
+          echo "/Users/goodjoon/.nvm/versions/node/v24.14.1/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/opt/python@3.14/libexec/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          echo "/Applications/Docker.app/Contents/Resources/bin" >> "$GITHUB_PATH"
 
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "24"
-          cache: npm
+      - name: Verify runner toolchain
+        run: |
+          python3 --version
+          uv --version
+          node --version
+          npm --version
 
       - name: Python dependencies
         run: uv sync --frozen
@@ -74,32 +78,20 @@ jobs:
       - name: Web build
         run: npm run build
 
-      - name: Prepare Docker CLI path
-        run: |
-          echo "/usr/local/bin" >> "$GITHUB_PATH"
-          echo "/Applications/Docker.app/Contents/Resources/bin" >> "$GITHUB_PATH"
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build and push api
         run: |
-          docker build -f apps/api/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG} .
-          docker push ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG}
+          docker build -f apps/api/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG} . </dev/null
+          docker push ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG} </dev/null
 
       - name: Build and push worker
         run: |
-          docker build -f apps/worker/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-worker:${IMAGE_TAG} .
-          docker push ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-worker:${IMAGE_TAG}
+          docker build -f apps/worker/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-worker:${IMAGE_TAG} . </dev/null
+          docker push ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-worker:${IMAGE_TAG} </dev/null
 
       - name: Build and push web
         run: |
-          docker build --build-arg VITE_API_BASE_URL=http://app-server01:8000 -f apps/web/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG} .
-          docker push ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG}
+          docker build --build-arg VITE_API_BASE_URL=http://app-server01:8000 -f apps/web/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG} . </dev/null
+          docker push ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG} </dev/null
 
       - name: Deploy profile
         run: deploy/scripts/deploy-profile.sh prod-home "${IMAGE_TAG}"

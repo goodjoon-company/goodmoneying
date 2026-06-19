@@ -1,6 +1,6 @@
 services:
   api:
-    image: ghcr.io/goodjoon/goodmoneying-api:${GOODMONEYING_IMAGE_TAG}
+    image: ghcr.io/goodjoon-company/goodmoneying-api:${GOODMONEYING_IMAGE_TAG}
     container_name: goodmoneying-api
     restart: unless-stopped
     env_file:
@@ -14,7 +14,7 @@ services:
       retries: 12
 
   worker:
-    image: ghcr.io/goodjoon/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}
+    image: ghcr.io/goodjoon-company/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}
     container_name: goodmoneying-worker
     restart: unless-stopped
     env_file:

@@ -92,12 +92,18 @@ def test_prod_home_compose_uses_fixed_ghcr_image_names() -> None:
     app = services(load_compose("compose.app.yml"))
     web = services(load_compose("compose.web.yml"))
 
-    assert app["api"]["image"] == "ghcr.io/goodjoon/goodmoneying-api:${GOODMONEYING_IMAGE_TAG}"
+    assert (
+        app["api"]["image"]
+        == "ghcr.io/goodjoon-company/goodmoneying-api:${GOODMONEYING_IMAGE_TAG}"
+    )
     assert (
         app["worker"]["image"]
-        == "ghcr.io/goodjoon/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}"
+        == "ghcr.io/goodjoon-company/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}"
     )
-    assert web["web"]["image"] == "ghcr.io/goodjoon/goodmoneying-web:${GOODMONEYING_IMAGE_TAG}"
+    assert (
+        web["web"]["image"]
+        == "ghcr.io/goodjoon-company/goodmoneying-web:${GOODMONEYING_IMAGE_TAG}"
+    )
 
 
 def test_deploy_script_rejects_unknown_profile() -> None:

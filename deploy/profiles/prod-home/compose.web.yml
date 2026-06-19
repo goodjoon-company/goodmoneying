@@ -1,6 +1,6 @@
 services:
   web:
-    image: ghcr.io/goodjoon/goodmoneying-web:${GOODMONEYING_IMAGE_TAG}
+    image: ghcr.io/goodjoon-company/goodmoneying-web:${GOODMONEYING_IMAGE_TAG}
     container_name: goodmoneying-web
     restart: unless-stopped
     env_file:

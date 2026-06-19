@@ -59,3 +59,54 @@ def test_ci_workflow_has_required_quality_commands() -> None:
     assert "docker build -f apps/api/Dockerfile -t goodmoneying-api:ci ." in runs
     assert "docker build -f apps/worker/Dockerfile -t goodmoneying-worker:ci ." in runs
     assert "docker build -f apps/web/Dockerfile -t goodmoneying-web:ci ." in runs
+
+
+def test_deploy_workflow_runs_on_release_and_dispatch() -> None:
+    workflow = load_workflow("deploy.yml")
+    triggers = workflow_on(workflow)
+    dispatch = cast(dict[str, object], triggers["workflow_dispatch"])
+    inputs = cast(dict[str, object], dispatch["inputs"])
+    profile = cast(dict[str, object], inputs["profile"])
+
+    assert cast(dict[str, object], triggers["push"])["branches"] == ["release"]
+    assert profile["options"] == ["prod-home"]
+
+
+def test_deploy_workflow_uses_self_hosted_runner_and_prod_home_concurrency() -> None:
+    workflow = load_workflow("deploy.yml")
+    job = workflow_job(workflow, "deploy")
+    concurrency = cast(dict[str, object], workflow["concurrency"])
+
+    assert "self-hosted" in cast(list[str], job["runs-on"])
+    assert "mac-mini-m4" in cast(list[str], job["runs-on"])
+    assert job["environment"] == "prod"
+    assert job["timeout-minutes"] == 60
+    assert concurrency["group"] == "deploy-prod-home"
+    assert concurrency["cancel-in-progress"] is False
+
+
+def test_deploy_workflow_has_required_permissions_and_profile_env() -> None:
+    workflow = load_workflow("deploy.yml")
+    permissions = cast(dict[str, object], workflow["permissions"])
+    job = workflow_job(workflow, "deploy")
+    env = cast(dict[str, object], job["env"])
+
+    assert permissions == {"contents": "read", "packages": "write"}
+    assert env["DEPLOY_PROFILE"] == "prod-home"
+    assert env["REGISTRY"] == "ghcr.io"
+    assert env["IMAGE_NAMESPACE"] == "goodjoon-company"
+
+
+def test_deploy_workflow_pushes_ghcr_and_runs_profile_scripts() -> None:
+    workflow = load_workflow("deploy.yml")
+    workflow_text = (ROOT / ".github/workflows/deploy.yml").read_text()
+    runs = workflow_step_runs(workflow, "deploy")
+
+    assert "docker/login-action@v3" in workflow_text
+    assert "registry: ghcr.io" in workflow_text
+    assert 'echo "IMAGE_TAG=release-${GITHUB_SHA::7}" >> "$GITHUB_ENV"' in runs
+    assert "deploy/scripts/deploy-profile.sh prod-home \"${IMAGE_TAG}\"" in runs
+    assert "deploy/scripts/healthcheck-profile.sh prod-home" in runs
+    assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG}" in workflow_text
+    assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-worker:${IMAGE_TAG}" in workflow_text
+    assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG}" in workflow_text

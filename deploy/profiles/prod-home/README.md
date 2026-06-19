@@ -21,12 +21,11 @@
 
 ## 비밀값
 
-비밀값은 repo에 커밋하지 않는다. 각 서버의 `/opt/goodmoneying/env/` 아래에 둔다.
+비밀값은 repo에 커밋하지 않는다. 각 서버의 goodmoneying base directory 아래 `env/`에 둔다.
 
-- `/opt/goodmoneying/env/infra.env`
-- `/opt/goodmoneying/env/app.env`
-- `/opt/goodmoneying/env/web.env`
-- `/opt/goodmoneying/env/ghcr.env`
+- Mac Mini M4: `/Users/goodjoon/DATA/applications/goodmoneying/env/infra.env`
+- APP SERVER 01: `/home/goodjoon/project/goodmoneying/env/app.env`
+- bmax-ubuntu: `/home/goodjoon/applications/goodmoneying/env/web.env`
 
 ## 서버별 host volume 경로와 설정 파일
 
@@ -34,23 +33,26 @@
 
 | 서버 | 설정 키 | 기본 host 경로 | 컨테이너 경로 |
 |---|---|---|---|
-| Mac Mini M4 | `GOODMONEYING_INFRA_POSTGRES_DATA_DIR` | `/opt/goodmoneying/infra/postgres-data` | `/var/lib/postgresql/data` |
-| Mac Mini M4 | `GOODMONEYING_INFRA_CONFIG_DIR` | `/opt/goodmoneying/infra/config` | 별도 서비스에서 필요 시 사용 |
-| APP SERVER 01 | `GOODMONEYING_APP_API_DATA_DIR` | `/opt/goodmoneying/app/api-data` | `/var/lib/goodmoneying/api` |
-| APP SERVER 01 | `GOODMONEYING_APP_WORKER_DATA_DIR` | `/opt/goodmoneying/app/worker-data` | `/var/lib/goodmoneying/worker` |
-| APP SERVER 01 | `GOODMONEYING_APP_CONFIG_DIR` | `/opt/goodmoneying/app/config` | `/etc/goodmoneying` |
-| bmax-ubuntu | `GOODMONEYING_WEB_NGINX_CACHE_DIR` | `/opt/goodmoneying/web/nginx-cache` | `/var/cache/nginx` |
-| bmax-ubuntu | `GOODMONEYING_WEB_CONFIG_DIR` | `/opt/goodmoneying/web/config` | `/etc/goodmoneying` |
+| Mac Mini M4 | `GOODMONEYING_INFRA_BASE_DIR` | `/Users/goodjoon/DATA/applications/goodmoneying` | compose/env 파일 위치 |
+| Mac Mini M4 | `GOODMONEYING_INFRA_POSTGRES_DATA_DIR` | `/Users/goodjoon/DATA/applications/goodmoneying/infra/postgres-data` | `/var/lib/postgresql/data` |
+| Mac Mini M4 | `GOODMONEYING_INFRA_CONFIG_DIR` | `/Users/goodjoon/DATA/applications/goodmoneying/infra/config` | 별도 서비스에서 필요 시 사용 |
+| APP SERVER 01 | `GOODMONEYING_APP_BASE_DIR` | `/home/goodjoon/project/goodmoneying` | compose/env 파일 위치 |
+| APP SERVER 01 | `GOODMONEYING_APP_API_DATA_DIR` | `/home/goodjoon/project/goodmoneying/app/api-data` | `/var/lib/goodmoneying/api` |
+| APP SERVER 01 | `GOODMONEYING_APP_WORKER_DATA_DIR` | `/home/goodjoon/project/goodmoneying/app/worker-data` | `/var/lib/goodmoneying/worker` |
+| APP SERVER 01 | `GOODMONEYING_APP_CONFIG_DIR` | `/home/goodjoon/project/goodmoneying/app/config` | `/etc/goodmoneying` |
+| bmax-ubuntu | `GOODMONEYING_WEB_BASE_DIR` | `/home/goodjoon/applications/goodmoneying` | compose/env 파일 위치 |
+| bmax-ubuntu | `GOODMONEYING_WEB_NGINX_CACHE_DIR` | `/home/goodjoon/applications/goodmoneying/web/nginx-cache` | `/var/cache/nginx` |
+| bmax-ubuntu | `GOODMONEYING_WEB_CONFIG_DIR` | `/home/goodjoon/applications/goodmoneying/web/config` | `/etc/goodmoneying` |
 
-`deploy-profile.sh`는 배포 시 각 서버에 `/opt/goodmoneying/deploy.hosts.env`를 복사하고, `docker compose --env-file /opt/goodmoneying/deploy.hosts.env`로 compose 변수 치환을 수행한다.
+`deploy-profile.sh`는 배포 시 각 서버의 base directory에 `deploy.hosts.env`와 compose 파일을 복사하고, `docker compose --env-file {base}/deploy.hosts.env`로 compose 변수 치환을 수행한다.
 
-`application.yml`, `logback.yml`처럼 운영 서버에서 바뀔 수 있는 설정 파일은 이미지(image)에만 두지 않는다. 기본값은 이미지에 포함하되, 운영에서 바꾸는 파일은 host의 config 디렉터리에 두고 read-only mount로 컨테이너에 제공한다. 현재 goodmoneying 앱의 주요 운영 설정은 `/opt/goodmoneying/env/*.env`로 관리하며, 향후 파일 기반 설정을 읽는 런타임을 추가하면 `/etc/goodmoneying`을 읽도록 앱 실행 옵션을 연결한다.
+`application.yml`, `logback.yml`처럼 운영 서버에서 바뀔 수 있는 설정 파일은 이미지(image)에만 두지 않는다. 기본값은 이미지에 포함하되, 운영에서 바꾸는 파일은 host의 config 디렉터리에 두고 read-only mount로 컨테이너에 제공한다. 현재 goodmoneying 앱의 주요 운영 설정은 각 서버의 `{base}/env/*.env`로 관리하며, 향후 파일 기반 설정을 읽는 런타임을 추가하면 `/etc/goodmoneying`을 읽도록 앱 실행 옵션을 연결한다.
 
 ## 서버별 env 파일
 
 아래 값은 형식 예시다. 실제 운영 값은 별도로 생성하고 배포 전 회전(rotate)한다.
 
-### Mac Mini M4: `/opt/goodmoneying/env/infra.env`
+### Mac Mini M4: `/Users/goodjoon/DATA/applications/goodmoneying/env/infra.env`
 
 ```bash
 POSTGRES_DB=goodmoneying
@@ -58,7 +60,7 @@ POSTGRES_USER=goodmoneying
 POSTGRES_PASSWORD=prod-home-example-postgres-password-rotate
 ```
 
-### APP SERVER 01: `/opt/goodmoneying/env/app.env`
+### APP SERVER 01: `/home/goodjoon/project/goodmoneying/env/app.env`
 
 ```bash
 GOODMONEYING_DATABASE_URL=postgresql://goodmoneying:prod-home-example-postgres-password-rotate@Mac-Mini-M4.local:5432/goodmoneying
@@ -66,7 +68,7 @@ GOODMONEYING_OPERATOR_TOKEN=prod-home-example-operator-token-rotate
 GOODMONEYING_LIVE_UPBIT=1
 ```
 
-### bmax-ubuntu: `/opt/goodmoneying/env/web.env`
+### bmax-ubuntu: `/home/goodjoon/applications/goodmoneying/env/web.env`
 
 ```bash
 GOODMONEYING_WEB_INTERNAL_URL=http://bmax-ubuntu:8080

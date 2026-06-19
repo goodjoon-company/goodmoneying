@@ -92,15 +92,27 @@ def test_prod_home_compose_uses_external_env_files() -> None:
     app = services(load_compose("compose.app.yml"))
     web = services(load_compose("compose.web.yml"))
 
-    assert "/opt/goodmoneying/env/infra.env" in infra["postgres"]["env_file"]
-    assert "/opt/goodmoneying/env/app.env" in app["api"]["env_file"]
-    assert "/opt/goodmoneying/env/app.env" in app["worker"]["env_file"]
-    assert "/opt/goodmoneying/env/web.env" in web["web"]["env_file"]
+    assert "${GOODMONEYING_INFRA_BASE_DIR}/env/infra.env" in infra["postgres"][
+        "env_file"
+    ]
+    assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["api"]["env_file"]
+    assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["worker"]["env_file"]
+    assert "${GOODMONEYING_WEB_BASE_DIR}/env/web.env" in web["web"]["env_file"]
 
 
 def test_prod_home_hosts_env_defines_server_specific_data_and_config_paths() -> None:
     hosts_env = (ROOT / "deploy/profiles/prod-home/hosts.env").read_text()
 
+    assert (
+        "GOODMONEYING_INFRA_BASE_DIR=/Users/goodjoon/DATA/applications/goodmoneying"
+        in hosts_env
+    )
+    assert "GOODMONEYING_APP_BASE_DIR=/home/goodjoon/project/goodmoneying" in hosts_env
+    assert (
+        "GOODMONEYING_WEB_BASE_DIR=/home/goodjoon/applications/goodmoneying"
+        in hosts_env
+    )
+    assert "GOODMONEYING_REMOTE_BASE_DIR=" not in hosts_env
     assert "GOODMONEYING_INFRA_POSTGRES_DATA_DIR=" in hosts_env
     assert "GOODMONEYING_INFRA_CONFIG_DIR=" in hosts_env
     assert "GOODMONEYING_APP_API_DATA_DIR=" in hosts_env
@@ -202,25 +214,56 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
     assert result.returncode == 0
     assert "ssh Mac-Mini-M4.local" in result.stdout
     assert "deploy.hosts.env" in result.stdout
-    assert "docker compose --env-file '/opt/goodmoneying/deploy.hosts.env'" in result.stdout
+    assert (
+        "docker compose --env-file "
+        "'/Users/goodjoon/DATA/applications/goodmoneying/deploy.hosts.env'"
+    ) in result.stdout
+    assert (
+        "docker compose --env-file "
+        "'/home/goodjoon/project/goodmoneying/deploy.hosts.env'"
+    ) in result.stdout
+    assert (
+        "docker compose --env-file "
+        "'/home/goodjoon/applications/goodmoneying/deploy.hosts.env'"
+    ) in result.stdout
     assert "ssh app-server01" in result.stdout
     assert "ssh bmax-ubuntu" in result.stdout
-    assert 'ssh Mac-Mini-M4.local "mkdir -p \'/opt/goodmoneying\'"' in result.stdout
-    assert "mkdir -p '/opt/goodmoneying/infra/postgres-data'" in result.stdout
-    assert "mkdir -p '/opt/goodmoneying/infra/config'" in result.stdout
-    assert "mkdir -p '/opt/goodmoneying/app/api-data'" in result.stdout
-    assert "mkdir -p '/opt/goodmoneying/app/worker-data'" in result.stdout
-    assert "mkdir -p '/opt/goodmoneying/app/config'" in result.stdout
-    assert "mkdir -p '/opt/goodmoneying/web/nginx-cache'" in result.stdout
-    assert "mkdir -p '/opt/goodmoneying/web/config'" in result.stdout
+    assert (
+        "ssh Mac-Mini-M4.local \"mkdir -p "
+        "'/Users/goodjoon/DATA/applications/goodmoneying'\""
+    ) in result.stdout
+    assert (
+        "mkdir -p '/Users/goodjoon/DATA/applications/goodmoneying/infra/postgres-data'"
+        in result.stdout
+    )
+    assert (
+        "mkdir -p '/Users/goodjoon/DATA/applications/goodmoneying/infra/config'"
+        in result.stdout
+    )
+    assert "mkdir -p '/home/goodjoon/project/goodmoneying/app/api-data'" in result.stdout
+    assert (
+        "mkdir -p '/home/goodjoon/project/goodmoneying/app/worker-data'"
+        in result.stdout
+    )
+    assert "mkdir -p '/home/goodjoon/project/goodmoneying/app/config'" in result.stdout
+    assert (
+        "mkdir -p '/home/goodjoon/applications/goodmoneying/web/nginx-cache'"
+        in result.stdout
+    )
+    assert (
+        "mkdir -p '/home/goodjoon/applications/goodmoneying/web/config'"
+        in result.stdout
+    )
     assert "logs" not in result.stdout
     assert (
         f"scp {ROOT}/deploy/profiles/prod-home/hosts.env "
-        "Mac-Mini-M4.local:/opt/goodmoneying/deploy.hosts.env"
+        "Mac-Mini-M4.local:/Users/goodjoon/DATA/applications/goodmoneying/"
+        "deploy.hosts.env"
     ) in result.stdout
     assert (
         f"scp {ROOT}/deploy/profiles/prod-home/compose.infra.yml "
-        "Mac-Mini-M4.local:/opt/goodmoneying/compose.infra.yml"
+        "Mac-Mini-M4.local:/Users/goodjoon/DATA/applications/goodmoneying/"
+        "compose.infra.yml"
     ) in result.stdout
     assert "compose.infra.yml' pull" in result.stdout
     assert "compose.infra.yml' up -d" in result.stdout

@@ -4,7 +4,7 @@ services:
     container_name: goodmoneying-postgres
     restart: unless-stopped
     env_file:
-      - /opt/goodmoneying/env/infra.env
+      - ${GOODMONEYING_INFRA_BASE_DIR}/env/infra.env
     ports:
       - "100.107.98.22:5432:5432"
     volumes:

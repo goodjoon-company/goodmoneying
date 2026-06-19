@@ -4,7 +4,7 @@ services:
     container_name: goodmoneying-web
     restart: unless-stopped
     env_file:
-      - /opt/goodmoneying/env/web.env
+      - ${GOODMONEYING_WEB_BASE_DIR}/env/web.env
     volumes:
       - ${GOODMONEYING_WEB_NGINX_CACHE_DIR}:/var/cache/nginx
       - ${GOODMONEYING_WEB_CONFIG_DIR}:/etc/goodmoneying:ro

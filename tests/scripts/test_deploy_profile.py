@@ -94,6 +94,13 @@ def test_deploy_script_rejects_unknown_profile() -> None:
     assert "지원하지 않는 배포 프로필입니다: unknown" in result.stderr
 
 
+def test_deploy_script_rejects_invalid_image_tag() -> None:
+    result = run_deploy_script("prod-home", "release-bad;rm")
+
+    assert result.returncode != 0
+    assert "잘못된 이미지 태그입니다: release-bad;rm" in result.stderr
+
+
 def test_deploy_script_dry_run_prints_prod_home_steps() -> None:
     result = run_deploy_script("prod-home", "release-abc1234")
 
@@ -115,3 +122,18 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
     assert "docker compose --env-file /opt/goodmoneying/env/app.env" in result.stdout
     assert "ssh bmax-ubuntu" in result.stdout
     assert "docker compose --env-file /opt/goodmoneying/env/web.env" in result.stdout
+    assert 'ssh Mac-Mini-M4.local "mkdir -p \'/opt/goodmoneying\'"' in result.stdout
+    assert (
+        f"scp {ROOT}/deploy/profiles/prod-home/compose.infra.yml "
+        "Mac-Mini-M4.local:/opt/goodmoneying/compose.infra.yml"
+    ) in result.stdout
+    assert "compose.infra.yml' pull" in result.stdout
+    assert "compose.infra.yml' up -d" in result.stdout
+    assert "compose.app.yml" in result.stdout
+    assert "compose.web.yml" in result.stdout
+    assert result.stdout.index("ssh Mac-Mini-M4.local") < result.stdout.index(
+        "ssh app-server01"
+    )
+    assert result.stdout.index("ssh app-server01") < result.stdout.index(
+        "ssh bmax-ubuntu"
+    )

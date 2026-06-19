@@ -19,23 +19,40 @@ if [[ "$PROFILE" != "prod-home" ]]; then
   fail "지원하지 않는 배포 프로필입니다: $PROFILE"
 fi
 
+if [[ ! "$IMAGE_TAG" =~ ^release-[0-9a-f]{7,40}$ ]]; then
+  fail "잘못된 이미지 태그입니다: $IMAGE_TAG"
+fi
+
 PROFILE_DIR="$ROOT_DIR/deploy/profiles/$PROFILE"
 source "$PROFILE_DIR/profile.env"
 source "$PROFILE_DIR/hosts.env"
 
-remote_compose_command() {
+print_remote_compose() {
   local host="$1"
   local compose_file="$2"
   local env_file="$3"
-  printf 'ssh %s "cd %s && GOODMONEYING_IMAGE_TAG=%s docker compose --env-file %s -f %s pull && GOODMONEYING_IMAGE_TAG=%s docker compose --env-file %s -f %s up -d"\n' \
+  printf 'ssh %s "mkdir -p '\''%s'\''"\n' \
+    "$host" \
+    "$GOODMONEYING_REMOTE_BASE_DIR"
+  printf 'scp %s/%s %s:%s/%s\n' \
+    "$PROFILE_DIR" \
+    "$compose_file" \
+    "$host" \
+    "$GOODMONEYING_REMOTE_BASE_DIR" \
+    "$compose_file"
+  printf 'ssh %s "cd '\''%s'\'' && GOODMONEYING_IMAGE_TAG='\''%s'\'' docker compose --env-file '\''%s'\'' -f '\''%s'\'' pull"\n' \
     "$host" \
     "$GOODMONEYING_REMOTE_BASE_DIR" \
     "$IMAGE_TAG" \
     "$env_file" \
-    "$compose_file" \
+    "$compose_file"
+  printf 'ssh %s "cd '\''%s'\'' && GOODMONEYING_IMAGE_TAG='\''%s'\'' docker compose --env-file '\''%s'\'' -f '\''%s'\'' up -d"\n' \
+    "$host" \
+    "$GOODMONEYING_REMOTE_BASE_DIR" \
     "$IMAGE_TAG" \
     "$env_file" \
     "$compose_file"
+  printf '# docker compose --env-file %s\n' "$env_file"
 }
 
 run_remote_compose() {
@@ -54,9 +71,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
   printf 'infra host=%s compose=%s\n' "$GOODMONEYING_INFRA_HOST" "$GOODMONEYING_INFRA_COMPOSE"
   printf 'app host=%s compose=%s\n' "$GOODMONEYING_APP_HOST" "$GOODMONEYING_APP_COMPOSE"
   printf 'web host=%s compose=%s\n' "$GOODMONEYING_WEB_HOST" "$GOODMONEYING_WEB_COMPOSE"
-  remote_compose_command "$GOODMONEYING_INFRA_HOST" "$GOODMONEYING_INFRA_COMPOSE" "$GOODMONEYING_REMOTE_BASE_DIR/env/infra.env"
-  remote_compose_command "$GOODMONEYING_APP_HOST" "$GOODMONEYING_APP_COMPOSE" "$GOODMONEYING_REMOTE_BASE_DIR/env/app.env"
-  remote_compose_command "$GOODMONEYING_WEB_HOST" "$GOODMONEYING_WEB_COMPOSE" "$GOODMONEYING_REMOTE_BASE_DIR/env/web.env"
+  print_remote_compose "$GOODMONEYING_INFRA_HOST" "$GOODMONEYING_INFRA_COMPOSE" "$GOODMONEYING_REMOTE_BASE_DIR/env/infra.env"
+  print_remote_compose "$GOODMONEYING_APP_HOST" "$GOODMONEYING_APP_COMPOSE" "$GOODMONEYING_REMOTE_BASE_DIR/env/app.env"
+  print_remote_compose "$GOODMONEYING_WEB_HOST" "$GOODMONEYING_WEB_COMPOSE" "$GOODMONEYING_REMOTE_BASE_DIR/env/web.env"
   exit 0
 fi
 

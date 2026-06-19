@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROFILE="${1:-}"
 DRY_RUN="${GOODMONEYING_DEPLOY_DRY_RUN:-0}"
+REMOTE_DOCKER_PATH="/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH"
 
 fail() {
   printf '오류: %s\n' "$*" >&2
@@ -29,8 +30,8 @@ api_health_url="$GOODMONEYING_API_INTERNAL_URL/health"
 web_health_url="$GOODMONEYING_WEB_INTERNAL_URL/"
 postgres_check='pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 worker_check_template="{{.State.Running}}"
-postgres_remote_command="docker exec goodmoneying-postgres sh -c '$postgres_check'"
-worker_remote_command="docker inspect -f '$worker_check_template' goodmoneying-worker"
+postgres_remote_command="PATH=$REMOTE_DOCKER_PATH docker exec goodmoneying-postgres sh -c '$postgres_check'"
+worker_remote_command="PATH=$REMOTE_DOCKER_PATH docker inspect -f '$worker_check_template' goodmoneying-worker"
 
 commands=(
   "curl ${curl_args[*]} $api_health_url"

@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROFILE="${1:-}"
 DRY_RUN="${GOODMONEYING_DEPLOY_DRY_RUN:-0}"
+REMOTE_DOCKER_PATH="/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH"
 
 fail() {
   printf '오류: %s\n' "$*" >&2
@@ -29,9 +30,10 @@ print_compose_command() {
   local compose_file="$3"
   local compose_env="$base_dir/deploy.compose.env"
 
-  printf 'ssh %s "cd '\''%s'\'' && docker compose --env-file '\''%s'\'' -f '\''%s'\'' stop"\n' \
+  printf 'ssh %s "cd '\''%s'\'' && PATH=%s docker compose --env-file '\''%s'\'' -f '\''%s'\'' stop"\n' \
     "$host" \
     "$base_dir" \
+    "$REMOTE_DOCKER_PATH" \
     "$compose_env" \
     "$compose_file"
 }
@@ -42,7 +44,7 @@ run_compose_command() {
   local compose_file="$3"
   local compose_env="$base_dir/deploy.compose.env"
 
-  ssh "$host" "cd '$base_dir' && docker compose --env-file '$compose_env' -f '$compose_file' stop"
+  ssh "$host" "cd '$base_dir' && PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH docker compose --env-file '$compose_env' -f '$compose_file' stop"
 }
 
 if [[ "$DRY_RUN" == "1" ]]; then

@@ -105,6 +105,11 @@ def test_deploy_workflow_pushes_ghcr_and_runs_profile_scripts() -> None:
 
     assert "docker/login-action@v3" in workflow_text
     assert "registry: ghcr.io" in workflow_text
+    assert 'echo "/usr/local/bin" >> "$GITHUB_PATH"' in workflow_text
+    assert (
+        'echo "/Applications/Docker.app/Contents/Resources/bin" >> "$GITHUB_PATH"'
+        in workflow_text
+    )
     assert 'echo "IMAGE_TAG=release-${GITHUB_SHA::7}" >> "$GITHUB_ENV"' in runs
     assert "deploy/scripts/deploy-profile.sh prod-home \"${IMAGE_TAG}\"" in runs
     assert "deploy/scripts/healthcheck-profile.sh prod-home" in runs

@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROFILE="${1:-}"
 IMAGE_TAG="${2:-}"
 DRY_RUN="${GOODMONEYING_DEPLOY_DRY_RUN:-0}"
+REMOTE_DOCKER_PATH="/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH"
 
 fail() {
   printf '오류: %s\n' "$*" >&2
@@ -79,14 +80,16 @@ print_remote_compose() {
       "$base_dir" \
       "$script_name"
   done
-  printf 'ssh %s "cd '\''%s'\'' && docker compose --env-file '\''%s'\'' -f '\''%s'\'' pull"\n' \
+  printf 'ssh %s "cd '\''%s'\'' && PATH=%s docker compose --env-file '\''%s'\'' -f '\''%s'\'' pull"\n' \
     "$host" \
     "$base_dir" \
+    "$REMOTE_DOCKER_PATH" \
     "$remote_compose_env" \
     "$remote_compose_file"
-  printf 'ssh %s "cd '\''%s'\'' && docker compose --env-file '\''%s'\'' -f '\''%s'\'' up -d"\n' \
+  printf 'ssh %s "cd '\''%s'\'' && PATH=%s docker compose --env-file '\''%s'\'' -f '\''%s'\'' up -d"\n' \
     "$host" \
     "$base_dir" \
+    "$REMOTE_DOCKER_PATH" \
     "$remote_compose_env" \
     "$remote_compose_file"
 }
@@ -116,8 +119,8 @@ run_remote_compose() {
     scp "$script_path" "$host:$base_dir/$script_name"
     ssh "$host" "chmod +x '$base_dir/$script_name'"
   done
-  ssh "$host" "cd '$base_dir' && docker compose --env-file '$remote_compose_env' -f '$remote_compose_file' pull"
-  ssh "$host" "cd '$base_dir' && docker compose --env-file '$remote_compose_env' -f '$remote_compose_file' up -d"
+  ssh "$host" "cd '$base_dir' && PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH docker compose --env-file '$remote_compose_env' -f '$remote_compose_file' pull"
+  ssh "$host" "cd '$base_dir' && PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH docker compose --env-file '$remote_compose_env' -f '$remote_compose_file' up -d"
 }
 
 if [[ "$DRY_RUN" == "1" ]]; then

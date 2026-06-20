@@ -3,8 +3,8 @@ import { Bell } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import {
   loadCollectionCoverageSegments,
-  type CollectionActivityBucket,
   type CollectionDashboardTarget,
+  type RealtimeCollectionHeatmapRow,
   type MissingRangeSummary,
   type OperationsSnapshot,
   type OperationsTrendPoint,
@@ -19,7 +19,7 @@ import {
   formatPercent,
   formatShortDateTime,
   formatShortDay,
-  heatmapCells
+  normalizeRealtimeCollectionHeatmapRows
 } from "../operationsDisplay";
 import {
   CoverageBar,
@@ -68,18 +68,19 @@ export function Dashboard({
         <section className="panel ops-activity-card">
           <div className="ops-card-title">
             <div>
-              <span className="panel-kicker">정상 수집</span>
-              <strong>{totals.normalTargets}</strong>
-              <em>활성 {totals.activeTargets} × 최근 7일</em>
+              <span className="panel-kicker">실시간 수집 현황</span>
+              <strong>실시간 정보 수집 현황</strong>
+              <em>최근 24시간 기준 · 최대 50개 코인</em>
             </div>
-            <div className="heatmap-legend" aria-label="수집 활동 범례">
+            <div className="heatmap-legend" aria-label="실시간 수집 상태 범례">
+              <span><i className="none" />예상 미달</span>
               <span><i className="none" />없음</span>
               <span><i className="low" />적음</span>
               <span><i className="high" />많음</span>
             </div>
           </div>
-          <ActivityHeatmap buckets={snapshot.dashboard.collectionActivity} compact />
-          <p className="panel-note">최근 1분 수집 행 수 · 칸 하나가 1시간</p>
+          <RealtimeCollectionHeatmap rows={snapshot.dashboard.realtimeCollectionHeatmap} />
+          <p className="panel-note">칸 하나는 1시간 기준 수집 기대치 대비 수집량</p>
         </section>
 
         <section className="panel ops-storage-card">
@@ -185,38 +186,69 @@ function MetricLine({
   );
 }
 
-function ActivityHeatmap({
-  buckets,
-  compact = false
-}: {
-  buckets: CollectionActivityBucket[];
-  compact?: boolean;
-}) {
-  const cells = heatmapCells(buckets);
+function RealtimeCollectionHeatmap({ rows }: { rows: RealtimeCollectionHeatmapRow[] }) {
+  const normalizedRows = normalizeRealtimeCollectionHeatmapRows(rows).slice(0, 50);
+  const visibleRows = normalizedRows.length > 0 ? normalizedRows : [];
+  const rowGroups = [
+    visibleRows.slice(0, 17),
+    visibleRows.slice(17, 34),
+    visibleRows.slice(34, 50)
+  ].filter((group) => group.length > 0);
   return (
-    <section className={compact ? "activity-panel compact" : "panel activity-panel"}>
-      {!compact ? (
-        <div className="panel-heading">
-          <h2>시간대별 수집 활동</h2>
-          <span>최근 7일 x 24시간</span>
-        </div>
-      ) : null}
-      <div className="activity-hour-ticks" aria-hidden="true">
-        {Array.from({ length: 24 }, (_, hour) => (
-          <span key={hour}>{hour % 6 === 0 ? hour.toString().padStart(2, "0") : ""}</span>
+    <section
+      className="panel activity-panel"
+      aria-label="실시간 정보 수집 현황 히트맵"
+    >
+      <div className="realtime-heatmap-grid">
+        {rowGroups.map((group, groupIndex) => (
+          <div
+            className="realtime-heatmap-block"
+            key={`realtime-heatmap-group-${groupIndex}`}
+          >
+            <div className="realtime-hour-markers" aria-hidden="true">
+              {group[0].hourlyBuckets.map((bucket, index) => (
+                <span key={`${bucket.bucketStartAt}-${index}`}>
+                  {index % 3 === 0 ? formatHeatmapHour(bucket.bucketStartAt) : ""}
+                </span>
+              ))}
+            </div>
+            <div className="realtime-cell-grid">
+              {group.flatMap((row) =>
+                row.hourlyBuckets.map((bucket, index) => {
+                  const tooltip = [
+                    `${row.instrumentDisplayName} (${row.instrument.marketCode})`,
+                    `${formatShortDateTime(bucket.bucketStartAt)} 수집`,
+                    `전체 실제 ${bucket.actualRowsAll} / 예상 ${bucket.expectedRowsAll}`,
+                    `현재가 ${bucket.actualRowsByType.ticker_snapshot}`,
+                    `캔들 ${bucket.actualRowsByType.source_candle}`,
+                    `호가 ${bucket.actualRowsByType.orderbook_summary}`
+                  ].join(" · ");
+                  return (
+                    <span
+                      aria-label={tooltip}
+                      className={`realtime-cell ${bucket.status}`}
+                      key={`${row.instrument.id}-${bucket.bucketStartAt}-${index}`}
+                      title={tooltip}
+                    />
+                  );
+                })
+              )}
+            </div>
+          </div>
         ))}
       </div>
-      <div className="activity-heatmap" aria-label="시간대별 수집 활동 히트맵">
-        {cells.map((bucket, index) => (
-          <span
-            className={`activity-cell ${bucket.status}`}
-            key={`${bucket.bucketStartAt}-${index}`}
-            title={`${formatFreshness(bucket.bucketStartAt)} · 실행 ${bucket.runCount} · 결과 ${bucket.resultCount}`}
-          />
-        ))}
-      </div>
+      {visibleRows.length === 0 ? <p className="panel-note">표시할 수집 대상이 없습니다.</p> : null}
     </section>
   );
+}
+
+function formatHeatmapHour(value: string): string {
+  const hour = new Date(value).toLocaleTimeString("en-GB", {
+    timeZone: "Asia/Seoul",
+    hour: "2-digit",
+    hour12: false
+  });
+  return hour;
 }
 
 function StorageRowsTable({ items }: { items: StorageBreakdownItem[] }) {

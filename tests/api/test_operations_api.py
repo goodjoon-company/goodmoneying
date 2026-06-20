@@ -89,6 +89,14 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
         "orderbook_summary",
         "quality_result",
     }
+    assert len(dashboard.json()["realtimeCollectionHeatmap"]) == 50
+    first_realtime_row = dashboard.json()["realtimeCollectionHeatmap"][0]
+    assert first_realtime_row["instrument"]["id"] > 0
+    assert len(first_realtime_row["hourlyBuckets"]) == 24
+    assert {
+        bucket["status"] for bucket in first_realtime_row["hourlyBuckets"]
+    }.issubset({"none", "low", "collecting", "high"})
+    assert all(bucket["expectedRowsAll"] > 0 for bucket in first_realtime_row["hourlyBuckets"])
     assert len(dashboard.json()["operationsTrend"]) == 7
     assert dashboard.json()["missingRangeTop"][0]["missingSegmentCount"] >= 0
     assert dashboard.json()["auditLogSummary"]["targetChangeCount24h"] >= 50

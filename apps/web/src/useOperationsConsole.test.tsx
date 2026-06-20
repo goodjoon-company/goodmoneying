@@ -3,12 +3,46 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { createFixtureOperationsDataClient } from "./operationsFixture";
 import { useOperationsConsole } from "./useOperationsConsole";
+import { createTestInstrumentDetail, createTestOperationsSnapshot } from "./testOperationsApi";
+import type { OperationsDataClient } from "./operationsData";
 
 function Harness() {
+  const dataClient: OperationsDataClient = {
+    loadOperationsSnapshot: async () => createTestOperationsSnapshot(),
+    loadCandidateUniverse: async () => [],
+    loadMarketList: async () => [],
+    loadCollectionCoverageSegments: async () => [],
+    loadInstrumentSnapshot: async (instrumentId) => ({
+      detail: createTestInstrumentDetail(instrumentId),
+      candles: []
+    }),
+    updateCollectionTargets: async () => undefined,
+    createBackfillPlan: async () => ({
+      planId: "plan-1",
+      dataType: "source_candle",
+      estimatedRequestCount: 1,
+      estimatedRowCount: 1,
+      estimatedStorageBytes: 1,
+      targets: [1]
+    }),
+    approveBackfillJob: async () => ({
+      id: 1,
+      status: "pending",
+      dataType: "source_candle",
+      progressPercent: "0",
+      createdAt: "2026-06-19T00:00:00.000Z"
+    }),
+    controlBackfillJob: async () => ({
+      id: 1,
+      status: "running",
+      dataType: "source_candle",
+      progressPercent: "0",
+      createdAt: "2026-06-19T00:00:00.000Z"
+    })
+  };
   const consoleState = useOperationsConsole({
-    dataClient: createFixtureOperationsDataClient(),
+    dataClient,
     refetchOnDashboard: false
   });
 

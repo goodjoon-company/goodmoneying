@@ -16,11 +16,9 @@ export function Markets({
 }) {
   const marketQuery = useQuery({
     queryKey: ["market-list"],
-    queryFn: loadMarketList,
-    enabled: snapshot.source === "api"
+    queryFn: loadMarketList
   });
-  const rows: MarketListRow[] =
-    snapshot.source === "api" ? marketQuery.data ?? EMPTY_MARKET_ROWS : snapshot.marketRows;
+  const rows: MarketListRow[] = marketQuery.data ?? EMPTY_MARKET_ROWS;
   return (
     <section className="panel full">
       <div className="panel-heading">

@@ -1,4 +1,10 @@
-import type { CollectionActivityBucket, OperationsTrendPoint, StorageBreakdownItem } from "./api";
+import type {
+  CollectionActivityBucket,
+  RealtimeCollectionHeatmapCell,
+  RealtimeCollectionHeatmapRow,
+  OperationsTrendPoint,
+  StorageBreakdownItem
+} from "./api";
 
 export function formatNumber(value: string): string {
   return Number(value).toLocaleString("ko-KR", { maximumFractionDigits: 4 });
@@ -29,6 +35,61 @@ export function heatmapCells(buckets: CollectionActivityBucket[]): CollectionAct
     status: "none" as const
   }));
   return [...padding, ...buckets];
+}
+
+export function normalizeRealtimeCollectionHeatmapRows(
+  rows: RealtimeCollectionHeatmapRow[]
+): RealtimeCollectionHeatmapRow[] {
+  const hourStart = new Date();
+  const currentHourStart = new Date(
+    hourStart.getFullYear(),
+    hourStart.getMonth(),
+    hourStart.getDate(),
+    hourStart.getHours()
+  );
+  return rows.slice(0, 50).map((row) => ({
+    ...row,
+    hourlyBuckets: normalizeRealtimeHeatmapBuckets(row.hourlyBuckets, currentHourStart)
+  }));
+}
+
+export function normalizeRealtimeHeatmapBuckets(
+  buckets: RealtimeCollectionHeatmapCell[],
+  anchorHourStart: Date
+): RealtimeCollectionHeatmapCell[] {
+  const wanted = 24;
+  if (buckets.length >= wanted) {
+    return buckets.slice(-wanted);
+  }
+
+  const existing = [...buckets].sort(
+    (left, right) =>
+      new Date(left.bucketStartAt).getTime() - new Date(right.bucketStartAt).getTime()
+  );
+  const seed = existing[existing.length - 1];
+  const fallbackExpectedRowsByType = {
+    source_candle: 60,
+    ticker_snapshot: 60,
+    orderbook_summary: 60
+  };
+  const expectedRowsByType = seed?.expectedRowsByType ?? fallbackExpectedRowsByType;
+  const expectedRowsAll = seed?.expectedRowsAll ?? 180;
+  const missingCount = wanted - buckets.length;
+  const firstBucketStart = new Date(anchorHourStart.getTime() - missingCount * 60 * 60 * 1000);
+  const padding = Array.from({ length: missingCount }, (_, index) => ({
+    bucketStartAt: new Date(firstBucketStart.getTime() + index * 60 * 60 * 1000).toISOString(),
+    expectedRowsAll,
+    actualRowsAll: 0,
+    expectedRowsByType,
+    actualRowsByType: {
+      source_candle: 0,
+      ticker_snapshot: 0,
+      orderbook_summary: 0
+    },
+    actualRatioPercent: "0",
+    status: "none" as const
+  }));
+  return [...padding, ...existing].slice(-wanted);
 }
 
 export function emptyStorageBreakdown(): StorageBreakdownItem[] {

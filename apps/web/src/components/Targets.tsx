@@ -38,13 +38,9 @@ export function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
   const [sortMode, setSortMode] = useState<SortMode>("trade");
   const universeQuery = useQuery({
     queryKey: ["candidate-universe"],
-    queryFn: loadCandidateUniverse,
-    enabled: snapshot.source === "api"
+    queryFn: loadCandidateUniverse
   });
-  const entries =
-    snapshot.source === "api"
-      ? universeQuery.data ?? EMPTY_CANDIDATE_ENTRIES
-      : snapshot.candidateEntries;
+  const entries = universeQuery.data ?? EMPTY_CANDIDATE_ENTRIES;
   const visibleEntries = useMemo(
     () => filterAndSortCandidateEntries(entries, searchText, sortMode),
     [entries, searchText, sortMode]

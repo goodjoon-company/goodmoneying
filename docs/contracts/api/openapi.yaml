@@ -455,6 +455,7 @@ components:
         - alerts
         - metricPrinciples
         - collectionActivity
+        - realtimeCollectionHeatmap
         - storageBreakdown
         - operationsTrend
         - missingRangeTop
@@ -546,6 +547,11 @@ components:
           description: 최근 7일 x 24시간 수집 실행과 대상별 수집 결과 기반 활동 버킷.
           items:
             $ref: "#/components/schemas/CollectionActivityBucket"
+        realtimeCollectionHeatmap:
+          type: array
+          description: 실시간 수집량 비교와 타입별 수집 상태를 보여주는 코인별 히트맵 데이터.
+          items:
+            $ref: "#/components/schemas/RealtimeCollectionHeatmapRow"
         storageBreakdown:
           type: array
           description: UTC 오늘 저장된 행 수와 명시적 row-size 추정 규칙 기반 저장량 분해.
@@ -596,6 +602,65 @@ components:
         status:
           type: string
           enum: [none, low, collecting, high]
+    RealtimeCollectionHeatmapCell:
+      description: 1시간 단위 실시간 수집량과 타입별 기대/실측 row 수를 담은 셀.
+      type: object
+      required:
+        - bucketStartAt
+        - expectedRowsAll
+        - actualRowsAll
+        - expectedRowsByType
+        - actualRowsByType
+        - actualRatioPercent
+        - status
+      properties:
+        bucketStartAt:
+          type: string
+          format: date-time
+        expectedRowsAll:
+          type: integer
+          description: 1시간 동안 소스 캔들/현재가/호가를 합산한 기대 row 수.
+        actualRowsAll:
+          type: integer
+          description: 1시간 동안 실측 수집된 row 수 합.
+        expectedRowsByType:
+          type: object
+          description: 데이터 유형별 기대 row 수.
+          properties:
+            source_candle:
+              type: integer
+            ticker_snapshot:
+              type: integer
+            orderbook_summary:
+              type: integer
+        actualRowsByType:
+          type: object
+          description: 데이터 유형별 실제 row 수.
+          properties:
+            source_candle:
+              type: integer
+            ticker_snapshot:
+              type: integer
+            orderbook_summary:
+              type: integer
+        actualRatioPercent:
+          $ref: "#/components/schemas/DecimalString"
+        status:
+          type: string
+          enum: [none, low, collecting, high]
+    RealtimeCollectionHeatmapRow:
+      description: 대상별 24개 시간대 실시간 수집 히트맵 행.
+      type: object
+      required: [instrument, instrumentDisplayName, hourlyBuckets]
+      properties:
+        instrument:
+          $ref: "#/components/schemas/Instrument"
+        instrumentDisplayName:
+          type: string
+        hourlyBuckets:
+          type: array
+          items:
+            $ref: "#/components/schemas/RealtimeCollectionHeatmapCell"
     StorageBreakdownItem:
       description: 데이터 유형별 저장 행 수와 추정 저장량 분해 항목.
       type: object

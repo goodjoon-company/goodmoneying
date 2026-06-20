@@ -136,6 +136,26 @@ class CollectionActivityBucketResponse(BaseModel):
     status: Literal["none", "low", "collecting", "high"]
 
 
+class RealtimeCollectionHeatmapCellResponse(BaseModel):
+    bucketStartAt: datetime
+    expectedRowsAll: int
+    actualRowsAll: int
+    expectedRowsByType: dict[
+        Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int
+    ]
+    actualRowsByType: dict[
+        Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int
+    ]
+    actualRatioPercent: str
+    status: Literal["none", "low", "collecting", "high"]
+
+
+class RealtimeCollectionHeatmapRowResponse(BaseModel):
+    instrument: InstrumentResponse
+    instrumentDisplayName: str
+    hourlyBuckets: list[RealtimeCollectionHeatmapCellResponse]
+
+
 class StorageBreakdownItemResponse(BaseModel):
     dataType: Literal["source_candle", "ticker_snapshot", "orderbook_summary", "quality_result"]
     label: str
@@ -177,6 +197,7 @@ class DashboardSummaryResponse(BaseModel):
     healthChecks: list[HealthCheckResponse]
     metricPrinciples: list[MetricPrincipleResponse]
     collectionActivity: list[CollectionActivityBucketResponse]
+    realtimeCollectionHeatmap: list[RealtimeCollectionHeatmapRowResponse]
     storageBreakdown: list[StorageBreakdownItemResponse]
     operationsTrend: list[OperationsTrendPointResponse]
     missingRangeTop: list[MissingRangeSummaryResponse]

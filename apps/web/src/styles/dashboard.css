@@ -169,6 +169,65 @@
   background: rgb(55 210 143 / 0.9);
 }
 
+.realtime-heatmap-grid {
+  display: grid;
+  grid-template-columns: repeat(3, max-content);
+  gap: 8px 12px;
+  align-content: start;
+  max-width: 100%;
+  overflow: auto;
+}
+
+.realtime-heatmap-block {
+  display: grid;
+  gap: 4px;
+}
+
+.realtime-hour-markers,
+.realtime-cell-grid {
+  display: grid;
+  grid-template-columns: repeat(24, 8px);
+  gap: 3px;
+}
+
+.realtime-hour-markers span {
+  color: #6e7a72;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 7px;
+  line-height: 1;
+  min-height: 8px;
+  text-align: center;
+}
+
+.realtime-cell {
+  width: 8px;
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 0.05);
+}
+
+.realtime-cell.low {
+  background: rgb(216 179 94 / 0.82);
+}
+
+.realtime-cell.collecting {
+  background: rgb(91 141 239 / 0.8);
+}
+
+.realtime-cell.high {
+  background: rgb(55 210 143 / 0.88);
+}
+
+.realtime-cell.none {
+  background: rgb(229 122 94 / 0.85);
+}
+
+@media (max-width: 860px) {
+  .realtime-heatmap-grid {
+    grid-template-columns: max-content;
+  }
+}
+
 .activity-panel.compact {
   display: block;
 }

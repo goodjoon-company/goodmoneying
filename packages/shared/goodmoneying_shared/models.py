@@ -208,6 +208,24 @@ class CollectionActivityBucket:
 
 
 @dataclass(frozen=True)
+class RealtimeCollectionHeatmapBucket:
+    bucket_start_at: datetime
+    actual_rows_all: int
+    expected_rows_all: int
+    expected_rows_by_type: dict[Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int]
+    actual_rows_by_type: dict[Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int]
+    actual_ratio_percent: Decimal
+    status: Literal["none", "low", "collecting", "high"]
+
+
+@dataclass(frozen=True)
+class RealtimeCollectionHeatmapRow:
+    instrument: Instrument
+    instrument_display_name: str
+    hourly_buckets: list[RealtimeCollectionHeatmapBucket]
+
+
+@dataclass(frozen=True)
 class StorageBreakdownItem:
     data_type: Literal["source_candle", "ticker_snapshot", "orderbook_summary", "quality_result"]
     label: str
@@ -308,6 +326,7 @@ class DashboardSummary:
     alerts: list[NotificationEvent]
     health_checks: list[HealthCheck]
     collection_activity: list[CollectionActivityBucket]
+    realtime_collection_heatmap: list[RealtimeCollectionHeatmapRow]
     storage_breakdown: list[StorageBreakdownItem]
     operations_trend: list[OperationsTrendPoint]
     missing_range_top: list[MissingRangeSummary]

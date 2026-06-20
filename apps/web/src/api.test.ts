@@ -58,7 +58,7 @@ afterEach(() => {
 });
 
 describe("운영 API 클라이언트", () => {
-  it("HTTP와 fixture 운영 데이터 Adapter는 같은 Interface를 제공한다", async () => {
+  it("HTTP 운영 데이터 Adapter는 화면이 필요한 Interface를 제공한다", async () => {
     const fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/v1/dashboard/summary")) {
@@ -72,22 +72,14 @@ describe("운영 API 클라이언트", () => {
     vi.stubGlobal("fetch", fetch);
 
     const { createHttpOperationsDataClient } = await import("./operationsData");
-    const { createFixtureOperationsDataClient } = await import("./operationsFixture");
     const httpClient = createHttpOperationsDataClient({ apiBaseUrl: "/api", operatorToken: "" });
-    const fixtureClient = createFixtureOperationsDataClient();
 
     await expect(httpClient.loadOperationsSnapshot()).resolves.toMatchObject({
       source: "api",
       dashboard: { status: "normal" }
     });
-    await expect(fixtureClient.loadOperationsSnapshot()).resolves.toMatchObject({
-      source: "fixture",
-      dashboard: { status: "normal" }
-    });
     expect(typeof httpClient.loadCandidateUniverse).toBe("function");
-    expect(typeof fixtureClient.loadCandidateUniverse).toBe("function");
     expect(typeof httpClient.createBackfillPlan).toBe("function");
-    expect(typeof fixtureClient.createBackfillPlan).toBe("function");
   });
 
   it("첫 운영 스냅샷은 대시보드와 백필 작업만 가져와 화면 표시를 빠르게 시작한다", async () => {

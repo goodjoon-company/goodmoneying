@@ -69,6 +69,12 @@ def test_repository_dashboard_exposes_operations_observability_summaries() -> No
     active_buckets = [bucket for bucket in summary.collection_activity if bucket.result_count > 0]
     assert active_buckets
     assert active_buckets[-1].status in {"low", "collecting", "high"}
+    assert len(summary.realtime_collection_heatmap) == len(repository.list_active_targets())
+    first_row = summary.realtime_collection_heatmap[0]
+    assert len(first_row.hourly_buckets) == 24
+    assert first_row.instrument_display_name
+    assert first_row.hourly_buckets[0].expected_rows_all > 0
+    assert first_row.hourly_buckets[0].status in {"none", "low", "collecting", "high"}
 
     breakdown = {item.data_type: item for item in summary.storage_breakdown}
     assert set(breakdown) == {

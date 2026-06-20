@@ -38,6 +38,8 @@ from goodmoneying_api.schemas import (
     OrderbookSummaryResponse,
     QualityHistoryEventResponse,
     StorageBreakdownItemResponse,
+    RealtimeCollectionHeatmapCellResponse,
+    RealtimeCollectionHeatmapRowResponse,
     TickerSnapshotResponse,
     TickerSnapshotsResponse,
 )
@@ -409,6 +411,25 @@ def dashboard_to_response(item: DashboardSummary) -> DashboardSummaryResponse:
                 status=bucket.status,
             )
             for bucket in item.collection_activity
+        ],
+        realtimeCollectionHeatmap=[
+            RealtimeCollectionHeatmapRowResponse(
+                instrument=instrument_to_response(heatmap_row.instrument),
+                instrumentDisplayName=heatmap_row.instrument_display_name,
+                hourlyBuckets=[
+                    RealtimeCollectionHeatmapCellResponse(
+                        bucketStartAt=bucket.bucket_start_at,
+                        expectedRowsAll=bucket.expected_rows_all,
+                        actualRowsAll=bucket.actual_rows_all,
+                        expectedRowsByType=bucket.expected_rows_by_type,
+                        actualRowsByType=bucket.actual_rows_by_type,
+                        actualRatioPercent=decimal_string(bucket.actual_ratio_percent) or "0",
+                        status=bucket.status,
+                    )
+                    for bucket in heatmap_row.hourly_buckets
+                ],
+            )
+            for heatmap_row in item.realtime_collection_heatmap
         ],
         storageBreakdown=[
             StorageBreakdownItemResponse(

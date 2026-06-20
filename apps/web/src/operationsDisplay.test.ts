@@ -3,6 +3,7 @@ import {
   dateTimeLocalToUtcIso,
   emptyStorageBreakdown,
   emptyTrendPoints,
+  normalizeRealtimeCollectionHeatmapRows,
   formatBytes,
   formatCompactCount,
   formatDateTimeRange,
@@ -47,5 +48,44 @@ describe("운영 표시 모델", () => {
     expect(cells.every((cell) => cell.status === "none")).toBe(true);
 
     vi.useRealTimers();
+  });
+
+  it("실시간 히트맵 행은 최대 24칸으로 정규화한다", () => {
+    const rows = [
+      {
+        instrument: {
+          id: 1,
+          exchange: "UPBIT" as const,
+          marketCode: "KRW-BTC",
+          quoteCurrency: "KRW",
+          baseAsset: "BTC",
+          displayName: "비트코인"
+        },
+        instrumentDisplayName: "비트코인",
+        hourlyBuckets: [
+          {
+            bucketStartAt: "2026-06-20T00:00:00.000Z",
+            expectedRowsAll: 180,
+            actualRowsAll: 0,
+            expectedRowsByType: {
+              source_candle: 60,
+              ticker_snapshot: 60,
+              orderbook_summary: 60
+            },
+            actualRowsByType: {
+              source_candle: 0,
+              ticker_snapshot: 0,
+              orderbook_summary: 0
+            },
+            actualRatioPercent: "0",
+            status: "none" as const
+          }
+        ]
+      }
+    ];
+    const normalizedRows = normalizeRealtimeCollectionHeatmapRows(rows);
+    expect(normalizedRows).toHaveLength(1);
+    expect(normalizedRows[0].hourlyBuckets).toHaveLength(24);
+    expect(normalizedRows[0].hourlyBuckets[0].status).toBe("none");
   });
 });

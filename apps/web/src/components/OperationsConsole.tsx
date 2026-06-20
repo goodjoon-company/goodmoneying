@@ -1,6 +1,4 @@
-import { useMemo } from "react";
 import { RefreshCcw } from "lucide-react";
-import { createFixtureOperationsDataClient } from "../operationsFixture";
 import { formatFreshness } from "../operationsDisplay";
 import { useOperationsConsole, type SectionId } from "../useOperationsConsole";
 import { Dashboard } from "./Dashboard";
@@ -69,10 +67,6 @@ const sectionMeta: Record<SectionId, { crumb: string; milestone: string; title: 
 };
 
 export function OperationsConsole() {
-  const dataClient = useMemo(
-    () => (import.meta.env.MODE === "test" ? createFixtureOperationsDataClient() : undefined),
-    []
-  );
   const {
     snapshot,
     activeSection,
@@ -82,7 +76,7 @@ export function OperationsConsole() {
     setDetailOpen,
     openInstrumentDetail,
     query
-  } = useOperationsConsole({ dataClient });
+  } = useOperationsConsole();
 
   if (query.error) {
     return <main className="app-shell error-state">운영 API를 불러오지 못했습니다.</main>;

@@ -26,6 +26,8 @@ from goodmoneying_shared.models import (
     DashboardSummary,
     HealthCheck,
     Instrument,
+    RealtimeCollectionHeatmapBucket,
+    RealtimeCollectionHeatmapRow,
     MarketListRow,
     MissingRangeSummary,
     NotificationEvent,
@@ -543,6 +545,7 @@ class SQLiteOperationsRepository:
             alerts=alerts,
             health_checks=self._health_checks(coverage, alerts),
             collection_activity=self._collection_activity_buckets(),
+            realtime_collection_heatmap=self._realtime_collection_heatmap(),
             storage_breakdown=self._storage_breakdown_today(storage_bytes_today),
             operations_trend=self._operations_trend(
                 coverage,
@@ -1050,6 +1053,109 @@ class SQLiteOperationsRepository:
             + self._table_count_since("target_collection_results", "created_at", day_start) * 128
         )
 
+    def _realtime_collection_heatmap(self) -> list[RealtimeCollectionHeatmapRow]:
+        active_targets = self.list_active_targets()[:50]
+        if not active_targets:
+            return []
+        expected_rows_by_type = {
+            "source_candle": 60,
+            "ticker_snapshot": 60,
+            "orderbook_summary": 60,
+        }
+        now = now_utc()
+        current_hour = now.replace(minute=0, second=0, microsecond=0)
+        first_hour = current_hour - timedelta(hours=23)
+        target_ids = [target.id for target in active_targets]
+        placeholders = ", ".join(["?"] * len(target_ids))
+
+        source_counts: dict[tuple[int, datetime], int] = {}
+        for row in self._execute(
+            f"""
+            SELECT instrument_id, collected_at
+            FROM source_candles
+            WHERE candle_unit = '1m' AND collected_at >= ? AND instrument_id IN ({placeholders})
+            """,
+            (_to_db_time(first_hour), *target_ids),
+        ).fetchall():
+            bucket = _from_db_time(row["collected_at"]).replace(
+                minute=0, second=0, microsecond=0
+            )
+            source_counts[(row["instrument_id"], bucket)] = source_counts.get(
+                (row["instrument_id"], bucket),
+                0,
+            ) + 1
+
+        ticker_counts: dict[tuple[int, datetime], int] = {}
+        for row in self._execute(
+            f"""
+            SELECT instrument_id, collected_at
+            FROM ticker_snapshots
+            WHERE collected_at >= ? AND instrument_id IN ({placeholders})
+            """,
+            (_to_db_time(first_hour), *target_ids),
+        ).fetchall():
+            bucket = _from_db_time(row["collected_at"]).replace(
+                minute=0, second=0, microsecond=0
+            )
+            ticker_counts[(row["instrument_id"], bucket)] = ticker_counts.get(
+                (row["instrument_id"], bucket),
+                0,
+            ) + 1
+
+        orderbook_counts: dict[tuple[int, datetime], int] = {}
+        for row in self._execute(
+            f"""
+            SELECT instrument_id, collected_at
+            FROM orderbook_summaries
+            WHERE collected_at >= ? AND instrument_id IN ({placeholders})
+            """,
+            (_to_db_time(first_hour), *target_ids),
+        ).fetchall():
+            bucket = _from_db_time(row["collected_at"]).replace(
+                minute=0, second=0, microsecond=0
+            )
+            orderbook_counts[(row["instrument_id"], bucket)] = orderbook_counts.get(
+                (row["instrument_id"], bucket),
+                0,
+            ) + 1
+
+        heatmap: list[RealtimeCollectionHeatmapRow] = []
+        for target in active_targets:
+            hourly_buckets: list[RealtimeCollectionHeatmapBucket] = []
+            for offset in range(24):
+                bucket_start = first_hour + timedelta(hours=offset)
+                actual_rows_by_type = {
+                    "source_candle": source_counts.get((target.id, bucket_start), 0),
+                    "ticker_snapshot": ticker_counts.get((target.id, bucket_start), 0),
+                    "orderbook_summary": orderbook_counts.get((target.id, bucket_start), 0),
+                }
+                actual_rows_all = sum(actual_rows_by_type.values())
+                expected_rows_all = sum(expected_rows_by_type.values())
+                actual_ratio_percent = (
+                    Decimal(actual_rows_all) / Decimal(expected_rows_all) * Decimal("100")
+                    if expected_rows_all > 0
+                    else Decimal("0")
+                )
+                hourly_buckets.append(
+                    RealtimeCollectionHeatmapBucket(
+                        bucket_start_at=bucket_start,
+                        expected_rows_all=expected_rows_all,
+                        actual_rows_all=actual_rows_all,
+                        expected_rows_by_type=expected_rows_by_type,
+                        actual_rows_by_type=actual_rows_by_type,
+                        actual_ratio_percent=actual_ratio_percent,
+                        status=self._realtime_collection_heatmap_status(actual_ratio_percent),
+                    )
+                )
+            heatmap.append(
+                RealtimeCollectionHeatmapRow(
+                    instrument=target,
+                    instrument_display_name=target.display_name,
+                    hourly_buckets=hourly_buckets,
+                )
+            )
+        return heatmap
+
     def _collection_activity_buckets(self) -> list[CollectionActivityBucket]:
         current_hour = now_utc().replace(minute=0, second=0, microsecond=0)
         first_hour = current_hour - timedelta(hours=(7 * 24) - 1)
@@ -1264,6 +1370,21 @@ class SQLiteOperationsRepository:
         if run_count > 0:
             return "collecting"
         return "low"
+
+    @staticmethod
+    def _realtime_collection_heatmap_status(
+        actual_ratio_percent: Decimal,
+    ) -> Literal["none", "low", "collecting", "high"]:
+        if actual_ratio_percent <= Decimal("0"):
+            return "none"
+        if actual_ratio_percent < Decimal("24"):
+            return "low"
+        if actual_ratio_percent < Decimal("50"):
+            return "collecting"
+        if actual_ratio_percent < Decimal("90"):
+            return "collecting"
+        return "high"
+
 
     @staticmethod
     def _average_coverage_percent(coverage: list[CoverageStatus]) -> Decimal:

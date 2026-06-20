@@ -1,8 +1,13 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { createTestOperationsFetch } from "./testOperationsApi";
+
+beforeEach(() => {
+  vi.stubGlobal("fetch", vi.fn(createTestOperationsFetch()));
+});
 
 afterEach(() => {
   cleanup();
@@ -74,7 +79,7 @@ describe("데이터 수집관리 화면", () => {
 
     expect(screen.getByText("선택 49/50")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "저장" })).toBeEnabled();
-    expect(screen.getByText("대상 변경 50건")).toBeInTheDocument();
+    expect(screen.getByText("대상 변경 1건")).toBeInTheDocument();
     expect(screen.getByText(/^₩100,000,000,000/)).toBeInTheDocument();
     expect(screen.getAllByTitle(/품질/)[0]).toHaveTextContent(/주의|정상/);
     expect(screen.getAllByText("2026-01-01 00:00 KST ~ NOW")[0]).toBeInTheDocument();
@@ -89,33 +94,6 @@ describe("데이터 수집관리 화면", () => {
 
   it("수집 대상 화면에서 선택 코인으로 백필 계획을 만들고 승인한다", async () => {
     const user = userEvent.setup();
-    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.endsWith("/v1/backfill/plans")) {
-        return Response.json({
-          planId: "plan-1",
-          dataType: "source_candle",
-          estimatedRequestCount: 12,
-          estimatedRowCount: 2880,
-          estimatedStorageBytes: 737280,
-          targets: [1, 2]
-        });
-      }
-      if (url.endsWith("/v1/backfill/jobs")) {
-        return Response.json(
-          {
-            id: 77,
-            status: "pending",
-            dataType: "source_candle",
-            progressPercent: "0",
-            createdAt: "2026-06-19T00:00:00.000Z"
-          },
-          { status: 201 }
-        );
-      }
-      return new Response(`unexpected ${url}`, { status: 500 });
-    });
-    vi.stubGlobal("fetch", fetch);
     render(<App />);
 
     await screen.findByRole("heading", { name: "업비트 수집 운영 상태" });
@@ -136,7 +114,8 @@ describe("데이터 수집관리 화면", () => {
 
     await user.click(screen.getByRole("button", { name: "백필 계획 승인" }));
 
-    const planRequest = fetch.mock.calls.find(([input]) =>
+    const fetchMock = vi.mocked(globalThis.fetch);
+    const planRequest = fetchMock.mock.calls.find(([input]) =>
       String(input).endsWith("/v1/backfill/plans")
     );
     const planBody = JSON.parse(String((planRequest?.[1] as RequestInit).body));

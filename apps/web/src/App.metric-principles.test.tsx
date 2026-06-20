@@ -1,44 +1,36 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createTestOperationsFetch } from "./testOperationsApi";
 
 afterEach(() => {
   cleanup();
-  vi.doUnmock("./api");
+  vi.unstubAllGlobals();
   vi.resetModules();
 });
 
 describe("운영 콘솔 관측 지표 원칙", () => {
   it("미노출 지표 원칙을 별도 패널로 렌더링하지 않고 실제 대체 지표만 표시한다", async () => {
-    vi.doMock("./api", async (importOriginal) => {
-      const actual = await importOriginal<typeof import("./api")>();
-      const snapshot = actual.demoSnapshot();
-      return {
-        ...actual,
-        demoSnapshot: () => ({
-          ...snapshot,
-          dashboard: {
-            ...snapshot.dashboard,
-            metricPrinciples: [
-              {
-                metricKey: "rateLimitRemainingPercent",
-                label: "업비트 Rate Limit 여유율",
-                displayStatus: "excluded",
-                evidenceStatus: "missing_persistence",
-                reason: "실제 Upbit 헤더 영속화가 없어 운영 콘솔에서 제외한다."
-              },
-              {
-                metricKey: "duplicateRows24h",
-                label: "중복 저장 시도",
-                displayStatus: "excluded",
-                evidenceStatus: "missing_measurement",
-                reason: "업서트 충돌 또는 중복 시도 측정값이 없어 운영 콘솔에서 제외한다."
-              }
-            ]
+    vi.stubGlobal("fetch", vi.fn(createTestOperationsFetch({
+      dashboard: {
+        metricPrinciples: [
+          {
+            metricKey: "rateLimitRemainingPercent",
+            label: "업비트 Rate Limit 여유율",
+            displayStatus: "excluded",
+            evidenceStatus: "missing_persistence",
+            reason: "실제 Upbit 헤더 영속화가 없어 운영 콘솔에서 제외한다."
+          },
+          {
+            metricKey: "duplicateRows24h",
+            label: "중복 저장 시도",
+            displayStatus: "excluded",
+            evidenceStatus: "missing_measurement",
+            reason: "업서트 충돌 또는 중복 시도 측정값이 없어 운영 콘솔에서 제외한다."
           }
-        })
-      };
-    });
+        ]
+      }
+    })));
     const { App } = await import("./App");
 
     render(<App />);

@@ -119,6 +119,8 @@ def test_openapi_contract_exposes_m2_collection_dashboard_view_model() -> None:
 
     for schema_name in [
         "CollectionActivityBucket",
+        "RealtimeCollectionHeatmapCell",
+        "RealtimeCollectionHeatmapRow",
         "StorageBreakdownItem",
         "OperationsTrendPoint",
         "MissingRangeSummary",
@@ -127,6 +129,7 @@ def test_openapi_contract_exposes_m2_collection_dashboard_view_model() -> None:
         assert schema_name in schemas
     for field in [
         "collectionActivity",
+        "realtimeCollectionHeatmap",
         "storageBreakdown",
         "operationsTrend",
         "missingRangeTop",

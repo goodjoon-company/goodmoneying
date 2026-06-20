@@ -59,7 +59,7 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.getByText(/24H 거래대금/).first()).toBeVisible();
   await expect(page.getByText("최근 1분 수집 건수")).toBeVisible();
   await expect(page.getByRole("heading", { name: "구간형 수집 진행 상태" })).toBeVisible();
-  await expect(page.getByLabel("시간대별 수집 활동 히트맵")).toBeVisible();
+  await expect(page.getByLabel("실시간 정보 수집 현황 히트맵")).toBeVisible();
   await expect(page.getByText("오늘 저장 Row Count")).toBeVisible();
   await expect(page.getByRole("heading", { name: "운영 헬스" })).toBeVisible();
   await expect(page.getByText("Rate limit 여유 64%")).toHaveCount(0);

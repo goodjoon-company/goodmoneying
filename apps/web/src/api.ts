@@ -106,6 +106,7 @@ export type DashboardSummary = {
   }[];
   metricPrinciples: MetricPrinciple[];
   collectionActivity: CollectionActivityBucket[];
+  realtimeCollectionHeatmap: RealtimeCollectionHeatmapRow[];
   storageBreakdown: StorageBreakdownItem[];
   operationsTrend: OperationsTrendPoint[];
   missingRangeTop: MissingRangeSummary[];
@@ -132,6 +133,30 @@ export type CollectionActivityBucket = {
   runCount: number;
   resultCount: number;
   status: "none" | "low" | "collecting" | "high";
+};
+
+export type RealtimeCollectionHeatmapCell = {
+  bucketStartAt: string;
+  expectedRowsAll: number;
+  actualRowsAll: number;
+  expectedRowsByType: {
+    source_candle: number;
+    ticker_snapshot: number;
+    orderbook_summary: number;
+  };
+  actualRowsByType: {
+    source_candle: number;
+    ticker_snapshot: number;
+    orderbook_summary: number;
+  };
+  actualRatioPercent: string;
+  status: "none" | "low" | "collecting" | "high";
+};
+
+export type RealtimeCollectionHeatmapRow = {
+  instrument: Instrument;
+  instrumentDisplayName: string;
+  hourlyBuckets: RealtimeCollectionHeatmapCell[];
 };
 
 export type StorageBreakdownItem = {
@@ -254,7 +279,7 @@ export type OperationsSnapshot = {
   candles: Candle[];
   backfillJobs: BackfillJob[];
   notifications: NotificationEvent[];
-  source: "api" | "fixture";
+  source: "api";
 };
 
 export type CollectionCoverageSegmentsResponse = {
@@ -312,6 +337,9 @@ function normalizeDashboardSummary(response: DashboardSummary): DashboardSummary
     healthChecks: dashboard.healthChecks ?? [],
     metricPrinciples: dashboard.metricPrinciples ?? [],
     collectionActivity: dashboard.collectionActivity ?? [],
+    realtimeCollectionHeatmap: normalizeRealtimeCollectionHeatmapRows(
+      dashboard.realtimeCollectionHeatmap ?? []
+    ),
     storageBreakdown: dashboard.storageBreakdown ?? [],
     operationsTrend: dashboard.operationsTrend ?? [],
     missingRangeTop: dashboard.missingRangeTop ?? [],
@@ -335,6 +363,61 @@ function normalizeDashboardTarget(target: CollectionDashboardTarget): Collection
     storageRowCount: numberOrZero(target.storageRowCount),
     storageBytesDisplay: target.storageBytesDisplay ?? "0B"
   };
+}
+
+function normalizeRealtimeCollectionHeatmapRows(
+  rows: RealtimeCollectionHeatmapRow[]
+): RealtimeCollectionHeatmapRow[] {
+  const currentHour = new Date();
+  const currentHourStart = new Date(
+    currentHour.getFullYear(),
+    currentHour.getMonth(),
+    currentHour.getDate(),
+    currentHour.getHours()
+  );
+  return rows.slice(0, 50).map((row) => ({
+    ...row,
+    hourlyBuckets: normalizeRealtimeHeatmapBuckets(row.hourlyBuckets, currentHourStart)
+  }));
+}
+
+function normalizeRealtimeHeatmapBuckets(
+  buckets: RealtimeCollectionHeatmapCell[],
+  currentHourStart: Date
+): RealtimeCollectionHeatmapCell[] {
+  const wanted = 24;
+  if (buckets.length >= wanted) {
+    return buckets.slice(-wanted);
+  }
+
+  const existingBuckets = [...buckets].sort(
+    (left, right) =>
+      new Date(left.bucketStartAt).getTime() - new Date(right.bucketStartAt).getTime()
+  );
+  const seed = existingBuckets[existingBuckets.length - 1];
+  const fallbackExpectedRowsByType = {
+    source_candle: 60,
+    ticker_snapshot: 60,
+    orderbook_summary: 60
+  };
+  const expectedRowsByType = seed?.expectedRowsByType ?? fallbackExpectedRowsByType;
+  const expectedRowsAll = seed?.expectedRowsAll ?? 180;
+  const bucketsToPrepend = wanted - buckets.length;
+  const firstStart = new Date(currentHourStart.getTime() - 3600 * 1000 * (bucketsToPrepend));
+  const padding = Array.from({ length: bucketsToPrepend }, (_, index) => ({
+    bucketStartAt: new Date(firstStart.getTime() + index * 3600 * 1000).toISOString(),
+    expectedRowsAll,
+    actualRowsAll: 0,
+    expectedRowsByType,
+    actualRowsByType: {
+      source_candle: 0,
+      ticker_snapshot: 0,
+      orderbook_summary: 0
+    },
+    actualRatioPercent: "0",
+    status: "none" as const
+  }));
+  return [...padding, ...existingBuckets].slice(-wanted);
 }
 
 function formatCollectionTargetFreshness(target: CollectionDashboardTarget): string {
@@ -447,5 +530,3 @@ export async function approveBackfillJob(planId: string): Promise<BackfillJob> {
 export async function controlBackfillJob(jobId: number, action: string): Promise<BackfillJob> {
   return sendJson<BackfillJob>(`/v1/backfill/jobs/${jobId}/${action}`, "POST");
 }
-
-export { demoSnapshot } from "./operationsFixture";

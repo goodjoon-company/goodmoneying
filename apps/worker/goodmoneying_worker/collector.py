@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from goodmoneying_shared.models import OrderbookSummary, SourceCandle, TickerSnapshot
@@ -123,46 +123,70 @@ class UpbitCollectionWorker:
                 )
                 continue
             try:
-                rows = self._client.fetch_minute_candles(
-                    instrument.market_code,
+                missing_ranges = self._missing_source_candle_ranges(
+                    target.instrument_id,
                     job.target_start_at,
                     job.target_end_at,
                 )
-                collected_at = now_utc()
-                candles = [
-                    SourceCandle(
-                        instrument_id=target.instrument_id,
-                        candle_unit="1m",
-                        candle_start_at=datetime.fromisoformat(row["candle_start_at"]).astimezone(
-                            UTC
-                        ),
-                        open_price=Decimal(row["open_price"]),
-                        high_price=Decimal(row["high_price"]),
-                        low_price=Decimal(row["low_price"]),
-                        close_price=Decimal(row["close_price"]),
-                        trade_volume=Decimal(row["trade_volume"]),
-                        trade_amount=Decimal(row["trade_amount"]),
-                        collected_at=collected_at,
+                if not missing_ranges:
+                    self._repository.mark_backfill_target(
+                        job.id,
+                        target.instrument_id,
+                        status="succeeded",
+                        last_completed_at=job.target_end_at,
                     )
-                    for row in rows
-                ]
-                rows_written = self._repository.record_backfill_candles(
-                    job.id,
-                    target.instrument_id,
-                    candles,
-                )
-                last_completed_at = (
-                    max((item.candle_start_at for item in candles), default=job.target_end_at)
-                    if candles
-                    else job.target_end_at
-                )
+                    continue
+                target_written = 0
+                last_completed_at = target.last_completed_at
+                for fetch_start_at, fetch_end_at in missing_ranges:
+                    if self._backfill_job_status(job.id) in {
+                        "paused",
+                        "stopped",
+                        "failed",
+                        "succeeded",
+                    }:
+                        break
+                    rows = self._client.fetch_minute_candles(
+                        instrument.market_code,
+                        fetch_start_at,
+                        fetch_end_at,
+                    )
+                    collected_at = now_utc()
+                    candles = [
+                        SourceCandle(
+                            instrument_id=target.instrument_id,
+                            candle_unit="1m",
+                            candle_start_at=datetime.fromisoformat(
+                                row["candle_start_at"]
+                            ).astimezone(UTC),
+                            open_price=Decimal(row["open_price"]),
+                            high_price=Decimal(row["high_price"]),
+                            low_price=Decimal(row["low_price"]),
+                            close_price=Decimal(row["close_price"]),
+                            trade_volume=Decimal(row["trade_volume"]),
+                            trade_amount=Decimal(row["trade_amount"]),
+                            collected_at=collected_at,
+                        )
+                        for row in rows
+                    ]
+                    rows_written = self._repository.record_backfill_candles(
+                        job.id,
+                        target.instrument_id,
+                        candles,
+                    )
+                    target_written += rows_written
+                    last_completed_at = (
+                        max((item.candle_start_at for item in candles), default=fetch_end_at)
+                        if candles
+                        else fetch_end_at
+                    )
                 self._repository.mark_backfill_target(
                     job.id,
                     target.instrument_id,
                     status="succeeded",
-                    last_completed_at=last_completed_at,
+                    last_completed_at=last_completed_at or job.target_end_at,
                 )
-                written += rows_written
+                written += target_written
             except Exception as exc:
                 self._repository.mark_backfill_target(
                     job.id,
@@ -173,6 +197,31 @@ class UpbitCollectionWorker:
                     error_message=str(exc),
                 )
         return written
+
+    def _missing_source_candle_ranges(
+        self,
+        instrument_id: int,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> list[tuple[datetime, datetime]]:
+        existing_starts = {
+            item.started_at
+            for item in self._repository.candles(instrument_id, "1m", start_at, end_at)
+        }
+        ranges: list[tuple[datetime, datetime]] = []
+        current = start_at
+        range_start: datetime | None = None
+        while current < end_at:
+            is_missing = current not in existing_starts
+            if is_missing and range_start is None:
+                range_start = current
+            if not is_missing and range_start is not None:
+                ranges.append((range_start, current))
+                range_start = None
+            current += timedelta(minutes=1)
+        if range_start is not None:
+            ranges.append((range_start, end_at))
+        return ranges
 
     def _backfill_job_status(self, job_id: int) -> str:
         for job in self._repository.backfill_jobs():

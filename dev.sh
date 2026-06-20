@@ -254,8 +254,7 @@ start_background() {
 
   (
     cd "$ROOT_DIR"
-    nohup "$@" >"$log_file" 2>&1 &
-    printf '%s\n' "$!" >"$pid_file"
+    "$PYTHON_BIN" scripts/dev-start-background.py "$pid_file" "$log_file" "$@"
   )
 
   sleep 1
@@ -279,7 +278,10 @@ start_api() {
 start_web() {
   start_background web \
     env VITE_API_BASE_URL="http://${API_HOST}:${API_PORT}" \
-      npm --workspace apps/web run dev -- --host "$WEB_HOST" --port "$WEB_PORT"
+      VITE_OPERATOR_TOKEN="$OPERATOR_TOKEN" \
+      GOODMONEYING_WEB_HOST="$WEB_HOST" \
+      GOODMONEYING_WEB_PORT="$WEB_PORT" \
+      node scripts/dev-vite-server.mjs
 }
 
 start_worker() {

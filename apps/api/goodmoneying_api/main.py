@@ -17,6 +17,7 @@ from goodmoneying_api.schemas import (
     BackfillPlanResponse,
     CandidateUniverseResponse,
     CandleSeriesResponse,
+    CollectionCoverageSegmentsResponse,
     CollectionRunsResponse,
     CollectionTargetsResponse,
     CreateBackfillPlanRequest,
@@ -41,13 +42,10 @@ from goodmoneying_worker.upbit_client import FixtureUpbitClient
 def create_repository_from_environment() -> OperationsRepository:
     database_url = os.getenv("GOODMONEYING_DATABASE_URL")
     if database_url and database_url.startswith(("postgres://", "postgresql://")):
-        repository = PostgresOperationsRepository(database_url)
-        try:
-            repository.list_candidate_universe()
-        except ValueError:
-            seed_repository(repository, FixtureUpbitClient())
-        return repository
-    return create_seeded_repository()
+        return PostgresOperationsRepository(database_url)
+    if os.getenv("GOODMONEYING_DEMO_DATA") == "1":
+        return create_seeded_repository()
+    return SQLiteOperationsRepository()
 
 
 def create_seeded_repository() -> SQLiteOperationsRepository:
@@ -129,6 +127,15 @@ def create_app(repository: OperationsRepository | None = None) -> FastAPI:
     @app.get("/v1/market-list", response_model=MarketListResponse)
     def get_market_list() -> MarketListResponse:
         return service.market_list()
+
+    @app.get(
+        "/v1/collection-targets/{instrumentId}/coverage-segments",
+        response_model=CollectionCoverageSegmentsResponse,
+    )
+    def get_collection_coverage_segments(
+        instrumentId: int,
+    ) -> CollectionCoverageSegmentsResponse:
+        return service.collection_coverage_segments(instrumentId)
 
     @app.get("/v1/instruments/{instrumentId}", response_model=InstrumentDetailResponse)
     def get_instrument_detail(instrumentId: int) -> InstrumentDetailResponse:

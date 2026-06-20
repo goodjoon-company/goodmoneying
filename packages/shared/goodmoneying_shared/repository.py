@@ -12,6 +12,7 @@ from goodmoneying_shared.models import (
     CandleView,
     CollectionDashboardTarget,
     CollectionRun,
+    CoverageSegment,
     CoverageStatus,
     DashboardSummary,
     Instrument,
@@ -49,7 +50,11 @@ class OperationsRepository(Protocol):
 
     def dashboard_summary(self) -> DashboardSummary: ...
 
-    def collection_dashboard_targets(self) -> list[CollectionDashboardTarget]: ...
+    def collection_dashboard_targets(
+        self, include_segments: bool = False
+    ) -> list[CollectionDashboardTarget]: ...
+
+    def coverage_segments_for(self, instrument_id: int) -> list[CoverageSegment]: ...
 
     def market_list(self) -> list[MarketListRow]: ...
 

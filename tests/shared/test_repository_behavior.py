@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from goodmoneying_shared.models import OrderbookSummary, SourceCandle, TickerSnapshot
@@ -27,7 +27,7 @@ def test_candidate_universe_defaults_to_top_50_active_targets() -> None:
     assert entries[50].selected is False
 
 
-def test_repository_dashboard_contains_collection_plan_rows_and_segments() -> None:
+def test_repository_dashboard_omits_segments_until_lazy_request() -> None:
     repository = SQLiteOperationsRepository()
     worker = UpbitCollectionWorker(repository, FixtureUpbitClient())
     worker.refresh_candidate_universe()
@@ -38,8 +38,8 @@ def test_repository_dashboard_contains_collection_plan_rows_and_segments() -> No
     assert len(summary.targets) == 50
     first = summary.targets[0]
     assert first.instrument.market_code == "KRW-BTC"
-    assert first.overall_status == "latest_collecting"
-    assert first.overall_status_label == "최신수집중"
+    assert first.overall_status == "warning"
+    assert first.overall_status_label == "주의"
     assert first.plan.is_continuous is True
     assert first.plan.range_time_zone == "KST"
     assert first.plan.display_range.endswith("~ NOW")
@@ -48,9 +48,98 @@ def test_repository_dashboard_contains_collection_plan_rows_and_segments() -> No
         "ticker_snapshot",
         "orderbook_summary",
     ]
-    assert first.coverage_segments[0].status == "collected"
-    assert first.coverage_segments[0].offset_percent == Decimal("0")
-    assert first.coverage_segments[0].width_percent > Decimal("0")
+    assert first.coverage_segments == []
+
+    lazy_segments = repository.coverage_segments_for(first.instrument.id)
+
+    assert lazy_segments[0].status in {"collected", "missing"}
+    assert lazy_segments[0].offset_percent == Decimal("0")
+    assert lazy_segments[0].width_percent > Decimal("0")
+
+
+def test_repository_dashboard_exposes_operations_observability_summaries() -> None:
+    repository = SQLiteOperationsRepository()
+    worker = UpbitCollectionWorker(repository, FixtureUpbitClient())
+    worker.refresh_candidate_universe()
+    worker.collect_incremental()
+
+    summary = repository.dashboard_summary()
+
+    assert len(summary.collection_activity) == 7 * 24
+    active_buckets = [bucket for bucket in summary.collection_activity if bucket.result_count > 0]
+    assert active_buckets
+    assert active_buckets[-1].status in {"low", "collecting", "high"}
+
+    breakdown = {item.data_type: item for item in summary.storage_breakdown}
+    assert set(breakdown) == {
+        "source_candle",
+        "ticker_snapshot",
+        "orderbook_summary",
+        "quality_result",
+    }
+    assert breakdown["source_candle"].row_count > 0
+    assert breakdown["ticker_snapshot"].bytes > 0
+    assert sum(item.bytes for item in breakdown.values()) == summary.storage_bytes_today
+
+    assert len(summary.operations_trend) == 7
+    today = summary.operations_trend[-1]
+    assert today.storage_bytes == summary.storage_bytes_today
+    assert today.warning_targets == summary.warning_targets
+    assert len(summary.missing_range_top) > 0
+    assert summary.missing_range_top[0].missing_segment_count >= 0
+    assert summary.audit_log_summary.target_change_count_24h >= 50
+    assert summary.audit_log_summary.latest_change_at is not None
+
+
+def test_repository_computes_candle_coverage_and_missing_segments_from_saved_rows() -> None:
+    repository = SQLiteOperationsRepository()
+    instrument = repository.refresh_candidate_universe(
+        [("KRW-BTC", "비트코인", "1000000000")]
+    )[0].instrument
+    repository.ensure_default_active_targets(limit=1)
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    end_at = datetime(2026, 1, 1, 0, 4, tzinfo=UTC)
+    repository._execute(
+        """
+        UPDATE collection_plans
+        SET range_start_at = ?, range_end_at = ?, is_continuous = 0
+        WHERE instrument_id = ?
+        """,
+        (start_at.isoformat(), end_at.isoformat(), instrument.id),
+    )
+    repository.record_incremental_collection(
+        tickers=[],
+        orderbooks=[],
+        candles=[
+            _source_candle(instrument.id, start_at, "100"),
+            _source_candle(instrument.id, start_at + timedelta(minutes=1), "101"),
+            _source_candle(instrument.id, start_at + timedelta(minutes=3), "103"),
+        ],
+    )
+
+    target = repository.collection_dashboard_targets()[0]
+    candle_status = next(
+        status for status in target.data_statuses if status.data_type == "source_candle"
+    )
+    candle_segments = [
+        segment
+        for segment in repository.coverage_segments_for(instrument.id)
+        if segment.data_type == "source_candle"
+    ]
+
+    assert candle_status.progress_percent == Decimal("75")
+    assert candle_status.missing_segment_count == 1
+    assert candle_status.stored_row_count == 3
+    assert target.coverage_segments == []
+    actual_segments = [
+        (segment.status, segment.segment_start_at, segment.segment_end_at)
+        for segment in candle_segments
+    ]
+    assert actual_segments == [
+        ("collected", start_at, start_at + timedelta(minutes=2)),
+        ("missing", start_at + timedelta(minutes=2), start_at + timedelta(minutes=3)),
+        ("collected", start_at + timedelta(minutes=3), end_at),
+    ]
 
 
 def test_repository_upserts_newer_market_snapshots_for_same_bucket() -> None:
@@ -114,6 +203,22 @@ def test_repository_upserts_newer_market_snapshots_for_same_bucket() -> None:
     assert latest is not None
     assert latest.trade_price == Decimal("120")
     assert latest.acc_trade_price_24h == Decimal("2000")
+
+
+def _source_candle(instrument_id: int, candle_start_at: datetime, close: str) -> SourceCandle:
+    close_decimal = Decimal(close)
+    return SourceCandle(
+        instrument_id=instrument_id,
+        candle_unit="1m",
+        candle_start_at=candle_start_at,
+        open_price=close_decimal,
+        high_price=close_decimal,
+        low_price=close_decimal,
+        close_price=close_decimal,
+        trade_volume=Decimal("1"),
+        trade_amount=close_decimal,
+        collected_at=candle_start_at,
+    )
 
 
 def test_backfill_plan_and_control_flow() -> None:

@@ -99,6 +99,7 @@ class CoverageStatus:
     status: QualityStatus
     progress_percent: Decimal
     last_successful_at: datetime
+    missing_segment_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -145,6 +146,12 @@ class CollectionDashboardTarget:
     plan: CollectionPlan
     data_statuses: list[CollectionDataStatus]
     coverage_segments: list[CoverageSegment]
+    change_rate: Decimal
+    acc_trade_price_24h_display: str
+    ticker_collected_at: datetime
+    coverage_percent: Decimal
+    storage_row_count: int
+    storage_bytes_display: str
 
 
 @dataclass(frozen=True)
@@ -159,6 +166,7 @@ class MarketListRow:
     quality_status: Literal["normal", "warning", "incident"]
     coverage_percent: Decimal
     storage_bytes: int
+    storage_row_count: int
     storage_bytes_display: str
 
 
@@ -189,6 +197,49 @@ class HealthCheck:
     status: Literal["normal", "warning", "incident"]
     status_label: str
     detail: str
+
+
+@dataclass(frozen=True)
+class CollectionActivityBucket:
+    bucket_start_at: datetime
+    run_count: int
+    result_count: int
+    status: Literal["none", "low", "collecting", "high"]
+
+
+@dataclass(frozen=True)
+class StorageBreakdownItem:
+    data_type: Literal["source_candle", "ticker_snapshot", "orderbook_summary", "quality_result"]
+    label: str
+    row_count: int
+    bytes: int
+    bytes_display: str
+    share_percent: Decimal
+
+
+@dataclass(frozen=True)
+class OperationsTrendPoint:
+    bucket_date: datetime
+    coverage_percent: Decimal
+    storage_bytes: int
+    warning_targets: int
+    incident_targets: int
+
+
+@dataclass(frozen=True)
+class MissingRangeSummary:
+    instrument: Instrument
+    missing_segment_count: int
+    coverage_percent: Decimal
+    last_successful_at: datetime
+
+
+@dataclass(frozen=True)
+class AuditLogSummary:
+    target_change_count_24h: int
+    backfill_change_count_24h: int
+    latest_change_at: datetime | None
+    latest_change_label: str
 
 
 @dataclass(frozen=True)
@@ -248,10 +299,17 @@ class DashboardSummary:
     missing_ranges_open: int
     storage_bytes_today: int
     storage_bytes_today_display: str
+    storage_rows_today: int
+    realtime_rows_last_minute: int
+    backfill_rows_last_minute: int
     recent_request_count: int
-    rate_limit_remaining_percent: Decimal
     coverage: list[CoverageStatus]
     targets: list[CollectionDashboardTarget]
     alerts: list[NotificationEvent]
     health_checks: list[HealthCheck]
+    collection_activity: list[CollectionActivityBucket]
+    storage_breakdown: list[StorageBreakdownItem]
+    operations_trend: list[OperationsTrendPoint]
+    missing_range_top: list[MissingRangeSummary]
+    audit_log_summary: AuditLogSummary
     refreshed_at: datetime

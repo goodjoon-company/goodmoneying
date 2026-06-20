@@ -208,6 +208,38 @@ def test_worker_runs_approved_backfill_job_and_records_progress() -> None:
     assert len(repository.candles(instrument.id, "1m", start_at, end_at)) == 2
 
 
+def test_worker_starts_backfill_from_first_missing_candle_after_existing_start() -> None:
+    repository = SQLiteOperationsRepository()
+    instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    end_at = datetime(2026, 1, 1, 0, 4, tzinfo=UTC)
+    repository.record_incremental_collection(
+        [],
+        [],
+        [
+            _worker_candle(instrument.id, start_at, "100"),
+            _worker_candle(instrument.id, start_at + timedelta(minutes=1), "101"),
+            _worker_candle(instrument.id, start_at + timedelta(minutes=3), "103"),
+        ],
+    )
+    client = BackfillOnlyClient(
+        [
+            _worker_candle(instrument.id, start_at + timedelta(minutes=2), "102"),
+        ]
+    )
+    worker = UpbitCollectionWorker(repository, client)
+    plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
+    repository.approve_backfill_job(plan.plan_id)
+
+    written = worker.run_backfill_once()
+
+    assert written == 1
+    assert client.requests == [
+        ("KRW-BTC", start_at + timedelta(minutes=2), start_at + timedelta(minutes=3))
+    ]
+    assert len(repository.candles(instrument.id, "1m", start_at, end_at)) == 4
+
+
 def test_worker_records_failed_backfill_target_when_client_fails() -> None:
     repository = SQLiteOperationsRepository()
     instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
@@ -286,10 +318,12 @@ class BackfillOnlyClient(FixtureUpbitClient):
     def __init__(self, candles: list[SourceCandle]) -> None:
         super().__init__(market_count=1)
         self._candles = candles
+        self.requests: list[tuple[str, datetime, datetime]] = []
 
     def fetch_minute_candles(
         self, market: str, start_at: datetime, end_at: datetime
     ) -> list[dict[str, str]]:
+        self.requests.append((market, start_at, end_at))
         return [
             {
                 "market": market,

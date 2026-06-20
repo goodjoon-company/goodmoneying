@@ -11,12 +11,14 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from goodmoneying_shared.models import (
+    AuditLogSummary,
     BackfillJob,
     BackfillJobDetail,
     BackfillJobTarget,
     BackfillPlan,
     CandidateUniverseEntry,
     CandleView,
+    CollectionActivityBucket,
     CollectionDashboardTarget,
     CollectionDataStatus,
     CollectionPlan,
@@ -27,9 +29,12 @@ from goodmoneying_shared.models import (
     HealthCheck,
     Instrument,
     MarketListRow,
+    MissingRangeSummary,
     NotificationEvent,
+    OperationsTrendPoint,
     OrderbookSummary,
     SourceCandle,
+    StorageBreakdownItem,
     TickerSnapshot,
 )
 from goodmoneying_shared.time import minute_bucket, now_utc
@@ -295,18 +300,30 @@ class PostgresOperationsRepository:
         )
 
     def dashboard_summary(self) -> DashboardSummary:
-        active_targets = self.list_active_targets()
-        coverage = [
-            status for instrument in active_targets for status in self.coverage_for(instrument.id)
-        ]
         targets = self.collection_dashboard_targets()
+        coverage = [
+            CoverageStatus(
+                instrument_id=target.instrument.id,
+                data_type=status.data_type,
+                status=status.status,
+                progress_percent=status.progress_percent,
+                last_successful_at=status.last_successful_at,
+                missing_segment_count=status.missing_segment_count,
+            )
+            for target in targets
+            for status in target.data_statuses
+        ]
         normal_targets = sum(
             1 for target in targets if target.overall_status == "latest_collecting"
         )
         warning_targets = sum(1 for target in targets if target.overall_status == "warning")
         incident_targets = sum(1 for target in targets if target.overall_status == "incident")
         delayed_targets = sum(1 for status in coverage if status.status != "normal")
-        missing_ranges_open = sum(1 for status in coverage if status.status == "incident")
+        missing_ranges_open = sum(
+            status.missing_segment_count
+            for status in coverage
+            if status.data_type == "source_candle"
+        )
         failed_runs_24h = self._failed_runs_24h()
         recent_runs = self._recent_run_count()
         failure_rate_24h = (
@@ -314,7 +331,8 @@ class PostgresOperationsRepository:
             if recent_runs > 0
             else Decimal("0")
         )
-        storage_bytes_today = self._storage_bytes_estimate()
+        storage_bytes_today = self._storage_bytes_today_estimate()
+        storage_rows_today = self._storage_rows_today()
         alerts = self.notification_events()
         if any(
             alert.severity in {"error", "critical"} and alert.status == "open" for alert in alerts
@@ -326,7 +344,7 @@ class PostgresOperationsRepository:
             summary_status = "normal"
         return DashboardSummary(
             status=summary_status,
-            active_targets=len(active_targets),
+            active_targets=len(targets),
             active_target_limit=50,
             normal_targets=normal_targets,
             warning_targets=warning_targets,
@@ -337,25 +355,48 @@ class PostgresOperationsRepository:
             missing_ranges_open=missing_ranges_open,
             storage_bytes_today=storage_bytes_today,
             storage_bytes_today_display=_format_storage_bytes(storage_bytes_today),
-            recent_request_count=max(recent_runs, len(active_targets) * 3),
-            rate_limit_remaining_percent=Decimal("64"),
+            storage_rows_today=storage_rows_today,
+            realtime_rows_last_minute=self._collection_rows_last_minute("incremental"),
+            backfill_rows_last_minute=self._collection_rows_last_minute("backfill"),
+            recent_request_count=self._recent_collection_result_count(),
             coverage=coverage,
             targets=targets,
             alerts=alerts,
             health_checks=self._health_checks(coverage, alerts),
+            collection_activity=self._collection_activity_buckets(),
+            storage_breakdown=self._storage_breakdown_today(storage_bytes_today),
+            operations_trend=self._operations_trend(
+                coverage,
+                storage_bytes_today,
+                warning_targets,
+                incident_targets,
+            ),
+            missing_range_top=self._missing_range_top(targets),
+            audit_log_summary=self._audit_log_summary(),
             refreshed_at=now_utc(),
         )
 
-    def collection_dashboard_targets(self) -> list[CollectionDashboardTarget]:
+    def collection_dashboard_targets(
+        self, include_segments: bool = False
+    ) -> list[CollectionDashboardTarget]:
         targets: list[CollectionDashboardTarget] = []
         active_targets = self.list_active_targets()
+        instrument_ids = [instrument.id for instrument in active_targets]
+        latest_tickers = self._latest_tickers_by_instrument(instrument_ids)
+        latest_orderbooks = self._latest_orderbooks_by_instrument(instrument_ids)
+        storage_bytes_by_instrument = self._instrument_storage_bytes_by_instrument(instrument_ids)
         source_candle_counts = self._table_counts_by_instrument(
             "source_candles",
-            [instrument.id for instrument in active_targets],
+            instrument_ids,
         )
         for instrument in active_targets:
+            ticker = latest_tickers.get(instrument.id)
             coverage = sorted(
-                self.coverage_for(instrument.id),
+                self._coverage_for_with_latest(
+                    instrument.id,
+                    ticker,
+                    latest_orderbooks.get(instrument.id),
+                ),
                 key=lambda item: {
                     "source_candle": 0,
                     "ticker_snapshot": 1,
@@ -366,17 +407,24 @@ class PostgresOperationsRepository:
                 self._collection_data_status(item, source_candle_counts)
                 for item in coverage
             ]
-            overall_status: Literal["latest_collecting", "warning"] = (
-                "latest_collecting"
-                if all(item.status == "normal" for item in data_statuses)
-                else "warning"
+            candle_status = next(
+                item for item in data_statuses if item.data_type == "source_candle"
             )
+            overall_status: Literal["latest_collecting", "warning", "incident"]
+            if any(item.status == "incident" for item in data_statuses):
+                overall_status = "incident"
+            elif all(item.status == "normal" for item in data_statuses):
+                overall_status = "latest_collecting"
+            else:
+                overall_status = "warning"
             targets.append(
                 CollectionDashboardTarget(
                     instrument=instrument,
                     overall_status=overall_status,
                     overall_status_label="최신수집중"
                     if overall_status == "latest_collecting"
+                    else "장애"
+                    if overall_status == "incident"
                     else "주의",
                     plan=self._collection_plan_for(instrument.id),
                     data_statuses=data_statuses,
@@ -386,18 +434,44 @@ class PostgresOperationsRepository:
                         for segment in self._coverage_segments_for(
                             instrument.id, data_status.data_type
                         )
-                    ],
+                    ]
+                    if include_segments
+                    else [],
+                    change_rate=ticker.change_rate if ticker else Decimal("0"),
+                    acc_trade_price_24h_display=(
+                        f"₩{int(ticker.acc_trade_price_24h):,}" if ticker else "₩0"
+                    ),
+                    ticker_collected_at=ticker.collected_at if ticker else now_utc(),
+                    coverage_percent=candle_status.progress_percent,
+                    storage_row_count=self._instrument_storage_row_count(instrument.id),
+                    storage_bytes_display=_format_storage_bytes(
+                        storage_bytes_by_instrument.get(instrument.id, 0)
+                    ),
                 )
             )
         return targets
 
+    def coverage_segments_for(self, instrument_id: int) -> list[CoverageSegment]:
+        return [
+            segment
+            for status in self.coverage_for(instrument_id)
+            for segment in self._coverage_segments_for(instrument_id, status.data_type)
+        ]
+
     def market_list(self) -> list[MarketListRow]:
         rows: list[MarketListRow] = []
-        for instrument in self.list_active_targets():
-            ticker = self.latest_ticker(instrument.id)
-            orderbook = self.latest_orderbook(instrument.id)
+        active_targets = self.list_active_targets()
+        instrument_ids = [instrument.id for instrument in active_targets]
+        latest_tickers = self._latest_tickers_by_instrument(instrument_ids)
+        latest_orderbooks = self._latest_orderbooks_by_instrument(instrument_ids)
+        storage_bytes_by_instrument = self._instrument_storage_bytes_by_instrument(instrument_ids)
+        for instrument in active_targets:
+            ticker = latest_tickers.get(instrument.id)
+            orderbook = latest_orderbooks.get(instrument.id)
             if ticker is None or orderbook is None:
                 continue
+            coverage = self._coverage_for_with_latest(instrument.id, ticker, orderbook)
+            storage_bytes = storage_bytes_by_instrument.get(instrument.id, 0)
             rows.append(
                 MarketListRow(
                     instrument=instrument,
@@ -407,12 +481,11 @@ class PostgresOperationsRepository:
                     change_rate=ticker.change_rate,
                     ticker_collected_at=ticker.collected_at,
                     orderbook_collected_at=orderbook.collected_at,
-                    quality_status="normal",
-                    coverage_percent=self._market_coverage_percent(instrument.id),
-                    storage_bytes=self._instrument_storage_bytes(instrument.id),
-                    storage_bytes_display=_format_storage_bytes(
-                        self._instrument_storage_bytes(instrument.id)
-                    ),
+                    quality_status=self._quality_status_from_coverage(coverage),
+                    coverage_percent=self._market_coverage_percent_from_statuses(coverage),
+                    storage_bytes=storage_bytes,
+                    storage_row_count=self._instrument_storage_row_count(instrument.id),
+                    storage_bytes_display=_format_storage_bytes(storage_bytes),
                 )
             )
         return rows
@@ -450,45 +523,66 @@ class PostgresOperationsRepository:
             ).fetchone()
         return _orderbook(row) if row else None
 
+    def _latest_tickers_by_instrument(
+        self, instrument_ids: list[int]
+    ) -> dict[int, TickerSnapshot]:
+        if not instrument_ids:
+            return {}
+        placeholders = ", ".join(["%s"] * len(instrument_ids))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT ON (instrument_id) *
+                FROM ticker_snapshots
+                WHERE instrument_id IN ({placeholders})
+                ORDER BY instrument_id, bucket_at DESC
+                """,
+                tuple(instrument_ids),
+            ).fetchall()
+        return {int(row["instrument_id"]): _ticker(row) for row in rows}
+
+    def _latest_orderbooks_by_instrument(
+        self, instrument_ids: list[int]
+    ) -> dict[int, OrderbookSummary]:
+        if not instrument_ids:
+            return {}
+        placeholders = ", ".join(["%s"] * len(instrument_ids))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT ON (instrument_id) *
+                FROM orderbook_summaries
+                WHERE instrument_id IN ({placeholders})
+                ORDER BY instrument_id, bucket_at DESC
+                """,
+                tuple(instrument_ids),
+            ).fetchall()
+        return {int(row["instrument_id"]): _orderbook(row) for row in rows}
+
     def coverage_for(self, instrument_id: int) -> list[CoverageStatus]:
         latest_ticker = self.latest_ticker(instrument_id)
         latest_orderbook = self.latest_orderbook(instrument_id)
-        checks: list[
-            tuple[
-                Literal["source_candle", "ticker_snapshot", "orderbook_summary"],
-                datetime | None,
-            ]
-        ] = [
-            ("ticker_snapshot", latest_ticker.collected_at if latest_ticker else None),
-            ("orderbook_summary", latest_orderbook.collected_at if latest_orderbook else None),
-            ("source_candle", self._latest_candle_time(instrument_id)),
+        return self._coverage_for_with_latest(instrument_id, latest_ticker, latest_orderbook)
+
+    def _coverage_for_with_latest(
+        self,
+        instrument_id: int,
+        latest_ticker: TickerSnapshot | None,
+        latest_orderbook: OrderbookSummary | None,
+    ) -> list[CoverageStatus]:
+        return [
+            self._source_candle_coverage_status(instrument_id),
+            self._freshness_coverage_status(
+                instrument_id,
+                "ticker_snapshot",
+                latest_ticker.collected_at if latest_ticker else None,
+            ),
+            self._freshness_coverage_status(
+                instrument_id,
+                "orderbook_summary",
+                latest_orderbook.collected_at if latest_orderbook else None,
+            ),
         ]
-        statuses: list[CoverageStatus] = []
-        for data_type, latest_at in checks:
-            if latest_at is None:
-                statuses.append(
-                    CoverageStatus(
-                        instrument_id=instrument_id,
-                        data_type=data_type,
-                        status="incident",
-                        progress_percent=Decimal("0"),
-                        last_successful_at=now_utc() - timedelta(days=365),
-                    )
-                )
-                continue
-            coverage_status: Literal["normal", "warning"] = (
-                "normal" if now_utc() - latest_at <= timedelta(minutes=3) else "warning"
-            )
-            statuses.append(
-                CoverageStatus(
-                    instrument_id=instrument_id,
-                    data_type=data_type,
-                    status=coverage_status,
-                    progress_percent=Decimal("100"),
-                    last_successful_at=latest_at,
-                )
-            )
-        return statuses
 
     def candles(
         self, instrument_id: int, unit: str, start_at: datetime, end_at: datetime
@@ -841,6 +935,35 @@ class PostgresOperationsRepository:
             )
         return int(row["count"])
 
+    def _recent_collection_result_count(self) -> int:
+        with self._connect() as conn:
+            row = _expect_row(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM target_collection_results
+                    WHERE created_at >= %s
+                    """,
+                    (now_utc() - timedelta(hours=24),),
+                ).fetchone()
+            )
+        return int(row["count"])
+
+    def _collection_rows_last_minute(self, run_type: str) -> int:
+        with self._connect() as conn:
+            row = _expect_row(
+                conn.execute(
+                    """
+                    SELECT COALESCE(SUM(tcr.rows_written), 0) AS count
+                    FROM target_collection_results tcr
+                    JOIN collection_runs cr ON cr.id = tcr.collection_run_id
+                    WHERE cr.run_type = %s AND tcr.created_at >= %s
+                    """,
+                    (run_type, now_utc() - timedelta(minutes=1)),
+                ).fetchone()
+            )
+        return int(row["count"])
+
     def _storage_bytes_estimate(self) -> int:
         return sum(
             self._table_count(table) * row_size
@@ -852,12 +975,291 @@ class PostgresOperationsRepository:
             )
         )
 
+    def _storage_bytes_today_estimate(self) -> int:
+        day_start = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+        return (
+            self._table_count_since("source_candles", "collected_at", day_start) * 256
+            + self._table_count_since("ticker_snapshots", "collected_at", day_start) * 160
+            + self._table_count_since("orderbook_summaries", "collected_at", day_start) * 224
+            + self._table_count_since("target_collection_results", "created_at", day_start) * 128
+        )
+
+    def _storage_rows_today(self) -> int:
+        day_start = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+        return (
+            self._table_count_since("source_candles", "collected_at", day_start)
+            + self._table_count_since("ticker_snapshots", "collected_at", day_start)
+            + self._table_count_since("orderbook_summaries", "collected_at", day_start)
+            + self._table_count_since("target_collection_results", "created_at", day_start)
+        )
+
+    def _collection_activity_buckets(self) -> list[CollectionActivityBucket]:
+        current_hour = now_utc().replace(minute=0, second=0, microsecond=0)
+        first_hour = current_hour - timedelta(hours=(7 * 24) - 1)
+        run_counts: dict[datetime, int] = {}
+        result_counts: dict[datetime, int] = {}
+        with self._connect() as conn:
+            run_rows = conn.execute(
+                "SELECT started_at FROM collection_runs WHERE started_at >= %s",
+                (first_hour,),
+            ).fetchall()
+            result_rows = conn.execute(
+                "SELECT created_at FROM target_collection_results WHERE created_at >= %s",
+                (first_hour,),
+            ).fetchall()
+        for row in run_rows:
+            bucket = row["started_at"].replace(minute=0, second=0, microsecond=0)
+            run_counts[bucket] = run_counts.get(bucket, 0) + 1
+        for row in result_rows:
+            bucket = row["created_at"].replace(minute=0, second=0, microsecond=0)
+            result_counts[bucket] = result_counts.get(bucket, 0) + 1
+        return [
+            CollectionActivityBucket(
+                bucket_start_at=bucket_start,
+                run_count=run_counts.get(bucket_start, 0),
+                result_count=result_counts.get(bucket_start, 0),
+                status=self._activity_status(
+                    run_counts.get(bucket_start, 0),
+                    result_counts.get(bucket_start, 0),
+                ),
+            )
+            for bucket_start in (
+                first_hour + timedelta(hours=offset) for offset in range(7 * 24)
+            )
+        ]
+
+    def _storage_breakdown_today(self, total_bytes: int) -> list[StorageBreakdownItem]:
+        day_start = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+        rows = [
+            (
+                "source_candle",
+                "캔들",
+                self._table_count_since("source_candles", "collected_at", day_start),
+                256,
+            ),
+            (
+                "ticker_snapshot",
+                "현재가",
+                self._table_count_since("ticker_snapshots", "collected_at", day_start),
+                160,
+            ),
+            (
+                "orderbook_summary",
+                "호가",
+                self._table_count_since("orderbook_summaries", "collected_at", day_start),
+                224,
+            ),
+            (
+                "quality_result",
+                "품질/결과",
+                self._table_count_since("target_collection_results", "created_at", day_start),
+                128,
+            ),
+        ]
+        return [
+            StorageBreakdownItem(
+                data_type=cast(
+                    Literal[
+                        "source_candle",
+                        "ticker_snapshot",
+                        "orderbook_summary",
+                        "quality_result",
+                    ],
+                    data_type,
+                ),
+                label=label,
+                row_count=row_count,
+                bytes=row_count * row_size,
+                bytes_display=_format_storage_bytes(row_count * row_size),
+                share_percent=self._storage_share_percent(row_count * row_size, total_bytes),
+            )
+            for data_type, label, row_count, row_size in rows
+        ]
+
+    def _operations_trend(
+        self,
+        coverage: list[CoverageStatus],
+        storage_bytes_today: int,
+        warning_targets: int,
+        incident_targets: int,
+    ) -> list[OperationsTrendPoint]:
+        today = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+        coverage_percent = self._average_coverage_percent(coverage)
+        points = []
+        for offset in range(6, -1, -1):
+            day = today - timedelta(days=offset)
+            next_day = day + timedelta(days=1)
+            points.append(
+                OperationsTrendPoint(
+                    bucket_date=day,
+                    coverage_percent=coverage_percent if offset == 0 else Decimal("0"),
+                    storage_bytes=(
+                        storage_bytes_today
+                        if offset == 0
+                        else self._storage_bytes_for_range(day, next_day)
+                    ),
+                    warning_targets=warning_targets if offset == 0 else 0,
+                    incident_targets=incident_targets if offset == 0 else 0,
+                )
+            )
+        return points
+
+    def _missing_range_top(
+        self, targets: list[CollectionDashboardTarget]
+    ) -> list[MissingRangeSummary]:
+        summaries = []
+        for target in targets:
+            candle_status = next(
+                status for status in target.data_statuses if status.data_type == "source_candle"
+            )
+            summaries.append(
+                MissingRangeSummary(
+                    instrument=target.instrument,
+                    missing_segment_count=candle_status.missing_segment_count,
+                    coverage_percent=candle_status.progress_percent,
+                    last_successful_at=candle_status.last_successful_at,
+                )
+            )
+        return sorted(
+            summaries,
+            key=lambda item: (item.missing_segment_count, Decimal("100") - item.coverage_percent),
+            reverse=True,
+        )[:5]
+
+    def _audit_log_summary(self) -> AuditLogSummary:
+        since = now_utc() - timedelta(hours=24)
+        with self._connect() as conn:
+            target_count_row = _expect_row(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM collection_target_changes
+                    WHERE changed_at >= %s
+                    """,
+                    (since,),
+                ).fetchone()
+            )
+            backfill_count_row = _expect_row(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM backfill_jobs
+                    WHERE created_at >= %s
+                    """,
+                    (since,),
+                ).fetchone()
+            )
+            latest_target = conn.execute(
+                """
+                SELECT changed_at, '대상 변경' AS label
+                FROM collection_target_changes
+                ORDER BY changed_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            latest_backfill = conn.execute(
+                """
+                SELECT created_at AS changed_at, '백필 승인' AS label
+                FROM backfill_jobs
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        latest_rows = [row for row in [latest_target, latest_backfill] if row is not None]
+        latest_row = max(
+            latest_rows,
+            key=lambda row: cast(datetime, row["changed_at"]),
+            default=None,
+        )
+        return AuditLogSummary(
+            target_change_count_24h=int(target_count_row["count"]),
+            backfill_change_count_24h=int(backfill_count_row["count"]),
+            latest_change_at=cast(datetime, latest_row["changed_at"]) if latest_row else None,
+            latest_change_label=str(latest_row["label"]) if latest_row else "기록 없음",
+        )
+
+    def _storage_bytes_for_range(self, start_at: datetime, end_at: datetime) -> int:
+        return (
+            self._table_count_between("source_candles", "collected_at", start_at, end_at) * 256
+            + self._table_count_between("ticker_snapshots", "collected_at", start_at, end_at)
+            * 160
+            + self._table_count_between("orderbook_summaries", "collected_at", start_at, end_at)
+            * 224
+            + self._table_count_between(
+                "target_collection_results", "created_at", start_at, end_at
+            )
+            * 128
+        )
+
+    def _table_count_between(
+        self, table: str, time_column: str, start_at: datetime, end_at: datetime
+    ) -> int:
+        with self._connect() as conn:
+            row = _expect_row(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*) AS count FROM {table}
+                    WHERE {time_column} >= %s AND {time_column} < %s
+                    """,
+                    (start_at, end_at),
+                ).fetchone()
+            )
+        return int(row["count"])
+
+    @staticmethod
+    def _activity_status(
+        run_count: int,
+        result_count: int,
+    ) -> Literal["none", "low", "collecting", "high"]:
+        if run_count == 0 and result_count == 0:
+            return "none"
+        if result_count >= 50:
+            return "high"
+        if run_count > 0:
+            return "collecting"
+        return "low"
+
+    @staticmethod
+    def _average_coverage_percent(coverage: list[CoverageStatus]) -> Decimal:
+        source = [item.progress_percent for item in coverage if item.data_type == "source_candle"]
+        if not source:
+            return Decimal("0")
+        return (sum(source) / Decimal(len(source))).quantize(Decimal("0.01"))
+
+    @staticmethod
+    def _storage_share_percent(bytes_value: int, total_bytes: int) -> Decimal:
+        if total_bytes <= 0:
+            return Decimal("0")
+        return (
+            Decimal(bytes_value) / Decimal(total_bytes) * Decimal("100")
+        ).quantize(Decimal("0.01"))
+
     def _instrument_storage_bytes(self, instrument_id: int) -> int:
         return (
             self._table_count("source_candles", instrument_id) * 256
             + self._table_count("ticker_snapshots", instrument_id) * 160
             + self._table_count("orderbook_summaries", instrument_id) * 224
         )
+
+    def _instrument_storage_row_count(self, instrument_id: int) -> int:
+        return (
+            self._table_count("source_candles", instrument_id)
+            + self._table_count("ticker_snapshots", instrument_id)
+            + self._table_count("orderbook_summaries", instrument_id)
+        )
+
+    def _instrument_storage_bytes_by_instrument(
+        self, instrument_ids: list[int]
+    ) -> dict[int, int]:
+        source_counts = self._table_counts_by_instrument("source_candles", instrument_ids)
+        ticker_counts = self._table_counts_by_instrument("ticker_snapshots", instrument_ids)
+        orderbook_counts = self._table_counts_by_instrument("orderbook_summaries", instrument_ids)
+        return {
+            instrument_id: source_counts.get(instrument_id, 0) * 256
+            + ticker_counts.get(instrument_id, 0) * 160
+            + orderbook_counts.get(instrument_id, 0) * 224
+            for instrument_id in instrument_ids
+        }
 
     def _table_count(self, table: str, instrument_id: int | None = None) -> int:
         with self._connect() as conn:
@@ -870,6 +1272,16 @@ class PostgresOperationsRepository:
                         (instrument_id,),
                     ).fetchone()
                 )
+        return int(row["count"])
+
+    def _table_count_since(self, table: str, time_column: str, since: datetime) -> int:
+        with self._connect() as conn:
+            row = _expect_row(
+                conn.execute(
+                    f"SELECT COUNT(*) AS count FROM {table} WHERE {time_column} >= %s",
+                    (since,),
+                ).fetchone()
+            )
         return int(row["count"])
 
     def _table_counts_by_instrument(self, table: str, instrument_ids: list[int]) -> dict[int, int]:
@@ -890,11 +1302,23 @@ class PostgresOperationsRepository:
 
     def _market_coverage_percent(self, instrument_id: int) -> Decimal:
         coverage = self.coverage_for(instrument_id)
+        return self._market_coverage_percent_from_statuses(coverage)
+
+    def _market_coverage_percent_from_statuses(self, coverage: list[CoverageStatus]) -> Decimal:
         if not coverage:
             return Decimal("0")
         return sum((item.progress_percent for item in coverage), Decimal("0")) / Decimal(
             len(coverage)
         )
+
+    def _quality_status_from_coverage(
+        self, coverage: list[CoverageStatus]
+    ) -> Literal["normal", "warning", "incident"]:
+        if any(item.status == "incident" for item in coverage):
+            return "incident"
+        if any(item.status != "normal" for item in coverage):
+            return "warning"
+        return "normal"
 
     def _health_checks(
         self, coverage: list[CoverageStatus], alerts: list[NotificationEvent]
@@ -1082,10 +1506,14 @@ class PostgresOperationsRepository:
             data_type=item.data_type,
             label=labels[item.data_type],
             status=item.status,
-            status_label="정상" if item.status == "normal" else "주의",
+            status_label="정상"
+            if item.status == "normal"
+            else "장애"
+            if item.status == "incident"
+            else "주의",
             last_successful_at=item.last_successful_at,
             progress_percent=item.progress_percent,
-            missing_segment_count=1 if item.data_type == "source_candle" else 0,
+            missing_segment_count=item.missing_segment_count,
             stored_row_count=stored_row_count,
         )
 
@@ -1095,37 +1523,9 @@ class PostgresOperationsRepository:
         data_type: Literal["source_candle", "ticker_snapshot", "orderbook_summary"],
     ) -> list[CoverageSegment]:
         plan = self._collection_plan_for(instrument_id)
-        segment_end = now_utc()
         if data_type == "source_candle":
-            return [
-                CoverageSegment(
-                    data_type=data_type,
-                    status="collected",
-                    offset_percent=Decimal("0"),
-                    width_percent=Decimal("64"),
-                    segment_start_at=plan.range_start_at,
-                    segment_end_at=segment_end,
-                    label="수집 완료",
-                ),
-                CoverageSegment(
-                    data_type=data_type,
-                    status="missing",
-                    offset_percent=Decimal("64"),
-                    width_percent=Decimal("8"),
-                    segment_start_at=plan.range_start_at,
-                    segment_end_at=segment_end,
-                    label="결측",
-                ),
-                CoverageSegment(
-                    data_type=data_type,
-                    status="collected",
-                    offset_percent=Decimal("72"),
-                    width_percent=Decimal("28"),
-                    segment_start_at=plan.range_start_at,
-                    segment_end_at=segment_end,
-                    label="수집 완료",
-                ),
-            ]
+            return self._source_candle_coverage_segments(instrument_id, plan)
+        segment_end = self._coverage_range_end(plan)
         return [
             CoverageSegment(
                 data_type=data_type,
@@ -1137,6 +1537,240 @@ class PostgresOperationsRepository:
                 label="수집 완료",
             )
         ]
+
+    def _freshness_coverage_status(
+        self,
+        instrument_id: int,
+        data_type: Literal["ticker_snapshot", "orderbook_summary"],
+        latest_at: datetime | None,
+    ) -> CoverageStatus:
+        if latest_at is None:
+            return CoverageStatus(
+                instrument_id=instrument_id,
+                data_type=data_type,
+                status="incident",
+                progress_percent=Decimal("0"),
+                last_successful_at=now_utc() - timedelta(days=365),
+            )
+        return CoverageStatus(
+            instrument_id=instrument_id,
+            data_type=data_type,
+            status="normal" if now_utc() - latest_at <= timedelta(minutes=3) else "warning",
+            progress_percent=Decimal("100"),
+            last_successful_at=latest_at,
+        )
+
+    def _source_candle_coverage_status(self, instrument_id: int) -> CoverageStatus:
+        plan = self._collection_plan_for(instrument_id)
+        range_end = self._coverage_range_end(plan)
+        expected_minutes = self._expected_minutes(plan.range_start_at, range_end)
+        stored_count, missing_segments, latest_at = self._source_candle_coverage_summary(
+            instrument_id, plan.range_start_at, range_end
+        )
+        progress = (
+            Decimal(stored_count) * Decimal("100") / Decimal(expected_minutes)
+        ).quantize(Decimal("0.01"))
+        if latest_at is None:
+            status: Literal["normal", "warning", "incident"] = "incident"
+            last_successful_at = now_utc() - timedelta(days=365)
+        elif missing_segments == 0 and progress == Decimal("100.00"):
+            status = "normal"
+            last_successful_at = latest_at
+        else:
+            status = "warning"
+            last_successful_at = latest_at
+        return CoverageStatus(
+            instrument_id=instrument_id,
+            data_type="source_candle",
+            status=status,
+            progress_percent=progress.normalize(),
+            last_successful_at=last_successful_at,
+            missing_segment_count=missing_segments,
+        )
+
+    def _source_candle_coverage_summary(
+        self,
+        instrument_id: int,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> tuple[int, int, datetime | None]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                WITH ordered AS (
+                  SELECT
+                    candle_start_at,
+                    lag(candle_start_at) OVER (ORDER BY candle_start_at) AS previous_start_at
+                  FROM source_candles
+                  WHERE instrument_id = %s
+                    AND candle_unit = '1m'
+                    AND candle_start_at >= %s
+                    AND candle_start_at < %s
+                )
+                SELECT
+                  count(*) AS stored_count,
+                  min(candle_start_at) AS first_start_at,
+                  max(candle_start_at) AS latest_start_at,
+                  coalesce(
+                    sum(
+                      CASE
+                        WHEN previous_start_at IS NOT NULL
+                         AND candle_start_at > previous_start_at + interval '1 minute'
+                        THEN 1
+                        ELSE 0
+                      END
+                    ),
+                    0
+                  ) AS gap_count
+                FROM ordered
+                """,
+                (instrument_id, start_at, end_at),
+            ).fetchone()
+        if row is None or row["stored_count"] == 0:
+            return 0, 1, None
+        stored_count = int(row["stored_count"])
+        first_start_at = cast(datetime, row["first_start_at"]).astimezone(UTC)
+        latest_start_at = cast(datetime, row["latest_start_at"]).astimezone(UTC)
+        missing_segments = int(row["gap_count"])
+        if first_start_at > start_at:
+            missing_segments += 1
+        if latest_start_at + timedelta(minutes=1) < end_at:
+            missing_segments += 1
+        return stored_count, missing_segments, latest_start_at
+
+    def _source_candle_coverage_segments(
+        self,
+        instrument_id: int,
+        plan: CollectionPlan,
+    ) -> list[CoverageSegment]:
+        range_start = plan.range_start_at
+        range_end = self._coverage_range_end(plan)
+        expected_minutes = self._expected_minutes(range_start, range_end)
+        stored_starts = sorted(self._source_candle_starts(instrument_id, range_start, range_end))
+        segments: list[CoverageSegment] = []
+        cursor = range_start
+        collected_start: datetime | None = None
+        collected_end: datetime | None = None
+        for bucket in stored_starts:
+            bucket_end = min(bucket + timedelta(minutes=1), range_end)
+            if collected_start is None:
+                if cursor < bucket:
+                    segments.append(
+                        self._coverage_segment(
+                            "source_candle",
+                            "missing",
+                            cursor,
+                            bucket,
+                            range_start,
+                            expected_minutes,
+                        )
+                    )
+                collected_start = bucket
+                collected_end = bucket_end
+                cursor = bucket_end
+                continue
+            if collected_end is not None and bucket == collected_end:
+                collected_end = bucket_end
+                cursor = bucket_end
+                continue
+            segments.append(
+                self._coverage_segment(
+                    "source_candle",
+                    "collected",
+                    collected_start,
+                    collected_end or bucket,
+                    range_start,
+                    expected_minutes,
+                )
+            )
+            if collected_end is not None and collected_end < bucket:
+                segments.append(
+                    self._coverage_segment(
+                        "source_candle",
+                        "missing",
+                        collected_end,
+                        bucket,
+                        range_start,
+                        expected_minutes,
+                    )
+                )
+            collected_start = bucket
+            collected_end = bucket_end
+            cursor = bucket_end
+        if collected_start is not None:
+            segments.append(
+                self._coverage_segment(
+                    "source_candle",
+                    "collected",
+                    collected_start,
+                    collected_end or range_end,
+                    range_start,
+                    expected_minutes,
+                )
+            )
+        if cursor < range_end:
+            segments.append(
+                self._coverage_segment(
+                    "source_candle",
+                    "missing",
+                    cursor,
+                    range_end,
+                    range_start,
+                    expected_minutes,
+                )
+            )
+        return segments
+
+    def _coverage_segment(
+        self,
+        data_type: Literal["source_candle", "ticker_snapshot", "orderbook_summary"],
+        status: Literal["collected", "missing"],
+        segment_start_at: datetime,
+        segment_end_at: datetime,
+        range_start_at: datetime,
+        expected_minutes: int,
+    ) -> CoverageSegment:
+        offset_minutes = int((segment_start_at - range_start_at).total_seconds() // 60)
+        width_minutes = max(1, int((segment_end_at - segment_start_at).total_seconds() // 60))
+        return CoverageSegment(
+            data_type=data_type,
+            status=status,
+            offset_percent=(Decimal(offset_minutes) * Decimal("100") / Decimal(expected_minutes))
+            .quantize(Decimal("0.01"))
+            .normalize(),
+            width_percent=(Decimal(width_minutes) * Decimal("100") / Decimal(expected_minutes))
+            .quantize(Decimal("0.01"))
+            .normalize(),
+            segment_start_at=segment_start_at,
+            segment_end_at=segment_end_at,
+            label="수집 완료" if status == "collected" else "결측",
+        )
+
+    def _source_candle_starts(
+        self, instrument_id: int, start_at: datetime, end_at: datetime
+    ) -> set[datetime]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT candle_start_at
+                FROM source_candles
+                WHERE instrument_id = %s
+                  AND candle_unit = '1m'
+                  AND candle_start_at >= %s
+                  AND candle_start_at < %s
+                ORDER BY candle_start_at
+                """,
+                (instrument_id, start_at, end_at),
+            ).fetchall()
+        return {cast(datetime, row["candle_start_at"]).astimezone(UTC) for row in rows}
+
+    def _coverage_range_end(self, plan: CollectionPlan) -> datetime:
+        if plan.range_end_at is not None:
+            return plan.range_end_at
+        return minute_bucket(now_utc())
+
+    def _expected_minutes(self, start_at: datetime, end_at: datetime) -> int:
+        return max(1, int((end_at - start_at).total_seconds() // 60))
 
     def _upsert_tickers(
         self,
@@ -1281,14 +1915,14 @@ class PostgresOperationsRepository:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT collected_at FROM source_candles
+                SELECT candle_start_at FROM source_candles
                 WHERE instrument_id = %s
                 ORDER BY candle_start_at DESC
                 LIMIT 1
                 """,
                 (instrument_id,),
             ).fetchone()
-        return cast(datetime, row["collected_at"]) if row else None
+        return cast(datetime, row["candle_start_at"]) if row else None
 
     def _failed_runs_24h(self) -> int:
         with self._connect() as conn:

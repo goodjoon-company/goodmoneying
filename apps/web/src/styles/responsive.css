@@ -1,0 +1,94 @@
+@media (max-width: 1100px) {
+  .app-layout,
+  .dashboard-page,
+  .split-page,
+  .detail-page {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    position: static;
+    min-height: auto;
+  }
+
+  .metric-band {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ops-kpi-grid,
+  .ops-content-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ops-activity-card,
+  .ops-storage-card {
+    grid-column: auto;
+  }
+
+  .workspace-header,
+  .hero-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .dashboard-table,
+  .data-table,
+  .target-table {
+    overflow-x: auto;
+  }
+
+  .dashboard-table-head,
+  .dashboard-row-button,
+  .table-header,
+  .table-row,
+  .target-table-head,
+  .target-row {
+    min-width: 920px;
+  }
+
+  .ops-coin-table-head,
+  .ops-coin-row-button {
+    min-width: 1040px;
+  }
+
+  .ops-plan-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .app-shell {
+    width: min(100vw - 16px, 100%);
+    padding: 8px 0;
+  }
+
+  .metric-band,
+  .ops-mini-card-grid,
+  .mini-metrics,
+  .detail-stats,
+  .orderbook-grid,
+  .data-status-grid,
+  .detail-grid,
+  .plan-editor,
+  .ops-plan-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-page,
+  .hero-row,
+  .workspace-header {
+    padding-inline: 16px;
+  }
+
+  .header-actions,
+  .target-toolbar {
+    width: 100%;
+  }
+
+  .header-actions button,
+  .target-toolbar button,
+  .target-toolbar label,
+  .target-toolbar select {
+    width: 100%;
+  }
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 from time import perf_counter
 
 import pytest
@@ -238,7 +239,7 @@ def test_dashboard_panel_pagination_and_validation() -> None:
 
 
 def test_dashboard_refresh_config_override_and_fallback(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config_path = tmp_path / "operations-api.yaml"
     config_path.write_text(
@@ -265,7 +266,7 @@ def test_dashboard_refresh_config_override_and_fallback(
 
 
 def test_dashboard_refresh_config_rejects_invalid_values(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config_path = tmp_path / "operations-api.yaml"
     config_path.write_text("dashboardRefreshSeconds:\n  overview: 0\n")

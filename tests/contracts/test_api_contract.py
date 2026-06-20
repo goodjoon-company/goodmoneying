@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import yaml
 from fastapi.routing import APIRoute
@@ -251,11 +252,13 @@ def test_openapi_contract_exposes_dashboard_panel_endpoints() -> None:
     )
 
 
-def _resolve_parameter(contract: dict, parameter: dict) -> dict:
+def _resolve_parameter(
+    contract: dict[str, Any], parameter: dict[str, Any]
+) -> dict[str, Any]:
     if "$ref" not in parameter:
         return parameter
     name = parameter["$ref"].rsplit("/", maxsplit=1)[-1]
-    return contract["components"]["parameters"][name]
+    return cast(dict[str, Any], contract["components"]["parameters"][name])
 
 
 def test_fastapi_implements_contract_paths() -> None:

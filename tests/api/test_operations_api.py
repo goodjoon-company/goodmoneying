@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from time import perf_counter
 
 import pytest
 from fastapi.testclient import TestClient
@@ -130,6 +131,173 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
     assert detail.json()["orderbookFreshnessLabel"].endswith("전")
     assert detail.json()["qualityHistory"][0]["status"] in {"normal", "warning", "incident"}
     assert detail.json()["qualityHistory"][0]["title"]
+
+
+def test_dashboard_panel_endpoints_return_summary_slices() -> None:
+    client = seeded_client()
+    summary = client.get("/v1/dashboard/summary").json()
+
+    overview = client.get("/v1/dashboard/overview")
+    targets = client.get("/v1/dashboard/targets")
+    coverage = client.get("/v1/dashboard/coverage")
+    collection_activity = client.get("/v1/dashboard/collection-activity")
+    realtime_heatmap = client.get("/v1/dashboard/realtime-heatmap")
+    storage_breakdown = client.get("/v1/dashboard/storage-breakdown")
+    operations_trend = client.get("/v1/dashboard/operations-trend")
+    missing_ranges = client.get("/v1/dashboard/missing-ranges")
+    audit_log_summary = client.get("/v1/dashboard/audit-log-summary")
+
+    assert overview.status_code == 200
+    assert overview.json()["status"] == summary["status"]
+    assert overview.json()["totals"] == summary["totals"]
+    assert overview.json()["alerts"] == summary["alerts"]
+    assert overview.json()["healthChecks"] == summary["healthChecks"]
+    assert overview.json()["metricPrinciples"] == summary["metricPrinciples"]
+    assert overview.json()["recommendedRefreshSeconds"] == 10
+
+    assert targets.status_code == 200
+    assert targets.json()["items"] == summary["targets"]
+    assert targets.json()["total"] == 50
+    assert targets.json()["limit"] == 50
+    assert targets.json()["offset"] == 0
+    assert targets.json()["recommendedRefreshSeconds"] == 15
+
+    assert coverage.status_code == 200
+    assert coverage.json()["items"] == summary["coverage"][:50]
+    assert coverage.json()["total"] == 150
+    assert coverage.json()["recommendedRefreshSeconds"] == 30
+
+    assert collection_activity.status_code == 200
+    assert collection_activity.json()["items"] == summary["collectionActivity"]
+    assert collection_activity.json()["recommendedRefreshSeconds"] == 15
+
+    assert realtime_heatmap.status_code == 200
+    assert realtime_heatmap.json()["items"] == summary["realtimeCollectionHeatmap"]
+    assert realtime_heatmap.json()["total"] == 50
+    assert realtime_heatmap.json()["recommendedRefreshSeconds"] == 10
+
+    assert storage_breakdown.status_code == 200
+    assert storage_breakdown.json()["items"] == summary["storageBreakdown"]
+    assert storage_breakdown.json()["recommendedRefreshSeconds"] == 60
+
+    assert operations_trend.status_code == 200
+    assert operations_trend.json()["items"] == summary["operationsTrend"]
+    assert operations_trend.json()["recommendedRefreshSeconds"] == 60
+
+    assert missing_ranges.status_code == 200
+    assert missing_ranges.json()["items"] == summary["missingRangeTop"]
+    assert missing_ranges.json()["total"] == 5
+    assert missing_ranges.json()["recommendedRefreshSeconds"] == 60
+
+    assert audit_log_summary.status_code == 200
+    assert audit_log_summary.json()["targetChangeCount24h"] == summary["auditLogSummary"][
+        "targetChangeCount24h"
+    ]
+    assert audit_log_summary.json()["backfillChangeCount24h"] == summary["auditLogSummary"][
+        "backfillChangeCount24h"
+    ]
+    assert audit_log_summary.json()["latestChangeLabel"] == summary["auditLogSummary"][
+        "latestChangeLabel"
+    ]
+    assert audit_log_summary.json()["recommendedRefreshSeconds"] == 60
+
+
+def test_dashboard_panel_pagination_and_validation() -> None:
+    client = seeded_client()
+
+    targets = client.get("/v1/dashboard/targets", params={"limit": 10, "offset": 5})
+    coverage = client.get("/v1/dashboard/coverage", params={"limit": 20, "offset": 10})
+    heatmap = client.get("/v1/dashboard/realtime-heatmap", params={"limit": 7, "offset": 3})
+    missing = client.get("/v1/dashboard/missing-ranges", params={"limit": 2, "offset": 1})
+
+    assert targets.status_code == 200
+    assert len(targets.json()["items"]) == 10
+    assert targets.json()["total"] == 50
+    assert targets.json()["limit"] == 10
+    assert targets.json()["offset"] == 5
+    assert coverage.status_code == 200
+    assert len(coverage.json()["items"]) == 20
+    assert coverage.json()["total"] == 150
+    assert heatmap.status_code == 200
+    assert len(heatmap.json()["items"]) == 7
+    assert heatmap.json()["total"] == 50
+    assert missing.status_code == 200
+    assert len(missing.json()["items"]) == 2
+    assert missing.json()["total"] == 5
+
+    invalid_queries = [
+        ("/v1/dashboard/targets", {"limit": 101}),
+        ("/v1/dashboard/coverage", {"limit": 0}),
+        ("/v1/dashboard/realtime-heatmap", {"offset": -1}),
+        ("/v1/dashboard/missing-ranges", {"limit": -1}),
+    ]
+    for path, params in invalid_queries:
+        response = client.get(path, params=params)
+        assert response.status_code == 422
+        assert response.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_dashboard_refresh_config_override_and_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    config_path = tmp_path / "operations-api.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "dashboardRefreshSeconds:",
+                "  overview: 3",
+                "  coverage: 31",
+                "  auditLogSummary: 61",
+            ]
+        )
+    )
+    monkeypatch.setenv("GOODMONEYING_DASHBOARD_REFRESH_CONFIG", str(config_path))
+
+    client = seeded_client()
+
+    assert client.get("/v1/dashboard/overview").json()["recommendedRefreshSeconds"] == 3
+    assert client.get("/v1/dashboard/coverage").json()["recommendedRefreshSeconds"] == 31
+    assert (
+        client.get("/v1/dashboard/audit-log-summary").json()["recommendedRefreshSeconds"]
+        == 61
+    )
+    assert client.get("/v1/dashboard/targets").json()["recommendedRefreshSeconds"] == 15
+
+
+def test_dashboard_refresh_config_rejects_invalid_values(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    config_path = tmp_path / "operations-api.yaml"
+    config_path.write_text("dashboardRefreshSeconds:\n  overview: 0\n")
+    monkeypatch.setenv("GOODMONEYING_DASHBOARD_REFRESH_CONFIG", str(config_path))
+
+    with pytest.raises(ValueError, match="overview"):
+        create_app(SQLiteOperationsRepository())
+
+
+def test_dashboard_panel_endpoints_respond_within_three_seconds() -> None:
+    client = seeded_client()
+    paths = [
+        "/v1/dashboard/overview",
+        "/v1/dashboard/targets",
+        "/v1/dashboard/coverage",
+        "/v1/dashboard/collection-activity",
+        "/v1/dashboard/realtime-heatmap",
+        "/v1/dashboard/storage-breakdown",
+        "/v1/dashboard/operations-trend",
+        "/v1/dashboard/missing-ranges",
+        "/v1/dashboard/audit-log-summary",
+    ]
+
+    for path in paths:
+        warmup = client.get(path)
+        assert warmup.status_code == 200
+        for _ in range(3):
+            start = perf_counter()
+            response = client.get(path)
+            elapsed = perf_counter() - start
+            assert response.status_code == 200
+            assert elapsed < 3
 
 
 def test_dashboard_coverage_segments_are_loaded_lazily() -> None:

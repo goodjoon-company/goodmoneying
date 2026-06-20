@@ -1,0 +1,10 @@
+dashboardRefreshSeconds:
+  overview: 10
+  targets: 15
+  coverage: 30
+  collectionActivity: 15
+  realtimeHeatmap: 10
+  storageBreakdown: 60
+  operationsTrend: 60
+  missingRanges: 60
+  auditLogSummary: 60

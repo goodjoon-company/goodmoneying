@@ -26,8 +26,6 @@ from goodmoneying_shared.models import (
     CoverageSegment,
     CoverageStatus,
     DashboardSummary,
-    RealtimeCollectionHeatmapBucket,
-    RealtimeCollectionHeatmapRow,
     HealthCheck,
     Instrument,
     MarketListRow,
@@ -35,6 +33,8 @@ from goodmoneying_shared.models import (
     NotificationEvent,
     OperationsTrendPoint,
     OrderbookSummary,
+    RealtimeCollectionHeatmapBucket,
+    RealtimeCollectionHeatmapRow,
     SourceCandle,
     StorageBreakdownItem,
     TickerSnapshot,
@@ -303,18 +303,7 @@ class PostgresOperationsRepository:
 
     def dashboard_summary(self) -> DashboardSummary:
         targets = self.collection_dashboard_targets()
-        coverage = [
-            CoverageStatus(
-                instrument_id=target.instrument.id,
-                data_type=status.data_type,
-                status=status.status,
-                progress_percent=status.progress_percent,
-                last_successful_at=status.last_successful_at,
-                missing_segment_count=status.missing_segment_count,
-            )
-            for target in targets
-            for status in target.data_statuses
-        ]
+        coverage = self._dashboard_coverage_from_targets(targets)
         normal_targets = sum(
             1 for target in targets if target.overall_status == "latest_collecting"
         )
@@ -365,19 +354,62 @@ class PostgresOperationsRepository:
             targets=targets,
             alerts=alerts,
             health_checks=self._health_checks(coverage, alerts),
-            collection_activity=self._collection_activity_buckets(),
-            realtime_collection_heatmap=self._realtime_collection_heatmap(),
+            collection_activity=self.dashboard_collection_activity(),
+            realtime_collection_heatmap=self.dashboard_realtime_heatmap(),
             storage_breakdown=self._storage_breakdown_today(storage_bytes_today),
             operations_trend=self._operations_trend(
-                coverage,
-                storage_bytes_today,
-                warning_targets,
-                incident_targets,
+                coverage, storage_bytes_today, warning_targets, incident_targets
             ),
             missing_range_top=self._missing_range_top(targets),
-            audit_log_summary=self._audit_log_summary(),
+            audit_log_summary=self.dashboard_audit_log_summary(),
             refreshed_at=now_utc(),
         )
+
+    def dashboard_coverage(self) -> list[CoverageStatus]:
+        return self._dashboard_coverage_from_targets(self.collection_dashboard_targets())
+
+    def dashboard_collection_activity(self) -> list[CollectionActivityBucket]:
+        return self._collection_activity_buckets()
+
+    def dashboard_realtime_heatmap(self) -> list[RealtimeCollectionHeatmapRow]:
+        return self._realtime_collection_heatmap()
+
+    def dashboard_storage_breakdown(self) -> list[StorageBreakdownItem]:
+        return self._storage_breakdown_today(self._storage_bytes_today_estimate())
+
+    def dashboard_operations_trend(self) -> list[OperationsTrendPoint]:
+        targets = self.collection_dashboard_targets()
+        coverage = self._dashboard_coverage_from_targets(targets)
+        warning_targets = sum(1 for target in targets if target.overall_status == "warning")
+        incident_targets = sum(1 for target in targets if target.overall_status == "incident")
+        return self._operations_trend(
+            coverage,
+            self._storage_bytes_today_estimate(),
+            warning_targets,
+            incident_targets,
+        )
+
+    def dashboard_missing_ranges(self) -> list[MissingRangeSummary]:
+        return self._missing_range_top(self.collection_dashboard_targets())
+
+    def dashboard_audit_log_summary(self) -> AuditLogSummary:
+        return self._audit_log_summary()
+
+    def _dashboard_coverage_from_targets(
+        self, targets: list[CollectionDashboardTarget]
+    ) -> list[CoverageStatus]:
+        return [
+            CoverageStatus(
+                instrument_id=target.instrument.id,
+                data_type=status.data_type,
+                status=status.status,
+                progress_percent=status.progress_percent,
+                last_successful_at=status.last_successful_at,
+                missing_segment_count=status.missing_segment_count,
+            )
+            for target in targets
+            for status in target.data_statuses
+        ]
 
     def collection_dashboard_targets(
         self, include_segments: bool = False
@@ -1000,7 +1032,9 @@ class PostgresOperationsRepository:
         active_targets = self.list_active_targets()[:50]
         if not active_targets:
             return []
-        expected_rows_by_type = {
+        expected_rows_by_type: dict[
+            Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int
+        ] = {
             "source_candle": 60,
             "ticker_snapshot": 60,
             "orderbook_summary": 60,
@@ -1020,7 +1054,9 @@ class PostgresOperationsRepository:
                 f"""
                 SELECT instrument_id, collected_at
                 FROM source_candles
-                WHERE candle_unit = '1m' AND collected_at >= %s AND instrument_id IN ({placeholders})
+                WHERE candle_unit = '1m'
+                  AND collected_at >= %s
+                  AND instrument_id IN ({placeholders})
                 """,
                 (first_hour, *target_ids),
             ).fetchall():
@@ -1061,7 +1097,9 @@ class PostgresOperationsRepository:
             hourly_buckets: list[RealtimeCollectionHeatmapBucket] = []
             for offset in range(24):
                 bucket_start = first_hour + timedelta(hours=offset)
-                actual_rows_by_type = {
+                actual_rows_by_type: dict[
+                    Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int
+                ] = {
                     "source_candle": source_counts.get((target.id, bucket_start), 0),
                     "ticker_snapshot": ticker_counts.get((target.id, bucket_start), 0),
                     "orderbook_summary": orderbook_counts.get((target.id, bucket_start), 0),

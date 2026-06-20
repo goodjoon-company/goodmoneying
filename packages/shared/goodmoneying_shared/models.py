@@ -212,8 +212,12 @@ class RealtimeCollectionHeatmapBucket:
     bucket_start_at: datetime
     actual_rows_all: int
     expected_rows_all: int
-    expected_rows_by_type: dict[Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int]
-    actual_rows_by_type: dict[Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int]
+    expected_rows_by_type: dict[
+        Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int
+    ]
+    actual_rows_by_type: dict[
+        Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int
+    ]
     actual_ratio_percent: Decimal
     status: Literal["none", "low", "collecting", "high"]
 

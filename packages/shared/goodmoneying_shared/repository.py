@@ -4,12 +4,14 @@ from datetime import datetime
 from typing import Protocol
 
 from goodmoneying_shared.models import (
+    AuditLogSummary,
     BackfillJob,
     BackfillJobDetail,
     BackfillJobTarget,
     BackfillPlan,
     CandidateUniverseEntry,
     CandleView,
+    CollectionActivityBucket,
     CollectionDashboardTarget,
     CollectionRun,
     CoverageSegment,
@@ -17,9 +19,13 @@ from goodmoneying_shared.models import (
     DashboardSummary,
     Instrument,
     MarketListRow,
+    MissingRangeSummary,
     NotificationEvent,
+    OperationsTrendPoint,
     OrderbookSummary,
+    RealtimeCollectionHeatmapRow,
     SourceCandle,
+    StorageBreakdownItem,
     TickerSnapshot,
 )
 
@@ -49,6 +55,20 @@ class OperationsRepository(Protocol):
     ) -> CollectionRun: ...
 
     def dashboard_summary(self) -> DashboardSummary: ...
+
+    def dashboard_coverage(self) -> list[CoverageStatus]: ...
+
+    def dashboard_collection_activity(self) -> list[CollectionActivityBucket]: ...
+
+    def dashboard_realtime_heatmap(self) -> list[RealtimeCollectionHeatmapRow]: ...
+
+    def dashboard_storage_breakdown(self) -> list[StorageBreakdownItem]: ...
+
+    def dashboard_operations_trend(self) -> list[OperationsTrendPoint]: ...
+
+    def dashboard_missing_ranges(self) -> list[MissingRangeSummary]: ...
+
+    def dashboard_audit_log_summary(self) -> AuditLogSummary: ...
 
     def collection_dashboard_targets(
         self, include_segments: bool = False

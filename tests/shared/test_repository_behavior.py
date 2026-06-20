@@ -97,6 +97,24 @@ def test_repository_dashboard_exposes_operations_observability_summaries() -> No
     assert summary.audit_log_summary.latest_change_at is not None
 
 
+def test_repository_dashboard_panel_methods_match_summary_source_data() -> None:
+    repository = SQLiteOperationsRepository()
+    worker = UpbitCollectionWorker(repository, FixtureUpbitClient())
+    worker.refresh_candidate_universe()
+    worker.collect_incremental()
+
+    summary = repository.dashboard_summary()
+
+    assert repository.collection_dashboard_targets() == summary.targets
+    assert repository.dashboard_coverage() == summary.coverage
+    assert repository.dashboard_collection_activity() == summary.collection_activity
+    assert repository.dashboard_realtime_heatmap() == summary.realtime_collection_heatmap
+    assert repository.dashboard_storage_breakdown() == summary.storage_breakdown
+    assert repository.dashboard_operations_trend() == summary.operations_trend
+    assert repository.dashboard_missing_ranges() == summary.missing_range_top
+    assert repository.dashboard_audit_log_summary() == summary.audit_log_summary
+
+
 def test_repository_computes_candle_coverage_and_missing_segments_from_saved_rows() -> None:
     repository = SQLiteOperationsRepository()
     instrument = repository.refresh_candidate_universe(

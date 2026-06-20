@@ -17,6 +17,15 @@ def test_openapi_contract_contains_m1_paths() -> None:
     assert set(contract["paths"]) >= {
         "/health",
         "/v1/dashboard/summary",
+        "/v1/dashboard/overview",
+        "/v1/dashboard/targets",
+        "/v1/dashboard/coverage",
+        "/v1/dashboard/collection-activity",
+        "/v1/dashboard/realtime-heatmap",
+        "/v1/dashboard/storage-breakdown",
+        "/v1/dashboard/operations-trend",
+        "/v1/dashboard/missing-ranges",
+        "/v1/dashboard/audit-log-summary",
         "/v1/candidate-universe",
         "/v1/collection-targets",
         "/v1/collection-targets/{instrumentId}/coverage-segments",
@@ -52,6 +61,15 @@ def test_openapi_contract_groups_operations_with_described_tags() -> None:
     expected_operation_tags = {
         ("get", "/health"): ["상태(Health)"],
         ("get", "/v1/dashboard/summary"): ["대시보드(Dashboard)"],
+        ("get", "/v1/dashboard/overview"): ["대시보드(Dashboard)"],
+        ("get", "/v1/dashboard/targets"): ["대시보드(Dashboard)"],
+        ("get", "/v1/dashboard/coverage"): ["대시보드(Dashboard)"],
+        ("get", "/v1/dashboard/collection-activity"): ["대시보드(Dashboard)"],
+        ("get", "/v1/dashboard/realtime-heatmap"): ["대시보드(Dashboard)"],
+        ("get", "/v1/dashboard/storage-breakdown"): ["대시보드(Dashboard)"],
+        ("get", "/v1/dashboard/operations-trend"): ["대시보드(Dashboard)"],
+        ("get", "/v1/dashboard/missing-ranges"): ["대시보드(Dashboard)"],
+        ("get", "/v1/dashboard/audit-log-summary"): ["대시보드(Dashboard)"],
         ("get", "/v1/candidate-universe"): ["수집(Collection)"],
         ("put", "/v1/collection-targets"): ["수집(Collection)"],
         ("get", "/v1/collection-targets/{instrumentId}/coverage-segments"): ["수집(Collection)"],
@@ -168,6 +186,8 @@ def test_openapi_contract_exposes_real_metric_principles_and_excludes_synthetic_
     assert metric_principle["properties"]["displayStatus"]["enum"] == ["displayed", "excluded"]
 
     totals = dashboard["properties"]["totals"]
+    if "$ref" in totals:
+        totals = schemas[totals["$ref"].rsplit("/", maxsplit=1)[-1]]
     prohibited_fields = {"rateLimitRemainingPercent", "duplicateRows24h"}
     assert prohibited_fields.isdisjoint(totals["required"])
     assert prohibited_fields.isdisjoint(totals["properties"])
@@ -178,6 +198,64 @@ def test_openapi_contract_exposes_real_metric_principles_and_excludes_synthetic_
     ]:
         assert field in totals["required"]
         assert field in totals["properties"]
+
+
+def test_openapi_contract_exposes_dashboard_panel_endpoints() -> None:
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+    schemas = contract["components"]["schemas"]
+
+    expected_response_schemas = {
+        "/v1/dashboard/overview": "DashboardOverviewResponse",
+        "/v1/dashboard/targets": "DashboardTargetsResponse",
+        "/v1/dashboard/coverage": "DashboardCoverageResponse",
+        "/v1/dashboard/collection-activity": "DashboardCollectionActivityResponse",
+        "/v1/dashboard/realtime-heatmap": "DashboardRealtimeHeatmapResponse",
+        "/v1/dashboard/storage-breakdown": "DashboardStorageBreakdownResponse",
+        "/v1/dashboard/operations-trend": "DashboardOperationsTrendResponse",
+        "/v1/dashboard/missing-ranges": "DashboardMissingRangesResponse",
+        "/v1/dashboard/audit-log-summary": "DashboardAuditLogSummaryResponse",
+    }
+    for path, schema_name in expected_response_schemas.items():
+        operation = contract["paths"][path]["get"]
+        assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+            "$ref": f"#/components/schemas/{schema_name}"
+        }
+        assert schema_name in schemas
+        assert "recommendedRefreshSeconds" in schemas[schema_name]["required"]
+        assert "refreshedAt" in schemas[schema_name]["required"]
+
+    for path in [
+        "/v1/dashboard/targets",
+        "/v1/dashboard/coverage",
+        "/v1/dashboard/realtime-heatmap",
+        "/v1/dashboard/missing-ranges",
+    ]:
+        parameters = {
+            _resolve_parameter(contract, parameter)["name"]: _resolve_parameter(contract, parameter)
+            for parameter in contract["paths"][path]["get"]["parameters"]
+        }
+        assert parameters["limit"]["schema"]["default"] == 50
+        assert parameters["limit"]["schema"]["minimum"] == 1
+        assert parameters["limit"]["schema"]["maximum"] == 100
+        assert parameters["offset"]["schema"]["default"] == 0
+        assert parameters["offset"]["schema"]["minimum"] == 0
+
+    assert schemas["DashboardOverviewResponse"]["properties"]["totals"]["$ref"] == (
+        "#/components/schemas/DashboardTotals"
+    )
+    assert schemas["DashboardTargetsResponse"]["properties"]["items"]["items"]["$ref"] == (
+        "#/components/schemas/CollectionDashboardTarget"
+    )
+    assert schemas["DashboardCoverageResponse"]["properties"]["items"]["items"]["$ref"] == (
+        "#/components/schemas/CoverageStatus"
+    )
+
+
+def _resolve_parameter(contract: dict, parameter: dict) -> dict:
+    if "$ref" not in parameter:
+        return parameter
+    name = parameter["$ref"].rsplit("/", maxsplit=1)[-1]
+    return contract["components"]["parameters"][name]
 
 
 def test_fastapi_implements_contract_paths() -> None:

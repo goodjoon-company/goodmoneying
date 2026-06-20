@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 
+from goodmoneying_api.dashboard_refresh import DEFAULT_DASHBOARD_REFRESH_SECONDS
 from goodmoneying_api.schemas import (
     AuditLogSummaryResponse,
     BackfillJobResponse,
@@ -22,7 +24,16 @@ from goodmoneying_api.schemas import (
     CollectionTargetsResponse,
     CoverageSegmentResponse,
     CoverageStatusResponse,
+    DashboardAuditLogSummaryResponse,
+    DashboardCollectionActivityResponse,
+    DashboardCoverageResponse,
+    DashboardMissingRangesResponse,
+    DashboardOperationsTrendResponse,
+    DashboardOverviewResponse,
+    DashboardRealtimeHeatmapResponse,
+    DashboardStorageBreakdownResponse,
     DashboardSummaryResponse,
+    DashboardTargetsResponse,
     DashboardTotalsResponse,
     HealthCheckResponse,
     InstrumentDetailResponse,
@@ -37,9 +48,9 @@ from goodmoneying_api.schemas import (
     OrderbookSummariesResponse,
     OrderbookSummaryResponse,
     QualityHistoryEventResponse,
-    StorageBreakdownItemResponse,
     RealtimeCollectionHeatmapCellResponse,
     RealtimeCollectionHeatmapRowResponse,
+    StorageBreakdownItemResponse,
     TickerSnapshotResponse,
     TickerSnapshotsResponse,
 )
@@ -52,8 +63,12 @@ from goodmoneying_shared.models import (
     CoverageStatus,
     DashboardSummary,
     Instrument,
+    MissingRangeSummary,
     NotificationEvent,
+    OperationsTrendPoint,
     OrderbookSummary,
+    RealtimeCollectionHeatmapRow,
+    StorageBreakdownItem,
     TickerSnapshot,
     decimal_string,
 )
@@ -84,11 +99,135 @@ METRIC_PRINCIPLES = [
 
 
 class OperationsService:
-    def __init__(self, repository: OperationsRepository) -> None:
+    def __init__(
+        self,
+        repository: OperationsRepository,
+        dashboard_refresh_seconds: Mapping[str, int] | None = None,
+    ) -> None:
         self._repository = repository
+        self._dashboard_refresh_seconds = DEFAULT_DASHBOARD_REFRESH_SECONDS.copy()
+        if dashboard_refresh_seconds is not None:
+            self._dashboard_refresh_seconds.update(dashboard_refresh_seconds)
 
     def dashboard_summary(self) -> DashboardSummaryResponse:
         return dashboard_to_response(self._repository.dashboard_summary())
+
+    def dashboard_overview(self) -> DashboardOverviewResponse:
+        summary = self.dashboard_summary()
+        return DashboardOverviewResponse(
+            status=summary.status,
+            refreshedAt=summary.refreshedAt,
+            recommendedRefreshSeconds=self._refresh_seconds("overview"),
+            totals=summary.totals,
+            alerts=summary.alerts,
+            healthChecks=summary.healthChecks,
+            metricPrinciples=summary.metricPrinciples,
+        )
+
+    def dashboard_targets(self, limit: int, offset: int) -> DashboardTargetsResponse:
+        targets = [
+            dashboard_target_to_response(target)
+            for target in self._repository.collection_dashboard_targets()
+        ]
+        return DashboardTargetsResponse(
+            items=targets[offset : offset + limit],
+            total=len(targets),
+            limit=limit,
+            offset=offset,
+            recommendedRefreshSeconds=self._refresh_seconds("targets"),
+            refreshedAt=now_utc(),
+        )
+
+    def dashboard_coverage(self, limit: int, offset: int) -> DashboardCoverageResponse:
+        coverage = [coverage_to_response(item) for item in self._repository.dashboard_coverage()]
+        return DashboardCoverageResponse(
+            items=coverage[offset : offset + limit],
+            total=len(coverage),
+            limit=limit,
+            offset=offset,
+            recommendedRefreshSeconds=self._refresh_seconds("coverage"),
+            refreshedAt=now_utc(),
+        )
+
+    def dashboard_collection_activity(self) -> DashboardCollectionActivityResponse:
+        return DashboardCollectionActivityResponse(
+            items=[
+                CollectionActivityBucketResponse(
+                    bucketStartAt=bucket.bucket_start_at,
+                    runCount=bucket.run_count,
+                    resultCount=bucket.result_count,
+                    status=bucket.status,
+                )
+                for bucket in self._repository.dashboard_collection_activity()
+            ],
+            recommendedRefreshSeconds=self._refresh_seconds("collectionActivity"),
+            refreshedAt=now_utc(),
+        )
+
+    def dashboard_realtime_heatmap(
+        self, limit: int, offset: int
+    ) -> DashboardRealtimeHeatmapResponse:
+        heatmap = [
+            realtime_heatmap_row_to_response(row)
+            for row in self._repository.dashboard_realtime_heatmap()
+        ]
+        return DashboardRealtimeHeatmapResponse(
+            items=heatmap[offset : offset + limit],
+            total=len(heatmap),
+            limit=limit,
+            offset=offset,
+            recommendedRefreshSeconds=self._refresh_seconds("realtimeHeatmap"),
+            refreshedAt=now_utc(),
+        )
+
+    def dashboard_storage_breakdown(self) -> DashboardStorageBreakdownResponse:
+        return DashboardStorageBreakdownResponse(
+            items=[
+                storage_breakdown_to_response(item)
+                for item in self._repository.dashboard_storage_breakdown()
+            ],
+            recommendedRefreshSeconds=self._refresh_seconds("storageBreakdown"),
+            refreshedAt=now_utc(),
+        )
+
+    def dashboard_operations_trend(self) -> DashboardOperationsTrendResponse:
+        return DashboardOperationsTrendResponse(
+            items=[
+                operations_trend_to_response(item)
+                for item in self._repository.dashboard_operations_trend()
+            ],
+            recommendedRefreshSeconds=self._refresh_seconds("operationsTrend"),
+            refreshedAt=now_utc(),
+        )
+
+    def dashboard_missing_ranges(
+        self, limit: int, offset: int
+    ) -> DashboardMissingRangesResponse:
+        missing_ranges = [
+            missing_range_to_response(item) for item in self._repository.dashboard_missing_ranges()
+        ]
+        return DashboardMissingRangesResponse(
+            items=missing_ranges[offset : offset + limit],
+            total=len(missing_ranges),
+            limit=limit,
+            offset=offset,
+            recommendedRefreshSeconds=self._refresh_seconds("missingRanges"),
+            refreshedAt=now_utc(),
+        )
+
+    def dashboard_audit_log_summary(self) -> DashboardAuditLogSummaryResponse:
+        audit_log_summary = self._repository.dashboard_audit_log_summary()
+        return DashboardAuditLogSummaryResponse(
+            targetChangeCount24h=audit_log_summary.target_change_count_24h,
+            backfillChangeCount24h=audit_log_summary.backfill_change_count_24h,
+            latestChangeAt=audit_log_summary.latest_change_at,
+            latestChangeLabel=audit_log_summary.latest_change_label,
+            recommendedRefreshSeconds=self._refresh_seconds("auditLogSummary"),
+            refreshedAt=now_utc(),
+        )
+
+    def _refresh_seconds(self, key: str) -> int:
+        return self._dashboard_refresh_seconds[key]
 
     def candidate_universe(self) -> CandidateUniverseResponse:
         ranked_at, entries = self._repository.list_candidate_universe()
@@ -413,60 +552,71 @@ def dashboard_to_response(item: DashboardSummary) -> DashboardSummaryResponse:
             for bucket in item.collection_activity
         ],
         realtimeCollectionHeatmap=[
-            RealtimeCollectionHeatmapRowResponse(
-                instrument=instrument_to_response(heatmap_row.instrument),
-                instrumentDisplayName=heatmap_row.instrument_display_name,
-                hourlyBuckets=[
-                    RealtimeCollectionHeatmapCellResponse(
-                        bucketStartAt=bucket.bucket_start_at,
-                        expectedRowsAll=bucket.expected_rows_all,
-                        actualRowsAll=bucket.actual_rows_all,
-                        expectedRowsByType=bucket.expected_rows_by_type,
-                        actualRowsByType=bucket.actual_rows_by_type,
-                        actualRatioPercent=decimal_string(bucket.actual_ratio_percent) or "0",
-                        status=bucket.status,
-                    )
-                    for bucket in heatmap_row.hourly_buckets
-                ],
-            )
+            realtime_heatmap_row_to_response(heatmap_row)
             for heatmap_row in item.realtime_collection_heatmap
         ],
         storageBreakdown=[
-            StorageBreakdownItemResponse(
-                dataType=breakdown.data_type,
-                label=breakdown.label,
-                rowCount=breakdown.row_count,
-                bytes=breakdown.bytes,
-                bytesDisplay=breakdown.bytes_display,
-                sharePercent=decimal_string(breakdown.share_percent) or "0",
-            )
-            for breakdown in item.storage_breakdown
+            storage_breakdown_to_response(breakdown) for breakdown in item.storage_breakdown
         ],
-        operationsTrend=[
-            OperationsTrendPointResponse(
-                bucketDate=point.bucket_date,
-                coveragePercent=decimal_string(point.coverage_percent) or "0",
-                storageBytes=point.storage_bytes,
-                warningTargets=point.warning_targets,
-                incidentTargets=point.incident_targets,
-            )
-            for point in item.operations_trend
-        ],
-        missingRangeTop=[
-            MissingRangeSummaryResponse(
-                instrument=instrument_to_response(summary.instrument),
-                missingSegmentCount=summary.missing_segment_count,
-                coveragePercent=decimal_string(summary.coverage_percent) or "0",
-                lastSuccessfulAt=summary.last_successful_at,
-            )
-            for summary in item.missing_range_top
-        ],
+        operationsTrend=[operations_trend_to_response(point) for point in item.operations_trend],
+        missingRangeTop=[missing_range_to_response(summary) for summary in item.missing_range_top],
         auditLogSummary=AuditLogSummaryResponse(
             targetChangeCount24h=item.audit_log_summary.target_change_count_24h,
             backfillChangeCount24h=item.audit_log_summary.backfill_change_count_24h,
             latestChangeAt=item.audit_log_summary.latest_change_at,
             latestChangeLabel=item.audit_log_summary.latest_change_label,
         ),
+    )
+
+
+def realtime_heatmap_row_to_response(
+    heatmap_row: RealtimeCollectionHeatmapRow,
+) -> RealtimeCollectionHeatmapRowResponse:
+    return RealtimeCollectionHeatmapRowResponse(
+        instrument=instrument_to_response(heatmap_row.instrument),
+        instrumentDisplayName=heatmap_row.instrument_display_name,
+        hourlyBuckets=[
+            RealtimeCollectionHeatmapCellResponse(
+                bucketStartAt=bucket.bucket_start_at,
+                expectedRowsAll=bucket.expected_rows_all,
+                actualRowsAll=bucket.actual_rows_all,
+                expectedRowsByType=bucket.expected_rows_by_type,
+                actualRowsByType=bucket.actual_rows_by_type,
+                actualRatioPercent=decimal_string(bucket.actual_ratio_percent) or "0",
+                status=bucket.status,
+            )
+            for bucket in heatmap_row.hourly_buckets
+        ],
+    )
+
+
+def storage_breakdown_to_response(item: StorageBreakdownItem) -> StorageBreakdownItemResponse:
+    return StorageBreakdownItemResponse(
+        dataType=item.data_type,
+        label=item.label,
+        rowCount=item.row_count,
+        bytes=item.bytes,
+        bytesDisplay=item.bytes_display,
+        sharePercent=decimal_string(item.share_percent) or "0",
+    )
+
+
+def operations_trend_to_response(item: OperationsTrendPoint) -> OperationsTrendPointResponse:
+    return OperationsTrendPointResponse(
+        bucketDate=item.bucket_date,
+        coveragePercent=decimal_string(item.coverage_percent) or "0",
+        storageBytes=item.storage_bytes,
+        warningTargets=item.warning_targets,
+        incidentTargets=item.incident_targets,
+    )
+
+
+def missing_range_to_response(item: MissingRangeSummary) -> MissingRangeSummaryResponse:
+    return MissingRangeSummaryResponse(
+        instrument=instrument_to_response(item.instrument),
+        missingSegmentCount=item.missing_segment_count,
+        coveragePercent=decimal_string(item.coverage_percent) or "0",
+        lastSuccessfulAt=item.last_successful_at,
     )
 
 

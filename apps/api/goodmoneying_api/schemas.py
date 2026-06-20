@@ -204,6 +204,79 @@ class DashboardSummaryResponse(BaseModel):
     auditLogSummary: AuditLogSummaryResponse
 
 
+class DashboardOverviewResponse(BaseModel):
+    status: Literal["normal", "warning", "incident"]
+    refreshedAt: datetime
+    recommendedRefreshSeconds: int
+    totals: DashboardTotalsResponse
+    alerts: list[NotificationEventResponse]
+    healthChecks: list[HealthCheckResponse]
+    metricPrinciples: list[MetricPrincipleResponse]
+
+
+class DashboardTargetsResponse(BaseModel):
+    items: list[CollectionDashboardTargetResponse]
+    total: int
+    limit: int
+    offset: int
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
+
+
+class DashboardCoverageResponse(BaseModel):
+    items: list[CoverageStatusResponse]
+    total: int
+    limit: int
+    offset: int
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
+
+
+class DashboardCollectionActivityResponse(BaseModel):
+    items: list[CollectionActivityBucketResponse]
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
+
+
+class DashboardRealtimeHeatmapResponse(BaseModel):
+    items: list[RealtimeCollectionHeatmapRowResponse]
+    total: int
+    limit: int
+    offset: int
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
+
+
+class DashboardStorageBreakdownResponse(BaseModel):
+    items: list[StorageBreakdownItemResponse]
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
+
+
+class DashboardOperationsTrendResponse(BaseModel):
+    items: list[OperationsTrendPointResponse]
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
+
+
+class DashboardMissingRangesResponse(BaseModel):
+    items: list[MissingRangeSummaryResponse]
+    total: int
+    limit: int
+    offset: int
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
+
+
+class DashboardAuditLogSummaryResponse(BaseModel):
+    targetChangeCount24h: int
+    backfillChangeCount24h: int
+    latestChangeAt: datetime | None
+    latestChangeLabel: str
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
+
+
 class CandidateUniverseEntryResponse(BaseModel):
     instrument: InstrumentResponse
     rank: int

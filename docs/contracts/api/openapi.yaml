@@ -48,6 +48,143 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DashboardSummary"
+  /v1/dashboard/overview:
+    get:
+      tags:
+        - 대시보드(Dashboard)
+      summary: 대시보드 핵심 상태 패널 조회
+      operationId: getDashboardOverview
+      responses:
+        "200":
+          description: KPI, 알림, 헬스체크, 지표 원칙
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardOverviewResponse"
+  /v1/dashboard/targets:
+    get:
+      tags:
+        - 대시보드(Dashboard)
+      summary: 대시보드 수집 대상 패널 조회
+      operationId: getDashboardTargets
+      parameters:
+        - $ref: "#/components/parameters/DashboardLimit"
+        - $ref: "#/components/parameters/DashboardOffset"
+      responses:
+        "200":
+          description: 수집 대상 행 목록
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardTargetsResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/dashboard/coverage:
+    get:
+      tags:
+        - 대시보드(Dashboard)
+      summary: 대시보드 커버리지 패널 조회
+      operationId: getDashboardCoverage
+      parameters:
+        - $ref: "#/components/parameters/DashboardLimit"
+        - $ref: "#/components/parameters/DashboardOffset"
+      responses:
+        "200":
+          description: 데이터 유형별 커버리지 상태 목록
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardCoverageResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/dashboard/collection-activity:
+    get:
+      tags:
+        - 대시보드(Dashboard)
+      summary: 대시보드 수집 활동 패널 조회
+      operationId: getDashboardCollectionActivity
+      responses:
+        "200":
+          description: 최근 7일 x 24시간 수집 활동 버킷
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardCollectionActivityResponse"
+  /v1/dashboard/realtime-heatmap:
+    get:
+      tags:
+        - 대시보드(Dashboard)
+      summary: 대시보드 실시간 수집 히트맵 패널 조회
+      operationId: getDashboardRealtimeHeatmap
+      parameters:
+        - $ref: "#/components/parameters/DashboardLimit"
+        - $ref: "#/components/parameters/DashboardOffset"
+      responses:
+        "200":
+          description: 대상별 실시간 수집 히트맵 행 목록
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardRealtimeHeatmapResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/dashboard/storage-breakdown:
+    get:
+      tags:
+        - 대시보드(Dashboard)
+      summary: 대시보드 저장량 breakdown 패널 조회
+      operationId: getDashboardStorageBreakdown
+      responses:
+        "200":
+          description: 데이터 유형별 저장 행과 추정 저장량
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardStorageBreakdownResponse"
+  /v1/dashboard/operations-trend:
+    get:
+      tags:
+        - 대시보드(Dashboard)
+      summary: 대시보드 운영 추이 패널 조회
+      operationId: getDashboardOperationsTrend
+      responses:
+        "200":
+          description: 최근 7일 운영 추이
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardOperationsTrendResponse"
+  /v1/dashboard/missing-ranges:
+    get:
+      tags:
+        - 대시보드(Dashboard)
+      summary: 대시보드 결측 상위 패널 조회
+      operationId: getDashboardMissingRanges
+      parameters:
+        - $ref: "#/components/parameters/DashboardLimit"
+        - $ref: "#/components/parameters/DashboardOffset"
+      responses:
+        "200":
+          description: 결측 구간 상위 대상 목록
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardMissingRangesResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/dashboard/audit-log-summary:
+    get:
+      tags:
+        - 대시보드(Dashboard)
+      summary: 대시보드 감사 로그 요약 패널 조회
+      operationId: getDashboardAuditLogSummary
+      responses:
+        "200":
+          description: 최근 운영 변경 감사 로그 요약
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardAuditLogSummaryResponse"
   /v1/candidate-universe:
     get:
       tags:
@@ -396,6 +533,23 @@ components:
       schema:
         type: string
         format: date-time
+    DashboardLimit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        default: 50
+        minimum: 1
+        maximum: 100
+    DashboardOffset:
+      name: offset
+      in: query
+      required: false
+      schema:
+        type: integer
+        default: 0
+        minimum: 0
   schemas:
     DecimalString:
       description: JSON number 정밀도 손실을 피하기 위해 문자열로 전달하는 십진수 값.
@@ -443,6 +597,242 @@ components:
           example: BTC
         displayName:
           type: string
+    DashboardTotals:
+      description: 대시보드 핵심 KPI와 최근 수집/저장 상태 집계.
+      type: object
+      required:
+        - activeTargets
+        - activeTargetLimit
+        - normalTargets
+        - warningTargets
+        - incidentTargets
+        - failedRuns24h
+        - failureRate24h
+        - delayedTargets
+        - missingRangesOpen
+        - storageBytesToday
+        - storageBytesTodayDisplay
+        - storageRowsToday
+        - realtimeRowsLastMinute
+        - backfillRowsLastMinute
+        - recentRequestCount
+      properties:
+        activeTargets:
+          type: integer
+        activeTargetLimit:
+          type: integer
+        normalTargets:
+          type: integer
+        warningTargets:
+          type: integer
+        incidentTargets:
+          type: integer
+        failedRuns24h:
+          type: integer
+        failureRate24h:
+          $ref: "#/components/schemas/DecimalString"
+        delayedTargets:
+          type: integer
+        missingRangesOpen:
+          type: integer
+        storageBytesToday:
+          type: integer
+          description: UTC 오늘 생성 또는 수집된 원천/결과 행 기반 추정 저장량.
+        storageBytesTodayDisplay:
+          type: string
+        storageRowsToday:
+          type: integer
+          description: UTC 오늘 생성 또는 수집된 원천/결과 행 수.
+        realtimeRowsLastMinute:
+          type: integer
+          description: 최근 1분 실시간 증분 수집이 저장한 row 수.
+        backfillRowsLastMinute:
+          type: integer
+          description: 최근 1분 백필 수집이 저장한 row 수.
+        recentRequestCount:
+          type: integer
+          description: 최근 24시간 대상별 수집 결과 행 수. API 요청 수가 아니다.
+    DashboardOverviewResponse:
+      description: 대시보드 첫 영역에서 사용하는 KPI, 알림, 헬스체크, 지표 원칙 패널 응답.
+      type: object
+      required:
+        - status
+        - refreshedAt
+        - recommendedRefreshSeconds
+        - totals
+        - alerts
+        - healthChecks
+        - metricPrinciples
+      properties:
+        status:
+          type: string
+          enum: [normal, warning, incident]
+        refreshedAt:
+          type: string
+          format: date-time
+        recommendedRefreshSeconds:
+          type: integer
+        totals:
+          $ref: "#/components/schemas/DashboardTotals"
+        alerts:
+          type: array
+          items:
+            $ref: "#/components/schemas/NotificationEvent"
+        healthChecks:
+          type: array
+          items:
+            $ref: "#/components/schemas/HealthCheck"
+        metricPrinciples:
+          type: array
+          items:
+            $ref: "#/components/schemas/MetricPrinciple"
+    DashboardTargetsResponse:
+      description: 대시보드 수집 대상 패널의 페이지 응답.
+      type: object
+      required: [items, total, limit, offset, recommendedRefreshSeconds, refreshedAt]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectionDashboardTarget"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        recommendedRefreshSeconds:
+          type: integer
+        refreshedAt:
+          type: string
+          format: date-time
+    DashboardCoverageResponse:
+      description: 대시보드 커버리지 패널의 페이지 응답.
+      type: object
+      required: [items, total, limit, offset, recommendedRefreshSeconds, refreshedAt]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CoverageStatus"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        recommendedRefreshSeconds:
+          type: integer
+        refreshedAt:
+          type: string
+          format: date-time
+    DashboardCollectionActivityResponse:
+      description: 대시보드 수집 활동 패널 응답.
+      type: object
+      required: [items, recommendedRefreshSeconds, refreshedAt]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectionActivityBucket"
+        recommendedRefreshSeconds:
+          type: integer
+        refreshedAt:
+          type: string
+          format: date-time
+    DashboardRealtimeHeatmapResponse:
+      description: 대시보드 실시간 수집 히트맵 패널의 페이지 응답.
+      type: object
+      required: [items, total, limit, offset, recommendedRefreshSeconds, refreshedAt]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RealtimeCollectionHeatmapRow"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        recommendedRefreshSeconds:
+          type: integer
+        refreshedAt:
+          type: string
+          format: date-time
+    DashboardStorageBreakdownResponse:
+      description: 대시보드 저장량 breakdown 패널 응답.
+      type: object
+      required: [items, recommendedRefreshSeconds, refreshedAt]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/StorageBreakdownItem"
+        recommendedRefreshSeconds:
+          type: integer
+        refreshedAt:
+          type: string
+          format: date-time
+    DashboardOperationsTrendResponse:
+      description: 대시보드 운영 추이 패널 응답.
+      type: object
+      required: [items, recommendedRefreshSeconds, refreshedAt]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OperationsTrendPoint"
+        recommendedRefreshSeconds:
+          type: integer
+        refreshedAt:
+          type: string
+          format: date-time
+    DashboardMissingRangesResponse:
+      description: 대시보드 결측 구간 상위 패널의 페이지 응답.
+      type: object
+      required: [items, total, limit, offset, recommendedRefreshSeconds, refreshedAt]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/MissingRangeSummary"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        recommendedRefreshSeconds:
+          type: integer
+        refreshedAt:
+          type: string
+          format: date-time
+    DashboardAuditLogSummaryResponse:
+      description: 대시보드 감사 로그 요약 패널 응답.
+      type: object
+      required:
+        - targetChangeCount24h
+        - backfillChangeCount24h
+        - latestChangeAt
+        - latestChangeLabel
+        - recommendedRefreshSeconds
+        - refreshedAt
+      properties:
+        targetChangeCount24h:
+          type: integer
+        backfillChangeCount24h:
+          type: integer
+        latestChangeAt:
+          type: [string, "null"]
+          format: date-time
+        latestChangeLabel:
+          type: string
+        recommendedRefreshSeconds:
+          type: integer
+        refreshedAt:
+          type: string
+          format: date-time
     DashboardSummary:
       description: 운영 콘솔 첫 화면에 필요한 파이프라인 상태, 지표, 대상, 알림 요약 View Model.
       type: object

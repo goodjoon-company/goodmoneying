@@ -9,6 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from goodmoneying_api.dashboard_refresh import load_dashboard_refresh_seconds
 from goodmoneying_api.dependencies import verify_operator_token
 from goodmoneying_api.schemas import (
     ApproveBackfillJobRequest,
@@ -21,7 +22,16 @@ from goodmoneying_api.schemas import (
     CollectionRunsResponse,
     CollectionTargetsResponse,
     CreateBackfillPlanRequest,
+    DashboardAuditLogSummaryResponse,
+    DashboardCollectionActivityResponse,
+    DashboardCoverageResponse,
+    DashboardMissingRangesResponse,
+    DashboardOperationsTrendResponse,
+    DashboardOverviewResponse,
+    DashboardRealtimeHeatmapResponse,
+    DashboardStorageBreakdownResponse,
     DashboardSummaryResponse,
+    DashboardTargetsResponse,
     HealthResponse,
     InstrumentDetailResponse,
     MarketListResponse,
@@ -63,7 +73,7 @@ def create_seeded_repository() -> SQLiteOperationsRepository:
 def create_app(repository: OperationsRepository | None = None) -> FastAPI:
     repo = repository or create_repository_from_environment()
     operator_token = os.getenv("GOODMONEYING_OPERATOR_TOKEN", "local-dev-token")
-    service = OperationsService(repo)
+    service = OperationsService(repo, load_dashboard_refresh_seconds())
     app = FastAPI(title="goodmoneying M1 Operations API", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
@@ -103,6 +113,63 @@ def create_app(repository: OperationsRepository | None = None) -> FastAPI:
     @app.get("/v1/dashboard/summary", response_model=DashboardSummaryResponse)
     def get_dashboard_summary() -> DashboardSummaryResponse:
         return service.dashboard_summary()
+
+    @app.get("/v1/dashboard/overview", response_model=DashboardOverviewResponse)
+    def get_dashboard_overview() -> DashboardOverviewResponse:
+        return service.dashboard_overview()
+
+    @app.get("/v1/dashboard/targets", response_model=DashboardTargetsResponse)
+    def get_dashboard_targets(
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> DashboardTargetsResponse:
+        return service.dashboard_targets(limit, offset)
+
+    @app.get("/v1/dashboard/coverage", response_model=DashboardCoverageResponse)
+    def get_dashboard_coverage(
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> DashboardCoverageResponse:
+        return service.dashboard_coverage(limit, offset)
+
+    @app.get(
+        "/v1/dashboard/collection-activity",
+        response_model=DashboardCollectionActivityResponse,
+    )
+    def get_dashboard_collection_activity() -> DashboardCollectionActivityResponse:
+        return service.dashboard_collection_activity()
+
+    @app.get("/v1/dashboard/realtime-heatmap", response_model=DashboardRealtimeHeatmapResponse)
+    def get_dashboard_realtime_heatmap(
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> DashboardRealtimeHeatmapResponse:
+        return service.dashboard_realtime_heatmap(limit, offset)
+
+    @app.get(
+        "/v1/dashboard/storage-breakdown",
+        response_model=DashboardStorageBreakdownResponse,
+    )
+    def get_dashboard_storage_breakdown() -> DashboardStorageBreakdownResponse:
+        return service.dashboard_storage_breakdown()
+
+    @app.get("/v1/dashboard/operations-trend", response_model=DashboardOperationsTrendResponse)
+    def get_dashboard_operations_trend() -> DashboardOperationsTrendResponse:
+        return service.dashboard_operations_trend()
+
+    @app.get("/v1/dashboard/missing-ranges", response_model=DashboardMissingRangesResponse)
+    def get_dashboard_missing_ranges(
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> DashboardMissingRangesResponse:
+        return service.dashboard_missing_ranges(limit, offset)
+
+    @app.get(
+        "/v1/dashboard/audit-log-summary",
+        response_model=DashboardAuditLogSummaryResponse,
+    )
+    def get_dashboard_audit_log_summary() -> DashboardAuditLogSummaryResponse:
+        return service.dashboard_audit_log_summary()
 
     @app.get("/v1/candidate-universe", response_model=CandidateUniverseResponse)
     def get_candidate_universe() -> CandidateUniverseResponse:

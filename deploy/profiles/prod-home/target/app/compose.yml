@@ -22,9 +22,6 @@ services:
     restart: unless-stopped
     env_file:
       - ${GOODMONEYING_APP_BASE_DIR}/env/app.env
-    environment:
-      GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS: "${GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS:-60}"
-      GOODMONEYING_LOG_LEVEL: "${GOODMONEYING_LOG_LEVEL:-INFO}"
     volumes:
       - ${GOODMONEYING_APP_REALTIME_COLLECTION_WORKER_DATA_DIR}:/var/lib/goodmoneying/realtime-collection-worker
       - ${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro
@@ -36,10 +33,6 @@ services:
     command: ["uv", "run", "--no-sync", "python", "-m", "goodmoneying_worker.backfill_collection_worker"]
     env_file:
       - ${GOODMONEYING_APP_BASE_DIR}/env/app.env
-    environment:
-      GOODMONEYING_BACKFILL_POLL_SECONDS: "${GOODMONEYING_BACKFILL_POLL_SECONDS:-10}"
-      GOODMONEYING_BACKFILL_BATCH_SIZE: "${GOODMONEYING_BACKFILL_BATCH_SIZE:-3000}"
-      GOODMONEYING_LOG_LEVEL: "${GOODMONEYING_LOG_LEVEL:-INFO}"
     volumes:
       - ${GOODMONEYING_APP_BACKFILL_COLLECTION_WORKER_DATA_DIR}:/var/lib/goodmoneying/backfill-collection-worker
       - ${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro

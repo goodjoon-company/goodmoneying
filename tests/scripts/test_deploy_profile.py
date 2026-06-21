@@ -77,6 +77,9 @@ def test_prod_home_profile_has_required_files() -> None:
 
     assert (profile_dir / "runner/profile.env").is_file()
     assert (profile_dir / "runner/hosts.env").is_file()
+    assert (profile_dir / "env-samples/infra.env.sample").is_file()
+    assert (profile_dir / "env-samples/app.env.sample").is_file()
+    assert (profile_dir / "env-samples/web.env.sample").is_file()
     assert (profile_dir / "target/infra/compose.yml").is_file()
     assert (profile_dir / "target/app/compose.yml").is_file()
     assert (profile_dir / "target/web/compose.yml").is_file()
@@ -150,6 +153,18 @@ def test_prod_home_compose_uses_external_env_files() -> None:
         "backfill-collection-worker"
     ]["env_file"]
     assert "${GOODMONEYING_WEB_BASE_DIR}/env/web.env" in web["web"]["env_file"]
+
+
+def test_prod_home_app_workers_do_not_override_runtime_env_file_values() -> None:
+    app = services(load_compose("app"))
+
+    for service_name in ("realtime-collection-worker", "backfill-collection-worker"):
+        environment = app[service_name].get("environment", {})
+
+        assert "GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS" not in environment
+        assert "GOODMONEYING_BACKFILL_POLL_SECONDS" not in environment
+        assert "GOODMONEYING_BACKFILL_BATCH_SIZE" not in environment
+        assert "GOODMONEYING_LOG_LEVEL" not in environment
 
 
 def test_prod_home_hosts_env_defines_server_specific_data_and_config_paths() -> None:
@@ -365,6 +380,10 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
         "'/Users/goodjoon/DATA/applications/goodmoneying'\""
     ) in result.stdout
     assert (
+        "mkdir -p '/Users/goodjoon/DATA/applications/goodmoneying/env'"
+        in result.stdout
+    )
+    assert (
         "mkdir -p '/Users/goodjoon/DATA/applications/goodmoneying/infra/postgres-data'"
         in result.stdout
     )
@@ -382,6 +401,7 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
         "backfill-collection-worker-data'"
     ) in result.stdout
     assert "mkdir -p '/home/goodjoon/project/goodmoneying/app/config'" in result.stdout
+    assert "mkdir -p '/home/goodjoon/project/goodmoneying/env'" in result.stdout
     assert (
         "mkdir -p '/home/goodjoon/applications/goodmoneying/web/nginx-cache'"
         in result.stdout
@@ -390,11 +410,25 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
         "mkdir -p '/home/goodjoon/applications/goodmoneying/web/config'"
         in result.stdout
     )
+    assert "mkdir -p '/home/goodjoon/applications/goodmoneying/env'" in result.stdout
     assert "logs" not in result.stdout
     assert (
         f"scp {ROOT}/deploy/profiles/prod-home/runner/hosts.env "
         "Mac-Mini-M4.local:/Users/goodjoon/DATA/applications/goodmoneying/"
         "deploy.hosts.env"
+    ) in result.stdout
+    assert (
+        f"scp {ROOT}/deploy/profiles/prod-home/env-samples/infra.env.sample "
+        "Mac-Mini-M4.local:/Users/goodjoon/DATA/applications/goodmoneying/"
+        "env/infra.env.sample"
+    ) in result.stdout
+    assert (
+        f"scp {ROOT}/deploy/profiles/prod-home/env-samples/app.env.sample "
+        "app-server01:/home/goodjoon/project/goodmoneying/env/app.env.sample"
+    ) in result.stdout
+    assert (
+        f"scp {ROOT}/deploy/profiles/prod-home/env-samples/web.env.sample "
+        "bmax-ubuntu:/home/goodjoon/applications/goodmoneying/env/web.env.sample"
     ) in result.stdout
     assert (
         "ssh Mac-Mini-M4.local \"printf "

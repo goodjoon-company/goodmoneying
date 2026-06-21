@@ -5,6 +5,7 @@ import {
   CircleDashed,
   ListChecks,
   PauseCircle,
+  PlayCircle,
   Search,
   Settings2,
   StopCircle,
@@ -79,6 +80,12 @@ export function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
   });
   const pauseJobMutation = useMutation({
     mutationFn: (jobId: number) => controlBackfillJob(jobId, "pause"),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["operations"] });
+    }
+  });
+  const resumeJobMutation = useMutation({
+    mutationFn: (jobId: number) => controlBackfillJob(jobId, "resume"),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["operations"] });
     }
@@ -205,9 +212,11 @@ export function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
         <BackfillJobs
           jobs={backfillJobs}
           pendingPauseJobId={pauseJobMutation.variables}
+          pendingResumeJobId={resumeJobMutation.variables}
           pendingStopJobId={stopJobMutation.variables}
           pendingDeleteJobId={deleteJobMutation.variables}
           onPause={(jobId) => pauseJobMutation.mutate(jobId)}
+          onResume={(jobId) => resumeJobMutation.mutate(jobId)}
           onStop={(jobId) => stopJobMutation.mutate(jobId)}
           onDelete={(jobId) => deleteJobMutation.mutate(jobId)}
         />
@@ -227,17 +236,21 @@ export function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
 function BackfillJobs({
   jobs,
   pendingPauseJobId,
+  pendingResumeJobId,
   pendingStopJobId,
   pendingDeleteJobId,
   onPause,
+  onResume,
   onStop,
   onDelete
 }: {
   jobs: BackfillJob[];
   pendingPauseJobId: number | undefined;
+  pendingResumeJobId: number | undefined;
   pendingStopJobId: number | undefined;
   pendingDeleteJobId: number | undefined;
   onPause: (jobId: number) => void;
+  onResume: (jobId: number) => void;
   onStop: (jobId: number) => void;
   onDelete: (jobId: number) => void;
 }) {
@@ -265,7 +278,7 @@ function BackfillJobs({
               <span>{formatFreshness(job.createdAt)}</span>
             </div>
             <div className="approved-backfill-detail">
-              <span>{backfillJobTargetSummary(job)}</span>
+              <span title={backfillJobTargetTooltip(job)}>{backfillJobTargetSummary(job)}</span>
               <span>
                 {formatBackfillJobRange(job.targetStartAt, job.targetEndAt)}
               </span>
@@ -281,15 +294,27 @@ function BackfillJobs({
               <strong>{job.progressPercent}%</strong>
             </div>
             <div className="approved-backfill-actions">
-              <button
-                type="button"
-                aria-label={`작업 ${job.id} 멈춤`}
-                disabled={!canPauseBackfillJob(job) || pendingPauseJobId === job.id}
-                onClick={() => onPause(job.id)}
-              >
-                <PauseCircle size={14} />
-                멈춤(Pause)
-              </button>
+              {canResumeBackfillJob(job) ? (
+                <button
+                  type="button"
+                  aria-label={`작업 ${job.id} 재개`}
+                  disabled={pendingResumeJobId === job.id}
+                  onClick={() => onResume(job.id)}
+                >
+                  <PlayCircle size={14} />
+                  재개
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  aria-label={`작업 ${job.id} 멈춤`}
+                  disabled={!canPauseBackfillJob(job) || pendingPauseJobId === job.id}
+                  onClick={() => onPause(job.id)}
+                >
+                  <PauseCircle size={14} />
+                  멈춤(Pause)
+                </button>
+              )}
               <button
                 type="button"
                 aria-label={`작업 ${job.id} 중지`}
@@ -350,6 +375,11 @@ function backfillJobTargetSummary(job: BackfillJob): string {
   return `${symbols.slice(0, 4).join(", ")} 외 ${(symbols.length - 4).toLocaleString("ko-KR")}개`;
 }
 
+function backfillJobTargetTooltip(job: BackfillJob): string {
+  if (job.targets.length === 0) return "대상 없음";
+  return job.targets.map((target) => target.baseAsset).join(", ");
+}
+
 function formatBackfillJobRange(startAt: string, endAt: string): string {
   return `${formatKstDateTimeMinute(startAt)} ~ ${formatKstDateTimeMinute(endAt)}`;
 }
@@ -378,6 +408,10 @@ function canStopBackfillJob(job: BackfillJob): boolean {
 
 function canPauseBackfillJob(job: BackfillJob): boolean {
   return job.status === "pending" || job.status === "running";
+}
+
+function canResumeBackfillJob(job: BackfillJob): boolean {
+  return job.status === "paused";
 }
 
 function canDeleteBackfillJob(job: BackfillJob): boolean {

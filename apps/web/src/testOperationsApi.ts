@@ -347,6 +347,12 @@ export function createTestOperationsFetch(
         createTestBackfillJob({ id: Number(pauseMatch[1]), status: "paused" })
       );
     }
+    const resumeMatch = url.match(/\/v1\/backfill\/jobs\/(\d+)\/resume$/);
+    if (resumeMatch && init?.method === "POST") {
+      return Response.json(
+        createTestBackfillJob({ id: Number(resumeMatch[1]), status: "running" })
+      );
+    }
     const controlMatch = url.match(/\/v1\/backfill\/jobs\/(\d+)\/stop$/);
     if (controlMatch && init?.method === "POST") {
       return Response.json(

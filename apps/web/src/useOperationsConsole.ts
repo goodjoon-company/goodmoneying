@@ -35,7 +35,12 @@ export function useOperationsConsole(
   const query = useQuery<OperationsSnapshot, Error>({
     queryKey: ["operations"],
     queryFn: () => dataClient.loadOperationsSnapshot(),
-    refetchInterval: refetchOnDashboard && activeSection === "dashboard" ? 15_000 : false
+    refetchInterval:
+      refetchOnDashboard && activeSection === "dashboard"
+        ? 15_000
+        : activeSection === "targets"
+          ? 10_000
+          : false
   });
 
   useEffect(() => {

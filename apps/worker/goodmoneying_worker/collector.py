@@ -107,124 +107,136 @@ class UpbitCollectionWorker:
         target_limit: int | None = None,
         on_progress: Callable[[], object] | None = None,
     ) -> int:
-        job = self._repository.claim_next_backfill_job()
-        if job is None:
-            return 0
-        if on_progress is not None:
-            on_progress()
-        written = 0
-        processed_targets = 0
-        for target in self._repository.backfill_job_targets(job.id):
-            if self._backfill_job_status(job.id) in {"paused", "stopped", "failed", "succeeded"}:
-                break
-            if target.status in {"succeeded", "stopped"}:
-                continue
-            if target_limit is not None and processed_targets >= target_limit:
-                break
-            processed_targets += 1
-            if target.status != "running":
-                self._repository.mark_backfill_target(
-                    job.id,
-                    target.instrument_id,
-                    status="running",
-                    last_completed_at=target.last_completed_at,
-                )
+        total_written = 0
+        while True:
+            job = self._repository.claim_next_backfill_job()
+            if job is None:
+                return total_written
             if on_progress is not None:
                 on_progress()
-            instrument = self._repository.get_instrument(target.instrument_id)
-            if instrument is None:
-                self._repository.mark_backfill_target(
-                    job.id,
-                    target.instrument_id,
-                    status="failed",
-                    last_completed_at=target.last_completed_at,
-                    error_code="InstrumentNotFound",
-                    error_message="백필 대상 거래 상품을 찾을 수 없다.",
-                )
-                continue
-            try:
-                missing_ranges = self._missing_source_candle_ranges(
-                    target.instrument_id,
-                    job.target_start_at,
-                    job.target_end_at,
-                )
-                if not missing_ranges:
+            written = 0
+            processed_targets = 0
+            should_claim_next_job = False
+            for target in self._repository.backfill_job_targets(job.id):
+                job_status = self._backfill_job_status(job.id)
+                if job_status in {"paused", "stopped", "failed", "succeeded"}:
+                    should_claim_next_job = job_status in {"paused", "stopped"}
+                    break
+                if target.status in {"succeeded", "stopped"}:
+                    continue
+                if target_limit is not None and processed_targets >= target_limit:
+                    return total_written + written
+                processed_targets += 1
+                if target.status != "running":
+                    self._repository.mark_backfill_target(
+                        job.id,
+                        target.instrument_id,
+                        status="running",
+                        last_completed_at=target.last_completed_at,
+                    )
+                if on_progress is not None:
+                    on_progress()
+                instrument = self._repository.get_instrument(target.instrument_id)
+                if instrument is None:
+                    self._repository.mark_backfill_target(
+                        job.id,
+                        target.instrument_id,
+                        status="failed",
+                        last_completed_at=target.last_completed_at,
+                        error_code="InstrumentNotFound",
+                        error_message="백필 대상 거래 상품을 찾을 수 없다.",
+                    )
+                    continue
+                try:
+                    missing_ranges = self._missing_source_candle_ranges(
+                        target.instrument_id,
+                        job.target_start_at,
+                        job.target_end_at,
+                    )
+                    if not missing_ranges:
+                        self._repository.mark_backfill_target(
+                            job.id,
+                            target.instrument_id,
+                            status="succeeded",
+                            last_completed_at=job.target_end_at,
+                        )
+                        continue
+                    target_written = 0
+                    last_completed_at = target.last_completed_at
+                    for fetch_start_at, fetch_end_at in missing_ranges:
+                        if self._backfill_job_status(job.id) in {
+                            "paused",
+                            "stopped",
+                            "failed",
+                            "succeeded",
+                        }:
+                            break
+                        if on_progress is not None:
+                            on_progress()
+                        rows = self._client.fetch_minute_candles(
+                            instrument.market_code,
+                            fetch_start_at,
+                            fetch_end_at,
+                        )
+                        collected_at = now_kst()
+                        candles = [
+                            SourceCandle(
+                                instrument_id=target.instrument_id,
+                                candle_unit="1m",
+                                candle_start_at=datetime.fromisoformat(
+                                    row["candle_start_at"]
+                                ).astimezone(KST),
+                                open_price=Decimal(row["open_price"]),
+                                high_price=Decimal(row["high_price"]),
+                                low_price=Decimal(row["low_price"]),
+                                close_price=Decimal(row["close_price"]),
+                                trade_volume=Decimal(row["trade_volume"]),
+                                trade_amount=Decimal(row["trade_amount"]),
+                                collected_at=collected_at,
+                            )
+                            for row in rows
+                        ]
+                        rows_written = self._repository.record_backfill_candles(
+                            job.id,
+                            target.instrument_id,
+                            candles,
+                        )
+                        if on_progress is not None:
+                            on_progress()
+                        target_written += rows_written
+                        last_completed_at = (
+                            max((item.candle_start_at for item in candles), default=fetch_end_at)
+                            if candles
+                            else fetch_end_at
+                        )
                     self._repository.mark_backfill_target(
                         job.id,
                         target.instrument_id,
                         status="succeeded",
-                        last_completed_at=job.target_end_at,
+                        last_completed_at=last_completed_at or job.target_end_at,
                     )
-                    continue
-                target_written = 0
-                last_completed_at = target.last_completed_at
-                for fetch_start_at, fetch_end_at in missing_ranges:
-                    if self._backfill_job_status(job.id) in {
-                        "paused",
-                        "stopped",
-                        "failed",
-                        "succeeded",
-                    }:
-                        break
                     if on_progress is not None:
                         on_progress()
-                    rows = self._client.fetch_minute_candles(
-                        instrument.market_code,
-                        fetch_start_at,
-                        fetch_end_at,
-                    )
-                    collected_at = now_kst()
-                    candles = [
-                        SourceCandle(
-                            instrument_id=target.instrument_id,
-                            candle_unit="1m",
-                            candle_start_at=datetime.fromisoformat(
-                            row["candle_start_at"]
-                            ).astimezone(KST),
-                            open_price=Decimal(row["open_price"]),
-                            high_price=Decimal(row["high_price"]),
-                            low_price=Decimal(row["low_price"]),
-                            close_price=Decimal(row["close_price"]),
-                            trade_volume=Decimal(row["trade_volume"]),
-                            trade_amount=Decimal(row["trade_amount"]),
-                            collected_at=collected_at,
-                        )
-                        for row in rows
-                    ]
-                    rows_written = self._repository.record_backfill_candles(
+                    written += target_written
+                    job_status = self._backfill_job_status(job.id)
+                    if job_status in {"paused", "stopped"}:
+                        should_claim_next_job = True
+                        break
+                except Exception as exc:
+                    self._repository.mark_backfill_target(
                         job.id,
                         target.instrument_id,
-                        candles,
+                        status="failed",
+                        last_completed_at=target.last_completed_at,
+                        error_code=type(exc).__name__,
+                        error_message=str(exc),
                     )
                     if on_progress is not None:
                         on_progress()
-                    target_written += rows_written
-                    last_completed_at = (
-                        max((item.candle_start_at for item in candles), default=fetch_end_at)
-                        if candles
-                        else fetch_end_at
-                    )
-                self._repository.mark_backfill_target(
-                    job.id,
-                    target.instrument_id,
-                    status="succeeded",
-                    last_completed_at=last_completed_at or job.target_end_at,
-                )
-                if on_progress is not None:
-                    on_progress()
-                written += target_written
-            except Exception as exc:
-                self._repository.mark_backfill_target(
-                    job.id,
-                    target.instrument_id,
-                    status="failed",
-                    last_completed_at=target.last_completed_at,
-                    error_code=type(exc).__name__,
-                    error_message=str(exc),
-                )
-                if on_progress is not None:
-                    on_progress()
-        return written
+            total_written += written
+            if should_claim_next_job:
+                continue
+            return total_written
 
     def _missing_source_candle_ranges(
         self,

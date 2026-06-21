@@ -26,6 +26,19 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
     quoteCurrency: string;
   };
   const firstInstrumentName = `${firstInstrument.baseAsset} / ${firstInstrument.quoteCurrency}`;
+  const pausedBackfillTargets = baselineEntries.slice(0, 5);
+  const pausedBackfillTargetIds = pausedBackfillTargets.map(
+    (entry: { instrument: { id: number } }) => entry.instrument.id
+  );
+  const pausedBackfillTargetSymbols = [...pausedBackfillTargets]
+    .sort(
+      (
+        left: { instrument: { marketCode: string } },
+        right: { instrument: { marketCode: string } }
+      ) => left.instrument.marketCode.localeCompare(right.instrument.marketCode)
+    )
+    .map((entry: { instrument: { baseAsset: string } }) => entry.instrument.baseAsset)
+    .join(", ");
   const resetResponse = await request.put(`${apiBaseUrl}/v1/collection-targets`, {
     headers: { "X-Operator-Token": operatorToken },
     data: {
@@ -34,6 +47,24 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
     }
   });
   expect(resetResponse.ok()).toBeTruthy();
+  const backfillJobResponse = await request.post(`${apiBaseUrl}/v1/backfill/jobs`, {
+    headers: { "X-Operator-Token": operatorToken },
+    data: {
+      dataType: "source_candle",
+      targetStartAt: "2026-01-01T00:00:00+09:00",
+      targetEndAt: "2026-01-03T00:00:00+09:00",
+      instrumentIds: pausedBackfillTargetIds
+    }
+  });
+  expect(backfillJobResponse.ok()).toBeTruthy();
+  const pausedBackfillJob = await backfillJobResponse.json();
+  const pauseBackfillResponse = await request.post(
+    `${apiBaseUrl}/v1/backfill/jobs/${pausedBackfillJob.id}/pause`,
+    {
+      headers: { "X-Operator-Token": operatorToken }
+    }
+  );
+  expect(pauseBackfillResponse.ok()).toBeTruthy();
 
   await page.goto("/");
 
@@ -95,6 +126,18 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.getByRole("combobox", { name: "후보 정렬" })).toHaveValue("trade");
   await expect(page.getByText(/대상 변경 [0-9]+건/)).toBeVisible();
   await expect(page.getByRole("button", { name: "백필 계획 생성" })).toBeEnabled();
+  await expect(page.getByText(`작업 ${pausedBackfillJob.id}`)).toBeVisible();
+  await expect(page.getByText("일시정지")).toBeVisible();
+  const pausedBackfillSummary = page
+    .locator(".approved-backfill-card")
+    .filter({ hasText: `작업 ${pausedBackfillJob.id}` })
+    .getByText(/외 1개/);
+  await expect(pausedBackfillSummary).toHaveAttribute("title", pausedBackfillTargetSymbols);
+  await expect(
+    page.getByRole("button", { name: `작업 ${pausedBackfillJob.id} 재개` })
+  ).toBeVisible();
+  await page.getByRole("button", { name: `작업 ${pausedBackfillJob.id} 재개` }).click();
+  await expect(page.getByText("실행 중")).toBeVisible();
   await page.getByRole("button", { name: "백필 계획 생성" }).click();
   await expect(page.getByRole("dialog", { name: "백필 계획 생성" })).toBeVisible();
   await expect(page.getByText("선택 코인 50개")).toBeVisible();

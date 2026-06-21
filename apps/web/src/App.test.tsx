@@ -3,7 +3,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import { createTestOperationsFetch } from "./testOperationsApi";
+import { createTestInstruments, createTestOperationsFetch } from "./testOperationsApi";
 
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(createTestOperationsFetch()));
@@ -206,22 +206,23 @@ describe("데이터 수집관리 화면", () => {
             },
             {
               id: 76,
+              status: "paused",
+              dataType: "source_candle",
+              progressPercent: "10",
+              targetStartAt: "2026-01-01T00:00:00+09:00",
+              targetEndAt: "2026-01-03T00:00:00+09:00",
+              targets: createTestInstruments(50),
+              createdAt: "2026-06-20T18:30:00+09:00"
+            },
+            {
+              id: 75,
               status: "succeeded",
               dataType: "source_candle",
               progressPercent: "100",
               targetStartAt: "2026-01-01T00:00:00+09:00",
               targetEndAt: "2026-01-03T00:00:00+09:00",
-              targets: [
-                {
-                  id: 3,
-                  exchange: "UPBIT",
-                  marketCode: "KRW-XRP",
-                  quoteCurrency: "KRW",
-                  baseAsset: "XRP",
-                  displayName: "리플"
-                }
-              ],
-              createdAt: "2026-06-20T18:30:00+09:00"
+              targets: createTestInstruments(1),
+              createdAt: "2026-06-20T12:00:00+09:00"
             }
           ]
         })
@@ -238,7 +239,7 @@ describe("데이터 수집관리 화면", () => {
     expect(within(panel).getByText("작업 77")).toBeInTheDocument();
     expect(within(panel).getByText("실행 중")).toBeInTheDocument();
     expect(within(panel).getByText("42.5%")).toBeInTheDocument();
-    expect(within(panel).getAllByText("1분 캔들(Source Candle)")).toHaveLength(2);
+    expect(within(panel).getAllByText("1분 캔들(Source Candle)")).toHaveLength(3);
     expect(within(panel).getByText("BTC, ETH")).toBeInTheDocument();
     expect(within(panel).getByText("2026년 01월 01일 00:00 ~ 2026년 02월 01일 00:00")).toBeInTheDocument();
     expect(within(panel).getByText(/06. 21./)).toBeInTheDocument();
@@ -246,12 +247,19 @@ describe("데이터 수집관리 화면", () => {
     expect(within(panel).getByRole("button", { name: "작업 77 중지" })).toBeEnabled();
     expect(within(panel).getByRole("button", { name: "작업 77 삭제" })).toBeDisabled();
     expect(within(panel).getByText("작업 76")).toBeInTheDocument();
-    expect(within(panel).getByText("완료")).toBeInTheDocument();
-    expect(within(panel).getByRole("button", { name: "작업 76 삭제" })).toBeEnabled();
+    expect(within(panel).getByText("일시정지")).toBeInTheDocument();
+    const targetSummary = within(panel).getByText("BTC, ETH, GM003, GM004 외 46개");
+    expect(targetSummary).toHaveAttribute(
+      "title",
+      createTestInstruments(50).map((target) => target.baseAsset).join(", ")
+    );
+    expect(within(panel).getByRole("button", { name: "작업 76 재개" })).toBeEnabled();
+    expect(within(panel).getByRole("button", { name: "작업 75 삭제" })).toBeEnabled();
 
     await user.click(within(panel).getByRole("button", { name: "작업 77 멈춤" }));
     await user.click(within(panel).getByRole("button", { name: "작업 77 중지" }));
-    await user.click(within(panel).getByRole("button", { name: "작업 76 삭제" }));
+    await user.click(within(panel).getByRole("button", { name: "작업 76 재개" }));
+    await user.click(within(panel).getByRole("button", { name: "작업 75 삭제" }));
 
     const requests = vi.mocked(globalThis.fetch).mock.calls.map(([input, init]) => ({
       url: String(input),
@@ -266,7 +274,11 @@ describe("데이터 수집관리 화면", () => {
       method: "POST"
     });
     expect(requests).toContainEqual({
-      url: "/api/v1/backfill/jobs/76",
+      url: "/api/v1/backfill/jobs/76/resume",
+      method: "POST"
+    });
+    expect(requests).toContainEqual({
+      url: "/api/v1/backfill/jobs/75",
       method: "DELETE"
     });
   });

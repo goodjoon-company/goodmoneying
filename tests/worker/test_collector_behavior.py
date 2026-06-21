@@ -340,6 +340,45 @@ def test_worker_stops_before_next_target_when_job_is_stopped() -> None:
     assert [target.status for target in targets] == ["succeeded", "pending"]
 
 
+@pytest.mark.parametrize("action, expected_status", [("stop", "stopped"), ("pause", "paused")])
+def test_worker_claims_next_pending_job_after_current_job_is_controlled(
+    action: str,
+    expected_status: str,
+) -> None:
+    repository = SQLiteOperationsRepository()
+    btc = repository.upsert_instrument("KRW-BTC", "비트코인")
+    eth = repository.upsert_instrument("KRW-ETH", "이더리움")
+    xrp = repository.upsert_instrument("KRW-XRP", "리플")
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=KST)
+    first_plan = repository.create_backfill_plan(
+        "source_candle",
+        start_at,
+        end_at,
+        [btc.id, eth.id],
+    )
+    first_job = repository.approve_backfill_job(first_plan.plan_id)
+    second_plan = repository.create_backfill_plan("source_candle", start_at, end_at, [xrp.id])
+    second_job = repository.approve_backfill_job(second_plan.plan_id)
+    client = StoppingBackfillClient(
+        {
+            "KRW-BTC": [_worker_candle(btc.id, start_at, "100")],
+            "KRW-ETH": [_worker_candle(eth.id, start_at, "200")],
+            "KRW-XRP": [_worker_candle(xrp.id, start_at, "300")],
+        },
+        on_first_fetch=lambda: repository.control_backfill_job(first_job.id, action),
+    )
+    worker = UpbitCollectionWorker(repository, client)
+
+    written = worker.run_backfill_once()
+
+    jobs_by_id = {job.id: job for job in repository.backfill_jobs()}
+    assert written == 2
+    assert client.fetch_count == 2
+    assert jobs_by_id[first_job.id].status == expected_status
+    assert jobs_by_id[second_job.id].status == "succeeded"
+
+
 def _upbit_candle(market: str, candle_time_utc: str, close: str) -> dict[str, object]:
     close_number = float(close)
     return {

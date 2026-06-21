@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 from time import perf_counter
 
@@ -8,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from goodmoneying_api.main import create_app
+from goodmoneying_shared.models import SourceCandle
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_shared.time import now_utc
 from goodmoneying_worker.collector import seed_repository
@@ -92,6 +94,12 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
         "quality_result",
     }
     assert len(dashboard.json()["realtimeCollectionHeatmap"]) == 50
+    assert dashboard.json()["workerStatus"]["realtime"]["status"] in {
+        "running",
+        "stale",
+        "failed",
+    }
+    assert dashboard.json()["workerStatus"]["backfill"]["runningTargetCount"] >= 0
     first_realtime_row = dashboard.json()["realtimeCollectionHeatmap"][0]
     assert first_realtime_row["instrument"]["id"] > 0
     assert len(first_realtime_row["hourlyBuckets"]) == 24
@@ -132,6 +140,94 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
     assert detail.json()["orderbookFreshnessLabel"].endswith("전")
     assert detail.json()["qualityHistory"][0]["status"] in {"normal", "warning", "incident"}
     assert detail.json()["qualityHistory"][0]["title"]
+
+
+def test_dashboard_summary_exposes_collection_worker_status() -> None:
+    repository, client = seeded_repository_and_client()
+    instruments = repository.list_active_targets()
+    started_at = now_utc() - timedelta(minutes=2)
+    repository.record_collection_worker_heartbeat("realtime_collection", "running")
+    repository.record_collection_worker_heartbeat("backfill_collection", "running")
+    repository.record_collection_run_failure(
+        "incremental",
+        "ticker_snapshot",
+        started_at,
+        "UpbitTimeout",
+        "현재가 수집 요청 시간이 초과되었습니다.",
+    )
+    failed_plan = repository.create_backfill_plan(
+        "source_candle",
+        now_utc() - timedelta(hours=4),
+        now_utc() - timedelta(hours=3),
+        [instruments[2].id],
+    )
+    failed_job = repository.approve_backfill_job(failed_plan.plan_id)
+    repository.claim_next_backfill_job()
+    repository.mark_backfill_target(
+        failed_job.id,
+        instruments[2].id,
+        "failed",
+        None,
+        "UpbitBackfillError",
+        "백필 캔들 조회 실패",
+    )
+    plan = repository.create_backfill_plan(
+        "source_candle",
+        now_utc() - timedelta(hours=2),
+        now_utc() - timedelta(hours=1),
+        [item.id for item in instruments[:2]],
+    )
+    job = repository.approve_backfill_job(plan.plan_id)
+    repository.claim_next_backfill_job()
+    repository.mark_backfill_target(
+        job.id,
+        instruments[0].id,
+        "running",
+        None,
+    )
+    repository.record_backfill_candles(
+        job.id,
+        instruments[1].id,
+        [
+            SourceCandle(
+                instrument_id=instruments[1].id,
+                candle_unit="1m",
+                candle_start_at=now_utc() - timedelta(hours=2),
+                open_price=Decimal("100"),
+                high_price=Decimal("101"),
+                low_price=Decimal("99"),
+                close_price=Decimal("100"),
+                trade_volume=Decimal("1"),
+                trade_amount=Decimal("100"),
+                collected_at=now_utc(),
+            )
+        ],
+    )
+    repository.mark_backfill_target(
+        job.id,
+        instruments[1].id,
+        "succeeded",
+        now_utc() - timedelta(hours=1),
+    )
+
+    response = client.get("/v1/dashboard/summary")
+
+    assert response.status_code == 200
+    worker_status = response.json()["workerStatus"]
+    assert worker_status["realtime"]["status"] == "running"
+    assert worker_status["realtime"]["lastHeartbeatAt"]
+    assert worker_status["realtime"]["lastCollectedAt"]
+    assert worker_status["realtime"]["errorCount24h"] == 1
+    assert worker_status["realtime"]["failureRate24h"] != "0"
+    assert worker_status["realtime"]["recentErrors"][0]["code"] == "UpbitTimeout"
+    assert worker_status["backfill"]["status"] == "running"
+    assert worker_status["backfill"]["lastHeartbeatAt"]
+    assert worker_status["backfill"]["lastCollectedAt"]
+    assert worker_status["backfill"]["totalErrorCount"] == 1
+    assert worker_status["backfill"]["failureRateAll"] != "0"
+    assert worker_status["backfill"]["runningTargetCount"] == 1
+    assert worker_status["backfill"]["totalTargetCount"] == 2
+    assert worker_status["backfill"]["recentErrors"][0]["code"] == "UpbitBackfillError"
 
 
 def test_dashboard_panel_endpoints_return_summary_slices() -> None:

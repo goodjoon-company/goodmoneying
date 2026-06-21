@@ -846,6 +846,7 @@ components:
         - metricPrinciples
         - collectionActivity
         - realtimeCollectionHeatmap
+        - workerStatus
         - storageBreakdown
         - operationsTrend
         - missingRangeTop
@@ -942,6 +943,8 @@ components:
           description: 실시간 수집량 비교와 타입별 수집 상태를 보여주는 코인별 히트맵 데이터.
           items:
             $ref: "#/components/schemas/RealtimeCollectionHeatmapRow"
+        workerStatus:
+          $ref: "#/components/schemas/CollectionWorkerStatus"
         storageBreakdown:
           type: array
           description: UTC 오늘 저장된 행 수와 명시적 row-size 추정 규칙 기반 저장량 분해.
@@ -1119,6 +1122,101 @@ components:
           format: date-time
         latestChangeLabel:
           type: string
+    CollectionWorkerError:
+      description: 수집 worker 상태판의 상세 레이어에 표시할 최근 오류 항목.
+      type: object
+      required: [occurredAt, code, message]
+      properties:
+        occurredAt:
+          type: string
+          format: date-time
+        code:
+          type: string
+        message:
+          type: string
+    RealtimeWorkerStatus:
+      description: 실시간 수집 워커의 heartbeat, 최근 수집 시각, 24시간 오류 지표.
+      type: object
+      required:
+        - status
+        - statusLabel
+        - statusDetail
+        - lastHeartbeatAt
+        - lastCollectedAt
+        - errorCount24h
+        - failureRate24h
+        - recentErrors
+      properties:
+        status:
+          type: string
+          enum: [running, stale, failed]
+        statusLabel:
+          type: string
+        statusDetail:
+          type: string
+        lastHeartbeatAt:
+          type: [string, "null"]
+          format: date-time
+        lastCollectedAt:
+          type: [string, "null"]
+          format: date-time
+        errorCount24h:
+          type: integer
+        failureRate24h:
+          $ref: "#/components/schemas/DecimalString"
+        recentErrors:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectionWorkerError"
+    BackfillWorkerStatus:
+      description: 백필 수집 워커의 heartbeat, 전체 오류 지표, 현재 백필 대상 진행 수.
+      type: object
+      required:
+        - status
+        - statusLabel
+        - statusDetail
+        - lastHeartbeatAt
+        - lastCollectedAt
+        - totalErrorCount
+        - failureRateAll
+        - runningTargetCount
+        - totalTargetCount
+        - recentErrors
+      properties:
+        status:
+          type: string
+          enum: [running, stale, failed]
+        statusLabel:
+          type: string
+        statusDetail:
+          type: string
+        lastHeartbeatAt:
+          type: [string, "null"]
+          format: date-time
+        lastCollectedAt:
+          type: [string, "null"]
+          format: date-time
+        totalErrorCount:
+          type: integer
+        failureRateAll:
+          $ref: "#/components/schemas/DecimalString"
+        runningTargetCount:
+          type: integer
+        totalTargetCount:
+          type: integer
+        recentErrors:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectionWorkerError"
+    CollectionWorkerStatus:
+      description: 운영 대시보드 worker 현황판에서 사용하는 실시간/백필 worker 상태 요약.
+      type: object
+      required: [realtime, backfill]
+      properties:
+        realtime:
+          $ref: "#/components/schemas/RealtimeWorkerStatus"
+        backfill:
+          $ref: "#/components/schemas/BackfillWorkerStatus"
     HealthCheck:
       description: 운영 대시보드에 표시할 개별 상태 점검 항목.
       type: object

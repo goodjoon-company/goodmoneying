@@ -140,6 +140,10 @@ def test_openapi_contract_exposes_m2_collection_dashboard_view_model() -> None:
         "CollectionActivityBucket",
         "RealtimeCollectionHeatmapCell",
         "RealtimeCollectionHeatmapRow",
+        "CollectionWorkerError",
+        "RealtimeWorkerStatus",
+        "BackfillWorkerStatus",
+        "CollectionWorkerStatus",
         "StorageBreakdownItem",
         "OperationsTrendPoint",
         "MissingRangeSummary",
@@ -149,12 +153,42 @@ def test_openapi_contract_exposes_m2_collection_dashboard_view_model() -> None:
     for field in [
         "collectionActivity",
         "realtimeCollectionHeatmap",
+        "workerStatus",
         "storageBreakdown",
         "operationsTrend",
         "missingRangeTop",
         "auditLogSummary",
     ]:
         assert field in dashboard["required"]
+
+    worker_status = schemas["CollectionWorkerStatus"]
+    assert set(worker_status["required"]) == {"realtime", "backfill"}
+
+    realtime_worker = schemas["RealtimeWorkerStatus"]
+    assert set(realtime_worker["required"]) == {
+        "status",
+        "statusLabel",
+        "statusDetail",
+        "lastHeartbeatAt",
+        "lastCollectedAt",
+        "errorCount24h",
+        "failureRate24h",
+        "recentErrors",
+    }
+
+    backfill_worker = schemas["BackfillWorkerStatus"]
+    assert set(backfill_worker["required"]) == {
+        "status",
+        "statusLabel",
+        "statusDetail",
+        "lastHeartbeatAt",
+        "lastCollectedAt",
+        "totalErrorCount",
+        "failureRateAll",
+        "runningTargetCount",
+        "totalTargetCount",
+        "recentErrors",
+    }
 
     candidate = schemas["CandidateUniverseEntry"]
     assert "qualityDetail" in candidate["required"]

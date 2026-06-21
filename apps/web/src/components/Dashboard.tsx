@@ -1,12 +1,16 @@
 import { Fragment, useState } from "react";
-import { Bell } from "lucide-react";
+import { Bell, X } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import {
+  type BackfillWorkerStatus,
   loadCollectionCoverageSegments,
   type CollectionDashboardTarget,
+  type CollectionWorkerError,
   type RealtimeCollectionHeatmapRow,
   type MissingRangeSummary,
   type OperationsSnapshot,
+  type RealtimeWorkerStatus,
+  type Status,
   type OperationsTrendPoint,
   type StorageBreakdownItem
 } from "../api";
@@ -39,31 +43,18 @@ export function Dashboard({
   onSelectInstrument: (instrumentId: number) => void;
 }) {
   const totals = snapshot.dashboard.totals;
+  const [workerErrorModal, setWorkerErrorModal] = useState<{
+    title: string;
+    errors: CollectionWorkerError[];
+  } | null>(null);
   return (
     <section className="dashboard-page">
       <div className="ops-kpi-grid">
-        <section className="panel ops-summary-card">
-          <span className="panel-kicker">수집 현황</span>
-          <div className="ops-summary-lines">
-            <MetricLine
-              label="활성 대상"
-              value={`${totals.activeTargets}`}
-              suffix={`/${totals.activeTargetLimit}`}
-            />
-            <MetricLine
-              label="주의 / 장애"
-              value={`${totals.warningTargets}`}
-              suffix={` / ${totals.incidentTargets}`}
-              tone={totals.incidentTargets ? "danger" : totals.warningTargets ? "warning" : "default"}
-            />
-            <MetricLine
-              label="실패율"
-              value={formatPercent(totals.failureRate24h).replace("%", "")}
-              suffix="%"
-              tone={Number(totals.failureRate24h) > 0 ? "danger" : "success"}
-            />
-          </div>
-        </section>
+        <WorkerStatusPanel
+          realtime={snapshot.dashboard.workerStatus.realtime}
+          backfill={snapshot.dashboard.workerStatus.backfill}
+          onShowErrors={setWorkerErrorModal}
+        />
 
         <section className="panel ops-activity-card">
           <div className="ops-card-title">
@@ -160,30 +151,153 @@ export function Dashboard({
           ))}
         </div>
       </section>
+      {workerErrorModal ? (
+        <WorkerErrorDialog
+          title={workerErrorModal.title}
+          errors={workerErrorModal.errors}
+          onClose={() => setWorkerErrorModal(null)}
+        />
+      ) : null}
     </section>
   );
 }
 
-function MetricLine({
-  label,
-  value,
-  suffix,
-  tone = "default"
+function WorkerStatusPanel({
+  realtime,
+  backfill,
+  onShowErrors
 }: {
-  label: string;
-  value: string;
-  suffix?: string;
-  tone?: "default" | "success" | "warning" | "danger";
+  realtime: RealtimeWorkerStatus;
+  backfill: BackfillWorkerStatus;
+  onShowErrors: (modal: { title: string; errors: CollectionWorkerError[] }) => void;
 }) {
   return (
-    <div className="metric-line">
-      <span>{label}</span>
-      <strong className={tone}>
-        {value}
-        {suffix ? <em>{suffix}</em> : null}
-      </strong>
+    <section className="panel ops-summary-card worker-status-card">
+      <span className="panel-kicker">worker 현황</span>
+      <div className="worker-status-list">
+        <article className="worker-status-row">
+          <div className="worker-status-title">
+            <StatusIcon status={workerStatusTone(realtime.status)} />
+            <div>
+              <strong>Realtime worker</strong>
+              <span>{realtime.statusLabel}</span>
+            </div>
+          </div>
+          <dl>
+            <div>
+              <dt>마지막 수집</dt>
+              <dd>{formatNullableDateTime(realtime.lastCollectedAt)}</dd>
+            </div>
+            <div>
+              <dt>실패율</dt>
+              <dd>{formatWorkerPercent(realtime.failureRate24h)}</dd>
+            </div>
+          </dl>
+          <button
+            type="button"
+            className="worker-error-button"
+            aria-label="Realtime worker 24시간 오류 상세"
+            onClick={() =>
+              onShowErrors({
+                title: "Realtime worker",
+                errors: realtime.recentErrors
+              })
+            }
+          >
+            24시간 오류 {realtime.errorCount24h.toLocaleString("ko-KR")}건
+          </button>
+        </article>
+        <article className="worker-status-row">
+          <div className="worker-status-title">
+            <StatusIcon status={workerStatusTone(backfill.status)} />
+            <div>
+              <strong>Backfill worker</strong>
+              <span>{backfill.statusLabel}</span>
+            </div>
+          </div>
+          <dl>
+            <div>
+              <dt>마지막 수집</dt>
+              <dd>{formatNullableDateTime(backfill.lastCollectedAt)}</dd>
+            </div>
+            <div>
+              <dt>실패율</dt>
+              <dd>{formatWorkerPercent(backfill.failureRateAll)}</dd>
+            </div>
+          </dl>
+          <button
+            type="button"
+            className="worker-error-button"
+            aria-label="Backfill worker 전체 오류 상세"
+            onClick={() =>
+              onShowErrors({
+                title: "Backfill worker",
+                errors: backfill.recentErrors
+              })
+            }
+          >
+            전체 오류 {backfill.totalErrorCount.toLocaleString("ko-KR")}건
+          </button>
+          <span className="worker-target-count">
+            동작중 코인 {backfill.runningTargetCount.toLocaleString("ko-KR")}/
+            {backfill.totalTargetCount.toLocaleString("ko-KR")}개
+          </span>
+        </article>
+      </div>
+    </section>
+  );
+}
+
+function WorkerErrorDialog({
+  title,
+  errors,
+  onClose
+}: {
+  title: string;
+  errors: CollectionWorkerError[];
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop">
+      <section className="worker-error-dialog" role="dialog" aria-label={`${title} 오류 상세`} aria-modal="true">
+        <button className="icon-button close-button" type="button" aria-label="닫기" onClick={onClose}>
+          <X size={18} />
+        </button>
+        <div className="panel-heading">
+          <h2>{title} 오류 상세</h2>
+          <span>{errors.length.toLocaleString("ko-KR")}건</span>
+        </div>
+        <div className="worker-error-list">
+          {errors.length === 0 ? <p className="panel-note">표시할 오류가 없습니다.</p> : null}
+          {errors.map((error, index) => (
+            <article className="worker-error-item" key={`${error.occurredAt}-${error.code}-${index}`}>
+              <strong>{error.code}</strong>
+              <span>{formatShortDateTime(error.occurredAt)}</span>
+              <p>{error.message}</p>
+            </article>
+          ))}
+        </div>
+      </section>
     </div>
   );
+}
+
+function workerStatusTone(status: RealtimeWorkerStatus["status"]): Status {
+  if (status === "running") {
+    return "normal";
+  }
+  if (status === "failed") {
+    return "incident";
+  }
+  return "warning";
+}
+
+function formatNullableDateTime(value: string | null): string {
+  return value ? formatShortDateTime(value) : "-";
+}
+
+function formatWorkerPercent(value: string): string {
+  return `${Number(value).toLocaleString("ko-KR", { maximumFractionDigits: 2 })}%`;
 }
 
 function RealtimeCollectionHeatmap({ rows }: { rows: RealtimeCollectionHeatmapRow[] }) {

@@ -142,6 +142,19 @@ CREATE TABLE IF NOT EXISTS collection_runs (
   CONSTRAINT collection_runs_trigger_type_ck CHECK (trigger_type IN ('schedule', 'manual', 'backfill_job', 'system'))
 );
 
+CREATE TABLE IF NOT EXISTS collection_worker_heartbeats (
+  worker_type TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  last_heartbeat_at TIMESTAMPTZ NOT NULL,
+  last_started_at TIMESTAMPTZ,
+  last_successful_at TIMESTAMPTZ,
+  last_error_at TIMESTAMPTZ,
+  last_error_message TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT collection_worker_heartbeats_worker_type_ck CHECK (worker_type IN ('realtime_collection', 'backfill_collection')),
+  CONSTRAINT collection_worker_heartbeats_status_ck CHECK (status IN ('running', 'failed'))
+);
+
 CREATE TABLE IF NOT EXISTS target_collection_results (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   collection_run_id BIGINT NOT NULL REFERENCES collection_runs(id) ON DELETE CASCADE,
@@ -334,6 +347,7 @@ CREATE INDEX IF NOT EXISTS source_candles_instrument_time_idx ON source_candles 
 CREATE INDEX IF NOT EXISTS ticker_snapshots_instrument_bucket_idx ON ticker_snapshots (instrument_id, bucket_at DESC);
 CREATE INDEX IF NOT EXISTS orderbook_summaries_instrument_bucket_idx ON orderbook_summaries (instrument_id, bucket_at DESC);
 CREATE INDEX IF NOT EXISTS collection_runs_started_at_idx ON collection_runs (started_at DESC);
+CREATE INDEX IF NOT EXISTS collection_worker_heartbeats_status_idx ON collection_worker_heartbeats (status, last_heartbeat_at DESC);
 CREATE INDEX IF NOT EXISTS target_collection_results_run_idx ON target_collection_results (collection_run_id, instrument_id);
 CREATE INDEX IF NOT EXISTS collection_plans_status_idx ON collection_plans (status, instrument_id);
 CREATE INDEX IF NOT EXISTS collection_coverage_snapshots_latest_idx ON collection_coverage_snapshots (instrument_id, data_type, calculated_at DESC);

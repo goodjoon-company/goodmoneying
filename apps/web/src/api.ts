@@ -107,6 +107,7 @@ export type DashboardSummary = {
   metricPrinciples: MetricPrinciple[];
   collectionActivity: CollectionActivityBucket[];
   realtimeCollectionHeatmap: RealtimeCollectionHeatmapRow[];
+  workerStatus: CollectionWorkerStatus;
   storageBreakdown: StorageBreakdownItem[];
   operationsTrend: OperationsTrendPoint[];
   missingRangeTop: MissingRangeSummary[];
@@ -157,6 +158,41 @@ export type RealtimeCollectionHeatmapRow = {
   instrument: Instrument;
   instrumentDisplayName: string;
   hourlyBuckets: RealtimeCollectionHeatmapCell[];
+};
+
+export type CollectionWorkerError = {
+  occurredAt: string;
+  code: string;
+  message: string;
+};
+
+export type RealtimeWorkerStatus = {
+  status: "running" | "stale" | "failed";
+  statusLabel: string;
+  statusDetail: string;
+  lastHeartbeatAt: string | null;
+  lastCollectedAt: string | null;
+  errorCount24h: number;
+  failureRate24h: string;
+  recentErrors: CollectionWorkerError[];
+};
+
+export type BackfillWorkerStatus = {
+  status: "running" | "stale" | "failed";
+  statusLabel: string;
+  statusDetail: string;
+  lastHeartbeatAt: string | null;
+  lastCollectedAt: string | null;
+  totalErrorCount: number;
+  failureRateAll: string;
+  runningTargetCount: number;
+  totalTargetCount: number;
+  recentErrors: CollectionWorkerError[];
+};
+
+export type CollectionWorkerStatus = {
+  realtime: RealtimeWorkerStatus;
+  backfill: BackfillWorkerStatus;
 };
 
 export type StorageBreakdownItem = {
@@ -340,6 +376,7 @@ function normalizeDashboardSummary(response: DashboardSummary): DashboardSummary
     realtimeCollectionHeatmap: normalizeRealtimeCollectionHeatmapRows(
       dashboard.realtimeCollectionHeatmap ?? []
     ),
+    workerStatus: normalizeCollectionWorkerStatus(dashboard.workerStatus),
     storageBreakdown: dashboard.storageBreakdown ?? [],
     operationsTrend: dashboard.operationsTrend ?? [],
     missingRangeTop: dashboard.missingRangeTop ?? [],
@@ -348,6 +385,35 @@ function normalizeDashboardSummary(response: DashboardSummary): DashboardSummary
       backfillChangeCount24h: 0,
       latestChangeAt: null,
       latestChangeLabel: "기록 없음"
+    }
+  };
+}
+
+function normalizeCollectionWorkerStatus(
+  workerStatus: CollectionWorkerStatus | undefined
+): CollectionWorkerStatus {
+  return {
+    realtime: {
+      status: workerStatus?.realtime?.status ?? "stale",
+      statusLabel: workerStatus?.realtime?.statusLabel ?? "중지 추정",
+      statusDetail: workerStatus?.realtime?.statusDetail ?? "worker 상태 데이터가 없습니다.",
+      lastHeartbeatAt: workerStatus?.realtime?.lastHeartbeatAt ?? null,
+      lastCollectedAt: workerStatus?.realtime?.lastCollectedAt ?? null,
+      errorCount24h: numberOrZero(workerStatus?.realtime?.errorCount24h),
+      failureRate24h: workerStatus?.realtime?.failureRate24h ?? "0",
+      recentErrors: workerStatus?.realtime?.recentErrors ?? []
+    },
+    backfill: {
+      status: workerStatus?.backfill?.status ?? "stale",
+      statusLabel: workerStatus?.backfill?.statusLabel ?? "중지 추정",
+      statusDetail: workerStatus?.backfill?.statusDetail ?? "worker 상태 데이터가 없습니다.",
+      lastHeartbeatAt: workerStatus?.backfill?.lastHeartbeatAt ?? null,
+      lastCollectedAt: workerStatus?.backfill?.lastCollectedAt ?? null,
+      totalErrorCount: numberOrZero(workerStatus?.backfill?.totalErrorCount),
+      failureRateAll: workerStatus?.backfill?.failureRateAll ?? "0",
+      runningTargetCount: numberOrZero(workerStatus?.backfill?.runningTargetCount),
+      totalTargetCount: numberOrZero(workerStatus?.backfill?.totalTargetCount),
+      recentErrors: workerStatus?.backfill?.recentErrors ?? []
     }
   };
 }

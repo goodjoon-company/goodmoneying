@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from goodmoneying_shared.time import now_utc
 from goodmoneying_worker.collector import UpbitCollectionWorker
 from goodmoneying_worker.runtime import (
     create_repository_from_environment,
@@ -8,8 +9,26 @@ from goodmoneying_worker.runtime import (
 
 
 def run_realtime_collection_once(worker: UpbitCollectionWorker) -> int:
-    worker.refresh_candidate_universe()
-    written = worker.collect_incremental()
+    started_at = now_utc()
+    worker.repository.record_collection_worker_heartbeat("realtime_collection", "running")
+    try:
+        worker.refresh_candidate_universe()
+        written = worker.collect_incremental()
+    except Exception as exc:
+        worker.repository.record_collection_worker_heartbeat(
+            "realtime_collection",
+            "failed",
+            str(exc),
+        )
+        worker.repository.record_collection_run_failure(
+            "incremental",
+            "ticker_snapshot",
+            started_at,
+            type(exc).__name__,
+            str(exc),
+        )
+        raise
+    worker.repository.record_collection_worker_heartbeat("realtime_collection", "running")
     print(f"실시간 수집 완료: rows={written}")
     return written
 

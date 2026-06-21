@@ -25,7 +25,9 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.queryByRole("button", { name: "CSV 내보내기" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "운영 변경 저장" })).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "업비트 수집 운영 상태" })).toBeInTheDocument();
-    expect(await screen.findByText("활성 대상")).toBeInTheDocument();
+    expect(await screen.findByText("worker 현황")).toBeInTheDocument();
+    expect(await screen.findByText("Realtime worker")).toBeInTheDocument();
+    expect(await screen.findByText("Backfill worker")).toBeInTheDocument();
     expect(screen.getAllByText("BTC / KRW")[0]).toBeInTheDocument();
     expect(screen.getByText("코인별 수집 상태")).toBeInTheDocument();
     expect(screen.getByText("운영 헬스")).toBeInTheDocument();
@@ -52,6 +54,9 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.getAllByText("수집 커버리지")[0]).toBeInTheDocument();
     expect(screen.getByText("저장 행")).toBeInTheDocument();
     expect(screen.getAllByText(/24H 거래대금/)[0]).toBeInTheDocument();
+    expect(screen.getByText("24시간 오류 2건")).toBeInTheDocument();
+    expect(screen.getByText("전체 오류 1건")).toBeInTheDocument();
+    expect(screen.getByText("동작중 코인 1/3개")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /BTC \/ KRW/ }));
 
@@ -63,6 +68,25 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.getAllByText("현재가")[0]).toBeInTheDocument();
     expect(screen.getByText(/구간형 진행 상태/)).toBeInTheDocument();
     expect(document.querySelector(".coverage-bar")).toBeInTheDocument();
+  });
+
+  it("worker 현황판에서 수집 오류 상세를 레이어 팝업으로 표시한다", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "업비트 수집 운영 상태" });
+    await user.click(screen.getByRole("button", { name: "Realtime worker 24시간 오류 상세" }));
+
+    expect(await screen.findByRole("dialog", { name: "Realtime worker 오류 상세" })).toBeInTheDocument();
+    expect(screen.getByText("UpbitTimeout")).toBeInTheDocument();
+    expect(screen.getByText("현재가 수집 요청 시간이 초과되었습니다.")).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("닫기"));
+    await user.click(screen.getByRole("button", { name: "Backfill worker 전체 오류 상세" }));
+
+    expect(await screen.findByRole("dialog", { name: "Backfill worker 오류 상세" })).toBeInTheDocument();
+    expect(screen.getByText("UpbitBackfillError")).toBeInTheDocument();
+    expect(screen.getByText("백필 캔들 조회 실패")).toBeInTheDocument();
   });
 
   it("수집 대상 설정은 최대 50개 후보 선택을 저장한다", async () => {

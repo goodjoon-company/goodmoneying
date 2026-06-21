@@ -17,6 +17,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 - 원천 캔들(Source Candle), 현재가 스냅샷(Ticker Snapshot), 호가 요약(Orderbook Summary) 수집
 - 백필(Backfill), 증분 수집(Incremental Collection), 데이터 완전성 검사(Data Completeness Check)
 - 수집 실행(Collection Run), 대상별 수집 결과(Target Collection Result), 결측 구간(Missing Range), 수집 진행률(Collection Coverage) 기록
+- 수집 워커 heartbeat와 worker 현황판용 상태 View Model 제공
 - 운영 서버(Operations Server)를 통한 화면 API와 원천 리소스 API 제공
 - 감사 로그(Audit Log), 알림 이벤트(Notification Event) 저장
 
@@ -36,8 +37,8 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 |---|---|---|
 | 실시간 수집 워커(Realtime Collection Worker) | 업비트 API 호출, rate limit 관리, 후보 유니버스와 증분 수집 실행 | Python 단일 프로세스 |
 | 백필 수집 워커(Backfill Collection Worker) | DB 상태 폴링으로 승인된 백필 작업 확인, 원천 캔들 백필 실행 | Python 단일 프로세스, 기본 10초 폴링 |
-| 운영 서버(Operations Server) | 화면 단위 View Model API, 원천 리소스 API, 쓰기 API, 저장된 상태 조회 | FastAPI |
-| 운영 화면 | 데이터 수집관리 내비게이션, 대시보드, 수집 대상/설정, 백필 제어, 시장 리스트, 코인 상세 레이어 | React, React Query, HTTP 폴링 |
+| 운영 서버(Operations Server) | 화면 단위 View Model API, 원천 리소스 API, 쓰기 API, 저장된 worker 상태 조회 | FastAPI |
+| 운영 화면 | 데이터 수집관리 내비게이션, worker 현황판, 대시보드, 수집 대상/설정, 백필 제어, 시장 리스트, 코인 상세 레이어 | React, React Query, HTTP 폴링 |
 | PostgreSQL | 원천 사실, 설정, 품질, 감사, 알림 이벤트 저장 | `docs/contracts/db/schema.sql` |
 
 ## 입력과 출력
@@ -80,7 +81,8 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 4. 일봉은 10~30분 주기 또는 하루 마감 후 보정한다.
 5. 모든 API 호출은 워커 내부 rate limiter를 통과한다. M1은 두 수집 워커 프로세스가 있으므로 백필 수집 워커 동시성은 1로 제한한다.
 6. 각 수집은 수집 실행과 대상별 수집 결과를 남긴다.
-7. 수집 또는 배치 시점에 코인별 수집 계획의 기간, 데이터별 최신성, 결측 구간, 구간형 진행 상태를 계산해 저장된 View Model을 갱신한다.
+7. 실시간 수집 워커는 실행 시작과 성공/오류 상태를 `collection_worker_heartbeats`에 남긴다.
+8. 수집 또는 배치 시점에 코인별 수집 계획의 기간, 데이터별 최신성, 결측 구간, 구간형 진행 상태를 계산해 저장된 View Model을 갱신한다.
 
 ### 백필
 
@@ -91,10 +93,11 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 5. 운영 화면은 생성된 계획들을 백필 승인 패널에 목록으로 구성하고, 계획 추가/삭제/변경 시 백필 계획 승인 버튼을 활성화한다.
 6. 사용자가 승인하면 계획별 백필 작업이 생성된다.
 7. 백필 수집 워커는 DB 폴링으로 작업 상태를 10초 주기로 읽고 백필을 실행한다.
-8. 백필 수집 워커는 이미 저장된 기간의 데이터를 중복 요청하지 않는다.
-9. 기간이 조정된 경우 수집 범위 시작일부터 재검사하되, 시작일 데이터가 이미 있으면 그 이후 첫 빈 구간부터 요청한다.
-10. 백필은 일시정지, 중지, 이어서하기, 안전 재시작을 지원한다.
-11. 삭제 후 재수집은 M1 이후 기능이다.
+8. 백필 수집 워커는 폴링 heartbeat와 성공/오류 상태를 `collection_worker_heartbeats`에 남긴다.
+9. 백필 수집 워커는 이미 저장된 기간의 데이터를 중복 요청하지 않는다.
+10. 기간이 조정된 경우 수집 범위 시작일부터 재검사하되, 시작일 데이터가 이미 있으면 그 이후 첫 빈 구간부터 요청한다.
+11. 백필은 일시정지, 중지, 이어서하기, 안전 재시작을 지원한다.
+12. 삭제 후 재수집은 M1 이후 기능이다.
 
 ### 데이터 완전성 검사
 
@@ -118,13 +121,15 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 | 화면 | API 성격 | 자동 갱신 |
 |---|---|---|
 | 데이터 수집관리 내비게이션 | 제품 전체 메뉴와 MVP 활성 영역 | 정적 또는 설정 변경 후 갱신 |
-| 운영 상태 대시보드 | 코인별 수집 계획, 파이프라인 건강도, 최신성, 실패, 결측, 저장량, 구간형 진행 상태 | 10~15초 |
+| 운영 상태 대시보드 | worker 현황판, 코인별 수집 계획, 파이프라인 건강도, 최신성, 실패, 결측, 저장량, 구간형 진행 상태 | 10~15초 |
 | 수집 대상/설정 | 후보 유니버스, 활성 수집 대상 최대 50개, 백필 계획 생성 레이어, 백필 승인 패널 | 수동 또는 변경 후 갱신 |
 | 백필 작업 | 승인된 백필 작업 상태와 제어 | 실행 중 5~10초 |
 | 시장 리스트 | 현재가, 거래대금, 등락률, 품질 상태 | 30초 |
 | 코인 상세 레이어 | 캔들 차트, 호가 요약, 품질 이력 | 30초 또는 사용자가 켜는 실시간 모드 |
 
 운영 상태 대시보드는 수집 대상 코인을 행(row) 단위로 표시한다. 각 행은 코인 전체 상태와 캔들(Candle), 현재가(Ticker), 호가 요약(Orderbook Summary)의 미니 상태를 함께 보여주고, 펼치면 데이터별 그래프, 결측 구간, 수집 계획 수정 버튼, 백필 제어를 표시한다.
+
+운영 상태 대시보드 첫 카드의 worker 현황판은 `DashboardSummary.workerStatus`를 사용한다. 실시간 수집 워커는 heartbeat, 마지막 증분 수집 시각, 24시간 수집 오류 수, 24시간 실패율, 최근 오류 상세를 표시한다. 백필 수집 워커는 heartbeat, 마지막 백필 수집 시각, 전체 백필 오류 수, 전체 실패율, 현재 동작 중인 백필 대상 수(`runningTargetCount/totalTargetCount`)와 최근 오류 상세를 표시한다.
 
 화면 시간 표시는 KST(Korea Standard Time)와 UTC(Coordinated Universal Time)를 작은 배지 또는 아이콘(icon)으로 항상 구분한다. 저장과 내부 계산은 UTC 기준이고, 현재(지속) 수집의 진행 상태 기준일은 KST 전일 23:59:59다.
 

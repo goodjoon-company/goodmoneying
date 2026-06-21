@@ -97,6 +97,42 @@ export function createTestDashboardSummary(
     ],
     metricPrinciples: [],
     collectionActivity: [],
+    workerStatus: {
+      realtime: {
+        status: "running",
+        statusLabel: "동작 중",
+        statusDetail: "최근 heartbeat 정상",
+        lastHeartbeatAt: NOW,
+        lastCollectedAt: NOW,
+        errorCount24h: 2,
+        failureRate24h: "1.5",
+        recentErrors: [
+          {
+            occurredAt: NOW,
+            code: "UpbitTimeout",
+            message: "현재가 수집 요청 시간이 초과되었습니다."
+          }
+        ]
+      },
+      backfill: {
+        status: "running",
+        statusLabel: "동작 중",
+        statusDetail: "백필 계획을 10초 주기로 확인 중",
+        lastHeartbeatAt: NOW,
+        lastCollectedAt: NOW,
+        totalErrorCount: 1,
+        failureRateAll: "2.4",
+        runningTargetCount: 1,
+        totalTargetCount: 3,
+        recentErrors: [
+          {
+            occurredAt: NOW,
+            code: "UpbitBackfillError",
+            message: "백필 캔들 조회 실패"
+          }
+        ]
+      }
+    },
     realtimeCollectionHeatmap: targets.map((target) => ({
       instrument: target.instrument,
       instrumentDisplayName: target.instrument.displayName,

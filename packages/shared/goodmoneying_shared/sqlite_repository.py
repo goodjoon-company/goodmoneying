@@ -14,6 +14,7 @@ from goodmoneying_shared.models import (
     BackfillJobDetail,
     BackfillJobTarget,
     BackfillPlan,
+    BackfillWorkerStatus,
     CandidateUniverseEntry,
     CandleView,
     CollectionActivityBucket,
@@ -22,6 +23,11 @@ from goodmoneying_shared.models import (
     CollectionPlan,
     CollectionRowsByType,
     CollectionRun,
+    CollectionWorkerError,
+    CollectionWorkerHeartbeatStatus,
+    CollectionWorkerStatus,
+    CollectionWorkerStatusSummary,
+    CollectionWorkerType,
     CoverageSegment,
     CoverageStatus,
     DashboardSummary,
@@ -34,6 +40,7 @@ from goodmoneying_shared.models import (
     OrderbookSummary,
     RealtimeCollectionHeatmapBucket,
     RealtimeCollectionHeatmapRow,
+    RealtimeWorkerStatus,
     SourceCandle,
     StorageBreakdownItem,
     TickerSnapshot,
@@ -181,6 +188,17 @@ class SQLiteOperationsRepository:
                   finished_at TEXT,
                   error_code TEXT,
                   error_message TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS collection_worker_heartbeats (
+                  worker_type TEXT PRIMARY KEY,
+                  status TEXT NOT NULL,
+                  last_heartbeat_at TEXT NOT NULL,
+                  last_started_at TEXT,
+                  last_successful_at TEXT,
+                  last_error_at TEXT,
+                  last_error_message TEXT,
+                  updated_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS target_collection_results (
@@ -542,6 +560,7 @@ class SQLiteOperationsRepository:
             ),
             missing_range_top=self._missing_range_top(targets),
             audit_log_summary=self.dashboard_audit_log_summary(),
+            worker_status=self.dashboard_worker_status(),
             refreshed_at=now_utc(),
         )
 
@@ -574,6 +593,12 @@ class SQLiteOperationsRepository:
 
     def dashboard_audit_log_summary(self) -> AuditLogSummary:
         return self._audit_log_summary()
+
+    def dashboard_worker_status(self) -> CollectionWorkerStatusSummary:
+        return CollectionWorkerStatusSummary(
+            realtime=self._realtime_worker_status(),
+            backfill=self._backfill_worker_status(),
+        )
 
     def _dashboard_coverage_from_targets(
         self, targets: list[CollectionDashboardTarget]
@@ -807,6 +832,99 @@ class SQLiteOperationsRepository:
             (limit,),
         ).fetchall()
         return [self._collection_run_from_row(row) for row in rows]
+
+    def record_collection_worker_heartbeat(
+        self,
+        worker_type: CollectionWorkerType,
+        status: CollectionWorkerHeartbeatStatus,
+        error_message: str | None = None,
+    ) -> None:
+        if worker_type not in {"realtime_collection", "backfill_collection"}:
+            raise ValueError("지원하지 않는 수집 워커 유형이다.")
+        if status not in {"running", "failed"}:
+            raise ValueError("지원하지 않는 수집 워커 상태다.")
+        now = now_utc()
+        with self._lock, self._conn:
+            self._execute(
+                """
+                INSERT INTO collection_worker_heartbeats (
+                  worker_type, status, last_heartbeat_at, last_started_at,
+                  last_successful_at, last_error_at, last_error_message, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(worker_type) DO UPDATE SET
+                  status = excluded.status,
+                  last_heartbeat_at = excluded.last_heartbeat_at,
+                  last_started_at = CASE
+                    WHEN excluded.status = 'running'
+                    THEN excluded.last_started_at
+                    ELSE collection_worker_heartbeats.last_started_at
+                  END,
+                  last_successful_at = CASE
+                    WHEN excluded.status = 'running'
+                    THEN excluded.last_successful_at
+                    ELSE collection_worker_heartbeats.last_successful_at
+                  END,
+                  last_error_at = CASE
+                    WHEN excluded.status = 'failed'
+                    THEN excluded.last_error_at
+                    ELSE collection_worker_heartbeats.last_error_at
+                  END,
+                  last_error_message = CASE
+                    WHEN excluded.status = 'failed'
+                    THEN excluded.last_error_message
+                    ELSE collection_worker_heartbeats.last_error_message
+                  END,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    worker_type,
+                    status,
+                    _to_db_time(now),
+                    _to_db_time(now) if status == "running" else None,
+                    _to_db_time(now) if status == "running" else None,
+                    _to_db_time(now) if status == "failed" else None,
+                    error_message,
+                    _to_db_time(now),
+                ),
+            )
+
+    def record_collection_run_failure(
+        self,
+        run_type: str,
+        data_type: str,
+        started_at: datetime,
+        error_code: str,
+        error_message: str,
+    ) -> CollectionRun:
+        finished_at = now_utc()
+        with self._lock, self._conn:
+            cursor = self._execute(
+                """
+                INSERT INTO collection_runs (
+                  run_type, data_type, status, trigger_type, started_at,
+                  finished_at, error_code, error_message
+                )
+                VALUES (?, ?, 'failed', 'system', ?, ?, ?, ?)
+                """,
+                (
+                    run_type,
+                    data_type,
+                    _to_db_time(started_at),
+                    _to_db_time(finished_at),
+                    error_code,
+                    error_message,
+                ),
+            )
+            run_id = _required_lastrowid(cursor)
+        return CollectionRun(
+            id=run_id,
+            run_type=run_type,
+            data_type=data_type,
+            status="failed",
+            started_at=started_at,
+            finished_at=finished_at,
+        )
 
     def create_backfill_plan(
         self,
@@ -1368,6 +1486,199 @@ class SQLiteOperationsRepository:
             latest_change_at=_from_db_time(latest_row["changed_at"]) if latest_row else None,
             latest_change_label=str(latest_row["label"]) if latest_row else "기록 없음",
         )
+
+    def _realtime_worker_status(self) -> RealtimeWorkerStatus:
+        status, status_label, status_detail, last_heartbeat_at = self._worker_runtime_status(
+            "realtime_collection",
+            stale_after=timedelta(minutes=2),
+        )
+        error_count_24h = self._realtime_error_count_24h()
+        run_count_24h = self._realtime_run_count_24h()
+        failure_rate_24h = (
+            Decimal(error_count_24h) / Decimal(run_count_24h) * Decimal("100")
+            if run_count_24h > 0
+            else Decimal("0")
+        )
+        return RealtimeWorkerStatus(
+            status=status,
+            status_label=status_label,
+            status_detail=status_detail,
+            last_heartbeat_at=last_heartbeat_at,
+            last_collected_at=self._latest_collection_finished_at("incremental"),
+            error_count_24h=error_count_24h,
+            failure_rate_24h=failure_rate_24h,
+            recent_errors=self._recent_realtime_errors(),
+        )
+
+    def _backfill_worker_status(self) -> BackfillWorkerStatus:
+        status, status_label, status_detail, last_heartbeat_at = self._worker_runtime_status(
+            "backfill_collection",
+            stale_after=timedelta(seconds=30),
+        )
+        total_error_count = self._backfill_error_count_all()
+        total_target_count_all = self._backfill_target_count_all()
+        failure_rate_all = (
+            Decimal(total_error_count) / Decimal(total_target_count_all) * Decimal("100")
+            if total_target_count_all > 0
+            else Decimal("0")
+        )
+        running_target_count, total_target_count = self._active_backfill_target_counts()
+        return BackfillWorkerStatus(
+            status=status,
+            status_label=status_label,
+            status_detail=status_detail,
+            last_heartbeat_at=last_heartbeat_at,
+            last_collected_at=self._latest_collection_finished_at("backfill"),
+            total_error_count=total_error_count,
+            failure_rate_all=failure_rate_all,
+            running_target_count=running_target_count,
+            total_target_count=total_target_count,
+            recent_errors=self._recent_backfill_errors(),
+        )
+
+    def _worker_runtime_status(
+        self,
+        worker_type: CollectionWorkerType,
+        stale_after: timedelta,
+    ) -> tuple[CollectionWorkerStatus, str, str, datetime | None]:
+        row = self._execute(
+            """
+            SELECT * FROM collection_worker_heartbeats
+            WHERE worker_type = ?
+            """,
+            (worker_type,),
+        ).fetchone()
+        if row is None:
+            return "stale", "중지 추정", "worker heartbeat 기록이 없습니다.", None
+        last_heartbeat_at = _from_db_time(row["last_heartbeat_at"])
+        if row["status"] == "failed":
+            return (
+                "failed",
+                "오류",
+                str(row["last_error_message"] or "마지막 heartbeat가 실패 상태입니다."),
+                last_heartbeat_at,
+            )
+        if now_utc() - last_heartbeat_at > stale_after:
+            return (
+                "stale",
+                "지연",
+                "마지막 heartbeat가 허용 지연 시간을 넘었습니다.",
+                last_heartbeat_at,
+            )
+        return "running", "동작 중", "최근 heartbeat 정상", last_heartbeat_at
+
+    def _latest_collection_finished_at(self, run_type: str) -> datetime | None:
+        row = self._execute(
+            """
+            SELECT finished_at, started_at FROM collection_runs
+            WHERE run_type = ? AND status IN ('succeeded', 'partial')
+            ORDER BY COALESCE(finished_at, started_at) DESC
+            LIMIT 1
+            """,
+            (run_type,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _from_db_time(row["finished_at"] or row["started_at"])
+
+    def _realtime_error_count_24h(self) -> int:
+        cutoff = _to_db_time(now_utc() - timedelta(hours=24))
+        row = self._execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM collection_runs
+            WHERE run_type = 'incremental' AND status = 'failed' AND started_at >= ?
+            """,
+            (cutoff,),
+        ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def _realtime_run_count_24h(self) -> int:
+        cutoff = _to_db_time(now_utc() - timedelta(hours=24))
+        row = self._execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM collection_runs
+            WHERE run_type = 'incremental' AND started_at >= ?
+            """,
+            (cutoff,),
+        ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def _recent_realtime_errors(self) -> list[CollectionWorkerError]:
+        cutoff = _to_db_time(now_utc() - timedelta(hours=24))
+        rows = self._execute(
+            """
+            SELECT started_at, error_code, error_message
+            FROM collection_runs
+            WHERE run_type = 'incremental' AND status = 'failed' AND started_at >= ?
+            ORDER BY started_at DESC
+            LIMIT 10
+            """,
+            (cutoff,),
+        ).fetchall()
+        return [
+            CollectionWorkerError(
+                occurred_at=_from_db_time(row["started_at"]),
+                code=str(row["error_code"] or "CollectionRunFailed"),
+                message=str(row["error_message"] or "실시간 수집 실행이 실패했습니다."),
+            )
+            for row in rows
+        ]
+
+    def _backfill_error_count_all(self) -> int:
+        row = self._execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM backfill_job_targets
+            WHERE status = 'failed'
+            """
+        ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def _backfill_target_count_all(self) -> int:
+        row = self._execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM backfill_job_targets
+            """
+        ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def _active_backfill_target_counts(self) -> tuple[int, int]:
+        row = self._execute(
+            """
+            SELECT
+              SUM(CASE WHEN bjt.status = 'running' THEN 1 ELSE 0 END) AS running_count,
+              COUNT(*) AS total_count
+            FROM backfill_job_targets bjt
+            JOIN backfill_jobs bj ON bj.id = bjt.backfill_job_id
+            WHERE bj.status IN ('pending', 'running')
+            """
+        ).fetchone()
+        if row is None:
+            return 0, 0
+        return int(row["running_count"] or 0), int(row["total_count"] or 0)
+
+    def _recent_backfill_errors(self) -> list[CollectionWorkerError]:
+        rows = self._execute(
+            """
+            SELECT bjt.updated_at, bjt.error_code, bjt.error_message, i.market_code
+            FROM backfill_job_targets bjt
+            JOIN instruments i ON i.id = bjt.instrument_id
+            WHERE bjt.status = 'failed'
+            ORDER BY bjt.updated_at DESC
+            LIMIT 10
+            """
+        ).fetchall()
+        return [
+            CollectionWorkerError(
+                occurred_at=_from_db_time(row["updated_at"]),
+                code=str(row["error_code"] or "BackfillTargetFailed"),
+                message=f"{row['market_code']}: {row['error_message'] or '백필 대상 수집 실패'}",
+            )
+            for row in rows
+        ]
 
     def _storage_bytes_for_range(self, start_at: datetime, end_at: datetime) -> int:
         return (

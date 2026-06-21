@@ -14,6 +14,10 @@ class UpbitCollectionWorker:
         self._repository = repository
         self._client = client
 
+    @property
+    def repository(self) -> OperationsRepository:
+        return self._repository
+
     def refresh_candidate_universe(self) -> int:
         ticker_rows = sorted(
             self._client.get_krw_tickers(),

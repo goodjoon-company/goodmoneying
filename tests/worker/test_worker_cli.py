@@ -5,6 +5,29 @@ import pytest
 from goodmoneying_worker import backfill_collection_worker, realtime_collection_worker
 
 
+class FakeRepository:
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+
+    def record_collection_worker_heartbeat(
+        self,
+        worker_type: str,
+        status: str,
+        error_message: str | None = None,
+    ) -> None:
+        self._calls.append(f"heartbeat:{worker_type}:{status}")
+
+    def record_collection_run_failure(
+        self,
+        run_type: str,
+        data_type: str,
+        started_at: object,
+        error_code: str,
+        error_message: str,
+    ) -> None:
+        self._calls.append(f"failure:{run_type}:{data_type}:{error_code}")
+
+
 def test_realtime_collection_worker_runs_single_collection_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -12,7 +35,7 @@ def test_realtime_collection_worker_runs_single_collection_by_default(
 
     class FakeWorker:
         def __init__(self, repository: object, client: object) -> None:
-            pass
+            self.repository = repository
 
         def refresh_candidate_universe(self) -> None:
             calls.append("refresh")
@@ -25,7 +48,7 @@ def test_realtime_collection_worker_runs_single_collection_by_default(
     monkeypatch.setattr(
         realtime_collection_worker,
         "create_repository_from_environment",
-        lambda: object(),
+        lambda: FakeRepository(calls),
     )
     monkeypatch.setattr(
         realtime_collection_worker,
@@ -35,7 +58,12 @@ def test_realtime_collection_worker_runs_single_collection_by_default(
 
     realtime_collection_worker.main()
 
-    assert calls == ["refresh", "collect"]
+    assert calls == [
+        "heartbeat:realtime_collection:running",
+        "refresh",
+        "collect",
+        "heartbeat:realtime_collection:running",
+    ]
 
 
 def test_backfill_collection_worker_polls_backfill_jobs_every_ten_seconds_by_default(
@@ -45,7 +73,7 @@ def test_backfill_collection_worker_polls_backfill_jobs_every_ten_seconds_by_def
 
     class FakeWorker:
         def __init__(self, repository: object, client: object) -> None:
-            pass
+            self.repository = repository
 
         def run_backfill_once(self) -> int:
             calls.append("backfill")
@@ -58,7 +86,7 @@ def test_backfill_collection_worker_polls_backfill_jobs_every_ten_seconds_by_def
     monkeypatch.setattr(
         backfill_collection_worker,
         "create_repository_from_environment",
-        lambda: object(),
+        lambda: FakeRepository(calls),
     )
     monkeypatch.setattr(
         backfill_collection_worker,
@@ -72,7 +100,14 @@ def test_backfill_collection_worker_polls_backfill_jobs_every_ten_seconds_by_def
 
     backfill_collection_worker.main()
 
-    assert calls == ["backfill", "sleep:10", "backfill"]
+    assert calls == [
+        "heartbeat:backfill_collection:running",
+        "backfill",
+        "heartbeat:backfill_collection:running",
+        "sleep:10",
+        "heartbeat:backfill_collection:running",
+        "backfill",
+    ]
 
 
 def test_backfill_collection_worker_uses_env_poll_interval(
@@ -82,7 +117,7 @@ def test_backfill_collection_worker_uses_env_poll_interval(
 
     class FakeWorker:
         def __init__(self, repository: object, client: object) -> None:
-            pass
+            self.repository = repository
 
         def run_backfill_once(self) -> int:
             calls.append("backfill")
@@ -93,7 +128,7 @@ def test_backfill_collection_worker_uses_env_poll_interval(
     monkeypatch.setattr(
         backfill_collection_worker,
         "create_repository_from_environment",
-        lambda: object(),
+        lambda: FakeRepository(calls),
     )
     monkeypatch.setattr(
         backfill_collection_worker,
@@ -104,7 +139,7 @@ def test_backfill_collection_worker_uses_env_poll_interval(
     backfill_collection_worker.main()
 
     assert backfill_collection_worker.poll_seconds_from_environment() == 2.5
-    assert calls == ["backfill"]
+    assert calls == ["heartbeat:backfill_collection:running", "backfill"]
 
 
 def test_backfill_collection_worker_rejects_negative_poll_interval(

@@ -16,6 +16,9 @@ BackfillStatus = Literal[
 CollectionRunStatus = Literal["running", "succeeded", "partial", "failed", "cancelled"]
 CollectionDataType = Literal["source_candle", "ticker_snapshot", "orderbook_summary"]
 CollectionRowsByType = dict[CollectionDataType, int]
+CollectionWorkerType = Literal["realtime_collection", "backfill_collection"]
+CollectionWorkerHeartbeatStatus = Literal["running", "failed"]
+CollectionWorkerStatus = Literal["running", "stale", "failed"]
 
 
 def decimal_string(value: Decimal | int | str | None) -> str | None:
@@ -263,6 +266,45 @@ class AuditLogSummary:
 
 
 @dataclass(frozen=True)
+class CollectionWorkerError:
+    occurred_at: datetime
+    code: str
+    message: str
+
+
+@dataclass(frozen=True)
+class RealtimeWorkerStatus:
+    status: CollectionWorkerStatus
+    status_label: str
+    status_detail: str
+    last_heartbeat_at: datetime | None
+    last_collected_at: datetime | None
+    error_count_24h: int
+    failure_rate_24h: Decimal
+    recent_errors: list[CollectionWorkerError]
+
+
+@dataclass(frozen=True)
+class BackfillWorkerStatus:
+    status: CollectionWorkerStatus
+    status_label: str
+    status_detail: str
+    last_heartbeat_at: datetime | None
+    last_collected_at: datetime | None
+    total_error_count: int
+    failure_rate_all: Decimal
+    running_target_count: int
+    total_target_count: int
+    recent_errors: list[CollectionWorkerError]
+
+
+@dataclass(frozen=True)
+class CollectionWorkerStatusSummary:
+    realtime: RealtimeWorkerStatus
+    backfill: BackfillWorkerStatus
+
+
+@dataclass(frozen=True)
 class BackfillPlan:
     plan_id: str
     data_type: Literal["source_candle"]
@@ -333,4 +375,5 @@ class DashboardSummary:
     operations_trend: list[OperationsTrendPoint]
     missing_range_top: list[MissingRangeSummary]
     audit_log_summary: AuditLogSummary
+    worker_status: CollectionWorkerStatusSummary
     refreshed_at: datetime

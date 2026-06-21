@@ -187,6 +187,41 @@ class AuditLogSummaryResponse(BaseModel):
     latestChangeLabel: str
 
 
+class CollectionWorkerErrorResponse(BaseModel):
+    occurredAt: datetime
+    code: str
+    message: str
+
+
+class RealtimeWorkerStatusResponse(BaseModel):
+    status: Literal["running", "stale", "failed"]
+    statusLabel: str
+    statusDetail: str
+    lastHeartbeatAt: datetime | None
+    lastCollectedAt: datetime | None
+    errorCount24h: int
+    failureRate24h: str
+    recentErrors: list[CollectionWorkerErrorResponse]
+
+
+class BackfillWorkerStatusResponse(BaseModel):
+    status: Literal["running", "stale", "failed"]
+    statusLabel: str
+    statusDetail: str
+    lastHeartbeatAt: datetime | None
+    lastCollectedAt: datetime | None
+    totalErrorCount: int
+    failureRateAll: str
+    runningTargetCount: int
+    totalTargetCount: int
+    recentErrors: list[CollectionWorkerErrorResponse]
+
+
+class CollectionWorkerStatusResponse(BaseModel):
+    realtime: RealtimeWorkerStatusResponse
+    backfill: BackfillWorkerStatusResponse
+
+
 class DashboardSummaryResponse(BaseModel):
     status: Literal["normal", "warning", "incident"]
     refreshedAt: datetime
@@ -202,6 +237,7 @@ class DashboardSummaryResponse(BaseModel):
     operationsTrend: list[OperationsTrendPointResponse]
     missingRangeTop: list[MissingRangeSummaryResponse]
     auditLogSummary: AuditLogSummaryResponse
+    workerStatus: CollectionWorkerStatusResponse
 
 
 class DashboardOverviewResponse(BaseModel):

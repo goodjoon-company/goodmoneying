@@ -14,6 +14,9 @@ from goodmoneying_shared.models import (
     CollectionActivityBucket,
     CollectionDashboardTarget,
     CollectionRun,
+    CollectionWorkerHeartbeatStatus,
+    CollectionWorkerStatusSummary,
+    CollectionWorkerType,
     CoverageSegment,
     CoverageStatus,
     DashboardSummary,
@@ -70,6 +73,8 @@ class OperationsRepository(Protocol):
 
     def dashboard_audit_log_summary(self) -> AuditLogSummary: ...
 
+    def dashboard_worker_status(self) -> CollectionWorkerStatusSummary: ...
+
     def collection_dashboard_targets(
         self, include_segments: bool = False
     ) -> list[CollectionDashboardTarget]: ...
@@ -99,6 +104,22 @@ class OperationsRepository(Protocol):
     ) -> list[OrderbookSummary]: ...
 
     def collection_runs(self, limit: int) -> list[CollectionRun]: ...
+
+    def record_collection_worker_heartbeat(
+        self,
+        worker_type: CollectionWorkerType,
+        status: CollectionWorkerHeartbeatStatus,
+        error_message: str | None = None,
+    ) -> None: ...
+
+    def record_collection_run_failure(
+        self,
+        run_type: str,
+        data_type: str,
+        started_at: datetime,
+        error_code: str,
+        error_message: str,
+    ) -> CollectionRun: ...
 
     def create_backfill_plan(
         self,

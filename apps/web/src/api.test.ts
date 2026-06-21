@@ -41,6 +41,30 @@ const dashboard = {
     }
   ],
   collectionActivity: [],
+  workerStatus: {
+    realtime: {
+      status: "running",
+      statusLabel: "동작 중",
+      statusDetail: "최근 heartbeat 정상",
+      lastHeartbeatAt: "2026-06-19T00:00:00.000Z",
+      lastCollectedAt: "2026-06-19T00:00:00.000Z",
+      errorCount24h: 0,
+      failureRate24h: "0",
+      recentErrors: []
+    },
+    backfill: {
+      status: "running",
+      statusLabel: "동작 중",
+      statusDetail: "백필 계획 확인 중",
+      lastHeartbeatAt: "2026-06-19T00:00:00.000Z",
+      lastCollectedAt: "2026-06-19T00:00:00.000Z",
+      totalErrorCount: 0,
+      failureRateAll: "0",
+      runningTargetCount: 0,
+      totalTargetCount: 0,
+      recentErrors: []
+    }
+  },
   storageBreakdown: [],
   operationsTrend: [],
   missingRangeTop: [],
@@ -108,8 +132,10 @@ describe("운영 API 클라이언트", () => {
   });
 
   it("구버전 대시보드 응답에 새 운영 콘솔 필드가 없어도 첫 화면용 기본값을 채운다", async () => {
+    const dashboardWithoutWorkerStatus = { ...dashboard };
+    delete (dashboardWithoutWorkerStatus as Partial<typeof dashboard>).workerStatus;
     const legacyDashboard = {
-      ...dashboard,
+      ...dashboardWithoutWorkerStatus,
       totals: {
         activeTargets: 1,
         activeTargetLimit: 50,
@@ -170,6 +196,8 @@ describe("운영 API 클라이언트", () => {
     expect(snapshot.dashboard.totals.realtimeRowsLastMinute).toBe(0);
     expect(snapshot.dashboard.totals.backfillRowsLastMinute).toBe(0);
     expect(snapshot.dashboard.collectionActivity).toEqual([]);
+    expect(snapshot.dashboard.workerStatus.realtime.status).toBe("stale");
+    expect(snapshot.dashboard.workerStatus.backfill.totalTargetCount).toBe(0);
     expect(snapshot.dashboard.storageBreakdown).toEqual([]);
     expect(snapshot.dashboard.targets[0].storageRowCount).toBe(0);
     expect(snapshot.dashboard.targets[0].changeRate).toBe("0");

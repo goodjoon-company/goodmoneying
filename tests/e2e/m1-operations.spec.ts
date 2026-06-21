@@ -48,7 +48,10 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.getByRole("button", { name: "운영 변경 저장" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "업비트 수집 운영 상태" })).toBeVisible();
   await expect(page.locator(".app-shell")).toHaveAttribute("data-theme", "dark");
-  await expect(page.locator(".ops-summary-card").filter({ hasText: "활성 대상" })).toBeVisible();
+  await expect(page.locator(".ops-summary-card").filter({ hasText: "worker 현황" })).toBeVisible();
+  await expect(page.getByText("Realtime worker")).toBeVisible();
+  await expect(page.getByText("Backfill worker")).toBeVisible();
+  await expect(page.getByText(/동작중 코인 [0-9]+\/[0-9]+개/)).toBeVisible();
   await expect(page.getByRole("heading", { name: "코인별 수집 상태" })).toBeVisible();
   await expect(page.locator(".dashboard-row-button").first()).toBeVisible();
   await expect(page.getByText("실시간 / 백필 row")).toBeVisible();
@@ -66,6 +69,9 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.getByText("중복 행 0")).toHaveCount(0);
   await expect(page.getByText("표시 KST")).toBeVisible();
   await expect(page.getByText("저장 UTC")).toBeVisible();
+  await page.getByRole("button", { name: "Realtime worker 24시간 오류 상세" }).click();
+  await expect(page.getByRole("dialog", { name: "Realtime worker 오류 상세" })).toBeVisible();
+  await page.getByLabel("닫기").click();
 
   await page.locator(".dashboard-row-button").first().click();
   await expect(page.getByText(/코인별 수집 계획/)).toBeVisible();

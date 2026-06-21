@@ -10,6 +10,7 @@ from goodmoneying_api.schemas import (
     AuditLogSummaryResponse,
     BackfillJobResponse,
     BackfillPlanResponse,
+    BackfillWorkerStatusResponse,
     CandidateUniverseEntryResponse,
     CandidateUniverseResponse,
     CandleResponse,
@@ -22,6 +23,8 @@ from goodmoneying_api.schemas import (
     CollectionRunResponse,
     CollectionRunsResponse,
     CollectionTargetsResponse,
+    CollectionWorkerErrorResponse,
+    CollectionWorkerStatusResponse,
     CoverageSegmentResponse,
     CoverageStatusResponse,
     DashboardAuditLogSummaryResponse,
@@ -50,6 +53,7 @@ from goodmoneying_api.schemas import (
     QualityHistoryEventResponse,
     RealtimeCollectionHeatmapCellResponse,
     RealtimeCollectionHeatmapRowResponse,
+    RealtimeWorkerStatusResponse,
     StorageBreakdownItemResponse,
     TickerSnapshotResponse,
     TickerSnapshotsResponse,
@@ -59,6 +63,7 @@ from goodmoneying_shared.models import (
     BackfillPlan,
     CandleView,
     CollectionDashboardTarget,
+    CollectionWorkerStatusSummary,
     CoverageSegment,
     CoverageStatus,
     DashboardSummary,
@@ -565,6 +570,50 @@ def dashboard_to_response(item: DashboardSummary) -> DashboardSummaryResponse:
             backfillChangeCount24h=item.audit_log_summary.backfill_change_count_24h,
             latestChangeAt=item.audit_log_summary.latest_change_at,
             latestChangeLabel=item.audit_log_summary.latest_change_label,
+        ),
+        workerStatus=worker_status_to_response(item.worker_status),
+    )
+
+
+def worker_status_to_response(
+    item: CollectionWorkerStatusSummary,
+) -> CollectionWorkerStatusResponse:
+    return CollectionWorkerStatusResponse(
+        realtime=RealtimeWorkerStatusResponse(
+            status=item.realtime.status,
+            statusLabel=item.realtime.status_label,
+            statusDetail=item.realtime.status_detail,
+            lastHeartbeatAt=item.realtime.last_heartbeat_at,
+            lastCollectedAt=item.realtime.last_collected_at,
+            errorCount24h=item.realtime.error_count_24h,
+            failureRate24h=decimal_string(item.realtime.failure_rate_24h) or "0",
+            recentErrors=[
+                CollectionWorkerErrorResponse(
+                    occurredAt=error.occurred_at,
+                    code=error.code,
+                    message=error.message,
+                )
+                for error in item.realtime.recent_errors
+            ],
+        ),
+        backfill=BackfillWorkerStatusResponse(
+            status=item.backfill.status,
+            statusLabel=item.backfill.status_label,
+            statusDetail=item.backfill.status_detail,
+            lastHeartbeatAt=item.backfill.last_heartbeat_at,
+            lastCollectedAt=item.backfill.last_collected_at,
+            totalErrorCount=item.backfill.total_error_count,
+            failureRateAll=decimal_string(item.backfill.failure_rate_all) or "0",
+            runningTargetCount=item.backfill.running_target_count,
+            totalTargetCount=item.backfill.total_target_count,
+            recentErrors=[
+                CollectionWorkerErrorResponse(
+                    occurredAt=error.occurred_at,
+                    code=error.code,
+                    message=error.message,
+                )
+                for error in item.backfill.recent_errors
+            ],
         ),
     )
 

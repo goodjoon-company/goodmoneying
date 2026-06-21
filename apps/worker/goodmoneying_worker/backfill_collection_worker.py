@@ -28,7 +28,23 @@ def run_backfill_poll_loop(
 ) -> None:
     try:
         while True:
-            written = worker.run_backfill_once()
+            worker.repository.record_collection_worker_heartbeat(
+                "backfill_collection",
+                "running",
+            )
+            try:
+                written = worker.run_backfill_once()
+            except Exception as exc:
+                worker.repository.record_collection_worker_heartbeat(
+                    "backfill_collection",
+                    "failed",
+                    str(exc),
+                )
+                raise
+            worker.repository.record_collection_worker_heartbeat(
+                "backfill_collection",
+                "running",
+            )
             print(f"백필 수집 폴링 완료: rows={written}")
             time.sleep(poll_seconds)
     except KeyboardInterrupt:

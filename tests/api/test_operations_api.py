@@ -26,6 +26,14 @@ def seeded_client() -> TestClient:
     return seeded_repository_and_client()[1]
 
 
+def without_relative_freshness(items: list[dict[str, object]]) -> list[dict[str, object]]:
+    normalized = []
+    for item in items:
+        assert str(item["tickerFreshnessLabel"]).endswith("전")
+        normalized.append({**item, "tickerFreshnessLabel": "<relative>"})
+    return normalized
+
+
 def test_default_api_repository_does_not_auto_seed_fixture_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -282,7 +290,9 @@ def test_dashboard_panel_endpoints_return_summary_slices() -> None:
     assert overview.json()["recommendedRefreshSeconds"] == 10
 
     assert targets.status_code == 200
-    assert targets.json()["items"] == summary["targets"]
+    assert without_relative_freshness(targets.json()["items"]) == without_relative_freshness(
+        summary["targets"]
+    )
     assert targets.json()["total"] == 50
     assert targets.json()["limit"] == 50
     assert targets.json()["offset"] == 0

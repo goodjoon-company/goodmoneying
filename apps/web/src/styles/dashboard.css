@@ -140,9 +140,24 @@
   line-height: 1.2;
 }
 
-.worker-status-title span {
+.worker-status-detail-button {
+  width: fit-content;
+  min-height: 0;
+  border: 0;
+  border-bottom: 1px dotted #5f7469;
+  border-radius: 0;
+  background: transparent;
   color: #8a958f;
+  cursor: pointer;
+  font: inherit;
   font-size: 11px;
+  padding: 0;
+  text-align: left;
+}
+
+.worker-status-detail-button:hover {
+  color: #d9e5de;
+  border-bottom-color: #37d28f;
 }
 
 .worker-status-row dl {
@@ -238,6 +253,44 @@
 .worker-error-item p {
   margin: 0;
   color: #dce7e0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.worker-diagnostics-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.worker-diagnostic-item {
+  display: grid;
+  grid-template-columns: minmax(92px, 0.5fr) minmax(0, 1fr);
+  gap: 5px 12px;
+  border-top: 1px solid rgb(255 255 255 / 0.07);
+  padding-top: 10px;
+}
+
+.worker-diagnostic-item:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.worker-diagnostic-item span {
+  color: #7d8a83;
+  font-size: 11px;
+}
+
+.worker-diagnostic-item strong {
+  overflow-wrap: anywhere;
+  color: #e8efe9;
+  font-size: 13px;
+}
+
+.worker-diagnostic-item p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #b8c6be;
   font-size: 12px;
   line-height: 1.45;
 }

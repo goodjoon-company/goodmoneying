@@ -133,8 +133,8 @@ export function formatBytes(value: number): string {
   return `${value}B`;
 }
 
-export function dateTimeLocalToUtcIso(value: string): string {
-  return `${value}:00.000Z`;
+export function dateTimeLocalToKstIso(value: string): string {
+  return `${value}:00+09:00`;
 }
 
 export function formatDateTimeRange(startAt: string, endAt: string): string {

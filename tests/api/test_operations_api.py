@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from goodmoneying_api.main import create_app
 from goodmoneying_shared.models import SourceCandle
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
-from goodmoneying_shared.time import now_utc
+from goodmoneying_shared.time import now_kst
 from goodmoneying_worker.collector import seed_repository
 from goodmoneying_worker.upbit_client import FixtureUpbitClient
 
@@ -118,7 +118,12 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
     assert "," in universe.json()["entries"][0]["accTradePrice24hDisplay"]
     assert universe.json()["entries"][0]["qualityStatus"] in {"normal", "warning", "incident"}
     assert universe.json()["entries"][0]["qualityDetail"]
-    assert universe.json()["entries"][0]["collectionRangeDisplay"].startswith("2026-01-01")
+    first_universe_entry = universe.json()["entries"][0]
+    assert first_universe_entry["collectionRangeDisplay"].startswith("2026-01-01")
+    assert first_universe_entry["collectedStartAt"]
+    assert first_universe_entry["collectedEndAt"]
+    assert first_universe_entry["collectedStartAt"] <= first_universe_entry["collectedEndAt"]
+    assert first_universe_entry["isRealtimeTarget"] is True
     assert market_list.status_code == 200
     assert len(market_list.json()["rows"]) == 50
     first_market_row = market_list.json()["rows"][0]
@@ -145,7 +150,7 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
 def test_dashboard_summary_exposes_collection_worker_status() -> None:
     repository, client = seeded_repository_and_client()
     instruments = repository.list_active_targets()
-    started_at = now_utc() - timedelta(minutes=2)
+    started_at = now_kst() - timedelta(minutes=2)
     repository.record_collection_worker_heartbeat("realtime_collection", "running")
     repository.record_collection_worker_heartbeat("backfill_collection", "running")
     repository.record_collection_run_failure(
@@ -157,8 +162,8 @@ def test_dashboard_summary_exposes_collection_worker_status() -> None:
     )
     failed_plan = repository.create_backfill_plan(
         "source_candle",
-        now_utc() - timedelta(hours=4),
-        now_utc() - timedelta(hours=3),
+        now_kst() - timedelta(hours=4),
+        now_kst() - timedelta(hours=3),
         [instruments[2].id],
     )
     failed_job = repository.approve_backfill_job(failed_plan.plan_id)
@@ -173,8 +178,8 @@ def test_dashboard_summary_exposes_collection_worker_status() -> None:
     )
     plan = repository.create_backfill_plan(
         "source_candle",
-        now_utc() - timedelta(hours=2),
-        now_utc() - timedelta(hours=1),
+        now_kst() - timedelta(hours=2),
+        now_kst() - timedelta(hours=1),
         [item.id for item in instruments[:2]],
     )
     job = repository.approve_backfill_job(plan.plan_id)
@@ -192,14 +197,14 @@ def test_dashboard_summary_exposes_collection_worker_status() -> None:
             SourceCandle(
                 instrument_id=instruments[1].id,
                 candle_unit="1m",
-                candle_start_at=now_utc() - timedelta(hours=2),
+                candle_start_at=now_kst() - timedelta(hours=2),
                 open_price=Decimal("100"),
                 high_price=Decimal("101"),
                 low_price=Decimal("99"),
                 close_price=Decimal("100"),
                 trade_volume=Decimal("1"),
                 trade_amount=Decimal("100"),
-                collected_at=now_utc(),
+                collected_at=now_kst(),
             )
         ],
     )
@@ -207,8 +212,15 @@ def test_dashboard_summary_exposes_collection_worker_status() -> None:
         job.id,
         instruments[1].id,
         "succeeded",
-        now_utc() - timedelta(hours=1),
+        now_kst() - timedelta(hours=1),
     )
+    queued_plan = repository.create_backfill_plan(
+        "source_candle",
+        now_kst() - timedelta(minutes=50),
+        now_kst() - timedelta(minutes=10),
+        [item.id for item in instruments[3:5]],
+    )
+    repository.approve_backfill_job(queued_plan.plan_id)
 
     response = client.get("/v1/dashboard/summary")
 
@@ -219,6 +231,11 @@ def test_dashboard_summary_exposes_collection_worker_status() -> None:
     assert worker_status["realtime"]["lastCollectedAt"]
     assert worker_status["realtime"]["errorCount24h"] == 1
     assert worker_status["realtime"]["failureRate24h"] != "0"
+    assert {
+        "label": "마지막 heartbeat",
+        "value": worker_status["realtime"]["lastHeartbeatAt"],
+        "detail": "최근 heartbeat 정상",
+    } in worker_status["realtime"]["diagnostics"]
     assert worker_status["realtime"]["recentErrors"][0]["code"] == "UpbitTimeout"
     assert worker_status["backfill"]["status"] == "running"
     assert worker_status["backfill"]["lastHeartbeatAt"]
@@ -227,6 +244,18 @@ def test_dashboard_summary_exposes_collection_worker_status() -> None:
     assert worker_status["backfill"]["failureRateAll"] != "0"
     assert worker_status["backfill"]["runningTargetCount"] == 1
     assert worker_status["backfill"]["totalTargetCount"] == 2
+    assert worker_status["backfill"]["queuedJobCount"] == 1
+    assert worker_status["backfill"]["queuedTargetCount"] == 2
+    assert {
+        "label": "동작중 코인",
+        "value": "1/2개",
+        "detail": "현재 실행 중인 백필 계획의 running 대상 수",
+    } in worker_status["backfill"]["diagnostics"]
+    assert {
+        "label": "대기 백필",
+        "value": "1건 / 2개",
+        "detail": "현재 계획 이후 대기 중인 백필 job/target",
+    } in worker_status["backfill"]["diagnostics"]
     assert worker_status["backfill"]["recentErrors"][0]["code"] == "UpbitBackfillError"
 
 
@@ -469,15 +498,15 @@ def test_collection_targets_reject_more_than_50_instruments() -> None:
     assert response.json()["code"] == "VALIDATION_ERROR"
 
 
-def test_backfill_plan_approval_and_control() -> None:
+def test_backfill_job_start_and_control() -> None:
     client = seeded_client()
     universe = client.get("/v1/candidate-universe").json()
     instrument_ids = [entry["instrument"]["id"] for entry in universe["entries"][:2]]
-    start_at = (now_utc() - timedelta(hours=1)).isoformat()
-    end_at = now_utc().isoformat()
+    start_at = (now_kst() - timedelta(hours=1)).isoformat()
+    end_at = now_kst().isoformat()
 
-    plan = client.post(
-        "/v1/backfill/plans",
+    job = client.post(
+        "/v1/backfill/jobs",
         headers={"X-Operator-Token": "local-dev-token"},
         json={
             "dataType": "source_candle",
@@ -486,14 +515,9 @@ def test_backfill_plan_approval_and_control() -> None:
             "instrumentIds": instrument_ids,
         },
     )
-    assert plan.status_code == 200
-
-    job = client.post(
-        "/v1/backfill/jobs",
-        headers={"X-Operator-Token": "local-dev-token"},
-        json={"planId": plan.json()["planId"]},
-    )
     assert job.status_code == 201
+    assert job.json()["status"] == "pending"
+    assert [target["id"] for target in job.json()["targets"]] == instrument_ids
 
     paused = client.post(
         f"/v1/backfill/jobs/{job.json()['id']}/pause",
@@ -502,16 +526,33 @@ def test_backfill_plan_approval_and_control() -> None:
     assert paused.status_code == 200
     assert paused.json()["status"] == "paused"
 
+    stopped = client.post(
+        f"/v1/backfill/jobs/{job.json()['id']}/stop",
+        headers={"X-Operator-Token": "local-dev-token"},
+    )
+    assert stopped.status_code == 200
+    assert stopped.json()["status"] == "stopped"
+
+    deleted = client.delete(
+        f"/v1/backfill/jobs/{job.json()['id']}",
+        headers={"X-Operator-Token": "local-dev-token"},
+    )
+    assert deleted.status_code == 204
+    assert all(
+        item["id"] != job.json()["id"]
+        for item in client.get("/v1/backfill/jobs").json()["items"]
+    )
+
 
 def test_backfill_jobs_return_repository_progress() -> None:
     repository, client = seeded_repository_and_client()
     universe = client.get("/v1/candidate-universe").json()
     instrument_ids = [entry["instrument"]["id"] for entry in universe["entries"][:2]]
-    start_at = (now_utc() - timedelta(hours=1)).isoformat()
-    end_at = now_utc().isoformat()
+    start_at = (now_kst() - timedelta(hours=1)).isoformat()
+    end_at = now_kst().isoformat()
 
-    plan = client.post(
-        "/v1/backfill/plans",
+    job = client.post(
+        "/v1/backfill/jobs",
         headers={"X-Operator-Token": "local-dev-token"},
         json={
             "dataType": "source_candle",
@@ -519,27 +560,27 @@ def test_backfill_jobs_return_repository_progress() -> None:
             "targetEndAt": end_at,
             "instrumentIds": instrument_ids,
         },
-    )
-    job = client.post(
-        "/v1/backfill/jobs",
-        headers={"X-Operator-Token": "local-dev-token"},
-        json={"planId": plan.json()["planId"]},
     ).json()
+    repository.claim_next_backfill_job()
 
-    repository.mark_backfill_target(job["id"], instrument_ids[0], "succeeded", now_utc())
+    repository.mark_backfill_target(job["id"], instrument_ids[0], "succeeded", now_kst())
 
     jobs = client.get("/v1/backfill/jobs")
 
     assert jobs.status_code == 200
-    assert jobs.json()["items"][0]["status"] == "running"
-    assert jobs.json()["items"][0]["progressPercent"] == "50"
+    item = jobs.json()["items"][0]
+    assert item["status"] == "running"
+    assert item["progressPercent"] == "50"
+    assert item["targetStartAt"] == start_at
+    assert item["targetEndAt"] == end_at
+    assert [target["id"] for target in item["targets"]] == instrument_ids
 
 
 def test_candle_endpoint_rejects_unsupported_unit_and_invalid_range() -> None:
     client = seeded_client()
     instrument_id = client.get("/v1/market-list").json()["rows"][0]["instrument"]["id"]
-    start_at = (now_utc() - timedelta(hours=1)).isoformat()
-    end_at = now_utc().isoformat()
+    start_at = (now_kst() - timedelta(hours=1)).isoformat()
+    end_at = now_kst().isoformat()
 
     unsupported_unit = client.get(
         f"/v1/instruments/{instrument_id}/candles",

@@ -15,7 +15,7 @@ const menuGroups: {
     title: "데이터 수집관리",
     items: [
       { id: "dashboard", label: "운영 상태", badge: "MVP", enabled: true },
-      { id: "targets", label: "수집 대상/설정", badge: "MVP", enabled: true },
+      { id: "targets", label: "Backfill 관리", badge: "MVP", enabled: true },
       { id: "markets", label: "시장 리스트", badge: "MVP", enabled: true },
       { id: "scalability", label: "확장성 점검", badge: "M3.5", enabled: true }
     ]
@@ -47,10 +47,10 @@ const sectionMeta: Record<SectionId, { crumb: string; milestone: string; title: 
     desc: "수집 대상 최대 50개 코인의 최신성, 지연, 결측, 실패, 저장 행을 한 화면에서 확인하는 고밀도 운영 콘솔"
   },
   targets: {
-    crumb: "goodmoneying / 수집 대상/설정 / M2",
+    crumb: "goodmoneying / Backfill 관리 / M2",
     milestone: "M2 · 운영 관제형",
-    title: "수집 대상과 백필 설정",
-    desc: "상위 100개 후보 중 활성 수집 대상 최대 50개를 조정하고 백필 계획을 승인합니다."
+    title: "Backfill 관리",
+    desc: "상위 100개 후보 중 활성 수집 대상 최대 50개를 조정하고 백필 작업을 시작합니다."
   },
   markets: {
     crumb: "goodmoneying / 시장 리스트 / M2",
@@ -139,7 +139,7 @@ export function OperationsConsole() {
           </div>
           <div className="runtime-pills" aria-label="화면 갱신 기준">
             <span>표시 KST</span>
-            <span>저장 UTC</span>
+            <span>저장 KST</span>
             <span>폴링 15초</span>
             <span>마지막 갱신 {formatFreshness(snapshot.dashboard.refreshedAt)}</span>
           </div>

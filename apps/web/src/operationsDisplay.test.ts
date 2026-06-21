@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  dateTimeLocalToUtcIso,
+  dateTimeLocalToKstIso,
   emptyStorageBreakdown,
   emptyTrendPoints,
   normalizeRealtimeCollectionHeatmapRows,
@@ -24,10 +24,10 @@ describe("운영 표시 모델", () => {
   });
 
   it("표시 시각과 datetime-local 값을 명확히 변환한다", () => {
-    expect(formatFreshness("2026-01-01T00:00:00.000Z")).toContain("01. 01.");
-    expect(formatDateTimeRange("2026-01-01T00:00:00.000Z", "2026-01-02T00:00:00.000Z"))
+    expect(formatFreshness("2026-01-01T00:00:00+09:00")).toContain("01. 01.");
+    expect(formatDateTimeRange("2026-01-01T00:00:00+09:00", "2026-01-02T00:00:00.000Z"))
       .toContain("~");
-    expect(dateTimeLocalToUtcIso("2026-01-01T00:00")).toBe("2026-01-01T00:00:00.000Z");
+    expect(dateTimeLocalToKstIso("2026-01-01T00:00")).toBe("2026-01-01T00:00:00+09:00");
   });
 
   it("빈 저장 breakdown과 운영 추이 fallback을 제공한다", () => {

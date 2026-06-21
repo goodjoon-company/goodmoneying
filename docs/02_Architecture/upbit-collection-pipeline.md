@@ -36,9 +36,9 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 | 구성요소 | 책임 | 구현 기준 |
 |---|---|---|
 | 실시간 수집 워커(Realtime Collection Worker) | 업비트 API 호출, rate limit 관리, 후보 유니버스와 증분 수집 실행 | Python 단일 프로세스 |
-| 백필 수집 워커(Backfill Collection Worker) | DB 상태 폴링으로 승인된 백필 작업 확인, 원천 캔들 백필 실행 | Python 단일 프로세스, 기본 10초 폴링 |
+| 백필 수집 워커(Backfill Collection Worker) | DB 상태 폴링으로 pending 백필 작업 확인, 원천 캔들 백필 실행 | Python 단일 프로세스, 기본 10초 폴링 |
 | 운영 서버(Operations Server) | 화면 단위 View Model API, 원천 리소스 API, 쓰기 API, 저장된 worker 상태 조회 | FastAPI |
-| 운영 화면 | 데이터 수집관리 내비게이션, worker 현황판, 대시보드, 수집 대상/설정, 백필 제어, 시장 리스트, 코인 상세 레이어 | React, React Query, HTTP 폴링 |
+| 운영 화면 | 데이터 수집관리 내비게이션, worker 현황판, 대시보드, Backfill 관리, 백필 제어, 시장 리스트, 코인 상세 레이어 | React, React Query, HTTP 폴링 |
 | PostgreSQL | 원천 사실, 설정, 품질, 감사, 알림 이벤트 저장 | `docs/contracts/db/schema.sql` |
 
 ## 입력과 출력
@@ -52,7 +52,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 - 운영 화면의 활성 수집 대상 변경
 - 운영 화면의 코인별 수집 계획 변경
 - 운영 화면의 수집 범위 설정 변경
-- 운영 화면의 백필 계획 승인과 제어 명령
+- 운영 화면의 백필 시작과 제어 명령
 
 ### 출력
 
@@ -86,14 +86,15 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 
 ### 백필
 
-1. 사용자는 수집 대상/설정 화면에서 백필 후보 코인을 체크한다.
+1. 사용자는 Backfill 관리 화면에서 백필 후보 코인을 체크한다.
 2. 사용자가 백필 계획 생성 버튼을 누르면 운영 화면은 수집 범위와 백필 옵션을 설정하는 레이어 팝업을 연다.
 3. 운영 서버는 선택 코인 세트, 데이터 유형, 목표 기간으로 백필 계획을 생성한다.
 4. 백필 계획은 대상, 기간, 예상 요청 수, 저장 예상량을 보수적 추정치로 보여준다.
-5. 운영 화면은 생성된 계획들을 백필 승인 패널에 목록으로 구성하고, 계획 추가/삭제/변경 시 백필 계획 승인 버튼을 활성화한다.
-6. 사용자가 승인하면 계획별 백필 작업이 생성된다.
+5. 사용자가 백필 시작 버튼을 누르면 계획별 백필 작업이 pending 상태로 저장된다.
+6. 운영 화면은 저장된 백필 작업을 백필 작업 패널에 목록으로 구성하고, 멈춤(Pause), 중지(Stop), 삭제(Delete) 제어를 제공한다.
 7. 백필 수집 워커는 DB 폴링으로 작업 상태를 10초 주기로 읽고 백필을 실행한다.
 8. 백필 수집 워커는 폴링 heartbeat와 성공/오류 상태를 `collection_worker_heartbeats`에 남긴다.
+   장시간 백필 작업 중에는 대상 처리와 캔들 요청 진행 지점마다 heartbeat를 갱신해 실행 중인 worker가 지연으로 오판되지 않게 한다.
 9. 백필 수집 워커는 이미 저장된 기간의 데이터를 중복 요청하지 않는다.
 10. 기간이 조정된 경우 수집 범위 시작일부터 재검사하되, 시작일 데이터가 이미 있으면 그 이후 첫 빈 구간부터 요청한다.
 11. 백필은 일시정지, 중지, 이어서하기, 안전 재시작을 지원한다.
@@ -108,7 +109,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 
 ## 데이터 기준
 
-- 저장 시각(Storage Time)은 UTC 기준 `timestamptz`다.
+- 저장 시각(Storage Time)은 KST(Korea Standard Time) 기준 `timestamptz`다.
 - 업비트 KRW 마켓 표시 시각(Display Time)은 KST(Korea Standard Time)를 기본으로 한다.
 - 금액, 수량, 거래대금, 등락률은 DB에서 `numeric`, Python에서 `Decimal`로 다룬다.
 - API 응답의 Decimal 값은 문자열로 보낸다.
@@ -122,22 +123,22 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 |---|---|---|
 | 데이터 수집관리 내비게이션 | 제품 전체 메뉴와 MVP 활성 영역 | 정적 또는 설정 변경 후 갱신 |
 | 운영 상태 대시보드 | worker 현황판, 코인별 수집 계획, 파이프라인 건강도, 최신성, 실패, 결측, 저장량, 구간형 진행 상태 | 10~15초 |
-| 수집 대상/설정 | 후보 유니버스, 활성 수집 대상 최대 50개, 백필 계획 생성 레이어, 백필 승인 패널 | 수동 또는 변경 후 갱신 |
-| 백필 작업 | 승인된 백필 작업 상태와 제어 | 실행 중 5~10초 |
+| Backfill 관리 | 후보 유니버스, 활성 수집 대상 최대 50개, 24시간 거래대금, 수집 시작일/최종일, 실시간 수집 라벨, 백필 계획 생성 레이어, 백필 작업 패널 | 수동 또는 변경 후 갱신 |
+| 백필 작업 | 저장된 백필 작업 상태와 제어 | 실행 중 5~10초 |
 | 시장 리스트 | 현재가, 거래대금, 등락률, 품질 상태 | 30초 |
 | 코인 상세 레이어 | 캔들 차트, 호가 요약, 품질 이력 | 30초 또는 사용자가 켜는 실시간 모드 |
 
 운영 상태 대시보드는 수집 대상 코인을 행(row) 단위로 표시한다. 각 행은 코인 전체 상태와 캔들(Candle), 현재가(Ticker), 호가 요약(Orderbook Summary)의 미니 상태를 함께 보여주고, 펼치면 데이터별 그래프, 결측 구간, 수집 계획 수정 버튼, 백필 제어를 표시한다.
 
-운영 상태 대시보드 첫 카드의 worker 현황판은 `DashboardSummary.workerStatus`를 사용한다. 실시간 수집 워커는 heartbeat, 마지막 증분 수집 시각, 24시간 수집 오류 수, 24시간 실패율, 최근 오류 상세를 표시한다. 백필 수집 워커는 heartbeat, 마지막 백필 수집 시각, 전체 백필 오류 수, 전체 실패율, 현재 동작 중인 백필 대상 수(`runningTargetCount/totalTargetCount`)와 최근 오류 상세를 표시한다.
+운영 상태 대시보드 첫 카드의 worker 현황판은 `DashboardSummary.workerStatus`를 사용한다. 실시간 수집 워커는 heartbeat, 마지막 저장 성공 시각, 24시간 수집 오류 수, 24시간 실패율, 최근 오류 상세를 표시한다. 백필 수집 워커는 heartbeat, 마지막 저장 성공 시각, 전체 백필 오류 수, 전체 실패율, 현재 실행 중인 단일 백필 계획 기준의 동작 중 대상 수(`runningTargetCount/totalTargetCount`), 대기 중인 백필 job/target 보조지표(`queuedJobCount/queuedTargetCount`), 최근 오류 상세를 표시한다. worker 상태 라벨은 클릭 가능한 진단 진입점이며, 상태 사유, 마지막 heartbeat, 마지막 저장 성공, 오류율, 동작 중 대상 수, 대기 백필 수 같은 `diagnostics` 항목을 레이어 팝업으로 표시한다.
 
-화면 시간 표시는 KST(Korea Standard Time)와 UTC(Coordinated Universal Time)를 작은 배지 또는 아이콘(icon)으로 항상 구분한다. 저장과 내부 계산은 UTC 기준이고, 현재(지속) 수집의 진행 상태 기준일은 KST 전일 23:59:59다.
+화면 시간 표시는 KST(Korea Standard Time)로 통일한다. 저장과 내부 계산, Docker 컨테이너, PostgreSQL 세션과 DB 기본 시간대도 KST 기준이고, 현재(지속) 수집의 진행 상태 기준일은 KST 전일 23:59:59다.
 
 ## 보안과 감사
 
 - M1은 로컬 신뢰 네트워크를 전제로 한다.
 - 쓰기 API는 단순 운영 토큰(Authentication)을 요구한다.
-- 활성 수집 대상 저장, 수집 범위 설정 변경, 백필 승인/제어는 감사 로그를 남긴다.
+- 활성 수집 대상 저장, 수집 범위 설정 변경, 백필 시작/제어는 감사 로그를 남긴다.
 - 다중 사용자 권한(Authorization)은 M1 범위가 아니다.
 
 ## 의존성

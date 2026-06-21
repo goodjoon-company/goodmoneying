@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from goodmoneying_shared.time import now_utc
+from goodmoneying_shared.time import now_kst
 from goodmoneying_worker.collector import UpbitCollectionWorker
 from goodmoneying_worker.runtime import (
     create_repository_from_environment,
@@ -9,7 +9,7 @@ from goodmoneying_worker.runtime import (
 
 
 def run_realtime_collection_once(worker: UpbitCollectionWorker) -> int:
-    started_at = now_utc()
+    started_at = now_kst()
     worker.repository.record_collection_worker_heartbeat("realtime_collection", "running")
     try:
         worker.refresh_candidate_universe()

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 from decimal import Decimal
 
-from goodmoneying_shared.time import minute_bucket, now_utc
+from goodmoneying_shared.time import minute_bucket, now_kst
 
 CORE_MARKETS = [
     ("KRW-BTC", "비트코인"),
@@ -66,7 +66,7 @@ def fixture_orderbook_rows(markets: list[str]) -> list[dict[str, str]]:
 
 def fixture_candle_rows(markets: list[str], minutes: int = 5) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    base_start = minute_bucket(now_utc()) - timedelta(minutes=minutes)
+    base_start = minute_bucket(now_kst()) - timedelta(minutes=minutes)
     for market_index, market_code in enumerate(markets, start=1):
         for offset in range(minutes):
             start_at = base_start + timedelta(minutes=offset)

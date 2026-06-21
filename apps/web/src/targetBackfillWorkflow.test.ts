@@ -1,14 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { CandidateUniverseEntry } from "./api";
 import {
-  addDraftBackfillPlan,
-  canApproveBackfillPlans,
   canCreateBackfillPlan,
   canSaveTargets,
   filterAndSortCandidateEntries,
   initialSelectedInstrumentIds,
-  removeDraftBackfillPlan,
-  sumDraftBackfillPlans,
   toggleSelectedInstrument
 } from "./targetBackfillWorkflow";
 
@@ -35,7 +31,10 @@ function entry(
     candidateStatus: "in_universe",
     qualityStatus,
     qualityDetail: qualityStatus,
-    collectionRangeDisplay: "2026-01-01 00:00 KST ~ NOW"
+    collectionRangeDisplay: "2026-01-01 00:00 KST ~ NOW",
+    collectedStartAt: "2026-01-01T00:00:00+09:00",
+    collectedEndAt: "2026-06-19T09:00:00+09:00",
+    isRealtimeTarget: selected
   };
 }
 
@@ -50,7 +49,7 @@ describe("수집 대상과 백필 workflow", () => {
     expect([...ids]).toEqual([1, 3]);
   });
 
-  it("거래대금순과 품질순으로 후보를 검색하고 정렬한다", () => {
+  it("거래대금순으로 후보를 검색하고 정렬한다", () => {
     const entries = [
       entry(1, "BTC", true, "100", "normal"),
       entry(2, "ETH", true, "200", "warning"),
@@ -59,8 +58,6 @@ describe("수집 대상과 백필 workflow", () => {
 
     expect(filterAndSortCandidateEntries(entries, "", "trade").map((item) => item.instrument.id))
       .toEqual([2, 1, 3]);
-    expect(filterAndSortCandidateEntries(entries, "", "quality").map((item) => item.instrument.id))
-      .toEqual([1, 2, 3]);
     expect(filterAndSortCandidateEntries(entries, "sol", "trade").map((item) => item.instrument.id))
       .toEqual([3]);
   });
@@ -78,29 +75,5 @@ describe("수집 대상과 백필 workflow", () => {
     expect(canSaveTargets(50, true)).toBe(false);
     expect(canCreateBackfillPlan(1, false)).toBe(true);
     expect(canCreateBackfillPlan(0, false)).toBe(false);
-    expect(canApproveBackfillPlans(1, false)).toBe(true);
-    expect(canApproveBackfillPlans(0, false)).toBe(false);
-  });
-
-  it("백필 draft 계획을 추가, 삭제, 합산한다", () => {
-    const draft = addDraftBackfillPlan(
-      [],
-      {
-        planId: "plan-1",
-        dataType: "source_candle",
-        estimatedRequestCount: 12,
-        estimatedRowCount: 2880,
-        estimatedStorageBytes: 737280,
-        targets: [1, 2]
-      },
-      {
-        targetStartAt: "2026-01-01T00:00:00.000Z",
-        targetEndAt: "2026-01-03T00:00:00.000Z"
-      }
-    );
-
-    expect(sumDraftBackfillPlans(draft, "estimatedRequestCount")).toBe(12);
-    expect(sumDraftBackfillPlans(draft, "estimatedStorageBytes")).toBe(737280);
-    expect(removeDraftBackfillPlan(draft, "plan-1")).toEqual([]);
   });
 });

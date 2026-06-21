@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -25,6 +25,7 @@ from goodmoneying_shared.models import (
     CollectionPlan,
     CollectionRowsByType,
     CollectionRun,
+    CollectionWorkerDiagnostic,
     CollectionWorkerError,
     CollectionWorkerHeartbeatStatus,
     CollectionWorkerStatus,
@@ -47,7 +48,7 @@ from goodmoneying_shared.models import (
     StorageBreakdownItem,
     TickerSnapshot,
 )
-from goodmoneying_shared.time import minute_bucket, now_utc
+from goodmoneying_shared.time import KST, isoformat_kst, minute_bucket, now_kst
 
 Row = dict[str, Any]
 
@@ -71,10 +72,15 @@ class PostgresOperationsRepository:
         self._apply_schema_if_empty()
 
     def _connect(self) -> psycopg.Connection[Any]:
-        return psycopg.connect(self._database_url, row_factory=dict_row)
+        return psycopg.connect(
+            self._database_url,
+            row_factory=dict_row,
+            options="-c timezone=Asia/Seoul",
+        )
 
     def _apply_schema_if_empty(self) -> None:
         with self._connect() as conn:
+            conn.autocommit = True
             conn.execute(self._schema_path.read_text())
 
     def upsert_instrument(self, market_code: str, display_name: str) -> Instrument:
@@ -110,7 +116,7 @@ class PostgresOperationsRepository:
                     VALUES ('UPBIT', 'UPBIT', 'KRW', %s)
                     RETURNING id
                     """,
-                    (now_utc(),),
+                    (now_kst(),),
                 ).fetchone()
             )["id"]
             for rank, (market_code, display_name, acc_trade_price_24h) in enumerate(
@@ -220,7 +226,7 @@ class PostgresOperationsRepository:
                 """,
                 (snapshot_id,),
             ).fetchall()
-        ranked_at = cast(datetime, rows[0]["ranked_at"]) if rows else now_utc()
+        ranked_at = cast(datetime, rows[0]["ranked_at"]) if rows else now_kst()
         return ranked_at, [
             CandidateUniverseEntry(
                 instrument=_instrument(row),
@@ -254,7 +260,7 @@ class PostgresOperationsRepository:
         orderbooks: list[OrderbookSummary],
         candles: list[SourceCandle],
     ) -> CollectionRun:
-        started_at = now_utc()
+        started_at = now_kst()
         with self._connect() as conn:
             run_id = int(
                 _expect_row(
@@ -295,7 +301,7 @@ class PostgresOperationsRepository:
                         + candle_rows.get(instrument_id, 0),
                     ),
                 )
-            finished_at = now_utc()
+            finished_at = now_kst()
             conn.execute(
                 "UPDATE collection_runs SET status = 'succeeded', finished_at = %s WHERE id = %s",
                 (finished_at, run_id),
@@ -371,7 +377,7 @@ class PostgresOperationsRepository:
             missing_range_top=self._missing_range_top(targets),
             audit_log_summary=self.dashboard_audit_log_summary(),
             worker_status=self.dashboard_worker_status(),
-            refreshed_at=now_utc(),
+            refreshed_at=now_kst(),
         )
 
     def dashboard_coverage(self) -> list[CoverageStatus]:
@@ -439,6 +445,7 @@ class PostgresOperationsRepository:
             "source_candles",
             instrument_ids,
         )
+        source_candle_ranges = self._source_candle_ranges_by_instrument(instrument_ids)
         for instrument in active_targets:
             ticker = latest_tickers.get(instrument.id)
             coverage = sorted(
@@ -491,15 +498,43 @@ class PostgresOperationsRepository:
                     acc_trade_price_24h_display=(
                         f"₩{int(ticker.acc_trade_price_24h):,}" if ticker else "₩0"
                     ),
-                    ticker_collected_at=ticker.collected_at if ticker else now_utc(),
+                    ticker_collected_at=ticker.collected_at if ticker else now_kst(),
                     coverage_percent=candle_status.progress_percent,
                     storage_row_count=self._instrument_storage_row_count(instrument.id),
                     storage_bytes_display=_format_storage_bytes(
                         storage_bytes_by_instrument.get(instrument.id, 0)
                     ),
+                    collected_start_at=source_candle_ranges.get(instrument.id, (None, None))[0],
+                    collected_end_at=source_candle_ranges.get(instrument.id, (None, None))[1],
                 )
             )
         return targets
+
+    def _source_candle_ranges_by_instrument(
+        self, instrument_ids: list[int]
+    ) -> dict[int, tuple[datetime | None, datetime | None]]:
+        if not instrument_ids:
+            return {}
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT instrument_id,
+                       min(candle_start_at) AS collected_start_at,
+                       max(candle_start_at) AS collected_end_at
+                FROM source_candles
+                WHERE candle_unit = '1m'
+                  AND instrument_id = ANY(%s)
+                GROUP BY instrument_id
+                """,
+                (instrument_ids,),
+            ).fetchall()
+        return {
+            int(row["instrument_id"]): (
+                cast(datetime | None, row["collected_start_at"]),
+                cast(datetime | None, row["collected_end_at"]),
+            )
+            for row in rows
+        }
 
     def coverage_segments_for(self, instrument_id: int) -> list[CoverageSegment]:
         return [
@@ -697,7 +732,7 @@ class PostgresOperationsRepository:
             raise ValueError("지원하지 않는 수집 워커 유형이다.")
         if status not in {"running", "failed"}:
             raise ValueError("지원하지 않는 수집 워커 상태다.")
-        timestamp = now_utc()
+        timestamp = now_kst()
         with self._connect() as conn:
             conn.execute(
                 """
@@ -750,7 +785,7 @@ class PostgresOperationsRepository:
         error_code: str,
         error_message: str,
     ) -> CollectionRun:
-        finished_at = now_utc()
+        finished_at = now_kst()
         with self._connect() as conn:
             row = _expect_row(
                 conn.execute(
@@ -852,7 +887,7 @@ class PostgresOperationsRepository:
                     WHERE id = %s
                     RETURNING *
                     """,
-                    (now_utc(), planned["id"]),
+                    (now_kst(), planned["id"]),
                 ).fetchone()
             )
             for instrument_id in targets:
@@ -864,7 +899,7 @@ class PostgresOperationsRepository:
                     """,
                     (row["id"], instrument_id),
                 )
-        return _backfill_job(row)
+            return _backfill_job(row, self._backfill_job_target_instruments(conn, int(row["id"])))
 
     def claim_next_backfill_job(self) -> BackfillJobDetail | None:
         with self._connect() as conn:
@@ -915,7 +950,7 @@ class PostgresOperationsRepository:
             return 0
         if any(item.instrument_id != instrument_id for item in candles):
             raise ValueError("백필 캔들 대상 instrument_id가 작업 대상과 다르다.")
-        started_at = now_utc()
+        started_at = now_kst()
         with self._connect() as conn:
             run_id = int(
                 _expect_row(
@@ -942,7 +977,7 @@ class PostgresOperationsRepository:
                 """,
                 (run_id, instrument_id, rows_written),
             )
-            finished_at = now_utc()
+            finished_at = now_kst()
             conn.execute(
                 """
                 UPDATE collection_runs
@@ -1012,7 +1047,18 @@ class PostgresOperationsRepository:
                     (transitions[action], job_id),
                 ).fetchone()
             )
-        return _backfill_job(row)
+            return _backfill_job(row, self._backfill_job_target_instruments(conn, job_id))
+
+    def delete_backfill_job(self, job_id: int) -> None:
+        with self._connect() as conn:
+            current = conn.execute(
+                "SELECT status FROM backfill_jobs WHERE id = %s FOR UPDATE", (job_id,)
+            ).fetchone()
+            if current is None:
+                raise ValueError("존재하지 않는 백필 작업이다.")
+            if current["status"] == "running":
+                raise ValueError("실행 중인 백필 작업은 먼저 중지해야 한다.")
+            conn.execute("DELETE FROM backfill_jobs WHERE id = %s", (job_id,))
 
     def backfill_jobs(self) -> list[BackfillJob]:
         with self._connect() as conn:
@@ -1035,7 +1081,10 @@ class PostgresOperationsRepository:
                 ORDER BY bj.created_at DESC
                 """
             ).fetchall()
-        return [_backfill_job(row) for row in rows]
+            return [
+                _backfill_job(row, self._backfill_job_target_instruments(conn, int(row["id"])))
+                for row in rows
+            ]
 
     def notification_events(self) -> list[NotificationEvent]:
         with self._connect() as conn:
@@ -1067,7 +1116,7 @@ class PostgresOperationsRepository:
             row = _expect_row(
                 conn.execute(
                     "SELECT COUNT(*) AS count FROM collection_runs WHERE started_at >= %s",
-                    (now_utc() - timedelta(hours=24),),
+                    (now_kst() - timedelta(hours=24),),
                 ).fetchone()
             )
         return int(row["count"])
@@ -1081,7 +1130,7 @@ class PostgresOperationsRepository:
                     FROM target_collection_results
                     WHERE created_at >= %s
                     """,
-                    (now_utc() - timedelta(hours=24),),
+                    (now_kst() - timedelta(hours=24),),
                 ).fetchone()
             )
         return int(row["count"])
@@ -1096,7 +1145,7 @@ class PostgresOperationsRepository:
                     JOIN collection_runs cr ON cr.id = tcr.collection_run_id
                     WHERE cr.run_type = %s AND tcr.created_at >= %s
                     """,
-                    (run_type, now_utc() - timedelta(minutes=1)),
+                    (run_type, now_kst() - timedelta(minutes=1)),
                 ).fetchone()
             )
         return int(row["count"])
@@ -1113,7 +1162,7 @@ class PostgresOperationsRepository:
         )
 
     def _storage_bytes_today_estimate(self) -> int:
-        day_start = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+        day_start = now_kst().replace(hour=0, minute=0, second=0, microsecond=0)
         return (
             self._table_count_since("source_candles", "collected_at", day_start) * 256
             + self._table_count_since("ticker_snapshots", "collected_at", day_start) * 160
@@ -1122,7 +1171,7 @@ class PostgresOperationsRepository:
         )
 
     def _storage_rows_today(self) -> int:
-        day_start = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+        day_start = now_kst().replace(hour=0, minute=0, second=0, microsecond=0)
         return (
             self._table_count_since("source_candles", "collected_at", day_start)
             + self._table_count_since("ticker_snapshots", "collected_at", day_start)
@@ -1139,7 +1188,7 @@ class PostgresOperationsRepository:
             "ticker_snapshot": 60,
             "orderbook_summary": 60,
         }
-        now = now_utc()
+        now = now_kst()
         current_hour = now.replace(minute=0, second=0, microsecond=0)
         first_hour = current_hour - timedelta(hours=23)
         target_ids = [target.id for target in active_targets]
@@ -1230,7 +1279,7 @@ class PostgresOperationsRepository:
         return heatmap
 
     def _collection_activity_buckets(self) -> list[CollectionActivityBucket]:
-        current_hour = now_utc().replace(minute=0, second=0, microsecond=0)
+        current_hour = now_kst().replace(minute=0, second=0, microsecond=0)
         first_hour = current_hour - timedelta(hours=(7 * 24) - 1)
         run_counts: dict[datetime, int] = {}
         result_counts: dict[datetime, int] = {}
@@ -1265,7 +1314,7 @@ class PostgresOperationsRepository:
         ]
 
     def _storage_breakdown_today(self, total_bytes: int) -> list[StorageBreakdownItem]:
-        day_start = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+        day_start = now_kst().replace(hour=0, minute=0, second=0, microsecond=0)
         rows = [
             (
                 "source_candle",
@@ -1319,7 +1368,7 @@ class PostgresOperationsRepository:
         warning_targets: int,
         incident_targets: int,
     ) -> list[OperationsTrendPoint]:
-        today = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+        today = now_kst().replace(hour=0, minute=0, second=0, microsecond=0)
         coverage_percent = self._average_coverage_percent(coverage)
         points = []
         for offset in range(6, -1, -1):
@@ -1363,7 +1412,7 @@ class PostgresOperationsRepository:
         )[:5]
 
     def _audit_log_summary(self) -> AuditLogSummary:
-        since = now_utc() - timedelta(hours=24)
+        since = now_kst() - timedelta(hours=24)
         with self._connect() as conn:
             target_count_row = _expect_row(
                 conn.execute(
@@ -1395,7 +1444,7 @@ class PostgresOperationsRepository:
             ).fetchone()
             latest_backfill = conn.execute(
                 """
-                SELECT created_at AS changed_at, '백필 승인' AS label
+                SELECT created_at AS changed_at, '백필 시작' AS label
                 FROM backfill_jobs
                 ORDER BY created_at DESC
                 LIMIT 1
@@ -1426,14 +1475,22 @@ class PostgresOperationsRepository:
             if run_count_24h > 0
             else Decimal("0")
         )
+        last_collected_at = self._latest_collection_finished_at("incremental")
         return RealtimeWorkerStatus(
             status=status,
             status_label=status_label,
             status_detail=status_detail,
             last_heartbeat_at=last_heartbeat_at,
-            last_collected_at=self._latest_collection_finished_at("incremental"),
+            last_collected_at=last_collected_at,
             error_count_24h=error_count_24h,
             failure_rate_24h=failure_rate_24h,
+            diagnostics=self._realtime_worker_diagnostics(
+                status_detail,
+                last_heartbeat_at,
+                last_collected_at,
+                error_count_24h,
+                failure_rate_24h,
+            ),
             recent_errors=self._recent_realtime_errors(),
         )
 
@@ -1449,19 +1506,104 @@ class PostgresOperationsRepository:
             if total_target_count_all > 0
             else Decimal("0")
         )
-        running_target_count, total_target_count = self._active_backfill_target_counts()
+        (
+            running_target_count,
+            total_target_count,
+            queued_job_count,
+            queued_target_count,
+        ) = self._active_backfill_target_summary()
+        last_collected_at = self._latest_collection_finished_at("backfill")
         return BackfillWorkerStatus(
             status=status,
             status_label=status_label,
             status_detail=status_detail,
             last_heartbeat_at=last_heartbeat_at,
-            last_collected_at=self._latest_collection_finished_at("backfill"),
+            last_collected_at=last_collected_at,
             total_error_count=total_error_count,
             failure_rate_all=failure_rate_all,
             running_target_count=running_target_count,
             total_target_count=total_target_count,
+            queued_job_count=queued_job_count,
+            queued_target_count=queued_target_count,
+            diagnostics=self._backfill_worker_diagnostics(
+                status_detail,
+                last_heartbeat_at,
+                last_collected_at,
+                total_error_count,
+                failure_rate_all,
+                running_target_count,
+                total_target_count,
+                queued_job_count,
+                queued_target_count,
+            ),
             recent_errors=self._recent_backfill_errors(),
         )
+
+    def _realtime_worker_diagnostics(
+        self,
+        status_detail: str,
+        last_heartbeat_at: datetime | None,
+        last_collected_at: datetime | None,
+        error_count: int,
+        failure_rate: Decimal,
+    ) -> list[CollectionWorkerDiagnostic]:
+        return [
+            CollectionWorkerDiagnostic(
+                "마지막 heartbeat",
+                _diagnostic_datetime(last_heartbeat_at),
+                status_detail,
+            ),
+            CollectionWorkerDiagnostic(
+                "마지막 저장 성공",
+                _diagnostic_datetime(last_collected_at),
+                "최근 성공 또는 부분 성공한 실시간 저장 시각",
+            ),
+            CollectionWorkerDiagnostic(
+                "24시간 오류",
+                f"{error_count:,}건",
+                f"24시간 실패율 {failure_rate:.2f}%",
+            ),
+        ]
+
+    def _backfill_worker_diagnostics(
+        self,
+        status_detail: str,
+        last_heartbeat_at: datetime | None,
+        last_collected_at: datetime | None,
+        error_count: int,
+        failure_rate: Decimal,
+        running_target_count: int,
+        total_target_count: int,
+        queued_job_count: int,
+        queued_target_count: int,
+    ) -> list[CollectionWorkerDiagnostic]:
+        return [
+            CollectionWorkerDiagnostic(
+                "마지막 heartbeat",
+                _diagnostic_datetime(last_heartbeat_at),
+                status_detail,
+            ),
+            CollectionWorkerDiagnostic(
+                "마지막 저장 성공",
+                _diagnostic_datetime(last_collected_at),
+                "최근 성공 또는 부분 성공한 백필 저장 시각",
+            ),
+            CollectionWorkerDiagnostic(
+                "전체 오류",
+                f"{error_count:,}건",
+                f"전체 실패율 {failure_rate:.2f}%",
+            ),
+            CollectionWorkerDiagnostic(
+                "동작중 코인",
+                f"{running_target_count:,}/{total_target_count:,}개",
+                "현재 실행 중인 백필 계획의 running 대상 수",
+            ),
+            CollectionWorkerDiagnostic(
+                "대기 백필",
+                f"{queued_job_count:,}건 / {queued_target_count:,}개",
+                "현재 계획 이후 대기 중인 백필 job/target",
+            ),
+        ]
 
     def _worker_runtime_status(
         self,
@@ -1486,7 +1628,7 @@ class PostgresOperationsRepository:
                 str(row["last_error_message"] or "마지막 heartbeat가 실패 상태입니다."),
                 last_heartbeat_at,
             )
-        if now_utc() - last_heartbeat_at > stale_after:
+        if now_kst() - last_heartbeat_at > stale_after:
             return (
                 "stale",
                 "지연",
@@ -1519,7 +1661,7 @@ class PostgresOperationsRepository:
                 WHERE run_type = 'incremental' AND status = 'failed'
                   AND started_at >= %s
                 """,
-                (now_utc() - timedelta(hours=24),),
+                (now_kst() - timedelta(hours=24),),
             ).fetchone()
         return int(_expect_row(row)["count"])
 
@@ -1531,7 +1673,7 @@ class PostgresOperationsRepository:
                 FROM collection_runs
                 WHERE run_type = 'incremental' AND started_at >= %s
                 """,
-                (now_utc() - timedelta(hours=24),),
+                (now_kst() - timedelta(hours=24),),
             ).fetchone()
         return int(_expect_row(row)["count"])
 
@@ -1546,7 +1688,7 @@ class PostgresOperationsRepository:
                 ORDER BY started_at DESC
                 LIMIT 10
                 """,
-                (now_utc() - timedelta(hours=24),),
+                (now_kst() - timedelta(hours=24),),
             ).fetchall()
         return [
             CollectionWorkerError(
@@ -1578,20 +1720,70 @@ class PostgresOperationsRepository:
             ).fetchone()
         return int(_expect_row(row)["count"])
 
-    def _active_backfill_target_counts(self) -> tuple[int, int]:
+    def _active_backfill_target_summary(self) -> tuple[int, int, int, int]:
         with self._connect() as conn:
-            row = conn.execute(
+            active_job = conn.execute(
                 """
-                SELECT
-                  COUNT(*) FILTER (WHERE bjt.status = 'running') AS running_count,
-                  COUNT(*) AS total_count
-                FROM backfill_job_targets bjt
-                JOIN backfill_jobs bj ON bj.id = bjt.backfill_job_id
-                WHERE bj.status IN ('pending', 'running')
+                SELECT id
+                FROM backfill_jobs
+                WHERE status IN ('running', 'pending')
+                ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, created_at
+                LIMIT 1
                 """
             ).fetchone()
-        expected = _expect_row(row)
-        return int(expected["running_count"] or 0), int(expected["total_count"] or 0)
+            if active_job is None:
+                return 0, 0, 0, 0
+            active_job_id = int(active_job["id"])
+            active_counts = _expect_row(
+                conn.execute(
+                    """
+                    SELECT
+                      COUNT(*) FILTER (WHERE status = 'running') AS running_count,
+                      COUNT(*) AS total_count
+                    FROM backfill_job_targets
+                    WHERE backfill_job_id = %s
+                    """,
+                    (active_job_id,),
+                ).fetchone()
+            )
+            queued_counts = _expect_row(
+                conn.execute(
+                    """
+                    SELECT
+                      COUNT(DISTINCT bj.id) AS queued_job_count,
+                      COUNT(bjt.instrument_id) AS queued_target_count
+                    FROM backfill_jobs bj
+                    LEFT JOIN backfill_job_targets bjt ON bjt.backfill_job_id = bj.id
+                    WHERE bj.status = 'pending' AND bj.id <> %s
+                    """,
+                    (active_job_id,),
+                ).fetchone()
+            )
+        return (
+            int(active_counts["running_count"] or 0),
+            int(active_counts["total_count"] or 0),
+            int(queued_counts["queued_job_count"] or 0),
+            int(queued_counts["queued_target_count"] or 0),
+        )
+
+    def _backfill_job_target_instruments(
+        self, conn: psycopg.Connection[Any], job_id: int
+    ) -> list[Instrument]:
+        rows = conn.execute(
+            """
+            SELECT i.*
+            FROM backfill_job_targets bjt
+            JOIN instruments i ON i.id = bjt.instrument_id
+            WHERE bjt.backfill_job_id = %s
+            ORDER BY i.market_code
+            """,
+            (job_id,),
+        ).fetchall()
+        return [_instrument(row) for row in rows]
+
+    def _active_backfill_target_counts(self) -> tuple[int, int]:
+        running_count, total_count, _, _ = self._active_backfill_target_summary()
+        return running_count, total_count
 
     def _recent_backfill_errors(self) -> list[CollectionWorkerError]:
         with self._connect() as conn:
@@ -1842,7 +2034,7 @@ class PostgresOperationsRepository:
               candidate_status = 'in_universe',
               updated_at = now()
             """,
-            (instrument_id, now_utc()),
+            (instrument_id, now_kst()),
         )
         self._ensure_collection_plan(conn, instrument_id)
         self._record_target_change(
@@ -1866,7 +2058,7 @@ class PostgresOperationsRepository:
             SET status = 'inactive', deactivated_at = %s, updated_at = now()
             WHERE instrument_id = %s
             """,
-            (now_utc(), instrument_id),
+            (now_kst(), instrument_id),
         )
         self._record_target_change(
             conn, instrument_id, previous["status"] if previous else None, "inactive", actor, reason
@@ -1892,7 +2084,7 @@ class PostgresOperationsRepository:
         )
 
     def _ensure_collection_plan(self, conn: psycopg.Connection[Any], instrument_id: int) -> None:
-        plan_start = datetime(2025, 12, 31, 15, 0, tzinfo=UTC)
+        plan_start = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
         conn.execute(
             """
             INSERT INTO collection_plans (
@@ -2000,12 +2192,12 @@ class PostgresOperationsRepository:
                 data_type=data_type,
                 status="incident",
                 progress_percent=Decimal("0"),
-                last_successful_at=now_utc() - timedelta(days=365),
+                last_successful_at=now_kst() - timedelta(days=365),
             )
         return CoverageStatus(
             instrument_id=instrument_id,
             data_type=data_type,
-            status="normal" if now_utc() - latest_at <= timedelta(minutes=3) else "warning",
+            status="normal" if now_kst() - latest_at <= timedelta(minutes=3) else "warning",
             progress_percent=Decimal("100"),
             last_successful_at=latest_at,
         )
@@ -2022,7 +2214,7 @@ class PostgresOperationsRepository:
         ).quantize(Decimal("0.01"))
         if latest_at is None:
             status: Literal["normal", "warning", "incident"] = "incident"
-            last_successful_at = now_utc() - timedelta(days=365)
+            last_successful_at = now_kst() - timedelta(days=365)
         elif missing_segments == 0 and progress == Decimal("100.00"):
             status = "normal"
             last_successful_at = latest_at
@@ -2079,8 +2271,8 @@ class PostgresOperationsRepository:
         if row is None or row["stored_count"] == 0:
             return 0, 1, None
         stored_count = int(row["stored_count"])
-        first_start_at = cast(datetime, row["first_start_at"]).astimezone(UTC)
-        latest_start_at = cast(datetime, row["latest_start_at"]).astimezone(UTC)
+        first_start_at = cast(datetime, row["first_start_at"]).astimezone(KST)
+        latest_start_at = cast(datetime, row["latest_start_at"]).astimezone(KST)
         missing_segments = int(row["gap_count"])
         if first_start_at > start_at:
             missing_segments += 1
@@ -2212,12 +2404,12 @@ class PostgresOperationsRepository:
                 """,
                 (instrument_id, start_at, end_at),
             ).fetchall()
-        return {cast(datetime, row["candle_start_at"]).astimezone(UTC) for row in rows}
+        return {cast(datetime, row["candle_start_at"]).astimezone(KST) for row in rows}
 
     def _coverage_range_end(self, plan: CollectionPlan) -> datetime:
         if plan.range_end_at is not None:
             return plan.range_end_at
-        return minute_bucket(now_utc())
+        return minute_bucket(now_kst())
 
     def _expected_minutes(self, start_at: datetime, end_at: datetime) -> int:
         return max(1, int((end_at - start_at).total_seconds() // 60))
@@ -2381,7 +2573,7 @@ class PostgresOperationsRepository:
                 SELECT COUNT(*) AS count FROM collection_runs
                 WHERE status = 'failed' AND started_at >= %s
                 """,
-                (now_utc() - timedelta(hours=24),),
+                (now_kst() - timedelta(hours=24),),
             ).fetchone()
         return int(_expect_row(row)["count"])
 
@@ -2560,7 +2752,7 @@ def _notification(row: dict[str, Any]) -> NotificationEvent:
     )
 
 
-def _backfill_job(row: dict[str, Any]) -> BackfillJob:
+def _backfill_job(row: dict[str, Any], targets: list[Instrument] | None = None) -> BackfillJob:
     return BackfillJob(
         id=int(row["id"]),
         status=cast(
@@ -2569,6 +2761,9 @@ def _backfill_job(row: dict[str, Any]) -> BackfillJob:
         ),
         data_type=str(row["data_type"]),
         progress_percent=Decimal(str(row.get("progress_percent") or "0")),
+        target_start_at=cast(datetime, row["target_start_at"]),
+        target_end_at=cast(datetime, row["target_end_at"]),
+        targets=targets or [],
         created_at=cast(datetime, row["created_at"]),
     )
 
@@ -2601,3 +2796,9 @@ def _backfill_target(row: dict[str, Any]) -> BackfillJobTarget:
         error_code=cast(str | None, row["error_code"]),
         error_message=cast(str | None, row["error_message"]),
     )
+
+
+def _diagnostic_datetime(value: datetime | None) -> str:
+    if value is None:
+        return "-"
+    return isoformat_kst(value)

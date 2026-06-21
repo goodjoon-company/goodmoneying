@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from collections.abc import Callable
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from goodmoneying_shared.models import OrderbookSummary, SourceCandle, TickerSnapshot
 from goodmoneying_shared.repository import OperationsRepository
-from goodmoneying_shared.time import minute_bucket, now_utc
+from goodmoneying_shared.time import KST, minute_bucket, now_kst
 from goodmoneying_worker.upbit_client import UpbitClient
 
 
@@ -47,7 +48,7 @@ class UpbitCollectionWorker:
             active_targets = self._repository.list_active_targets()
         active_by_market = {item.market_code: item for item in active_targets}
         markets = list(active_by_market.keys())
-        collected_at = now_utc()
+        collected_at = now_kst()
         bucket_at = minute_bucket(collected_at)
 
         ticker_rows = self._client.get_krw_tickers()
@@ -86,7 +87,7 @@ class UpbitCollectionWorker:
             SourceCandle(
                 instrument_id=active_by_market[row["market"]].id,
                 candle_unit="1m",
-                candle_start_at=datetime.fromisoformat(row["candle_start_at"]).astimezone(UTC),
+                candle_start_at=datetime.fromisoformat(row["candle_start_at"]).astimezone(KST),
                 open_price=Decimal(row["open_price"]),
                 high_price=Decimal(row["high_price"]),
                 low_price=Decimal(row["low_price"]),
@@ -101,10 +102,16 @@ class UpbitCollectionWorker:
         self._repository.record_incremental_collection(tickers, orderbooks, candles)
         return len(tickers) + len(orderbooks) + len(candles)
 
-    def run_backfill_once(self, target_limit: int | None = None) -> int:
+    def run_backfill_once(
+        self,
+        target_limit: int | None = None,
+        on_progress: Callable[[], object] | None = None,
+    ) -> int:
         job = self._repository.claim_next_backfill_job()
         if job is None:
             return 0
+        if on_progress is not None:
+            on_progress()
         written = 0
         processed_targets = 0
         for target in self._repository.backfill_job_targets(job.id):
@@ -115,6 +122,15 @@ class UpbitCollectionWorker:
             if target_limit is not None and processed_targets >= target_limit:
                 break
             processed_targets += 1
+            if target.status != "running":
+                self._repository.mark_backfill_target(
+                    job.id,
+                    target.instrument_id,
+                    status="running",
+                    last_completed_at=target.last_completed_at,
+                )
+            if on_progress is not None:
+                on_progress()
             instrument = self._repository.get_instrument(target.instrument_id)
             if instrument is None:
                 self._repository.mark_backfill_target(
@@ -150,19 +166,21 @@ class UpbitCollectionWorker:
                         "succeeded",
                     }:
                         break
+                    if on_progress is not None:
+                        on_progress()
                     rows = self._client.fetch_minute_candles(
                         instrument.market_code,
                         fetch_start_at,
                         fetch_end_at,
                     )
-                    collected_at = now_utc()
+                    collected_at = now_kst()
                     candles = [
                         SourceCandle(
                             instrument_id=target.instrument_id,
                             candle_unit="1m",
                             candle_start_at=datetime.fromisoformat(
-                                row["candle_start_at"]
-                            ).astimezone(UTC),
+                            row["candle_start_at"]
+                            ).astimezone(KST),
                             open_price=Decimal(row["open_price"]),
                             high_price=Decimal(row["high_price"]),
                             low_price=Decimal(row["low_price"]),
@@ -178,6 +196,8 @@ class UpbitCollectionWorker:
                         target.instrument_id,
                         candles,
                     )
+                    if on_progress is not None:
+                        on_progress()
                     target_written += rows_written
                     last_completed_at = (
                         max((item.candle_start_at for item in candles), default=fetch_end_at)
@@ -190,6 +210,8 @@ class UpbitCollectionWorker:
                     status="succeeded",
                     last_completed_at=last_completed_at or job.target_end_at,
                 )
+                if on_progress is not None:
+                    on_progress()
                 written += target_written
             except Exception as exc:
                 self._repository.mark_backfill_target(
@@ -200,6 +222,8 @@ class UpbitCollectionWorker:
                     error_code=type(exc).__name__,
                     error_message=str(exc),
                 )
+                if on_progress is not None:
+                    on_progress()
         return written
 
     def _missing_source_candle_ranges(

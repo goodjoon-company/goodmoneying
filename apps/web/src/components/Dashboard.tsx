@@ -5,6 +5,7 @@ import {
   type BackfillWorkerStatus,
   loadCollectionCoverageSegments,
   type CollectionDashboardTarget,
+  type CollectionWorkerDiagnostic,
   type CollectionWorkerError,
   type RealtimeCollectionHeatmapRow,
   type MissingRangeSummary,
@@ -47,6 +48,10 @@ export function Dashboard({
     title: string;
     errors: CollectionWorkerError[];
   } | null>(null);
+  const [workerDiagnosticsModal, setWorkerDiagnosticsModal] = useState<{
+    title: string;
+    diagnostics: CollectionWorkerDiagnostic[];
+  } | null>(null);
   return (
     <section className="dashboard-page">
       <div className="ops-kpi-grid">
@@ -54,6 +59,7 @@ export function Dashboard({
           realtime={snapshot.dashboard.workerStatus.realtime}
           backfill={snapshot.dashboard.workerStatus.backfill}
           onShowErrors={setWorkerErrorModal}
+          onShowDiagnostics={setWorkerDiagnosticsModal}
         />
 
         <section className="panel ops-activity-card">
@@ -158,6 +164,13 @@ export function Dashboard({
           onClose={() => setWorkerErrorModal(null)}
         />
       ) : null}
+      {workerDiagnosticsModal ? (
+        <WorkerDiagnosticsDialog
+          title={workerDiagnosticsModal.title}
+          diagnostics={workerDiagnosticsModal.diagnostics}
+          onClose={() => setWorkerDiagnosticsModal(null)}
+        />
+      ) : null}
     </section>
   );
 }
@@ -165,11 +178,16 @@ export function Dashboard({
 function WorkerStatusPanel({
   realtime,
   backfill,
-  onShowErrors
+  onShowErrors,
+  onShowDiagnostics
 }: {
   realtime: RealtimeWorkerStatus;
   backfill: BackfillWorkerStatus;
   onShowErrors: (modal: { title: string; errors: CollectionWorkerError[] }) => void;
+  onShowDiagnostics: (modal: {
+    title: string;
+    diagnostics: CollectionWorkerDiagnostic[];
+  }) => void;
 }) {
   return (
     <section className="panel ops-summary-card worker-status-card">
@@ -180,12 +198,24 @@ function WorkerStatusPanel({
             <StatusIcon status={workerStatusTone(realtime.status)} />
             <div>
               <strong>Realtime worker</strong>
-              <span>{realtime.statusLabel}</span>
+              <button
+                type="button"
+                className="worker-status-detail-button"
+                aria-label={`Realtime worker 상태 상세: ${realtime.statusLabel}`}
+                onClick={() =>
+                  onShowDiagnostics({
+                    title: "Realtime worker",
+                    diagnostics: realtime.diagnostics
+                  })
+                }
+              >
+                {realtime.statusLabel}
+              </button>
             </div>
           </div>
           <dl>
             <div>
-              <dt>마지막 수집</dt>
+              <dt>마지막 저장 성공</dt>
               <dd>{formatNullableDateTime(realtime.lastCollectedAt)}</dd>
             </div>
             <div>
@@ -212,12 +242,24 @@ function WorkerStatusPanel({
             <StatusIcon status={workerStatusTone(backfill.status)} />
             <div>
               <strong>Backfill worker</strong>
-              <span>{backfill.statusLabel}</span>
+              <button
+                type="button"
+                className="worker-status-detail-button"
+                aria-label={`Backfill worker 상태 상세: ${backfill.statusLabel}`}
+                onClick={() =>
+                  onShowDiagnostics({
+                    title: "Backfill worker",
+                    diagnostics: backfill.diagnostics
+                  })
+                }
+              >
+                {backfill.statusLabel}
+              </button>
             </div>
           </div>
           <dl>
             <div>
-              <dt>마지막 수집</dt>
+              <dt>마지막 저장 성공</dt>
               <dd>{formatNullableDateTime(backfill.lastCollectedAt)}</dd>
             </div>
             <div>
@@ -242,9 +284,47 @@ function WorkerStatusPanel({
             동작중 코인 {backfill.runningTargetCount.toLocaleString("ko-KR")}/
             {backfill.totalTargetCount.toLocaleString("ko-KR")}개
           </span>
+          <span className="worker-target-count">
+            대기 백필 {backfill.queuedJobCount.toLocaleString("ko-KR")}건/
+            {backfill.queuedTargetCount.toLocaleString("ko-KR")}개
+          </span>
         </article>
       </div>
     </section>
+  );
+}
+
+function WorkerDiagnosticsDialog({
+  title,
+  diagnostics,
+  onClose
+}: {
+  title: string;
+  diagnostics: CollectionWorkerDiagnostic[];
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop">
+      <section className="worker-error-dialog" role="dialog" aria-label={`${title} 동작 상세`} aria-modal="true">
+        <button className="icon-button close-button" type="button" aria-label="닫기" onClick={onClose}>
+          <X size={18} />
+        </button>
+        <div className="panel-heading">
+          <h2>{title} 동작 상세</h2>
+          <span>{diagnostics.length.toLocaleString("ko-KR")}개</span>
+        </div>
+        <div className="worker-diagnostics-list">
+          {diagnostics.length === 0 ? <p className="panel-note">표시할 동작 정보가 없습니다.</p> : null}
+          {diagnostics.map((diagnostic) => (
+            <article className="worker-diagnostic-item" key={`${diagnostic.label}-${diagnostic.value}`}>
+              <span>{diagnostic.label}</span>
+              <strong>{formatDiagnosticValue(diagnostic.value)}</strong>
+              <p>{diagnostic.detail}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -298,6 +378,13 @@ function formatNullableDateTime(value: string | null): string {
 
 function formatWorkerPercent(value: string): string {
   return `${Number(value).toLocaleString("ko-KR", { maximumFractionDigits: 2 })}%`;
+}
+
+function formatDiagnosticValue(value: string): string {
+  if (Number.isNaN(Date.parse(value))) {
+    return value;
+  }
+  return formatShortDateTime(value);
 }
 
 function RealtimeCollectionHeatmap({ rows }: { rows: RealtimeCollectionHeatmapRow[] }) {

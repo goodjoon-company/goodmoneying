@@ -116,7 +116,7 @@ class CollectionPlan:
     is_continuous: bool
     method: str
     display_range: str
-    range_time_zone: Literal["KST", "UTC"]
+    range_time_zone: Literal["KST"]
     progress_basis: str
 
 
@@ -157,6 +157,8 @@ class CollectionDashboardTarget:
     coverage_percent: Decimal
     storage_row_count: int
     storage_bytes_display: str
+    collected_start_at: datetime | None
+    collected_end_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -273,6 +275,13 @@ class CollectionWorkerError:
 
 
 @dataclass(frozen=True)
+class CollectionWorkerDiagnostic:
+    label: str
+    value: str
+    detail: str
+
+
+@dataclass(frozen=True)
 class RealtimeWorkerStatus:
     status: CollectionWorkerStatus
     status_label: str
@@ -281,6 +290,7 @@ class RealtimeWorkerStatus:
     last_collected_at: datetime | None
     error_count_24h: int
     failure_rate_24h: Decimal
+    diagnostics: list[CollectionWorkerDiagnostic]
     recent_errors: list[CollectionWorkerError]
 
 
@@ -295,6 +305,9 @@ class BackfillWorkerStatus:
     failure_rate_all: Decimal
     running_target_count: int
     total_target_count: int
+    queued_job_count: int
+    queued_target_count: int
+    diagnostics: list[CollectionWorkerDiagnostic]
     recent_errors: list[CollectionWorkerError]
 
 
@@ -322,6 +335,9 @@ class BackfillJob:
     status: BackfillStatus
     data_type: str
     progress_percent: Decimal
+    target_start_at: datetime
+    target_end_at: datetime
+    targets: list[Instrument]
     created_at: datetime
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from goodmoneying_worker import backfill_collection_worker, realtime_collection_worker
@@ -75,8 +77,10 @@ def test_backfill_collection_worker_polls_backfill_jobs_every_ten_seconds_by_def
         def __init__(self, repository: object, client: object) -> None:
             self.repository = repository
 
-        def run_backfill_once(self) -> int:
+        def run_backfill_once(self, on_progress: Callable[[], object] | None = None) -> int:
             calls.append("backfill")
+            if on_progress is not None:
+                on_progress()
             if calls.count("backfill") == 2:
                 raise KeyboardInterrupt
             return 0
@@ -104,9 +108,11 @@ def test_backfill_collection_worker_polls_backfill_jobs_every_ten_seconds_by_def
         "heartbeat:backfill_collection:running",
         "backfill",
         "heartbeat:backfill_collection:running",
+        "heartbeat:backfill_collection:running",
         "sleep:10",
         "heartbeat:backfill_collection:running",
         "backfill",
+        "heartbeat:backfill_collection:running",
     ]
 
 
@@ -119,8 +125,10 @@ def test_backfill_collection_worker_uses_env_poll_interval(
         def __init__(self, repository: object, client: object) -> None:
             self.repository = repository
 
-        def run_backfill_once(self) -> int:
+        def run_backfill_once(self, on_progress: Callable[[], object] | None = None) -> int:
             calls.append("backfill")
+            if on_progress is not None:
+                on_progress()
             raise KeyboardInterrupt
 
     monkeypatch.setenv("GOODMONEYING_BACKFILL_POLL_SECONDS", "2.5")
@@ -139,7 +147,11 @@ def test_backfill_collection_worker_uses_env_poll_interval(
     backfill_collection_worker.main()
 
     assert backfill_collection_worker.poll_seconds_from_environment() == 2.5
-    assert calls == ["heartbeat:backfill_collection:running", "backfill"]
+    assert calls == [
+        "heartbeat:backfill_collection:running",
+        "backfill",
+        "heartbeat:backfill_collection:running",
+    ]
 
 
 def test_backfill_collection_worker_rejects_negative_poll_interval(

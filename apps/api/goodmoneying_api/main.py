@@ -7,12 +7,11 @@ from typing import Annotated, cast
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from goodmoneying_api.dashboard_refresh import load_dashboard_refresh_seconds
 from goodmoneying_api.dependencies import verify_operator_token
 from goodmoneying_api.schemas import (
-    ApproveBackfillJobRequest,
     BackfillJobResponse,
     BackfillJobsResponse,
     BackfillPlanResponse,
@@ -21,6 +20,7 @@ from goodmoneying_api.schemas import (
     CollectionCoverageSegmentsResponse,
     CollectionRunsResponse,
     CollectionTargetsResponse,
+    CreateBackfillJobRequest,
     CreateBackfillPlanRequest,
     DashboardAuditLogSummaryResponse,
     DashboardCollectionActivityResponse,
@@ -44,7 +44,7 @@ from goodmoneying_api.service import OperationsService
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
-from goodmoneying_shared.time import now_utc
+from goodmoneying_shared.time import now_kst
 from goodmoneying_worker.collector import seed_repository
 from goodmoneying_worker.upbit_client import FixtureUpbitClient
 
@@ -108,7 +108,7 @@ def create_app(repository: OperationsRepository | None = None) -> FastAPI:
 
     @app.get("/health", response_model=HealthResponse)
     def get_health() -> HealthResponse:
-        return HealthResponse(status="ok", checkedAt=now_utc())
+        return HealthResponse(status="ok", checkedAt=now_kst())
 
     @app.get("/v1/dashboard/summary", response_model=DashboardSummaryResponse)
     def get_dashboard_summary() -> DashboardSummaryResponse:
@@ -285,11 +285,16 @@ def create_app(repository: OperationsRepository | None = None) -> FastAPI:
         status_code=status.HTTP_201_CREATED,
         dependencies=[Depends(require_operator_token)],
     )
-    def approve_backfill_job(
-        request: ApproveBackfillJobRequest,
+    def create_backfill_job(
+        request: CreateBackfillJobRequest,
     ) -> BackfillJobResponse:
         try:
-            return service.approve_backfill_job(request.planId)
+            return service.create_backfill_job(
+                request.dataType,
+                request.targetStartAt,
+                request.targetEndAt,
+                request.instrumentIds,
+            )
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -312,6 +317,21 @@ def create_app(repository: OperationsRepository | None = None) -> FastAPI:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={"code": "INVALID_BACKFILL_CONTROL", "message": str(exc)},
             ) from exc
+
+    @app.delete(
+        "/v1/backfill/jobs/{jobId}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        dependencies=[Depends(require_operator_token)],
+    )
+    def delete_backfill_job(jobId: int) -> Response:
+        try:
+            service.delete_backfill_job(jobId)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "INVALID_BACKFILL_DELETE", "message": str(exc)},
+            ) from exc
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.get("/v1/notifications", response_model=NotificationEventsResponse)
     def get_notification_events() -> NotificationEventsResponse:

@@ -23,6 +23,7 @@ from goodmoneying_api.schemas import (
     CollectionRunResponse,
     CollectionRunsResponse,
     CollectionTargetsResponse,
+    CollectionWorkerDiagnosticResponse,
     CollectionWorkerErrorResponse,
     CollectionWorkerStatusResponse,
     CoverageSegmentResponse,
@@ -78,7 +79,7 @@ from goodmoneying_shared.models import (
     decimal_string,
 )
 from goodmoneying_shared.repository import OperationsRepository
-from goodmoneying_shared.time import now_utc
+from goodmoneying_shared.time import now_kst
 
 CANDLE_UNITS = {"1m", "3m", "5m", "10m", "15m", "30m", "60m", "240m", "1d"}
 
@@ -140,7 +141,7 @@ class OperationsService:
             limit=limit,
             offset=offset,
             recommendedRefreshSeconds=self._refresh_seconds("targets"),
-            refreshedAt=now_utc(),
+            refreshedAt=now_kst(),
         )
 
     def dashboard_coverage(self, limit: int, offset: int) -> DashboardCoverageResponse:
@@ -151,7 +152,7 @@ class OperationsService:
             limit=limit,
             offset=offset,
             recommendedRefreshSeconds=self._refresh_seconds("coverage"),
-            refreshedAt=now_utc(),
+            refreshedAt=now_kst(),
         )
 
     def dashboard_collection_activity(self) -> DashboardCollectionActivityResponse:
@@ -166,7 +167,7 @@ class OperationsService:
                 for bucket in self._repository.dashboard_collection_activity()
             ],
             recommendedRefreshSeconds=self._refresh_seconds("collectionActivity"),
-            refreshedAt=now_utc(),
+            refreshedAt=now_kst(),
         )
 
     def dashboard_realtime_heatmap(
@@ -182,7 +183,7 @@ class OperationsService:
             limit=limit,
             offset=offset,
             recommendedRefreshSeconds=self._refresh_seconds("realtimeHeatmap"),
-            refreshedAt=now_utc(),
+            refreshedAt=now_kst(),
         )
 
     def dashboard_storage_breakdown(self) -> DashboardStorageBreakdownResponse:
@@ -192,7 +193,7 @@ class OperationsService:
                 for item in self._repository.dashboard_storage_breakdown()
             ],
             recommendedRefreshSeconds=self._refresh_seconds("storageBreakdown"),
-            refreshedAt=now_utc(),
+            refreshedAt=now_kst(),
         )
 
     def dashboard_operations_trend(self) -> DashboardOperationsTrendResponse:
@@ -202,7 +203,7 @@ class OperationsService:
                 for item in self._repository.dashboard_operations_trend()
             ],
             recommendedRefreshSeconds=self._refresh_seconds("operationsTrend"),
-            refreshedAt=now_utc(),
+            refreshedAt=now_kst(),
         )
 
     def dashboard_missing_ranges(
@@ -217,7 +218,7 @@ class OperationsService:
             limit=limit,
             offset=offset,
             recommendedRefreshSeconds=self._refresh_seconds("missingRanges"),
-            refreshedAt=now_utc(),
+            refreshedAt=now_kst(),
         )
 
     def dashboard_audit_log_summary(self) -> DashboardAuditLogSummaryResponse:
@@ -228,7 +229,7 @@ class OperationsService:
             latestChangeAt=audit_log_summary.latest_change_at,
             latestChangeLabel=audit_log_summary.latest_change_label,
             recommendedRefreshSeconds=self._refresh_seconds("auditLogSummary"),
-            refreshedAt=now_utc(),
+            refreshedAt=now_kst(),
         )
 
     def _refresh_seconds(self, key: str) -> int:
@@ -255,6 +256,15 @@ class OperationsService:
                         targets_by_instrument_id.get(entry.instrument.id)
                     ),
                     collectionRangeDisplay=candidate_collection_range_display(
+                        targets_by_instrument_id.get(entry.instrument.id)
+                    ),
+                    collectedStartAt=candidate_collected_start_at(
+                        targets_by_instrument_id.get(entry.instrument.id)
+                    ),
+                    collectedEndAt=candidate_collected_end_at(
+                        targets_by_instrument_id.get(entry.instrument.id)
+                    ),
+                    isRealtimeTarget=candidate_is_realtime_target(
                         targets_by_instrument_id.get(entry.instrument.id)
                     ),
                 )
@@ -332,7 +342,7 @@ class OperationsService:
         )
 
     def _trade_volume_24h_change(self, instrument_id: int) -> tuple[Decimal, Decimal]:
-        end_at = now_utc()
+        end_at = now_kst()
         current_start_at = end_at - timedelta(hours=24)
         previous_start_at = end_at - timedelta(hours=48)
         current_volume = sum(
@@ -426,8 +436,26 @@ class OperationsService:
     def approve_backfill_job(self, plan_id: str) -> BackfillJobResponse:
         return backfill_job_to_response(self._repository.approve_backfill_job(plan_id))
 
+    def create_backfill_job(
+        self,
+        data_type: str,
+        target_start_at: datetime,
+        target_end_at: datetime,
+        instrument_ids: list[int],
+    ) -> BackfillJobResponse:
+        plan = self._repository.create_backfill_plan(
+            data_type,
+            target_start_at,
+            target_end_at,
+            instrument_ids,
+        )
+        return backfill_job_to_response(self._repository.approve_backfill_job(plan.plan_id))
+
     def control_backfill_job(self, job_id: int, action: str) -> BackfillJobResponse:
         return backfill_job_to_response(self._repository.control_backfill_job(job_id, action))
+
+    def delete_backfill_job(self, job_id: int) -> None:
+        self._repository.delete_backfill_job(job_id)
 
     def backfill_jobs(self) -> list[BackfillJobResponse]:
         return [backfill_job_to_response(item) for item in self._repository.backfill_jobs()]
@@ -587,6 +615,14 @@ def worker_status_to_response(
             lastCollectedAt=item.realtime.last_collected_at,
             errorCount24h=item.realtime.error_count_24h,
             failureRate24h=decimal_string(item.realtime.failure_rate_24h) or "0",
+            diagnostics=[
+                CollectionWorkerDiagnosticResponse(
+                    label=diagnostic.label,
+                    value=diagnostic.value,
+                    detail=diagnostic.detail,
+                )
+                for diagnostic in item.realtime.diagnostics
+            ],
             recentErrors=[
                 CollectionWorkerErrorResponse(
                     occurredAt=error.occurred_at,
@@ -606,6 +642,16 @@ def worker_status_to_response(
             failureRateAll=decimal_string(item.backfill.failure_rate_all) or "0",
             runningTargetCount=item.backfill.running_target_count,
             totalTargetCount=item.backfill.total_target_count,
+            queuedJobCount=item.backfill.queued_job_count,
+            queuedTargetCount=item.backfill.queued_target_count,
+            diagnostics=[
+                CollectionWorkerDiagnosticResponse(
+                    label=diagnostic.label,
+                    value=diagnostic.value,
+                    detail=diagnostic.detail,
+                )
+                for diagnostic in item.backfill.diagnostics
+            ],
             recentErrors=[
                 CollectionWorkerErrorResponse(
                     occurredAt=error.occurred_at,
@@ -780,12 +826,15 @@ def backfill_job_to_response(item: BackfillJob) -> BackfillJobResponse:
         status=item.status,
         dataType=item.data_type,
         progressPercent=decimal_string(item.progress_percent) or "0",
+        targetStartAt=item.target_start_at,
+        targetEndAt=item.target_end_at,
+        targets=[instrument_to_response(target) for target in item.targets],
         createdAt=item.created_at,
     )
 
 
 def format_freshness_label(value: datetime) -> str:
-    age = now_utc() - value
+    age = now_kst() - value
     total_seconds = max(0, int(age.total_seconds()))
     if total_seconds < 60:
         return f"{total_seconds}초 전"
@@ -833,3 +882,19 @@ def candidate_collection_range_display(target: CollectionDashboardTarget | None)
     if target is None:
         return "수집 계획 없음"
     return target.plan.display_range
+
+
+def candidate_collected_start_at(target: CollectionDashboardTarget | None) -> datetime | None:
+    if target is None:
+        return None
+    return target.collected_start_at
+
+
+def candidate_collected_end_at(target: CollectionDashboardTarget | None) -> datetime | None:
+    if target is None:
+        return None
+    return target.collected_end_at
+
+
+def candidate_is_realtime_target(target: CollectionDashboardTarget | None) -> bool:
+    return bool(target and target.plan.is_continuous)

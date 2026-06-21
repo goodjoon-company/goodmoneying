@@ -1,6 +1,9 @@
 -- goodmoneying M1 DB contract
 -- Source of truth for PostgreSQL schema used by the Upbit Collection Pipeline.
 
+SET TIME ZONE 'Asia/Seoul';
+ALTER DATABASE goodmoneying SET timezone TO 'Asia/Seoul';
+
 CREATE TABLE IF NOT EXISTS instruments (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   exchange TEXT NOT NULL,

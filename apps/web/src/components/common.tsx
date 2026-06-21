@@ -78,7 +78,7 @@ export function InstrumentTitle({ instrument }: { instrument: Instrument }) {
   return <>{instrument.baseAsset} / {instrument.quoteCurrency}</>;
 }
 
-export function TimeInline({ value, zone }: { value: string; zone: "KST" | "UTC" }) {
+export function TimeInline({ value, zone }: { value: string; zone: "KST" }) {
   return (
     <span className="time-inline">
       {value}

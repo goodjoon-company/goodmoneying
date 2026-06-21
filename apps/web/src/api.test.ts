@@ -103,7 +103,7 @@ describe("운영 API 클라이언트", () => {
       dashboard: { status: "normal" }
     });
     expect(typeof httpClient.loadCandidateUniverse).toBe("function");
-    expect(typeof httpClient.createBackfillPlan).toBe("function");
+    expect(typeof httpClient.startBackfillJob).toBe("function");
   });
 
   it("첫 운영 스냅샷은 대시보드와 백필 작업만 가져와 화면 표시를 빠르게 시작한다", async () => {
@@ -165,7 +165,7 @@ describe("운영 API 클라이언트", () => {
           plan: {
             instrumentId: 1,
             preset: "2026년 1월 1분봉",
-            rangeStartAt: "2026-01-01T00:00:00.000Z",
+            rangeStartAt: "2026-01-01T00:00:00+09:00",
             rangeEndAt: null,
             isContinuous: true,
             method: "safe_restart",
@@ -267,7 +267,7 @@ describe("운영 API 클라이언트", () => {
               status: "collected",
               offsetPercent: "0",
               widthPercent: "100",
-              segmentStartAt: "2026-01-01T00:00:00.000Z",
+              segmentStartAt: "2026-01-01T00:00:00+09:00",
               segmentEndAt: "2026-01-02T00:00:00.000Z",
               label: "수집 완료"
             }

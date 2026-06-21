@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from goodmoneying_shared.time import KST
 from goodmoneying_worker.fixtures import (
     fixture_candle_rows,
     fixture_orderbook_rows,
@@ -88,7 +89,7 @@ class FixtureUpbitClient:
         return [
             row
             for row in fixture_candle_rows([market], minutes=minutes)
-            if start_at <= datetime.fromisoformat(row["candle_start_at"]).astimezone(UTC) < end_at
+            if start_at <= datetime.fromisoformat(row["candle_start_at"]).astimezone(KST) < end_at
         ]
 
 
@@ -170,7 +171,9 @@ class LiveUpbitClient:
                     {
                         "market": market,
                         "candle_unit": "1m",
-                        "candle_start_at": item["candle_date_time_utc"] + "+00:00",
+                        "candle_start_at": _parse_upbit_candle_time(
+                            item["candle_date_time_utc"]
+                        ).isoformat(),
                         "open_price": str(item["opening_price"]),
                         "high_price": str(item["high_price"]),
                         "low_price": str(item["low_price"]),
@@ -212,7 +215,7 @@ class LiveUpbitClient:
                 break
             if oldest >= cursor:
                 break
-            cursor = oldest
+            cursor = oldest.astimezone(UTC)
         return [
             rows_by_started_at[started_at]
             for started_at in sorted(rows_by_started_at)
@@ -236,7 +239,7 @@ class LiveUpbitClient:
 
 
 def _parse_upbit_candle_time(value: object) -> datetime:
-    return datetime.fromisoformat(str(value)).replace(tzinfo=UTC)
+    return datetime.fromisoformat(str(value)).replace(tzinfo=UTC).astimezone(KST)
 
 
 def _upbit_candle_to_row(market: str, item: dict[str, Any]) -> dict[str, str]:

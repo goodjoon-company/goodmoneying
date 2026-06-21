@@ -1,12 +1,13 @@
 import {
-  approveBackfillJob,
   controlBackfillJob,
   createBackfillPlan,
+  deleteBackfillJob,
   loadCandidateUniverse,
   loadCollectionCoverageSegments,
   loadInstrumentSnapshot,
   loadMarketList,
   loadOperationsSnapshot,
+  startBackfillJob,
   updateCollectionTargets,
   type BackfillJob,
   type BackfillPlan,
@@ -31,8 +32,12 @@ export type OperationsDataClient = {
     instrumentIds: number[],
     options?: CreateBackfillPlanOptions
   ) => Promise<BackfillPlan>;
-  approveBackfillJob: (planId: string) => Promise<BackfillJob>;
+  startBackfillJob: (
+    instrumentIds: number[],
+    options?: CreateBackfillPlanOptions
+  ) => Promise<BackfillJob>;
   controlBackfillJob: (jobId: number, action: string) => Promise<BackfillJob>;
+  deleteBackfillJob: (jobId: number) => Promise<void>;
 };
 
 export type HttpOperationsDataClientOptions = {
@@ -51,7 +56,8 @@ export function createHttpOperationsDataClient(
     loadInstrumentSnapshot,
     updateCollectionTargets,
     createBackfillPlan,
-    approveBackfillJob,
-    controlBackfillJob
+    startBackfillJob,
+    controlBackfillJob,
+    deleteBackfillJob
   };
 }

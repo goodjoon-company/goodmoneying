@@ -38,7 +38,10 @@ export function createTestCandidateUniverse(): CandidateUniverseEntry[] {
     candidateStatus: "in_universe",
     qualityStatus: index % 9 === 0 ? "warning" : "normal",
     qualityDetail: index % 9 === 0 ? "품질 주의" : "정상",
-    collectionRangeDisplay: "2026-01-01 00:00 KST ~ NOW"
+    collectionRangeDisplay: "2026-01-01 00:00 KST ~ NOW",
+    collectedStartAt: "2026-01-01T00:00:00+09:00",
+    collectedEndAt: "2026-06-19T09:00:00+09:00",
+    isRealtimeTarget: index < 50
   }));
 }
 
@@ -106,6 +109,18 @@ export function createTestDashboardSummary(
         lastCollectedAt: NOW,
         errorCount24h: 2,
         failureRate24h: "1.5",
+        diagnostics: [
+          {
+            label: "마지막 heartbeat",
+            value: NOW,
+            detail: "최근 heartbeat 정상"
+          },
+          {
+            label: "24시간 오류",
+            value: "2건",
+            detail: "24시간 실패율 1.50%"
+          }
+        ],
         recentErrors: [
           {
             occurredAt: NOW,
@@ -124,6 +139,20 @@ export function createTestDashboardSummary(
         failureRateAll: "2.4",
         runningTargetCount: 1,
         totalTargetCount: 3,
+        queuedJobCount: 0,
+        queuedTargetCount: 0,
+        diagnostics: [
+          {
+            label: "마지막 heartbeat",
+            value: NOW,
+            detail: "최근 heartbeat 정상"
+          },
+          {
+            label: "동작중 코인",
+            value: "1/3개",
+            detail: "현재 실행 중인 백필 계획의 running 대상 수"
+          }
+        ],
         recentErrors: [
           {
             occurredAt: NOW,
@@ -244,7 +273,7 @@ export function createTestInstrumentDetail(instrumentId: number): InstrumentDeta
 
 export function createTestCandles(): Candle[] {
   return Array.from({ length: 10 }, (_, index) => ({
-    startedAt: new Date(Date.parse("2026-01-01T00:00:00.000Z") + index * 60 * 1000).toISOString(),
+    startedAt: new Date(Date.parse("2026-01-01T00:00:00+09:00") + index * 60 * 1000).toISOString(),
     open: "1000000",
     high: "1001000",
     low: "999000",
@@ -261,13 +290,16 @@ export function createTestBackfillJob(overrides: Partial<BackfillJob> = {}): Bac
     status: "pending",
     dataType: "source_candle",
     progressPercent: "0",
+    targetStartAt: "2026-01-01T00:00:00+09:00",
+    targetEndAt: "2026-02-01T00:00:00+09:00",
+    targets: createTestInstruments(2),
     createdAt: NOW,
     ...overrides
   };
 }
 
 export function createTestOperationsFetch(
-  options: { dashboard?: Partial<DashboardSummary> } = {}
+  options: { dashboard?: Partial<DashboardSummary>; backfillJobs?: BackfillJob[] } = {}
 ) {
   return async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -275,7 +307,7 @@ export function createTestOperationsFetch(
       return Response.json(createTestDashboardSummary(options.dashboard));
     }
     if (url.endsWith("/v1/backfill/jobs") && (!init || init.method !== "POST")) {
-      return Response.json({ items: [] });
+      return Response.json({ items: options.backfillJobs ?? [] });
     }
     if (url.endsWith("/v1/candidate-universe")) {
       return Response.json({ entries: createTestCandidateUniverse() });
@@ -309,6 +341,22 @@ export function createTestOperationsFetch(
     if (url.endsWith("/v1/backfill/jobs") && init?.method === "POST") {
       return Response.json(createTestBackfillJob(), { status: 201 });
     }
+    const pauseMatch = url.match(/\/v1\/backfill\/jobs\/(\d+)\/pause$/);
+    if (pauseMatch && init?.method === "POST") {
+      return Response.json(
+        createTestBackfillJob({ id: Number(pauseMatch[1]), status: "paused" })
+      );
+    }
+    const controlMatch = url.match(/\/v1\/backfill\/jobs\/(\d+)\/stop$/);
+    if (controlMatch && init?.method === "POST") {
+      return Response.json(
+        createTestBackfillJob({ id: Number(controlMatch[1]), status: "stopped" })
+      );
+    }
+    const deleteMatch = url.match(/\/v1\/backfill\/jobs\/(\d+)$/);
+    if (deleteMatch && init?.method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
     return new Response(`unexpected ${url}`, { status: 500 });
   };
 }
@@ -321,7 +369,7 @@ function createDashboardTarget(instrument: Instrument): CollectionDashboardTarge
     plan: {
       instrumentId: instrument.id,
       preset: "2026년 1월 1분봉",
-      rangeStartAt: "2026-01-01T00:00:00.000Z",
+      rangeStartAt: "2026-01-01T00:00:00+09:00",
       rangeEndAt: null,
       isContinuous: true,
       method: "safe_restart",

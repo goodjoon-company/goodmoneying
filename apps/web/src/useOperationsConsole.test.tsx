@@ -4,7 +4,11 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { useOperationsConsole } from "./useOperationsConsole";
-import { createTestInstrumentDetail, createTestOperationsSnapshot } from "./testOperationsApi";
+import {
+  createTestBackfillJob,
+  createTestInstrumentDetail,
+  createTestOperationsSnapshot
+} from "./testOperationsApi";
 import type { OperationsDataClient } from "./operationsData";
 
 function Harness() {
@@ -26,20 +30,9 @@ function Harness() {
       estimatedStorageBytes: 1,
       targets: [1]
     }),
-    approveBackfillJob: async () => ({
-      id: 1,
-      status: "pending",
-      dataType: "source_candle",
-      progressPercent: "0",
-      createdAt: "2026-06-19T00:00:00.000Z"
-    }),
-    controlBackfillJob: async () => ({
-      id: 1,
-      status: "running",
-      dataType: "source_candle",
-      progressPercent: "0",
-      createdAt: "2026-06-19T00:00:00.000Z"
-    })
+    startBackfillJob: async () => createTestBackfillJob({ id: 1, status: "pending" }),
+    controlBackfillJob: async () => createTestBackfillJob({ id: 1, status: "running" }),
+    deleteBackfillJob: async () => undefined
   };
   const consoleState = useOperationsConsole({
     dataClient,

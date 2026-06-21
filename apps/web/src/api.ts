@@ -35,7 +35,7 @@ export type CollectionPlan = {
   isContinuous: boolean;
   method: string;
   displayRange: string;
-  rangeTimeZone: "KST" | "UTC";
+  rangeTimeZone: "KST";
   progressBasis: string;
 };
 
@@ -166,6 +166,12 @@ export type CollectionWorkerError = {
   message: string;
 };
 
+export type CollectionWorkerDiagnostic = {
+  label: string;
+  value: string;
+  detail: string;
+};
+
 export type RealtimeWorkerStatus = {
   status: "running" | "stale" | "failed";
   statusLabel: string;
@@ -174,6 +180,7 @@ export type RealtimeWorkerStatus = {
   lastCollectedAt: string | null;
   errorCount24h: number;
   failureRate24h: string;
+  diagnostics: CollectionWorkerDiagnostic[];
   recentErrors: CollectionWorkerError[];
 };
 
@@ -187,6 +194,9 @@ export type BackfillWorkerStatus = {
   failureRateAll: string;
   runningTargetCount: number;
   totalTargetCount: number;
+  queuedJobCount: number;
+  queuedTargetCount: number;
+  diagnostics: CollectionWorkerDiagnostic[];
   recentErrors: CollectionWorkerError[];
 };
 
@@ -229,6 +239,9 @@ export type CandidateUniverseEntry = {
   qualityStatus: Status;
   qualityDetail: string;
   collectionRangeDisplay: string;
+  collectedStartAt: string | null;
+  collectedEndAt: string | null;
+  isRealtimeTarget: boolean;
 };
 
 export type MarketListRow = {
@@ -304,6 +317,9 @@ export type BackfillJob = {
   status: "planned" | "pending" | "running" | "paused" | "stopped" | "succeeded" | "failed";
   dataType: string;
   progressPercent: string;
+  targetStartAt: string;
+  targetEndAt: string;
+  targets: Instrument[];
   createdAt: string;
 };
 
@@ -325,8 +341,8 @@ export type CollectionCoverageSegmentsResponse = {
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const OPERATOR_TOKEN = import.meta.env.VITE_OPERATOR_TOKEN ?? "";
-export const JANUARY_2026_BACKFILL_START = "2026-01-01T00:00:00.000Z";
-export const JANUARY_2026_BACKFILL_END = "2026-02-01T00:00:00.000Z";
+export const JANUARY_2026_BACKFILL_START = "2026-01-01T00:00:00+09:00";
+export const JANUARY_2026_BACKFILL_END = "2026-02-01T00:00:00+09:00";
 
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`);
@@ -348,7 +364,7 @@ export async function loadOperationsSnapshot(): Promise<OperationsSnapshot> {
     marketRows: [],
     detail: null,
     candles: [],
-    backfillJobs: jobs.items,
+    backfillJobs: jobs.items.map(normalizeBackfillJob),
     notifications: dashboard.alerts,
     source: "api"
   };
@@ -401,6 +417,7 @@ function normalizeCollectionWorkerStatus(
       lastCollectedAt: workerStatus?.realtime?.lastCollectedAt ?? null,
       errorCount24h: numberOrZero(workerStatus?.realtime?.errorCount24h),
       failureRate24h: workerStatus?.realtime?.failureRate24h ?? "0",
+      diagnostics: workerStatus?.realtime?.diagnostics ?? [],
       recentErrors: workerStatus?.realtime?.recentErrors ?? []
     },
     backfill: {
@@ -413,8 +430,21 @@ function normalizeCollectionWorkerStatus(
       failureRateAll: workerStatus?.backfill?.failureRateAll ?? "0",
       runningTargetCount: numberOrZero(workerStatus?.backfill?.runningTargetCount),
       totalTargetCount: numberOrZero(workerStatus?.backfill?.totalTargetCount),
+      queuedJobCount: numberOrZero(workerStatus?.backfill?.queuedJobCount),
+      queuedTargetCount: numberOrZero(workerStatus?.backfill?.queuedTargetCount),
+      diagnostics: workerStatus?.backfill?.diagnostics ?? [],
       recentErrors: workerStatus?.backfill?.recentErrors ?? []
     }
+  };
+}
+
+function normalizeBackfillJob(job: BackfillJob): BackfillJob {
+  return {
+    ...job,
+    progressPercent: job.progressPercent ?? "0",
+    targetStartAt: job.targetStartAt ?? JANUARY_2026_BACKFILL_START,
+    targetEndAt: job.targetEndAt ?? JANUARY_2026_BACKFILL_END,
+    targets: job.targets ?? []
   };
 }
 
@@ -555,6 +585,20 @@ async function sendJson<T>(path: string, method: string, body?: unknown): Promis
   return (await response.json()) as T;
 }
 
+async function sendEmpty(path: string, method: string): Promise<void> {
+  const headers: Record<string, string> = {};
+  if (OPERATOR_TOKEN) {
+    headers["X-Operator-Token"] = OPERATOR_TOKEN;
+  }
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method,
+    headers
+  });
+  if (!response.ok) {
+    throw new Error(`${path} failed with ${response.status}`);
+  }
+}
+
 export async function updateCollectionTargets(instrumentIds: number[]): Promise<void> {
   await sendJson("/v1/collection-targets", "PUT", {
     instrumentIds,
@@ -589,10 +633,26 @@ export async function createBackfillPlan(
   });
 }
 
-export async function approveBackfillJob(planId: string): Promise<BackfillJob> {
-  return sendJson<BackfillJob>("/v1/backfill/jobs", "POST", { planId });
+export async function startBackfillJob(
+  instrumentIds: number[],
+  options: CreateBackfillPlanOptions = {}
+): Promise<BackfillJob> {
+  return normalizeBackfillJob(
+    await sendJson<BackfillJob>("/v1/backfill/jobs", "POST", {
+      dataType: options.dataType ?? "source_candle",
+      targetStartAt: options.targetStartAt ?? JANUARY_2026_BACKFILL_START,
+      targetEndAt: options.targetEndAt ?? JANUARY_2026_BACKFILL_END,
+      instrumentIds
+    })
+  );
 }
 
 export async function controlBackfillJob(jobId: number, action: string): Promise<BackfillJob> {
-  return sendJson<BackfillJob>(`/v1/backfill/jobs/${jobId}/${action}`, "POST");
+  return normalizeBackfillJob(
+    await sendJson<BackfillJob>(`/v1/backfill/jobs/${jobId}/${action}`, "POST")
+  );
+}
+
+export async function deleteBackfillJob(jobId: number): Promise<void> {
+  await sendEmpty(`/v1/backfill/jobs/${jobId}`, "DELETE");
 }

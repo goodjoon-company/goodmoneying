@@ -1,17 +1,6 @@
-import type { BackfillPlan, CandidateUniverseEntry, Status } from "./api";
+import type { CandidateUniverseEntry } from "./api";
 
-export type SortMode = "trade" | "quality";
-
-export type BackfillDraftPlan = BackfillPlan & {
-  targetStartAt: string;
-  targetEndAt: string;
-};
-
-const QUALITY_RANK: Record<Status, number> = {
-  normal: 0,
-  warning: 1,
-  incident: 2
-};
+export type SortMode = "trade";
 
 export function initialSelectedInstrumentIds(entries: CandidateUniverseEntry[]): Set<number> {
   return new Set(
@@ -38,12 +27,7 @@ export function filterAndSortCandidateEntries(
       return text.includes(normalizedSearch);
     })
     .sort((left, right) => {
-      if (sortMode === "quality") {
-        return (
-          QUALITY_RANK[left.qualityStatus] - QUALITY_RANK[right.qualityStatus] ||
-          Number(right.accTradePrice24h) - Number(left.accTradePrice24h)
-        );
-      }
+      void sortMode;
       return Number(right.accTradePrice24h) - Number(left.accTradePrice24h);
     });
 }
@@ -72,30 +56,4 @@ export function canCreateBackfillPlan(
   limit = 50
 ): boolean {
   return selectedCount > 0 && selectedCount <= limit && !isPending;
-}
-
-export function canApproveBackfillPlans(planCount: number, isPending: boolean): boolean {
-  return planCount > 0 && !isPending;
-}
-
-export function addDraftBackfillPlan(
-  current: BackfillDraftPlan[],
-  plan: BackfillPlan,
-  range: { targetStartAt: string; targetEndAt: string }
-): BackfillDraftPlan[] {
-  return [...current, { ...plan, ...range }];
-}
-
-export function removeDraftBackfillPlan(
-  current: BackfillDraftPlan[],
-  planId: string
-): BackfillDraftPlan[] {
-  return current.filter((item) => item.planId !== planId);
-}
-
-export function sumDraftBackfillPlans(
-  plans: BackfillDraftPlan[],
-  key: "estimatedRequestCount" | "estimatedStorageBytes"
-): number {
-  return plans.reduce((total, plan) => total + plan[key], 0);
 }

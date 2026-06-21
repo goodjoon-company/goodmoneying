@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -23,6 +23,7 @@ from goodmoneying_shared.models import (
     CollectionPlan,
     CollectionRowsByType,
     CollectionRun,
+    CollectionWorkerDiagnostic,
     CollectionWorkerError,
     CollectionWorkerHeartbeatStatus,
     CollectionWorkerStatus,
@@ -45,15 +46,21 @@ from goodmoneying_shared.models import (
     StorageBreakdownItem,
     TickerSnapshot,
 )
-from goodmoneying_shared.time import minute_bucket, now_utc
+from goodmoneying_shared.time import KST, isoformat_kst, minute_bucket, now_kst
 
 
 def _to_db_time(value: datetime) -> str:
-    return value.astimezone(UTC).replace(microsecond=0).isoformat()
+    return isoformat_kst(value)
 
 
 def _from_db_time(value: str) -> datetime:
-    return datetime.fromisoformat(value).astimezone(UTC)
+    return datetime.fromisoformat(value).astimezone(KST)
+
+
+def _diagnostic_datetime(value: datetime | None) -> str:
+    if value is None:
+        return "-"
+    return isoformat_kst(value)
 
 
 def _decimal(value: str | int | float | Decimal | None) -> Decimal:
@@ -298,7 +305,7 @@ class SQLiteOperationsRepository:
 
     def upsert_instrument(self, market_code: str, display_name: str) -> Instrument:
         quote_currency, base_asset = market_code.split("-", maxsplit=1)
-        timestamp = _to_db_time(now_utc())
+        timestamp = _to_db_time(now_kst())
         with self._lock, self._conn:
             self._execute(
                 """
@@ -322,7 +329,7 @@ class SQLiteOperationsRepository:
     def refresh_candidate_universe(
         self, entries: list[tuple[str, str, str]]
     ) -> list[CandidateUniverseEntry]:
-        ranked_at = _to_db_time(now_utc())
+        ranked_at = _to_db_time(now_kst())
         with self._lock, self._conn:
             self._execute("DELETE FROM candidate_universe_entries")
             for rank, (market_code, display_name, acc_trade_price_24h) in enumerate(
@@ -413,7 +420,7 @@ class SQLiteOperationsRepository:
                 ORDER BY cue.rank
                 """
             ).fetchall()
-        ranked_at = _from_db_time(rows[0]["ranked_at"]) if rows else now_utc()
+        ranked_at = _from_db_time(rows[0]["ranked_at"]) if rows else now_kst()
         entries = [
             CandidateUniverseEntry(
                 instrument=self._instrument_from_row(row),
@@ -445,7 +452,7 @@ class SQLiteOperationsRepository:
         orderbooks: list[OrderbookSummary],
         candles: list[SourceCandle],
     ) -> CollectionRun:
-        started_at = now_utc()
+        started_at = now_kst()
         with self._lock, self._conn:
             cursor = self._execute(
                 """
@@ -478,10 +485,10 @@ class SQLiteOperationsRepository:
                         ticker_rows.get(instrument_id, 0)
                         + orderbook_rows.get(instrument_id, 0)
                         + candle_rows.get(instrument_id, 0),
-                        _to_db_time(now_utc()),
+                        _to_db_time(now_kst()),
                     ),
                 )
-            finished_at = now_utc()
+            finished_at = now_kst()
             self._execute(
                 """
                 UPDATE collection_runs
@@ -561,7 +568,7 @@ class SQLiteOperationsRepository:
             missing_range_top=self._missing_range_top(targets),
             audit_log_summary=self.dashboard_audit_log_summary(),
             worker_status=self.dashboard_worker_status(),
-            refreshed_at=now_utc(),
+            refreshed_at=now_kst(),
         )
 
     def dashboard_coverage(self) -> list[CoverageStatus]:
@@ -626,6 +633,9 @@ class SQLiteOperationsRepository:
                 "source_candles",
                 [instrument.id for instrument in active_targets],
             )
+            source_candle_ranges = self._source_candle_ranges_by_instrument(
+                [instrument.id for instrument in active_targets]
+            )
             for instrument in active_targets:
                 ticker = self.latest_ticker(instrument.id)
                 coverage = sorted(
@@ -674,15 +684,49 @@ class SQLiteOperationsRepository:
                         acc_trade_price_24h_display=(
                             f"₩{int(ticker.acc_trade_price_24h):,}" if ticker else "₩0"
                         ),
-                        ticker_collected_at=ticker.collected_at if ticker else now_utc(),
+                        ticker_collected_at=ticker.collected_at if ticker else now_kst(),
                         coverage_percent=candle_status.progress_percent,
                         storage_row_count=self._instrument_storage_row_count(instrument.id),
                         storage_bytes_display=_format_storage_bytes(
                             self._instrument_storage_bytes(instrument.id)
                         ),
+                        collected_start_at=source_candle_ranges.get(
+                            instrument.id, (None, None)
+                        )[0],
+                        collected_end_at=source_candle_ranges.get(
+                            instrument.id, (None, None)
+                        )[1],
                     )
                 )
             return targets
+
+    def _source_candle_ranges_by_instrument(
+        self, instrument_ids: list[int]
+    ) -> dict[int, tuple[datetime | None, datetime | None]]:
+        if not instrument_ids:
+            return {}
+        placeholders = ",".join("?" for _ in instrument_ids)
+        rows = self._execute(
+            f"""
+            SELECT instrument_id,
+                   min(candle_start_at) AS collected_start_at,
+                   max(candle_start_at) AS collected_end_at
+            FROM source_candles
+            WHERE candle_unit = '1m'
+              AND instrument_id IN ({placeholders})
+            GROUP BY instrument_id
+            """,
+            tuple(instrument_ids),
+        ).fetchall()
+        return {
+            row["instrument_id"]: (
+                _from_db_time(row["collected_start_at"])
+                if row["collected_start_at"]
+                else None,
+                _from_db_time(row["collected_end_at"]) if row["collected_end_at"] else None,
+            )
+            for row in rows
+        }
 
     def coverage_segments_for(self, instrument_id: int) -> list[CoverageSegment]:
         return [
@@ -843,7 +887,7 @@ class SQLiteOperationsRepository:
             raise ValueError("지원하지 않는 수집 워커 유형이다.")
         if status not in {"running", "failed"}:
             raise ValueError("지원하지 않는 수집 워커 상태다.")
-        now = now_utc()
+        now = now_kst()
         with self._lock, self._conn:
             self._execute(
                 """
@@ -897,7 +941,7 @@ class SQLiteOperationsRepository:
         error_code: str,
         error_message: str,
     ) -> CollectionRun:
-        finished_at = now_utc()
+        finished_at = now_kst()
         with self._lock, self._conn:
             cursor = self._execute(
                 """
@@ -969,7 +1013,7 @@ class SQLiteOperationsRepository:
                     plan.estimated_row_count,
                     plan.estimated_storage_bytes,
                     ",".join(str(item) for item in plan.targets),
-                    _to_db_time(now_utc()),
+                    _to_db_time(now_kst()),
                 ),
             )
         return plan
@@ -978,7 +1022,7 @@ class SQLiteOperationsRepository:
         row = self._execute("SELECT * FROM backfill_plans WHERE plan_id = ?", (plan_id,)).fetchone()
         if row is None:
             raise ValueError("존재하지 않는 백필 계획이다.")
-        created_at = _to_db_time(now_utc())
+        created_at = _to_db_time(now_kst())
         with self._lock, self._conn:
             cursor = self._execute(
                 """
@@ -1023,7 +1067,7 @@ class SQLiteOperationsRepository:
             if row["status"] == "pending":
                 self._execute(
                     "UPDATE backfill_jobs SET status = 'running', updated_at = ? WHERE id = ?",
-                    (_to_db_time(now_utc()), row["id"]),
+                    (_to_db_time(now_kst()), row["id"]),
                 )
                 row = self._execute(
                     """
@@ -1057,7 +1101,7 @@ class SQLiteOperationsRepository:
             return 0
         if any(item.instrument_id != instrument_id for item in candles):
             raise ValueError("백필 캔들 대상 instrument_id가 작업 대상과 다르다.")
-        started_at = now_utc()
+        started_at = now_kst()
         with self._lock, self._conn:
             cursor = self._execute(
                 """
@@ -1077,7 +1121,7 @@ class SQLiteOperationsRepository:
                 )
                 VALUES (?, ?, 'source_candle', 'succeeded', 0, ?, ?)
                 """,
-                (run_id, instrument_id, rows_written, _to_db_time(now_utc())),
+                (run_id, instrument_id, rows_written, _to_db_time(now_kst())),
             )
             self._execute(
                 """
@@ -1085,7 +1129,7 @@ class SQLiteOperationsRepository:
                 SET status = 'succeeded', finished_at = ?
                 WHERE id = ?
                 """,
-                (_to_db_time(now_utc()), run_id),
+                (_to_db_time(now_kst()), run_id),
             )
             self._execute(
                 """
@@ -1093,7 +1137,7 @@ class SQLiteOperationsRepository:
                 SET status = 'running', updated_at = ?
                 WHERE backfill_job_id = ? AND instrument_id = ? AND status = 'pending'
                 """,
-                (_to_db_time(now_utc()), job_id, instrument_id),
+                (_to_db_time(now_kst()), job_id, instrument_id),
             )
         return rows_written
 
@@ -1121,7 +1165,7 @@ class SQLiteOperationsRepository:
                     _to_db_time(last_completed_at) if last_completed_at else None,
                     error_code,
                     error_message,
-                    _to_db_time(now_utc()),
+                    _to_db_time(now_kst()),
                     job_id,
                     instrument_id,
                 ),
@@ -1143,12 +1187,34 @@ class SQLiteOperationsRepository:
                 raise ValueError("완료 또는 중지된 백필 작업은 해당 명령을 수행할 수 없다.")
             self._execute(
                 "UPDATE backfill_jobs SET status = ?, updated_at = ? WHERE id = ?",
-                (transitions[action], _to_db_time(now_utc()), job_id),
+                (transitions[action], _to_db_time(now_kst()), job_id),
             )
         return self._backfill_job_by_id(job_id)
 
+    def delete_backfill_job(self, job_id: int) -> None:
+        with self._lock, self._conn:
+            current = self._execute(
+                "SELECT status FROM backfill_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if current is None:
+                raise ValueError("존재하지 않는 백필 작업이다.")
+            if current["status"] == "running":
+                raise ValueError("실행 중인 백필 작업은 먼저 중지해야 한다.")
+            self._execute("DELETE FROM backfill_job_targets WHERE backfill_job_id = ?", (job_id,))
+            self._execute("DELETE FROM backfill_jobs WHERE id = ?", (job_id,))
+
     def backfill_jobs(self) -> list[BackfillJob]:
-        rows = self._execute("SELECT * FROM backfill_jobs ORDER BY created_at DESC").fetchall()
+        rows = self._execute(
+            """
+            SELECT
+              bj.*,
+              bp.target_start_at,
+              bp.target_end_at
+            FROM backfill_jobs bj
+            JOIN backfill_plans bp ON bp.plan_id = bj.plan_id
+            ORDER BY bj.created_at DESC
+            """
+        ).fetchall()
         return [self._backfill_job_from_row(row) for row in rows]
 
     def notification_events(self) -> list[NotificationEvent]:
@@ -1158,7 +1224,7 @@ class SQLiteOperationsRepository:
         return [self._notification_from_row(row) for row in rows]
 
     def _recent_run_count(self) -> int:
-        since = _to_db_time(now_utc() - timedelta(hours=24))
+        since = _to_db_time(now_kst() - timedelta(hours=24))
         row = self._execute(
             "SELECT COUNT(*) AS count FROM collection_runs WHERE started_at >= ?",
             (since,),
@@ -1166,7 +1232,7 @@ class SQLiteOperationsRepository:
         return int(row["count"]) if row else 0
 
     def _recent_collection_result_count(self) -> int:
-        since = _to_db_time(now_utc() - timedelta(hours=24))
+        since = _to_db_time(now_kst() - timedelta(hours=24))
         row = self._execute(
             "SELECT COUNT(*) AS count FROM target_collection_results WHERE created_at >= ?",
             (since,),
@@ -1174,7 +1240,7 @@ class SQLiteOperationsRepository:
         return int(row["count"]) if row else 0
 
     def _collection_rows_last_minute(self, run_type: str) -> int:
-        since = _to_db_time(now_utc() - timedelta(minutes=1))
+        since = _to_db_time(now_kst() - timedelta(minutes=1))
         row = self._execute(
             """
             SELECT COALESCE(SUM(tcr.rows_written), 0) AS count
@@ -1187,7 +1253,7 @@ class SQLiteOperationsRepository:
         return int(row["count"]) if row else 0
 
     def _storage_rows_today(self) -> int:
-        day_start = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+        day_start = now_kst().replace(hour=0, minute=0, second=0, microsecond=0)
         return (
             self._table_count_since("source_candles", "collected_at", day_start)
             + self._table_count_since("ticker_snapshots", "collected_at", day_start)
@@ -1196,7 +1262,7 @@ class SQLiteOperationsRepository:
         )
 
     def _storage_bytes_today_estimate(self) -> int:
-        day_start = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+        day_start = now_kst().replace(hour=0, minute=0, second=0, microsecond=0)
         return (
             self._table_count_since("source_candles", "collected_at", day_start) * 256
             + self._table_count_since("ticker_snapshots", "collected_at", day_start) * 160
@@ -1213,7 +1279,7 @@ class SQLiteOperationsRepository:
             "ticker_snapshot": 60,
             "orderbook_summary": 60,
         }
-        now = now_utc()
+        now = now_kst()
         current_hour = now.replace(minute=0, second=0, microsecond=0)
         first_hour = current_hour - timedelta(hours=23)
         target_ids = [target.id for target in active_targets]
@@ -1308,7 +1374,7 @@ class SQLiteOperationsRepository:
         return heatmap
 
     def _collection_activity_buckets(self) -> list[CollectionActivityBucket]:
-        current_hour = now_utc().replace(minute=0, second=0, microsecond=0)
+        current_hour = now_kst().replace(minute=0, second=0, microsecond=0)
         first_hour = current_hour - timedelta(hours=(7 * 24) - 1)
         run_counts: dict[datetime, int] = {}
         for row in self._execute(
@@ -1340,7 +1406,7 @@ class SQLiteOperationsRepository:
         return buckets
 
     def _storage_breakdown_today(self, total_bytes: int) -> list[StorageBreakdownItem]:
-        day_start = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+        day_start = now_kst().replace(hour=0, minute=0, second=0, microsecond=0)
         rows = [
             (
                 "source_candle",
@@ -1396,7 +1462,7 @@ class SQLiteOperationsRepository:
         warning_targets: int,
         incident_targets: int,
     ) -> list[OperationsTrendPoint]:
-        today = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+        today = now_kst().replace(hour=0, minute=0, second=0, microsecond=0)
         coverage_percent = self._average_coverage_percent(coverage)
         points = []
         for offset in range(6, -1, -1):
@@ -1441,7 +1507,7 @@ class SQLiteOperationsRepository:
         )[:5]
 
     def _audit_log_summary(self) -> AuditLogSummary:
-        since = now_utc() - timedelta(hours=24)
+        since = now_kst() - timedelta(hours=24)
         target_count_row = self._execute(
             """
             SELECT COUNT(*) AS count
@@ -1468,7 +1534,7 @@ class SQLiteOperationsRepository:
         ).fetchone()
         latest_backfill = self._execute(
             """
-            SELECT created_at AS changed_at, '백필 승인' AS label
+            SELECT created_at AS changed_at, '백필 시작' AS label
             FROM backfill_jobs
             ORDER BY created_at DESC
             LIMIT 1
@@ -1499,14 +1565,22 @@ class SQLiteOperationsRepository:
             if run_count_24h > 0
             else Decimal("0")
         )
+        last_collected_at = self._latest_collection_finished_at("incremental")
         return RealtimeWorkerStatus(
             status=status,
             status_label=status_label,
             status_detail=status_detail,
             last_heartbeat_at=last_heartbeat_at,
-            last_collected_at=self._latest_collection_finished_at("incremental"),
+            last_collected_at=last_collected_at,
             error_count_24h=error_count_24h,
             failure_rate_24h=failure_rate_24h,
+            diagnostics=self._realtime_worker_diagnostics(
+                status_detail,
+                last_heartbeat_at,
+                last_collected_at,
+                error_count_24h,
+                failure_rate_24h,
+            ),
             recent_errors=self._recent_realtime_errors(),
         )
 
@@ -1522,19 +1596,104 @@ class SQLiteOperationsRepository:
             if total_target_count_all > 0
             else Decimal("0")
         )
-        running_target_count, total_target_count = self._active_backfill_target_counts()
+        (
+            running_target_count,
+            total_target_count,
+            queued_job_count,
+            queued_target_count,
+        ) = self._active_backfill_target_summary()
+        last_collected_at = self._latest_collection_finished_at("backfill")
         return BackfillWorkerStatus(
             status=status,
             status_label=status_label,
             status_detail=status_detail,
             last_heartbeat_at=last_heartbeat_at,
-            last_collected_at=self._latest_collection_finished_at("backfill"),
+            last_collected_at=last_collected_at,
             total_error_count=total_error_count,
             failure_rate_all=failure_rate_all,
             running_target_count=running_target_count,
             total_target_count=total_target_count,
+            queued_job_count=queued_job_count,
+            queued_target_count=queued_target_count,
+            diagnostics=self._backfill_worker_diagnostics(
+                status_detail,
+                last_heartbeat_at,
+                last_collected_at,
+                total_error_count,
+                failure_rate_all,
+                running_target_count,
+                total_target_count,
+                queued_job_count,
+                queued_target_count,
+            ),
             recent_errors=self._recent_backfill_errors(),
         )
+
+    def _realtime_worker_diagnostics(
+        self,
+        status_detail: str,
+        last_heartbeat_at: datetime | None,
+        last_collected_at: datetime | None,
+        error_count: int,
+        failure_rate: Decimal,
+    ) -> list[CollectionWorkerDiagnostic]:
+        return [
+            CollectionWorkerDiagnostic(
+                "마지막 heartbeat",
+                _diagnostic_datetime(last_heartbeat_at),
+                status_detail,
+            ),
+            CollectionWorkerDiagnostic(
+                "마지막 저장 성공",
+                _diagnostic_datetime(last_collected_at),
+                "최근 성공 또는 부분 성공한 실시간 저장 시각",
+            ),
+            CollectionWorkerDiagnostic(
+                "24시간 오류",
+                f"{error_count:,}건",
+                f"24시간 실패율 {failure_rate:.2f}%",
+            ),
+        ]
+
+    def _backfill_worker_diagnostics(
+        self,
+        status_detail: str,
+        last_heartbeat_at: datetime | None,
+        last_collected_at: datetime | None,
+        error_count: int,
+        failure_rate: Decimal,
+        running_target_count: int,
+        total_target_count: int,
+        queued_job_count: int,
+        queued_target_count: int,
+    ) -> list[CollectionWorkerDiagnostic]:
+        return [
+            CollectionWorkerDiagnostic(
+                "마지막 heartbeat",
+                _diagnostic_datetime(last_heartbeat_at),
+                status_detail,
+            ),
+            CollectionWorkerDiagnostic(
+                "마지막 저장 성공",
+                _diagnostic_datetime(last_collected_at),
+                "최근 성공 또는 부분 성공한 백필 저장 시각",
+            ),
+            CollectionWorkerDiagnostic(
+                "전체 오류",
+                f"{error_count:,}건",
+                f"전체 실패율 {failure_rate:.2f}%",
+            ),
+            CollectionWorkerDiagnostic(
+                "동작중 코인",
+                f"{running_target_count:,}/{total_target_count:,}개",
+                "현재 실행 중인 백필 계획의 running 대상 수",
+            ),
+            CollectionWorkerDiagnostic(
+                "대기 백필",
+                f"{queued_job_count:,}건 / {queued_target_count:,}개",
+                "현재 계획 이후 대기 중인 백필 job/target",
+            ),
+        ]
 
     def _worker_runtime_status(
         self,
@@ -1558,7 +1717,7 @@ class SQLiteOperationsRepository:
                 str(row["last_error_message"] or "마지막 heartbeat가 실패 상태입니다."),
                 last_heartbeat_at,
             )
-        if now_utc() - last_heartbeat_at > stale_after:
+        if now_kst() - last_heartbeat_at > stale_after:
             return (
                 "stale",
                 "지연",
@@ -1582,7 +1741,7 @@ class SQLiteOperationsRepository:
         return _from_db_time(row["finished_at"] or row["started_at"])
 
     def _realtime_error_count_24h(self) -> int:
-        cutoff = _to_db_time(now_utc() - timedelta(hours=24))
+        cutoff = _to_db_time(now_kst() - timedelta(hours=24))
         row = self._execute(
             """
             SELECT COUNT(*) AS count
@@ -1594,7 +1753,7 @@ class SQLiteOperationsRepository:
         return int(row["count"]) if row else 0
 
     def _realtime_run_count_24h(self) -> int:
-        cutoff = _to_db_time(now_utc() - timedelta(hours=24))
+        cutoff = _to_db_time(now_kst() - timedelta(hours=24))
         row = self._execute(
             """
             SELECT COUNT(*) AS count
@@ -1606,7 +1765,7 @@ class SQLiteOperationsRepository:
         return int(row["count"]) if row else 0
 
     def _recent_realtime_errors(self) -> list[CollectionWorkerError]:
-        cutoff = _to_db_time(now_utc() - timedelta(hours=24))
+        cutoff = _to_db_time(now_kst() - timedelta(hours=24))
         rows = self._execute(
             """
             SELECT started_at, error_code, error_message
@@ -1645,20 +1804,50 @@ class SQLiteOperationsRepository:
         ).fetchone()
         return int(row["count"]) if row else 0
 
-    def _active_backfill_target_counts(self) -> tuple[int, int]:
-        row = self._execute(
+    def _active_backfill_target_summary(self) -> tuple[int, int, int, int]:
+        active_job = self._execute(
             """
-            SELECT
-              SUM(CASE WHEN bjt.status = 'running' THEN 1 ELSE 0 END) AS running_count,
-              COUNT(*) AS total_count
-            FROM backfill_job_targets bjt
-            JOIN backfill_jobs bj ON bj.id = bjt.backfill_job_id
-            WHERE bj.status IN ('pending', 'running')
+            SELECT id
+            FROM backfill_jobs
+            WHERE status IN ('running', 'pending')
+            ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, created_at
+            LIMIT 1
             """
         ).fetchone()
-        if row is None:
-            return 0, 0
-        return int(row["running_count"] or 0), int(row["total_count"] or 0)
+        if active_job is None:
+            return 0, 0, 0, 0
+        active_job_id = int(active_job["id"])
+        active_counts = self._execute(
+            """
+            SELECT
+              SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_count,
+              COUNT(*) AS total_count
+            FROM backfill_job_targets
+            WHERE backfill_job_id = ?
+            """,
+            (active_job_id,),
+        ).fetchone()
+        queued_counts = self._execute(
+            """
+            SELECT
+              COUNT(DISTINCT bj.id) AS queued_job_count,
+              COUNT(bjt.instrument_id) AS queued_target_count
+            FROM backfill_jobs bj
+            LEFT JOIN backfill_job_targets bjt ON bjt.backfill_job_id = bj.id
+            WHERE bj.status = 'pending' AND bj.id <> ?
+            """,
+            (active_job_id,),
+        ).fetchone()
+        return (
+            int(active_counts["running_count"] or 0) if active_counts else 0,
+            int(active_counts["total_count"] or 0) if active_counts else 0,
+            int(queued_counts["queued_job_count"] or 0) if queued_counts else 0,
+            int(queued_counts["queued_target_count"] or 0) if queued_counts else 0,
+        )
+
+    def _active_backfill_target_counts(self) -> tuple[int, int]:
+        running_count, total_count, _, _ = self._active_backfill_target_summary()
+        return running_count, total_count
 
     def _recent_backfill_errors(self) -> list[CollectionWorkerError]:
         rows = self._execute(
@@ -1878,7 +2067,7 @@ class SQLiteOperationsRepository:
         title: str,
         message: str,
     ) -> NotificationEvent:
-        created_at = _to_db_time(now_utc())
+        created_at = _to_db_time(now_kst())
         with self._lock, self._conn:
             cursor = self._execute(
                 """
@@ -1896,7 +2085,7 @@ class SQLiteOperationsRepository:
         return self._notification_from_row(row)
 
     def _activate_target(self, instrument_id: int, actor: str, reason: str | None) -> None:
-        timestamp = _to_db_time(now_utc())
+        timestamp = _to_db_time(now_kst())
         previous = self._execute(
             "SELECT status FROM collection_targets WHERE instrument_id = ?",
             (instrument_id,),
@@ -1922,7 +2111,7 @@ class SQLiteOperationsRepository:
         self._ensure_collection_plan(instrument_id)
 
     def _deactivate_target(self, instrument_id: int, actor: str, reason: str | None) -> None:
-        timestamp = _to_db_time(now_utc())
+        timestamp = _to_db_time(now_kst())
         previous = self._execute(
             "SELECT status FROM collection_targets WHERE instrument_id = ?",
             (instrument_id,),
@@ -1954,12 +2143,12 @@ class SQLiteOperationsRepository:
             )
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (instrument_id, previous_status, new_status, actor, reason, _to_db_time(now_utc())),
+            (instrument_id, previous_status, new_status, actor, reason, _to_db_time(now_kst())),
         )
 
     def _ensure_collection_plan(self, instrument_id: int) -> None:
-        plan_start = datetime(2025, 12, 31, 15, 0, tzinfo=UTC)
-        timestamp = _to_db_time(now_utc())
+        plan_start = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+        timestamp = _to_db_time(now_kst())
         self._execute(
             """
             INSERT INTO collection_plans (
@@ -2062,9 +2251,9 @@ class SQLiteOperationsRepository:
                 data_type=data_type,
                 status="incident",
                 progress_percent=Decimal("0"),
-                last_successful_at=now_utc() - timedelta(days=365),
+                last_successful_at=now_kst() - timedelta(days=365),
             )
-        age = now_utc() - latest_at
+        age = now_kst() - latest_at
         return CoverageStatus(
             instrument_id=instrument_id,
             data_type=data_type,
@@ -2090,7 +2279,7 @@ class SQLiteOperationsRepository:
         latest_at = stored_starts[-1] if stored_starts else None
         if latest_at is None:
             status: Literal["normal", "warning", "incident"] = "incident"
-            last_successful_at = now_utc() - timedelta(days=365)
+            last_successful_at = now_kst() - timedelta(days=365)
         elif missing_segments == 0 and progress == Decimal("100.00"):
             status = "normal"
             last_successful_at = latest_at
@@ -2254,7 +2443,7 @@ class SQLiteOperationsRepository:
     def _coverage_range_end(self, plan: CollectionPlan) -> datetime:
         if plan.range_end_at is not None:
             return plan.range_end_at
-        return minute_bucket(now_utc())
+        return minute_bucket(now_kst())
 
     def _expected_minutes(self, start_at: datetime, end_at: datetime) -> int:
         return max(1, int((end_at - start_at).total_seconds() // 60))
@@ -2378,7 +2567,7 @@ class SQLiteOperationsRepository:
         return _from_db_time(row["candle_start_at"]) if row else None
 
     def _failed_runs_24h(self) -> int:
-        cutoff = _to_db_time(now_utc() - timedelta(hours=24))
+        cutoff = _to_db_time(now_kst() - timedelta(hours=24))
         return int(
             self._execute(
                 """
@@ -2438,10 +2627,34 @@ class SQLiteOperationsRepository:
         return result
 
     def _backfill_job_by_id(self, job_id: int) -> BackfillJob:
-        row = self._execute("SELECT * FROM backfill_jobs WHERE id = ?", (job_id,)).fetchone()
+        row = self._execute(
+            """
+            SELECT
+              bj.*,
+              bp.target_start_at,
+              bp.target_end_at
+            FROM backfill_jobs bj
+            JOIN backfill_plans bp ON bp.plan_id = bj.plan_id
+            WHERE bj.id = ?
+            """,
+            (job_id,),
+        ).fetchone()
         if row is None:
             raise ValueError("존재하지 않는 백필 작업이다.")
         return self._backfill_job_from_row(row)
+
+    def _backfill_job_target_instruments(self, job_id: int) -> list[Instrument]:
+        rows = self._execute(
+            """
+            SELECT i.*
+            FROM backfill_job_targets bjt
+            JOIN instruments i ON i.id = bjt.instrument_id
+            WHERE bjt.backfill_job_id = ?
+            ORDER BY i.market_code
+            """,
+            (job_id,),
+        ).fetchall()
+        return [self._instrument_from_row(row) for row in rows]
 
     def _instrument_from_row(self, row: sqlite3.Row) -> Instrument:
         return Instrument(
@@ -2533,6 +2746,9 @@ class SQLiteOperationsRepository:
             ),
             data_type=str(row["data_type"]),
             progress_percent=_decimal(row["progress_percent"]),
+            target_start_at=_from_db_time(row["target_start_at"]),
+            target_end_at=_from_db_time(row["target_end_at"]),
+            targets=self._backfill_job_target_instruments(int(row["id"])),
             created_at=_from_db_time(row["created_at"]),
         )
 
@@ -2610,5 +2826,5 @@ class SQLiteOperationsRepository:
             SET status = ?, progress_percent = ?, updated_at = ?
             WHERE id = ?
             """,
-            (status, str(progress.normalize()), _to_db_time(now_utc()), job_id),
+            (status, str(progress.normalize()), _to_db_time(now_kst()), job_id),
         )

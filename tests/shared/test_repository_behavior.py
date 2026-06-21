@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from goodmoneying_shared.models import OrderbookSummary, SourceCandle, TickerSnapshot
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
-from goodmoneying_shared.time import minute_bucket, now_utc
+from goodmoneying_shared.time import KST, minute_bucket, now_kst
 from goodmoneying_worker.collector import UpbitCollectionWorker
 from goodmoneying_worker.upbit_client import FixtureUpbitClient
 
@@ -121,8 +121,8 @@ def test_repository_computes_candle_coverage_and_missing_segments_from_saved_row
         [("KRW-BTC", "비트코인", "1000000000")]
     )[0].instrument
     repository.ensure_default_active_targets(limit=1)
-    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
-    end_at = datetime(2026, 1, 1, 0, 4, tzinfo=UTC)
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 4, tzinfo=KST)
     repository._execute(
         """
         UPDATE collection_plans
@@ -169,7 +169,7 @@ def test_repository_computes_candle_coverage_and_missing_segments_from_saved_row
 def test_repository_upserts_newer_market_snapshots_for_same_bucket() -> None:
     repository = SQLiteOperationsRepository()
     instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
-    bucket_at = minute_bucket(now_utc())
+    bucket_at = minute_bucket(now_kst())
     old_collected_at = bucket_at
     new_collected_at = bucket_at + timedelta(seconds=30)
 
@@ -248,8 +248,8 @@ def _source_candle(instrument_id: int, candle_start_at: datetime, close: str) ->
 def test_backfill_plan_and_control_flow() -> None:
     repository = SQLiteOperationsRepository()
     instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
-    start_at = now_utc() - timedelta(hours=2)
-    end_at = now_utc()
+    start_at = now_kst() - timedelta(hours=2)
+    end_at = now_kst()
 
     plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
     job = repository.approve_backfill_job(plan.plan_id)
@@ -267,9 +267,9 @@ def test_backfill_plan_and_control_flow() -> None:
 def test_backfill_job_claim_records_candle_chunk_and_progress() -> None:
     repository = SQLiteOperationsRepository()
     instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
-    start_at = now_utc() - timedelta(minutes=2)
-    end_at = now_utc()
-    collected_at = now_utc()
+    start_at = now_kst() - timedelta(minutes=2)
+    end_at = now_kst()
+    collected_at = now_kst()
 
     plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
     job = repository.approve_backfill_job(plan.plan_id)

@@ -39,6 +39,7 @@ def test_openapi_contract_contains_m1_paths() -> None:
         "/v1/backfill/plans",
         "/v1/backfill/jobs",
         "/v1/backfill/jobs/{jobId}/{action}",
+        "/v1/backfill/jobs/{jobId}",
         "/v1/notifications",
     }
 
@@ -84,6 +85,7 @@ def test_openapi_contract_groups_operations_with_described_tags() -> None:
         ("get", "/v1/backfill/jobs"): ["백필(Backfill)"],
         ("post", "/v1/backfill/jobs"): ["백필(Backfill)"],
         ("post", "/v1/backfill/jobs/{jobId}/{action}"): ["백필(Backfill)"],
+        ("delete", "/v1/backfill/jobs/{jobId}"): ["백필(Backfill)"],
         ("get", "/v1/notifications"): ["알림(Notification)"],
     }
     for (method, path), tags in expected_operation_tags.items():
@@ -148,6 +150,7 @@ def test_openapi_contract_exposes_m2_collection_dashboard_view_model() -> None:
         "OperationsTrendPoint",
         "MissingRangeSummary",
         "AuditLogSummary",
+        "CollectionWorkerDiagnostic",
     ]:
         assert schema_name in schemas
     for field in [
@@ -173,6 +176,7 @@ def test_openapi_contract_exposes_m2_collection_dashboard_view_model() -> None:
         "lastCollectedAt",
         "errorCount24h",
         "failureRate24h",
+        "diagnostics",
         "recentErrors",
     }
 
@@ -187,11 +191,29 @@ def test_openapi_contract_exposes_m2_collection_dashboard_view_model() -> None:
         "failureRateAll",
         "runningTargetCount",
         "totalTargetCount",
+        "queuedJobCount",
+        "queuedTargetCount",
+        "diagnostics",
         "recentErrors",
     }
 
+    diagnostic = schemas["CollectionWorkerDiagnostic"]
+    assert set(diagnostic["required"]) == {"label", "value", "detail"}
+
     candidate = schemas["CandidateUniverseEntry"]
     assert "qualityDetail" in candidate["required"]
+    assert {
+        "collectedStartAt",
+        "collectedEndAt",
+        "isRealtimeTarget",
+    }.issubset(set(candidate["required"]))
+
+    backfill_job = schemas["BackfillJob"]
+    assert {
+        "targetStartAt",
+        "targetEndAt",
+        "targets",
+    }.issubset(set(backfill_job["required"]))
 
     request_schema = schemas["UpdateCollectionTargetsRequest"]
     instrument_ids = request_schema["properties"]["instrumentIds"]

@@ -51,7 +51,7 @@ class CollectionPlanResponse(BaseModel):
     isContinuous: bool
     method: str
     displayRange: str
-    rangeTimeZone: Literal["KST", "UTC"]
+    rangeTimeZone: Literal["KST"]
     progressBasis: str
 
 
@@ -193,6 +193,12 @@ class CollectionWorkerErrorResponse(BaseModel):
     message: str
 
 
+class CollectionWorkerDiagnosticResponse(BaseModel):
+    label: str
+    value: str
+    detail: str
+
+
 class RealtimeWorkerStatusResponse(BaseModel):
     status: Literal["running", "stale", "failed"]
     statusLabel: str
@@ -201,6 +207,7 @@ class RealtimeWorkerStatusResponse(BaseModel):
     lastCollectedAt: datetime | None
     errorCount24h: int
     failureRate24h: str
+    diagnostics: list[CollectionWorkerDiagnosticResponse]
     recentErrors: list[CollectionWorkerErrorResponse]
 
 
@@ -214,6 +221,9 @@ class BackfillWorkerStatusResponse(BaseModel):
     failureRateAll: str
     runningTargetCount: int
     totalTargetCount: int
+    queuedJobCount: int
+    queuedTargetCount: int
+    diagnostics: list[CollectionWorkerDiagnosticResponse]
     recentErrors: list[CollectionWorkerErrorResponse]
 
 
@@ -323,6 +333,9 @@ class CandidateUniverseEntryResponse(BaseModel):
     qualityStatus: Literal["normal", "warning", "incident"]
     qualityDetail: str
     collectionRangeDisplay: str
+    collectedStartAt: datetime | None
+    collectedEndAt: datetime | None
+    isRealtimeTarget: bool
 
 
 class CandidateUniverseResponse(BaseModel):
@@ -444,6 +457,13 @@ class CreateBackfillPlanRequest(BaseModel):
     instrumentIds: list[int]
 
 
+class CreateBackfillJobRequest(BaseModel):
+    dataType: Literal["source_candle"]
+    targetStartAt: datetime
+    targetEndAt: datetime
+    instrumentIds: list[int]
+
+
 class BackfillPlanResponse(BaseModel):
     planId: str
     dataType: str
@@ -453,15 +473,14 @@ class BackfillPlanResponse(BaseModel):
     targets: list[int]
 
 
-class ApproveBackfillJobRequest(BaseModel):
-    planId: str
-
-
 class BackfillJobResponse(BaseModel):
     id: int
     status: Literal["planned", "pending", "running", "paused", "stopped", "succeeded", "failed"]
     dataType: str
     progressPercent: str
+    targetStartAt: datetime
+    targetEndAt: datetime
+    targets: list[InstrumentResponse]
     createdAt: datetime
 
 

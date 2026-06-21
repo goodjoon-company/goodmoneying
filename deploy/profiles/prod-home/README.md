@@ -64,6 +64,7 @@
 ## 서버별 env 파일
 
 아래 값은 형식 예시다. 실제 운영 값은 별도로 생성하고 배포 전 회전(rotate)한다.
+배포 스크립트는 각 서버의 `{base}/env/{infra,app,web}.env.sample`도 함께 복사한다. 샘플은 새 환경변수 확인용이며, 실제 `{base}/env/*.env` 파일을 덮어쓰지 않는다.
 
 ### Mac Mini M4: `/Users/goodjoon/DATA/applications/goodmoneying/env/infra.env`
 
@@ -78,6 +79,7 @@ POSTGRES_PASSWORD=prod-home-example-postgres-password-rotate
 ```bash
 GOODMONEYING_DATABASE_URL=postgresql://goodmoneying:prod-home-example-postgres-password-rotate@100.107.98.22:5432/goodmoneying
 GOODMONEYING_OPERATOR_TOKEN=prod-home-example-operator-token-rotate
+GOODMONEYING_DASHBOARD_REFRESH_CONFIG=/etc/goodmoneying/operations-api.yaml
 GOODMONEYING_LIVE_UPBIT=1
 GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS=60
 GOODMONEYING_BACKFILL_POLL_SECONDS=10

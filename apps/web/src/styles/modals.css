@@ -1,0 +1,173 @@
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 0.62);
+}
+
+.detail-modal {
+  position: relative;
+  width: min(1500px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border: 1px solid #2d463b;
+  border-radius: 8px;
+  background: #111916;
+  padding: 18px;
+}
+
+.backfill-dialog {
+  position: relative;
+  width: min(620px, calc(100vw - 48px));
+  border: 1px solid #2d463b;
+  border-radius: 8px;
+  background: #111916;
+  padding: 18px;
+}
+
+.backfill-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.backfill-form-grid label {
+  display: grid;
+  gap: 7px;
+}
+
+.backfill-form-grid label span {
+  color: #9eaaa2;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.backfill-form-grid input,
+.backfill-form-grid select {
+  min-width: 0;
+  border: 1px solid #2d463b;
+  border-radius: 8px;
+  background: #0d1311;
+  color: #edf7ef;
+  padding: 9px 10px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.icon-button {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #2d463b;
+  border-radius: 8px;
+  background: #0d1311;
+  color: #edf7ef;
+}
+
+.icon-button.small {
+  width: 28px;
+  height: 28px;
+}
+
+.close-button {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 2;
+}
+
+.trading-chart-shell {
+  position: relative;
+  min-height: 406px;
+  overflow: hidden;
+  border: 1px solid #253c33;
+  border-radius: 8px;
+  background: #0c1010;
+}
+
+.chart-titlebar {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 14px;
+  border-bottom: 1px solid #1d2e27;
+}
+
+.chart-titlebar strong {
+  color: #27d0a4;
+  font-size: 18px;
+}
+
+.chart-canvas {
+  min-height: 328px;
+  display: grid;
+  place-items: center;
+}
+
+.chart-canvas span {
+  color: #9eaaa2;
+  font-weight: 900;
+}
+
+.price-gauge,
+.volume-gauge {
+  position: absolute;
+  right: 10px;
+  border-radius: 4px;
+  background: #2fc4a1;
+  color: #eefaf1;
+  padding: 5px 8px;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.08);
+}
+
+.price-gauge {
+  top: 172px;
+}
+
+.volume-gauge {
+  right: 10px;
+  bottom: 18px;
+}
+
+.price-gauge span,
+.volume-gauge span {
+  display: block;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.price-gauge strong,
+.volume-gauge strong {
+  display: block;
+  font-size: 15px;
+}
+
+.trading-watermark {
+  position: absolute;
+  left: 16px;
+  bottom: 18px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.08);
+  padding: 8px 12px;
+  color: #eefaf1;
+}
+
+.error-text {
+  margin: 0 0 10px;
+  color: #ff786d;
+  font-weight: 900;
+}

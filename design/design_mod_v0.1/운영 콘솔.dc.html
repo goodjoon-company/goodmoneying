@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:#0a0e0c;}
+  @keyframes gmFade{from{opacity:0}to{opacity:1}}
+  @keyframes gmPop{from{opacity:0;transform:translateY(14px) scale(.985)}to{opacity:1;transform:none}}
+  @keyframes gmPulse{0%,100%{opacity:1}50%{opacity:.3}}
+  ::-webkit-scrollbar{width:11px;height:11px}
+  ::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.09);border-radius:6px;border:2px solid transparent;background-clip:padding-box}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,0.16);background-clip:padding-box}
+  ::-webkit-scrollbar-track{background:transparent}
+</style>
+</helmet>
+
+<div style="display:flex;min-height:100vh;background:#0a0e0c;color:#e8efe9;font-family:'Pretendard','Pretendard Variable',-apple-system,BlinkMacSystemFont,sans-serif;font-feature-settings:'tnum';-webkit-font-smoothing:antialiased;">
+
+  <!-- ========== SIDEBAR ========== -->
+  <aside style="width:250px;flex:none;background:#0c1210;border-right:1px solid rgba(255,255,255,0.06);display:flex;flex-direction:column;padding:18px 14px;position:sticky;top:0;height:100vh;overflow-y:auto;">
+    <div style="display:flex;align-items:center;gap:11px;padding:6px 8px 18px;">
+      <div style="width:38px;height:38px;border-radius:11px;background:linear-gradient(150deg,#37d28f,#1e9e8f);display:flex;align-items:center;justify-content:center;font-weight:800;color:#06120d;font-size:17px;box-shadow:0 4px 14px rgba(55,210,143,0.28);">g</div>
+      <div style="line-height:1.25;">
+        <div style="font-weight:700;font-size:15.5px;letter-spacing:-0.02em;">goodmoneying</div>
+        <div style="font-size:11.5px;color:#7d8a83;">운영 관제형 콘솔</div>
+      </div>
+    </div>
+
+    <div style="font-size:10.5px;font-weight:700;letter-spacing:0.09em;color:#5f6b64;padding:14px 10px 7px;">데이터 수집관리</div>
+    <div onClick="{{ goOps }}" style="{{ navStyle.ops }}" style-hover="background:rgba(255,255,255,0.05)"><span>운영 상태</span><span style="font-size:9.5px;font-weight:700;color:#37d28f;background:rgba(55,210,143,0.12);padding:2px 6px;border-radius:5px;">MVP</span></div>
+    <div onClick="{{ goTargets }}" style="{{ navStyle.targets }}" style-hover="background:rgba(255,255,255,0.05)"><span>수집 대상/설정</span><span style="font-size:9.5px;font-weight:700;color:#37d28f;background:rgba(55,210,143,0.12);padding:2px 6px;border-radius:5px;">MVP</span></div>
+    <div onClick="{{ goMarket }}" style="{{ navStyle.market }}" style-hover="background:rgba(255,255,255,0.05)"><span>시장 리스트</span><span style="font-size:9.5px;font-weight:700;color:#37d28f;background:rgba(55,210,143,0.12);padding:2px 6px;border-radius:5px;">MVP</span></div>
+    <div onClick="{{ goDetail }}" style="{{ navStyle.detail }}" style-hover="background:rgba(255,255,255,0.05)"><span>코인 상세</span><span style="font-size:9.5px;font-weight:700;color:#37d28f;background:rgba(55,210,143,0.12);padding:2px 6px;border-radius:5px;">MVP</span></div>
+    <div onClick="{{ goScale }}" style="{{ navStyle.scale }}" style-hover="background:rgba(255,255,255,0.05)"><span>확장성 점검</span><span style="font-size:9.5px;font-weight:700;color:#37d28f;background:rgba(55,210,143,0.12);padding:2px 6px;border-radius:5px;">MVP</span></div>
+
+    <div style="font-size:10.5px;font-weight:700;letter-spacing:0.09em;color:#5f6b64;padding:18px 10px 7px;">종목 발굴</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;border-radius:9px;font-size:13.5px;color:#566159;cursor:default;"><span>국내 주식 리스트</span><span style="font-size:9.5px;color:#566159;border:1px solid rgba(255,255,255,0.08);padding:2px 6px;border-radius:5px;">후속</span></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;border-radius:9px;font-size:13.5px;color:#566159;cursor:default;"><span>미국 주식 리스트</span><span style="font-size:9.5px;color:#566159;border:1px solid rgba(255,255,255,0.08);padding:2px 6px;border-radius:5px;">후속</span></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;border-radius:9px;font-size:13.5px;color:#566159;cursor:default;"><span>통합 시장 스캐닝</span><span style="font-size:9.5px;color:#566159;border:1px solid rgba(255,255,255,0.08);padding:2px 6px;border-radius:5px;">후속</span></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;border-radius:9px;font-size:13.5px;color:#566159;cursor:default;"><span>신호/이벤트 타임라인</span><span style="font-size:9.5px;color:#566159;border:1px solid rgba(255,255,255,0.08);padding:2px 6px;border-radius:5px;">후속</span></div>
+
+    <div style="font-size:10.5px;font-weight:700;letter-spacing:0.09em;color:#5f6b64;padding:18px 10px 7px;">매매 전략 · 봇 관리</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;border-radius:9px;font-size:13.5px;color:#566159;cursor:default;"><span>전략 작업대</span><span style="font-size:9.5px;color:#566159;border:1px solid rgba(255,255,255,0.08);padding:2px 6px;border-radius:5px;">후속</span></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;border-radius:9px;font-size:13.5px;color:#566159;cursor:default;"><span>봇 설계 / 시뮬레이션</span><span style="font-size:9.5px;color:#566159;border:1px solid rgba(255,255,255,0.08);padding:2px 6px;border-radius:5px;">후속</span></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;border-radius:9px;font-size:13.5px;color:#566159;cursor:default;"><span>모의매매 준비</span><span style="font-size:9.5px;color:#566159;border:1px solid rgba(255,255,255,0.08);padding:2px 6px;border-radius:5px;">후속</span></div>
+
+    <div style="margin-top:auto;padding:14px 12px 4px;border-top:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;gap:9px;">
+      <div style="width:8px;height:8px;border-radius:50%;background:#37d28f;animation:gmPulse 1.8s ease-in-out infinite;"></div>
+      <div style="font-size:11.5px;color:#7d8a83;">워커 1 · 파이프라인 가동중</div>
+    </div>
+  </aside>
+
+  <!-- ========== MAIN ========== -->
+  <main style="flex:1;display:flex;flex-direction:column;min-width:0;">
+
+    <!-- topbar -->
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 32px;border-bottom:1px solid rgba(255,255,255,0.06);position:sticky;top:0;background:rgba(10,14,12,0.82);backdrop-filter:blur(12px);z-index:20;">
+      <div style="font-size:13px;color:#7d8a83;letter-spacing:-0.01em;">goodmoneying <span style="color:#3f4843;">/</span> {{ crumb }} <span style="color:#3f4843;">/</span> <span style="color:#37d28f;font-weight:600;font-family:'JetBrains Mono',monospace;">{{ milestone }}</span></div>
+      <div style="display:flex;gap:9px;">
+        <button style="background:transparent;border:1px solid rgba(255,255,255,0.1);color:#c2ccc5;padding:8px 15px;border-radius:9px;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit;" style-hover="background:rgba(255,255,255,0.05)">새로고침</button>
+        <button style="background:transparent;border:1px solid rgba(255,255,255,0.1);color:#c2ccc5;padding:8px 15px;border-radius:9px;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit;" style-hover="background:rgba(255,255,255,0.05)">CSV 내보내기</button>
+        <button style="background:#37d28f;border:1px solid #37d28f;color:#06120d;padding:8px 17px;border-radius:9px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;box-shadow:0 4px 14px rgba(55,210,143,0.2);" style-hover="background:#46e09d">운영 변경 저장</button>
+      </div>
+    </div>
+
+    <!-- scroll content -->
+    <div style="flex:1;overflow-y:auto;padding:30px 32px 64px;">
+
+      <!-- title block -->
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:26px;">
+        <div style="min-width:0;">
+          <div style="font-size:12px;font-weight:700;letter-spacing:0.04em;color:#37d28f;margin-bottom:9px;font-family:'JetBrains Mono',monospace;">{{ milestone }} · 운영 관제형</div>
+          <h1 style="margin:0 0 11px;font-size:30px;font-weight:800;letter-spacing:-0.03em;line-height:1.1;">{{ title }}</h1>
+          <p style="margin:0;font-size:14px;line-height:1.6;color:#8a958f;max-width:680px;">{{ desc }}</p>
+        </div>
+        <div style="display:flex;gap:8px;flex:none;flex-wrap:wrap;justify-content:flex-end;max-width:300px;">
+          <span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;color:#9aa39d;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);padding:5px 11px;border-radius:8px;font-family:'JetBrains Mono',monospace;">⏱ 표시 KST</span>
+          <span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;color:#9aa39d;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);padding:5px 11px;border-radius:8px;font-family:'JetBrains Mono',monospace;">⛁ 저장 UTC</span>
+          <span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;color:#37d28f;background:rgba(55,210,143,0.1);border:1px solid rgba(55,210,143,0.22);padding:5px 11px;border-radius:8px;font-family:'JetBrains Mono',monospace;">↻ 폴링 10–30초</span>
+        </div>
+      </div>
+
+      <!-- ============ SCREEN: OPS ============ -->
+      <sc-if value="{{ isOps }}" hint-placeholder-val="{{ true }}">
+      <div style="animation:gmFade .35s ease;">
+
+        <!-- KPI row -->
+        <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;margin-bottom:18px;">
+          <div style="background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:16px 18px;display:flex;flex-direction:column;">
+            <div style="font-size:12.5px;color:#8a958f;margin-bottom:14px;">수집 현황</div>
+            <div style="display:flex;flex-direction:column;flex:1;justify-content:space-between;gap:10px;">
+              <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;">
+                <span style="font-size:12px;color:#8a958f;">활성 대상</span>
+                <span style="font-size:18px;font-weight:700;letter-spacing:-0.02em;font-family:'JetBrains Mono',monospace;">50<span style="color:#5f6b64;font-size:13px;">/50</span></span>
+              </div>
+              <div style="height:1px;background:rgba(255,255,255,0.06);"></div>
+              <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;">
+                <span style="font-size:12px;color:#8a958f;">주의 / 장애</span>
+                <span style="font-size:18px;font-weight:700;letter-spacing:-0.02em;font-family:'JetBrains Mono',monospace;"><span style="color:#d8b35e;">2</span><span style="color:#5f6b64;"> / </span><span style="color:#e57a5e;">1</span></span>
+              </div>
+              <div style="height:1px;background:rgba(255,255,255,0.06);"></div>
+              <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;">
+                <span style="font-size:12px;color:#8a958f;">실패율</span>
+                <span style="font-size:18px;font-weight:700;letter-spacing:-0.02em;font-family:'JetBrains Mono',monospace;color:#37d28f;">0.18<span style="color:#5f6b64;font-size:13px;">%</span></span>
+              </div>
+            </div>
+          </div>
+          <div style="grid-column:span 2;background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:18px 19px;display:flex;flex-direction:column;">
+            <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:11px;">
+              <div style="display:flex;align-items:baseline;gap:8px;">
+                <span style="font-size:12.5px;color:#8a958f;">정상 수집</span>
+                <span style="font-size:21px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#37d28f;line-height:1;">47</span>
+                <span style="font-size:11px;color:#6e7a72;">활성 50 × 24시간</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:9px;font-size:9.5px;color:#7d8a83;font-family:'JetBrains Mono',monospace;">
+                <span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:9px;height:9px;border-radius:2px;background:rgba(229,122,94,0.85);display:inline-block;"></span>없음</span>
+                <span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:9px;height:9px;border-radius:2px;background:rgba(216,179,94,0.82);display:inline-block;"></span>적음</span>
+                <span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:9px;height:9px;border-radius:2px;background:rgba(55,210,143,0.9);display:inline-block;"></span>많음</span>
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(24,1fr);gap:3px;margin-bottom:4px;">
+              <sc-for list="{{ hourTicks }}" as="tick" hint-placeholder-count="24">
+                <div style="font-size:8.5px;color:#5f6b64;text-align:center;font-family:'JetBrains Mono',monospace;line-height:1;">{{ tick }}</div>
+              </sc-for>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:3px;">
+              <sc-for list="{{ activityGrid }}" as="arow" hint-placeholder-count="7">
+                <div style="display:grid;grid-template-columns:repeat(24,1fr);gap:3px;">
+                  <sc-for list="{{ arow.cells }}" as="cell" hint-placeholder-count="24">
+                    <div title="{{ cell.title }}" style="{{ cell.style }}"></div>
+                  </sc-for>
+                </div>
+              </sc-for>
+            </div>
+            <div style="font-size:11.5px;color:#6e7a72;margin-top:9px;">최근 3분 이내 갱신 · 칸 하나가 1시간</div>
+          </div>
+          <div style="grid-column:span 2;background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:18px 20px;display:flex;flex-direction:column;">
+            <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:14px;">
+              <div style="display:flex;align-items:baseline;gap:9px;">
+                <span style="font-size:12.5px;color:#8a958f;">오늘 저장량</span>
+                <span style="font-size:28px;font-weight:700;letter-spacing:-0.02em;font-family:'JetBrains Mono',monospace;line-height:1;">75.8<span style="color:#5f6b64;font-size:17px;">GB</span></span>
+              </div>
+              <span style="font-size:11px;color:#6e7a72;font-family:'JetBrains Mono',monospace;">13.6M rows</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1.4fr 1fr 0.7fr 1fr;column-gap:10px;row-gap:0;font-family:'JetBrains Mono',monospace;">
+              <div style="font-size:9.5px;color:#5f6b64;padding-bottom:7px;">구분</div>
+              <div style="font-size:9.5px;color:#5f6b64;text-align:right;padding-bottom:7px;">용량</div>
+              <div style="font-size:9.5px;color:#5f6b64;text-align:right;padding-bottom:7px;">비중</div>
+              <div style="font-size:9.5px;color:#5f6b64;text-align:right;padding-bottom:7px;">Rows</div>
+
+              <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#c2ccc5;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);"><span style="width:7px;height:7px;border-radius:2px;background:#37d28f;flex:none;"></span>캔들 <span style="color:#6e7a72;font-size:10px;">Candle</span></div>
+              <div style="font-size:12.5px;font-weight:600;text-align:right;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);">41.2<span style="color:#5f6b64;font-size:10px;">GB</span></div>
+              <div style="font-size:12px;color:#a3ada7;text-align:right;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);">54%</div>
+              <div style="font-size:12px;color:#a3ada7;text-align:right;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);">1.21M</div>
+
+              <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#c2ccc5;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);"><span style="width:7px;height:7px;border-radius:2px;background:#5b8def;flex:none;"></span>현재가 <span style="color:#6e7a72;font-size:10px;">Ticker</span></div>
+              <div style="font-size:12.5px;font-weight:600;text-align:right;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);">12.6<span style="color:#5f6b64;font-size:10px;">GB</span></div>
+              <div style="font-size:12px;color:#a3ada7;text-align:right;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);">17%</div>
+              <div style="font-size:12px;color:#a3ada7;text-align:right;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);">8.62M</div>
+
+              <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#c2ccc5;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);"><span style="width:7px;height:7px;border-radius:2px;background:#9d7bef;flex:none;"></span>호가 <span style="color:#6e7a72;font-size:10px;">Orderbook</span></div>
+              <div style="font-size:12.5px;font-weight:600;text-align:right;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);">19.4<span style="color:#5f6b64;font-size:10px;">GB</span></div>
+              <div style="font-size:12px;color:#a3ada7;text-align:right;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);">26%</div>
+              <div style="font-size:12px;color:#a3ada7;text-align:right;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);">3.42M</div>
+
+              <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#c2ccc5;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);"><span style="width:7px;height:7px;border-radius:2px;background:#d8b35e;flex:none;"></span>품질 <span style="color:#6e7a72;font-size:10px;">Quality</span></div>
+              <div style="font-size:12.5px;font-weight:600;text-align:right;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);">2.6<span style="color:#5f6b64;font-size:10px;">GB</span></div>
+              <div style="font-size:12px;color:#a3ada7;text-align:right;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);">3%</div>
+              <div style="font-size:12px;color:#a3ada7;text-align:right;padding:7px 0;border-top:1px solid rgba(255,255,255,0.06);">0.38M</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- chart + health -->
+        <div style="display:grid;grid-template-columns:1fr 360px;gap:18px;margin-bottom:18px;">
+          <!-- chart panel -->
+          <div style="background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:22px 24px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+              <h3 style="margin:0;font-size:16px;font-weight:700;letter-spacing:-0.02em;">구간형 수집 진행 상태</h3>
+              <span style="font-size:11.5px;font-weight:600;color:#9aa39d;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);padding:5px 11px;border-radius:8px;font-family:'JetBrains Mono',monospace;">KST 전일 23:59:59 기준</span>
+            </div>
+            <div style="position:relative;">
+              <div id="gm-chart-ops" style="width:100%;height:240px;"></div>
+              <div style="font-size:11.5px;color:#6e7a72;margin-top:8px;display:flex;gap:18px;">
+                <span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:14px;height:3px;border-radius:2px;background:#37d28f;display:inline-block;"></span>수집 커버리지</span>
+                <span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:14px;height:3px;border-radius:2px;background:#5b8def;display:inline-block;"></span>저장량</span>
+                <span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:8px;height:8px;border-radius:50%;background:#d8b35e;display:inline-block;"></span>주의 / 장애 구간</span>
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:18px;">
+              <div style="background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:15px 16px;">
+                <div style="font-size:12px;color:#8a958f;margin-bottom:7px;">결측 구간</div>
+                <div style="font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;">11</div>
+                <div style="font-size:11px;color:#6e7a72;margin-top:5px;">XRP 4 · DOGE 7</div>
+              </div>
+              <div style="background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:15px 16px;">
+                <div style="font-size:12px;color:#8a958f;margin-bottom:7px;">백필 대기</div>
+                <div style="font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;">3<span style="font-size:14px;color:#5f6b64;">건</span></div>
+                <div style="font-size:11px;color:#6e7a72;margin-top:5px;">예상 요청 14,200</div>
+              </div>
+              <div style="background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:15px 16px;">
+                <div style="font-size:12px;color:#8a958f;margin-bottom:7px;">Rate limit 여유</div>
+                <div style="font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#37d28f;">64<span style="font-size:14px;color:#5f6b64;">%</span></div>
+                <div style="font-size:11px;color:#6e7a72;margin-top:5px;">전역 제한기 정상</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- health panel -->
+          <div style="background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:22px 22px;">
+            <h3 style="margin:0 0 16px;font-size:16px;font-weight:700;letter-spacing:-0.02em;">운영 헬스</h3>
+            <div style="display:flex;flex-direction:column;gap:11px;">
+              <div style="display:flex;align-items:center;gap:13px;background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:13px 15px;">
+                <div style="width:9px;height:9px;border-radius:50%;background:#37d28f;flex:none;box-shadow:0 0 10px rgba(55,210,143,0.5);"></div>
+                <div style="flex:1;"><div style="font-size:13px;font-weight:600;">현재가 · 거래대금</div><div style="font-size:11.5px;color:#6e7a72;margin-top:2px;">최근 1–3분 이내 정상</div></div>
+                <div style="font-size:12px;font-weight:700;color:#37d28f;">정상</div>
+              </div>
+              <div style="display:flex;align-items:center;gap:13px;background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:13px 15px;">
+                <div style="width:9px;height:9px;border-radius:50%;background:#37d28f;flex:none;box-shadow:0 0 10px rgba(55,210,143,0.5);"></div>
+                <div style="flex:1;"><div style="font-size:13px;font-weight:600;">캔들</div><div style="font-size:11.5px;color:#6e7a72;margin-top:2px;">직전 완성 1분봉 저장됨</div></div>
+                <div style="font-size:12px;font-weight:700;color:#37d28f;">정상</div>
+              </div>
+              <div style="display:flex;align-items:center;gap:13px;background:#0c1210;border:1px solid rgba(229,122,94,0.25);border-radius:12px;padding:13px 15px;">
+                <div style="width:9px;height:9px;border-radius:50%;background:#e57a5e;flex:none;box-shadow:0 0 10px rgba(229,122,94,0.5);"></div>
+                <div style="flex:1;"><div style="font-size:13px;font-weight:600;">호가 요약</div><div style="font-size:11.5px;color:#6e7a72;margin-top:2px;">DOGE 8분 지연</div></div>
+                <div style="font-size:12px;font-weight:700;color:#e57a5e;">장애</div>
+              </div>
+              <div style="display:flex;align-items:center;gap:13px;background:#0c1210;border:1px solid rgba(216,179,94,0.22);border-radius:12px;padding:13px 15px;">
+                <div style="width:9px;height:9px;border-radius:50%;background:#d8b35e;flex:none;box-shadow:0 0 10px rgba(216,179,94,0.45);"></div>
+                <div style="flex:1;"><div style="font-size:13px;font-weight:600;">완전성 검사</div><div style="font-size:11.5px;color:#6e7a72;margin-top:2px;">결측 11구간 검토 대기</div></div>
+                <div style="font-size:12px;font-weight:700;color:#d8b35e;">주의</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- coin table -->
+        <div style="background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:8px 8px 10px;">
+          <div style="display:grid;grid-template-columns:1.5fr 0.9fr 0.85fr 1fr 1fr 1.3fr 0.85fr;align-items:center;gap:14px;padding:14px 18px 13px;font-size:11.5px;font-weight:600;color:#6e7a72;letter-spacing:0.02em;">
+            <div>코인</div><div>상태</div><div>등락률</div><div>24H 거래대금 (억원)</div><div>최신성</div><div>수집 커버리지</div><div style="text-align:right;">저장량</div>
+          </div>
+          <sc-for list="{{ rows }}" as="row" hint-placeholder-count="6">
+            <div style="border-top:1px solid rgba(255,255,255,0.05);">
+              <div onClick="{{ row.onRow }}" style="display:grid;grid-template-columns:1.5fr 0.9fr 0.85fr 1fr 1fr 1.3fr 0.85fr;align-items:center;gap:14px;padding:14px 18px;cursor:pointer;border-radius:10px;background:{{ row.rowBg }};" style-hover="background:rgba(255,255,255,0.035)">
+                <div style="display:flex;align-items:center;gap:11px;">
+                  <span style="{{ row.tickerDot }}"></span>
+                  <div><div style="font-weight:700;font-size:14px;font-family:'JetBrains Mono',monospace;">{{ row.sym }}</div><div style="font-size:11.5px;color:#7d8a83;">{{ row.name }}</div></div>
+                </div>
+                <div><span style="{{ row.badgeStyle }}"><span style="{{ row.dotStyle }}"></span>{{ row.status }}</span></div>
+                <div style="{{ row.changeStyle }}">{{ row.changeStr }}</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:13.5px;">{{ row.turnover }}<span style="color:#5f6b64;font-size:11px;">억원</span></div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:13px;color:{{ row.freshColor }};">{{ row.fresh }}</div>
+                <div>
+                  <div style="position:relative;height:7px;border-radius:999px;background:#1a221d;overflow:hidden;width:150px;">
+                    <div style="{{ row.fillStyle }}"></div><div style="{{ row.missStyle }}"></div>
+                  </div>
+                  <div style="font-size:10.5px;color:#7d8a83;margin-top:5px;font-family:'JetBrains Mono',monospace;">{{ row.covLabel }}</div>
+                </div>
+                <div style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:13.5px;color:#c2ccc5;">{{ row.storage }}</div>
+              </div>
+              <!-- expand -->
+              <sc-if value="{{ row.expandedOpen }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:6px 18px 20px;animation:gmFade .25s ease;">
+                  <div style="background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:13px;padding:18px 20px;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:15px;">
+                      <div style="font-size:13px;font-weight:700;color:#c2ccc5;">코인별 수집 계획 <span style="color:#5f6b64;font-weight:500;">— {{ row.sym }}</span></div>
+                      <button onClick="{{ row.onOpen }}" style="background:rgba(55,210,143,0.1);border:1px solid rgba(55,210,143,0.25);color:#37d28f;padding:6px 13px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;" style-hover="background:rgba(55,210,143,0.18)">상세 레이어 열기 →</button>
+                    </div>
+                    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:18px;">
+                      <div><div style="font-size:11px;color:#6e7a72;margin-bottom:5px;">프리셋</div><div style="font-size:13px;font-family:'JetBrains Mono',monospace;color:#c2ccc5;">MVP-1m-orderbook</div></div>
+                      <div><div style="font-size:11px;color:#6e7a72;margin-bottom:5px;">수집 시작 <span style="color:#37d28f;">KST</span></div><div style="font-size:13px;font-family:'JetBrains Mono',monospace;color:#c2ccc5;">2024-01-01 00:00</div></div>
+                      <div><div style="font-size:11px;color:#6e7a72;margin-bottom:5px;">종료</div><div style="font-size:13px;font-family:'JetBrains Mono',monospace;color:#37d28f;">현재 (지속)</div></div>
+                      <div><div style="font-size:11px;color:#6e7a72;margin-bottom:5px;">수집 방식</div><div style="font-size:13px;font-family:'JetBrains Mono',monospace;color:#c2ccc5;">1분 캔들 + 호가</div></div>
+                      <div><div style="font-size:11px;color:#6e7a72;margin-bottom:5px;">상태</div><div><span style="{{ row.badgeStyle }}"><span style="{{ row.dotStyle }}"></span>{{ row.status }}</span></div></div>
+                    </div>
+                    <div style="font-size:11px;color:#6e7a72;margin-bottom:8px;">구간형 진행 상태 <span style="color:#4a544d;">· 녹색=데이터 있음 / 적색·황색=결측</span></div>
+                    <div style="display:flex;height:12px;border-radius:6px;overflow:hidden;background:#161d19;gap:1px;">
+                      <sc-for list="{{ row.segs }}" as="seg" hint-placeholder-count="5">
+                        <div style="{{ seg.style }}"></div>
+                      </sc-for>
+                    </div>
+                  </div>
+                </div>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ============ SCREEN: TARGETS ============ -->
+      <sc-if value="{{ isTargets }}" hint-placeholder-val="{{ false }}">
+      <div style="display:grid;grid-template-columns:1fr 340px;gap:18px;animation:gmFade .35s ease;">
+        <div style="background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:20px 20px 10px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+            <h3 style="margin:0;font-size:16px;font-weight:700;letter-spacing:-0.02em;">후보 유니버스 상위 100</h3>
+            <span style="font-size:12px;font-weight:700;color:#37d28f;background:rgba(55,210,143,0.1);border:1px solid rgba(55,210,143,0.22);padding:5px 13px;border-radius:999px;font-family:'JetBrains Mono',monospace;">선택 {{ selCount }}/50</span>
+          </div>
+          <div style="display:flex;gap:10px;margin-bottom:8px;">
+            <input placeholder="코인명 또는 심볼 검색" style="flex:1;background:#0c1210;border:1px solid rgba(255,255,255,0.1);color:#e8efe9;padding:9px 13px;border-radius:9px;font-size:13px;font-family:inherit;outline:none;"/>
+            <button style="background:rgba(55,210,143,0.12);border:1px solid rgba(55,210,143,0.25);color:#37d28f;padding:9px 15px;border-radius:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;" style-hover="background:rgba(55,210,143,0.2)">백필 계획 생성</button>
+          </div>
+          <div style="display:grid;grid-template-columns:0.8fr 1.5fr 1fr 0.9fr 1.3fr;align-items:center;gap:14px;padding:13px 14px 11px;font-size:11.5px;font-weight:600;color:#6e7a72;">
+            <div>활성</div>
+            <div onClick="{{ onSortSym }}" style="cursor:pointer;user-select:none;" style-hover="color:#c2ccc5">티커<span style="color:#37d28f;">{{ symArrow }}</span></div>
+            <div onClick="{{ onSortTurnover }}" style="cursor:pointer;user-select:none;" style-hover="color:#c2ccc5">거래대금<span style="color:#37d28f;">{{ turnoverArrow }}</span></div>
+            <div onClick="{{ onSortQuality }}" style="cursor:pointer;user-select:none;" style-hover="color:#c2ccc5">품질<span style="color:#37d28f;">{{ qualityArrow }}</span></div>
+            <div onClick="{{ onSortCov }}" style="cursor:pointer;user-select:none;" style-hover="color:#c2ccc5">수집 범위<span style="color:#37d28f;">{{ covArrow }}</span></div>
+          </div>
+          <sc-for list="{{ targetRows }}" as="t" hint-placeholder-count="8">
+            <div onClick="{{ t.onToggle }}" style="display:grid;grid-template-columns:0.8fr 1.5fr 1fr 0.9fr 1.3fr;align-items:center;gap:14px;padding:13px 14px;border-top:1px solid rgba(255,255,255,0.05);cursor:pointer;border-radius:9px;" style-hover="background:rgba(255,255,255,0.03)">
+              <div style="display:flex;align-items:center;gap:9px;"><span style="{{ t.boxStyle }}">{{ t.check }}</span><span style="font-size:12.5px;color:#8a958f;">수집</span></div>
+              <div style="display:flex;align-items:center;gap:10px;"><span style="{{ t.tickerDot }}"></span><div><div style="font-weight:700;font-size:13.5px;font-family:'JetBrains Mono',monospace;">{{ t.sym }}</div><div style="font-size:11px;color:#7d8a83;">{{ t.name }}</div></div></div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:13px;">{{ t.turnover }}<span style="color:#5f6b64;font-size:11px;">억원</span></div>
+              <div><span style="{{ t.badgeStyle }}"><span style="{{ t.dotStyle }}"></span>{{ t.status }}</span></div>
+              <div style="font-size:12.5px;color:#8a958f;font-family:'JetBrains Mono',monospace;">2024-01-01 → 현재</div>
+            </div>
+          </sc-for>
+        </div>
+        <div>
+          <div style="background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:22px;position:sticky;top:20px;">
+            <h3 style="margin:0 0 16px;font-size:16px;font-weight:700;letter-spacing:-0.02em;">백필 승인 패널</h3>
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div style="background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:15px 16px;">
+                <div style="font-size:12px;color:#8a958f;margin-bottom:7px;">예상 요청 수</div>
+                <div style="font-size:25px;font-weight:700;font-family:'JetBrains Mono',monospace;">18,420</div>
+                <div style="font-size:11.5px;color:#37d28f;margin-top:5px;">1분 캔들 + 일봉 보정</div>
+              </div>
+              <div style="background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:15px 16px;">
+                <div style="font-size:12px;color:#8a958f;margin-bottom:7px;">예상 저장량</div>
+                <div style="font-size:25px;font-weight:700;font-family:'JetBrains Mono',monospace;">12.6<span style="font-size:16px;color:#5f6b64;">GB</span></div>
+                <div style="font-size:11.5px;color:#8a958f;margin-top:5px;">삭제 후 재수집 없음</div>
+              </div>
+              <div style="background:#0c1210;border:1px solid rgba(216,179,94,0.2);border-radius:12px;padding:15px 16px;">
+                <div style="font-size:12px;color:#8a958f;margin-bottom:7px;">감사 로그</div>
+                <div style="font-size:18px;font-weight:700;color:#d8b35e;">필수</div>
+                <div style="font-size:11.5px;color:#8a958f;margin-top:5px;">대상 변경 · 범위 변경 기록</div>
+              </div>
+            </div>
+            <button style="width:100%;margin-top:16px;background:#37d28f;border:none;color:#06120d;padding:12px;border-radius:11px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;box-shadow:0 4px 14px rgba(55,210,143,0.22);" style-hover="background:#46e09d">백필 계획 승인</button>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ============ SCREEN: MARKET ============ -->
+      <sc-if value="{{ isMarket }}" hint-placeholder-val="{{ false }}">
+      <div style="background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:8px 8px 10px;animation:gmFade .35s ease;">
+        <div style="display:grid;grid-template-columns:1.6fr 1.1fr 0.9fr 1.1fr 1fr 0.9fr 0.5fr;align-items:center;gap:14px;padding:15px 18px 13px;font-size:11.5px;font-weight:600;color:#6e7a72;">
+          <div>코인</div><div style="text-align:right;">현재가</div><div style="text-align:right;">등락률</div><div style="text-align:right;">24H 거래대금 (억원)</div><div>최신성</div><div>품질</div><div></div>
+        </div>
+        <sc-for list="{{ rows }}" as="row" hint-placeholder-count="8">
+          <div onClick="{{ row.onOpen }}" style="display:grid;grid-template-columns:1.6fr 1.1fr 0.9fr 1.1fr 1fr 0.9fr 0.5fr;align-items:center;gap:14px;padding:15px 18px;border-top:1px solid rgba(255,255,255,0.05);cursor:pointer;border-radius:10px;" style-hover="background:rgba(255,255,255,0.035)">
+            <div style="display:flex;align-items:center;gap:11px;"><span style="{{ row.tickerDot }}"></span><div><div style="font-weight:700;font-size:14px;font-family:'JetBrains Mono',monospace;">{{ row.sym }}</div><div style="font-size:11.5px;color:#7d8a83;">{{ row.name }}</div></div></div>
+            <div style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:13.5px;">₩{{ row.priceStr }}</div>
+            <div style="text-align:right;{{ row.changeStyle }}">{{ row.changeStr }}</div>
+            <div style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:13.5px;">{{ row.turnover }}<span style="color:#5f6b64;font-size:11px;">억원</span></div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:13px;color:{{ row.freshColor }};">{{ row.fresh }}</div>
+            <div><span style="{{ row.badgeStyle }}"><span style="{{ row.dotStyle }}"></span>{{ row.status }}</span></div>
+            <div style="text-align:right;color:#5f6b64;font-size:16px;">›</div>
+          </div>
+        </sc-for>
+      </div>
+      </sc-if>
+
+      <!-- ============ SCREEN: DETAIL ============ -->
+      <sc-if value="{{ isDetail }}" hint-placeholder-val="{{ false }}">
+      <div style="display:grid;grid-template-columns:1fr 380px;gap:18px;animation:gmFade .35s ease;">
+        <div style="background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:22px 24px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+            <h3 style="margin:0;font-size:16px;font-weight:700;letter-spacing:-0.02em;">{{ dc.sym }} 캔들 · 거래대금</h3>
+            <button onClick="{{ dc.onOpen }}" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:#c2ccc5;padding:7px 14px;border-radius:9px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;" style-hover="background:rgba(255,255,255,0.09)">레이어로 열기 ↗</button>
+          </div>
+          <div id="gm-chart-detail" style="width:100%;height:280px;"></div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:18px;">
+            <div style="background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:15px 16px;"><div style="font-size:12px;color:#8a958f;margin-bottom:7px;">현재가</div><div style="font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace;">₩{{ dc.priceStr }}</div><div style="font-size:11px;color:#6e7a72;margin-top:5px;">최신성 {{ dc.fresh }}</div></div>
+            <div style="background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:15px 16px;"><div style="font-size:12px;color:#8a958f;margin-bottom:7px;">24H 거래대금</div><div style="font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace;">{{ dc.turnover }}<span style="font-size:13px;color:#5f6b64;">억원</span></div><div style="font-size:11px;color:#6e7a72;margin-top:5px;">소수점 생략</div></div>
+            <div style="background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:15px 16px;"><div style="font-size:12px;color:#8a958f;margin-bottom:7px;">중복 행</div><div style="font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace;">0</div><div style="font-size:11px;color:#6e7a72;margin-top:5px;">최근 24시간</div></div>
+          </div>
+        </div>
+        <div style="background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:22px;">
+          <h3 style="margin:0 0 16px;font-size:16px;font-weight:700;letter-spacing:-0.02em;">호가 요약</h3>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div style="background:#0c1210;border:1px solid rgba(55,210,143,0.18);border-radius:12px;padding:14px 15px;"><div style="font-size:11.5px;color:#8a958f;margin-bottom:6px;">최우선 매수</div><div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#37d28f;">{{ dc.bidStr }}</div><div style="font-size:11px;color:#6e7a72;margin-top:5px;">수량 {{ dc.bidQty }}</div></div>
+            <div style="background:#0c1210;border:1px solid rgba(229,122,94,0.18);border-radius:12px;padding:14px 15px;"><div style="font-size:11.5px;color:#8a958f;margin-bottom:6px;">최우선 매도</div><div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#e57a5e;">{{ dc.askStr }}</div><div style="font-size:11px;color:#6e7a72;margin-top:5px;">수량 {{ dc.askQty }}</div></div>
+            <div style="background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:14px 15px;"><div style="font-size:11.5px;color:#8a958f;margin-bottom:6px;">스프레드</div><div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;">{{ dc.spreadStr }}</div><div style="font-size:11px;color:#6e7a72;margin-top:5px;">정상 범위</div></div>
+            <div style="background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:14px 15px;"><div style="font-size:11.5px;color:#8a958f;margin-bottom:6px;">호가 불균형</div><div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;color:{{ dc.imbColor }};">{{ dc.imbStr }}</div><div style="font-size:11px;color:#6e7a72;margin-top:5px;">{{ dc.imbNote }}</div></div>
+          </div>
+          <div style="margin-top:16px;background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:15px 16px;">
+            <div style="font-size:12px;color:#8a958f;margin-bottom:10px;">수집 품질 이력 <span style="color:#37d28f;">KST</span></div>
+            <div style="display:flex;flex-direction:column;gap:9px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;font-size:12.5px;"><span style="color:#9aa39d;">06-19 14:00 캔들 완성</span><span style="color:#37d28f;font-weight:600;">정상</span></div>
+              <div style="display:flex;align-items:center;justify-content:space-between;font-size:12.5px;"><span style="color:#9aa39d;">06-19 13:00 캔들 완성</span><span style="color:#37d28f;font-weight:600;">정상</span></div>
+              <div style="display:flex;align-items:center;justify-content:space-between;font-size:12.5px;"><span style="color:#9aa39d;">06-19 12:42 호가 지연</span><span style="color:#d8b35e;font-weight:600;">주의</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ============ SCREEN: SCALE ============ -->
+      <sc-if value="{{ isScale }}" hint-placeholder-val="{{ false }}">
+      <div style="animation:gmFade .35s ease;">
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;">
+          <div style="background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:20px;"><div style="font-size:13px;font-weight:600;margin-bottom:10px;">수평 확장</div><div style="font-size:12px;color:#8a958f;line-height:1.6;">단일 워커 → 다중 워커, 분산 rate limit 결정 대기</div><div style="margin-top:14px;font-size:11.5px;font-weight:700;color:#d8b35e;">준비 중 · M3.5</div></div>
+          <div style="background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:20px;"><div style="font-size:13px;font-weight:600;margin-bottom:10px;">메시지 큐</div><div style="font-size:12px;color:#8a958f;line-height:1.6;">수집·저장 비동기 분리 큐 도입 검토</div><div style="margin-top:14px;font-size:11.5px;font-weight:700;color:#d8b35e;">준비 중 · M3.5</div></div>
+          <div style="background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:20px;"><div style="font-size:13px;font-weight:600;margin-bottom:10px;">보존 정책</div><div style="font-size:12px;color:#8a958f;line-height:1.6;">PostgreSQL 파티셔닝·복제·장애조치 전략</div><div style="margin-top:14px;font-size:11.5px;font-weight:700;color:#d8b35e;">준비 중 · M3.5</div></div>
+          <div style="background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:20px;"><div style="font-size:13px;font-weight:600;margin-bottom:10px;">알림 발송</div><div style="font-size:12px;color:#8a958f;line-height:1.6;">채널·등급·빈도 제한·확인/해결 상태 정의</div><div style="margin-top:14px;font-size:11.5px;font-weight:700;color:#566159;">미정 · M3.5 이후</div></div>
+        </div>
+        <div style="margin-top:18px;background:#101714;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:22px 24px;color:#8a958f;font-size:13px;line-height:1.7;">국내 주식(M4) 확장 전 게이트입니다. 다중 워커·운영 서버 다중 인스턴스·메시지 큐·분산 rate limit·PostgreSQL 보존/파티셔닝/복제/장애조치 전략이 결정되어야 다음 마일스톤으로 진행합니다.</div>
+      </div>
+      </sc-if>
+
+    </div>
+  </main>
+
+  <!-- ========== POPUP LAYER ========== -->
+  <sc-if value="{{ popupOpen }}" hint-placeholder-val="{{ false }}">
+  <div onClick="{{ closePopup }}" style="position:fixed;inset:0;background:rgba(5,8,7,0.72);backdrop-filter:blur(4px);z-index:60;display:flex;align-items:center;justify-content:center;padding:40px;animation:gmFade .2s ease;">
+    <div onClick="{{ stop }}" style="width:min(880px,100%);max-height:88vh;overflow-y:auto;background:#10171450;background:#111815;border:1px solid rgba(255,255,255,0.1);border-radius:18px;box-shadow:0 30px 80px rgba(0,0,0,0.6);animation:gmPop .3s cubic-bezier(.2,.8,.2,1);">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;padding:24px 26px 18px;border-bottom:1px solid rgba(255,255,255,0.06);position:sticky;top:0;background:#111815;border-radius:18px 18px 0 0;">
+        <div style="display:flex;align-items:center;gap:13px;">
+          <span style="{{ pc.tickerDot }}"></span>
+          <div><div style="font-size:11px;color:#37d28f;font-weight:700;font-family:'JetBrains Mono',monospace;margin-bottom:3px;">M3 · 코인 상세 레이어</div><h2 style="margin:0;font-size:21px;font-weight:800;letter-spacing:-0.02em;">{{ pc.sym }} <span style="color:#7d8a83;font-weight:500;font-size:15px;">{{ pc.name }}</span></h2></div>
+        </div>
+        <button onClick="{{ closePopup }}" style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);color:#c2ccc5;width:34px;height:34px;border-radius:9px;font-size:18px;cursor:pointer;line-height:1;" style-hover="background:rgba(255,255,255,0.12)">×</button>
+      </div>
+      <div style="padding:24px 26px 28px;">
+        <div style="display:flex;align-items:center;gap:18px;margin-bottom:20px;">
+          <div style="font-size:32px;font-weight:800;font-family:'JetBrains Mono',monospace;letter-spacing:-0.02em;">₩{{ pc.priceStr }}</div>
+          <div style="{{ pc.changeStyle }};font-size:17px;">{{ pc.changeStr }}</div>
+          <div style="margin-left:auto;"><span style="{{ pc.badgeStyle }}"><span style="{{ pc.dotStyle }}"></span>{{ pc.status }}</span></div>
+        </div>
+        <div id="gm-chart-popup" style="width:100%;height:220px;margin-bottom:20px;"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;">
+          <div style="background:#0c1210;border:1px solid rgba(55,210,143,0.18);border-radius:12px;padding:14px 15px;"><div style="font-size:11px;color:#8a958f;margin-bottom:6px;">최우선 매수</div><div style="font-size:14px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#37d28f;">{{ pc.bidStr }}</div></div>
+          <div style="background:#0c1210;border:1px solid rgba(229,122,94,0.18);border-radius:12px;padding:14px 15px;"><div style="font-size:11px;color:#8a958f;margin-bottom:6px;">최우선 매도</div><div style="font-size:14px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#e57a5e;">{{ pc.askStr }}</div></div>
+          <div style="background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:14px 15px;"><div style="font-size:11px;color:#8a958f;margin-bottom:6px;">스프레드</div><div style="font-size:14px;font-weight:700;font-family:'JetBrains Mono',monospace;">{{ pc.spreadStr }}</div></div>
+          <div style="background:#0c1210;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:14px 15px;"><div style="font-size:11px;color:#8a958f;margin-bottom:6px;">호가 불균형</div><div style="font-size:14px;font-weight:700;font-family:'JetBrains Mono',monospace;color:{{ pc.imbColor }};">{{ pc.imbStr }}</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:&quot;100%&quot;,&quot;height&quot;:900}}">
+class Component extends DCLogic {
+  state = {
+    screen: 'ops',
+    expanded: 'BTC',
+    popup: null,
+    detail: 'BTC',
+    targetSort: 'turnover',
+    targetDir: 'desc',
+    targets: { BTC:1, ETH:1, XRP:1, SOL:1, DOGE:1, ADA:1, AVAX:0, LINK:0 }
+  };
+
+  coins() {
+    return [
+      { sym:'BTC', name:'비트코인',  status:'정상',  change:1.8,  turnover:'3,412', fresh:'49초',     cov:99.2, storage:'24.1GB', price:148720000 },
+      { sym:'ETH', name:'이더리움',  status:'정상',  change:0.6,  turnover:'1,224', fresh:'57초',     cov:98.8, storage:'18.4GB', price:5240000 },
+      { sym:'XRP', name:'리플',      status:'주의',  change:-2.1, turnover:'812',   fresh:'2분 42초', cov:92.5, storage:'9.7GB',  price:3180 },
+      { sym:'SOL', name:'솔라나',    status:'정상',  change:3.4,  turnover:'609',   fresh:'1분 05초', cov:97.9, storage:'11.2GB', price:284500 },
+      { sym:'DOGE',name:'도지코인',  status:'장애',  change:-4.7, turnover:'442',   fresh:'8분 11초', cov:71.3, storage:'6.5GB',  price:612 },
+      { sym:'ADA', name:'에이다',    status:'수집중',change:0.2,  turnover:'288',   fresh:'1분 41초', cov:95.1, storage:'5.9GB',  price:1040 },
+      { sym:'AVAX',name:'아발란체',  status:'정상',  change:1.1,  turnover:'221',   fresh:'1분 12초', cov:98.1, storage:'7.1GB',  price:62300 },
+      { sym:'LINK',name:'체인링크',  status:'주의',  change:-0.9, turnover:'207',   fresh:'3분 48초', cov:89.4, storage:'6.8GB',  price:31800 }
+    ];
+  }
+
+  setSort(key, defDir) {
+    return () => this.setState(s => ({
+      targetSort: key,
+      targetDir: s.targetSort === key ? (s.targetDir === 'asc' ? 'desc' : 'asc') : defDir
+    }));
+  }
+  sortArrow(key) {
+    if (this.state.targetSort !== key) return '';
+    return this.state.targetDir === 'asc' ? ' ↑' : ' ↓';
+  }
+
+  meta(status) {
+    return ({
+      '정상':   '#37d28f',
+      '주의':   '#d8b35e',
+      '장애':   '#e57a5e',
+      '수집중': '#5b8def'
+    })[status] || '#37d28f';
+  }
+  hexA(hex, a) {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+  }
+  fmt(n) { return n.toLocaleString('en-US'); }
+
+  genSegs(cov, color) {
+    const miss = Math.max(0, 100 - cov);
+    const g1 = miss * 0.62, g2 = miss - g1;
+    const present = 100 - miss;
+    const a = present * 0.46, b = present * 0.32, c = present - a - b;
+    const segs = [
+      { w:a,  bg:'#2f9d6e' },
+      { w:g1, bg:'#e57a5e' },
+      { w:b,  bg:'#2f9d6e' },
+      { w:g2, bg:'#d8b35e' },
+      { w:c,  bg:'#2f9d6e' }
+    ];
+    return segs.filter(s => s.w > 0.3).map(s => ({ style:`width:${s.w}%;background:${s.bg};height:100%;` }));
+  }
+
+  genActivityGrid() {
+    const r = this.seeded('ACT9');
+    const rows = 7, cols = 24, grid = [];
+    for (let y = 0; y < rows; y++) {
+      const cells = [];
+      for (let x = 0; x < cols; x++) {
+        const env = Math.max(0, 1 - Math.abs(x - 11.5) / 9);
+        let bg, label;
+        if (r() > env * 0.95 + 0.05) {
+          bg = 'rgba(255,255,255,0.05)'; label = '';
+        } else {
+          const t = r();
+          if (t < 0.06)      { bg = 'rgba(229,122,94,0.85)'; label = '없음'; }
+          else if (t < 0.2)  { bg = 'rgba(216,179,94,0.82)'; label = '적음'; }
+          else if (t < 0.32) { bg = 'rgba(91,141,239,0.8)';  label = '수집중'; }
+          else               { bg = `rgba(55,210,143,${(0.4 + r() * 0.55).toFixed(2)})`; label = '많음'; }
+        }
+        cells.push({ style: `aspect-ratio:1;border-radius:2px;background:${bg};`, title: label ? `${String(x).padStart(2,'0')}시 · ${label}` : `${String(x).padStart(2,'0')}시` });
+      }
+      grid.push({ cells });
+    }
+    return grid;
+  }
+
+  deriveRow(c) {
+    const color = this.meta(c.status);
+    const pos = c.change >= 0;
+    const freshSlow = c.status === '장애' || c.status === '주의';
+    return {
+      ...c,
+      changeStr: (pos ? '+' : '') + c.change.toFixed(1) + '%',
+      changeStyle: `font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13.5px;color:${pos ? '#37d28f' : '#e57a5e'};`,
+      priceStr: this.fmt(c.price),
+      freshColor: freshSlow ? color : '#c2ccc5',
+      badgeStyle: `display:inline-flex;align-items:center;gap:6px;padding:3px 11px;border-radius:999px;font-size:12px;font-weight:600;background:${this.hexA(color,0.13)};color:${color};`,
+      dotStyle: `width:6px;height:6px;border-radius:50%;background:${color};display:inline-block;`,
+      tickerDot: `width:9px;height:9px;border-radius:50%;flex:none;background:${color};box-shadow:0 0 9px ${this.hexA(color,0.55)};display:inline-block;`,
+      fillStyle: `position:absolute;left:0;top:0;height:100%;border-radius:999px;width:${c.cov}%;background:#37d28f;`,
+      missStyle: `position:absolute;top:0;height:100%;left:${c.cov}%;width:${(100-c.cov).toFixed(1)}%;border-radius:999px;background:${c.status==='정상' ? 'transparent' : this.hexA(color,0.8)};`,
+      covLabel: c.cov.toFixed(1) + '%',
+      segs: this.genSegs(c.cov, color),
+      expandedOpen: this.state.expanded === c.sym,
+      rowBg: this.state.expanded === c.sym ? 'rgba(255,255,255,0.03)' : 'transparent',
+      onRow: () => this.setState(s => ({ expanded: s.expanded === c.sym ? null : c.sym })),
+      onOpen: (e) => { if (e && e.stopPropagation) e.stopPropagation(); this.setState({ popup: c.sym }); }
+    };
+  }
+
+  deriveDetail(c) {
+    const color = this.meta(c.status);
+    const pos = c.change >= 0;
+    const step = Math.max(1, Math.round(c.price * 0.00007));
+    const bid = c.price - step, ask = c.price + step;
+    const imb = (c.change * 4).toFixed(1);
+    return {
+      ...c,
+      priceStr: this.fmt(c.price),
+      changeStr: (pos ? '+' : '') + c.change.toFixed(1) + '%',
+      changeStyle: `font-family:'JetBrains Mono',monospace;font-weight:700;color:${pos ? '#37d28f' : '#e57a5e'};`,
+      badgeStyle: `display:inline-flex;align-items:center;gap:6px;padding:4px 13px;border-radius:999px;font-size:12.5px;font-weight:600;background:${this.hexA(color,0.13)};color:${color};`,
+      dotStyle: `width:6px;height:6px;border-radius:50%;background:${color};display:inline-block;`,
+      tickerDot: `width:13px;height:13px;border-radius:50%;flex:none;background:${color};box-shadow:0 0 12px ${this.hexA(color,0.55)};display:inline-block;`,
+      fresh: c.fresh,
+      bidStr: this.fmt(bid),
+      askStr: this.fmt(ask),
+      bidQty: (Math.abs(c.change) + 0.9).toFixed(2) + ' ' + c.sym,
+      askQty: (Math.abs(c.change) + 0.4).toFixed(2) + ' ' + c.sym,
+      spreadStr: ((ask - bid) / c.price * 100).toFixed(3) + '%',
+      imbStr: (pos ? '+' : '') + imb + '%',
+      imbColor: pos ? '#37d28f' : '#e57a5e',
+      imbNote: pos ? '매수 잔량 우세' : '매도 잔량 우세',
+      onOpen: () => this.setState({ popup: c.sym })
+    };
+  }
+
+  componentDidMount() { this._charts = {}; this._tryCharts(0); }
+  componentDidUpdate() { this._tryCharts(0); }
+  _tryCharts(n) {
+    if (!window.LightweightCharts) { if (n < 50) setTimeout(() => this._tryCharts(n + 1), 80); return; }
+    requestAnimationFrame(() => this.syncCharts());
+  }
+  _basePrice(sym) { const c = this.coins().find(x => x.sym === sym); return c ? c.price : 1000; }
+  seeded(sym) {
+    let s = 7; for (const ch of sym) s += ch.charCodeAt(0) * 31;
+    return () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
+  }
+  genCandles(sym, base) {
+    const r = this.seeded(sym);
+    const data = [], vol = [];
+    let price = base * 0.78;
+    const dp = base < 100 ? 4 : base < 10000 ? 1 : 0;
+    const start = new Date(Date.UTC(2026, 2, 1));
+    for (let i = 0; i < 72; i++) {
+      const open = price;
+      const close = Math.max(base * 0.3, open + (r() - 0.46) * base * 0.026);
+      const high = Math.max(open, close) + r() * base * 0.013;
+      const low = Math.min(open, close) - r() * base * 0.013;
+      const d = new Date(start); d.setUTCDate(start.getUTCDate() + i);
+      const t = d.toISOString().slice(0, 10);
+      data.push({ time: t, open: +open.toFixed(dp), high: +high.toFixed(dp), low: +low.toFixed(dp), close: +close.toFixed(dp) });
+      vol.push({ time: t, value: Math.round(r() * 900 + 250), color: close >= open ? 'rgba(55,210,143,0.32)' : 'rgba(229,122,94,0.32)' });
+      price = close;
+    }
+    return { data, vol };
+  }
+  baseOpts() {
+    return {
+      layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#7d8a83', fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: 11 },
+      grid: { vertLines: { color: 'rgba(255,255,255,0.035)' }, horzLines: { color: 'rgba(255,255,255,0.05)' } },
+      rightPriceScale: { borderColor: 'rgba(255,255,255,0.07)' },
+      timeScale: { borderColor: 'rgba(255,255,255,0.07)', timeVisible: false, fixLeftEdge: true, fixRightEdge: true },
+      crosshair: { mode: 1, vertLine: { color: 'rgba(255,255,255,0.18)', labelBackgroundColor: '#1e2723' }, horzLine: { color: 'rgba(255,255,255,0.18)', labelBackgroundColor: '#1e2723' } }
+    };
+  }
+  _observe(el, chart) {
+    if (el._ro) return;
+    const ro = new ResizeObserver(() => { if (el.clientWidth) chart.applyOptions({ width: el.clientWidth, height: el.clientHeight }); });
+    ro.observe(el); el._ro = ro;
+  }
+  mkCandle(id, sym) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (el._sig === sym && el._chart) return;
+    if (el._chart) { try { el._chart.remove(); } catch (e) {} el._chart = null; el._ro = null; }
+    el.innerHTML = '';
+    const LC = window.LightweightCharts;
+    const chart = LC.createChart(el, { ...this.baseOpts(), width: el.clientWidth || 600, height: el.clientHeight || 260 });
+    const cs = chart.addCandlestickSeries({ upColor: '#37d28f', downColor: '#e57a5e', borderUpColor: '#37d28f', borderDownColor: '#e57a5e', wickUpColor: '#5fd9a6', wickDownColor: '#e88f78' });
+    cs.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.28 } });
+    const vs = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: '' });
+    vs.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+    const { data, vol } = this.genCandles(sym, this._basePrice(sym));
+    cs.setData(data); vs.setData(vol);
+    chart.timeScale().fitContent();
+    el._chart = chart; el._sig = sym;
+    this._observe(el, chart);
+  }
+  mkArea(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (el._sig === 'ops' && el._chart) return;
+    if (el._chart) { try { el._chart.remove(); } catch (e) {} el._chart = null; el._ro = null; }
+    el.innerHTML = '';
+    const LC = window.LightweightCharts;
+    const chart = LC.createChart(el, { ...this.baseOpts(), width: el.clientWidth || 600, height: el.clientHeight || 240, leftPriceScale: { visible: true, borderColor: 'rgba(255,255,255,0.07)' } });
+    const area = chart.addAreaSeries({ lineColor: '#37d28f', topColor: 'rgba(55,210,143,0.3)', bottomColor: 'rgba(55,210,143,0)', lineWidth: 2, priceScaleId: 'right' });
+    const line = chart.addLineSeries({ color: '#5b8def', lineWidth: 2, priceScaleId: 'left' });
+    const r = this.seeded('OPSCOV');
+    const cov = [], sto = [], marks = [];
+    let c = 88, s = 12;
+    const start = new Date(Date.UTC(2026, 2, 1));
+    for (let i = 0; i < 72; i++) {
+      c = Math.min(99.7, Math.max(86, c + (r() - 0.42) * 1.4));
+      s = s + r() * 1.0;
+      const d = new Date(start); d.setUTCDate(start.getUTCDate() + i);
+      const t = d.toISOString().slice(0, 10);
+      cov.push({ time: t, value: +c.toFixed(1) });
+      sto.push({ time: t, value: +s.toFixed(1) });
+      if (i === 52) marks.push({ time: t, position: 'aboveBar', color: '#d8b35e', shape: 'circle', size: 1, text: '주의' });
+      if (i === 63) marks.push({ time: t, position: 'aboveBar', color: '#e57a5e', shape: 'circle', size: 1, text: '장애' });
+    }
+    area.setData(cov); line.setData(sto); area.setMarkers(marks);
+    chart.timeScale().fitContent();
+    el._chart = chart; el._sig = 'ops';
+    this._observe(el, chart);
+  }
+  syncCharts() {
+    if (!window.LightweightCharts) return;
+    if (this.state.screen === 'ops') this.mkArea('gm-chart-ops');
+    if (this.state.screen === 'detail') this.mkCandle('gm-chart-detail', this.state.detail);
+    if (this.state.popup) this.mkCandle('gm-chart-popup', this.state.popup);
+  }
+
+  navItem(name) {
+    const base = 'display:flex;align-items:center;justify-content:space-between;padding:9px 14px;border-radius:9px;cursor:pointer;font-size:13.5px;font-weight:500;letter-spacing:-0.01em;transition:background .15s;margin-bottom:1px;';
+    return base + (this.state.screen === name
+      ? 'background:rgba(55,210,143,0.12);color:#eaf6ee;box-shadow:inset 3px 0 0 #37d28f;'
+      : 'color:#9aa39d;background:transparent;');
+  }
+
+  renderVals() {
+    const coins = this.coins();
+    const rows = coins.map(c => this.deriveRow(c));
+    const sk = this.state.targetSort, dir = this.state.targetDir === 'asc' ? 1 : -1;
+    const qrank = { '정상':0, '수집중':1, '주의':2, '장애':3 };
+    const keyOf = (c) => {
+      if (sk === 'sym') return c.sym;
+      if (sk === 'turnover') return parseFloat(String(c.turnover).replace(/,/g, ''));
+      if (sk === 'quality') return qrank[c.status] ?? 9;
+      if (sk === 'cov') return c.cov;
+      return 0;
+    };
+    const sortedCoins = [...coins].sort((a, b) => {
+      const aOn = this.state.targets[a.sym] ? 1 : 0, bOn = this.state.targets[b.sym] ? 1 : 0;
+      if (aOn !== bOn) return bOn - aOn;
+      const ka = keyOf(a), kb = keyOf(b);
+      if (typeof ka === 'string') return ka.localeCompare(kb) * dir;
+      return (ka - kb) * dir;
+    });
+    const targetRows = sortedCoins.map(c => {
+      const on = !!this.state.targets[c.sym];
+      const color = this.meta(c.status);
+      return {
+        sym: c.sym, name: c.name, status: c.status, turnover: c.turnover,
+        check: on ? '✓' : '',
+        boxStyle: `width:19px;height:19px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex:none;${on ? 'background:#37d28f;color:#06120d;border:1px solid #37d28f;' : 'background:transparent;color:transparent;border:1.5px solid rgba(255,255,255,0.22);'}`,
+        badgeStyle: `display:inline-flex;align-items:center;gap:6px;padding:3px 11px;border-radius:999px;font-size:12px;font-weight:600;background:${this.hexA(color,0.13)};color:${color};`,
+        dotStyle: `width:6px;height:6px;border-radius:50%;background:${color};display:inline-block;`,
+        tickerDot: `width:8px;height:8px;border-radius:50%;flex:none;background:${color};display:inline-block;`,
+        onToggle: () => this.setState(s => ({ targets: { ...s.targets, [c.sym]: s.targets[c.sym] ? 0 : 1 } }))
+      };
+    });
+    const selCount = Object.values(this.state.targets).reduce((a, b) => a + b, 0);
+    const hourTicks = Array.from({ length: 24 }, (_, i) => (i % 6 === 0 ? String(i) : (i === 23 ? '23' : '')));
+
+    const screenInfo = {
+      ops:     { crumb:'운영 상태',    milestone:'M1', title:'업비트 수집 운영 상태',  desc:'수집 대상 최대 50개 코인의 최신성, 지연, 결측, 실패, 저장량을 관리합니다. 업비트 수집 파이프라인의 건강도와 결측을 한 화면에서 처리하는 고밀도 다크 운영 콘솔입니다.' },
+      targets: { crumb:'수집 대상/설정', milestone:'M2', title:'수집 대상과 백필 설정',  desc:'상위 100개 후보 중 활성 수집 대상 최대 50개를 조정하고 백필 계획을 승인합니다. 변경은 운영 상태와 시장 리스트가 공유하는 전역 수집 대상 풀에 반영됩니다.' },
+      market:  { crumb:'시장 리스트',   milestone:'M2', title:'시장 리스트',          desc:'수집 대상 코인의 현재가, 거래대금, 등락률, 최신성, 품질 상태를 표로 탐색합니다. 행을 누르면 코인 상세가 dimmed 레이어 팝업으로 열립니다.' },
+      detail:  { crumb:'코인 상세',     milestone:'M3', title:'코인 상세 레이어',      desc:'단일 코인의 캔들 차트, 현재가·거래대금 추이, 호가 요약, 수집 품질 이력을 확인합니다. 호가 요약은 전략 입력으로 확장 가능한 형태로 보존됩니다.' },
+      scale:   { crumb:'확장성 점검',   milestone:'M3.5',title:'운영 확장성 점검',     desc:'국내 주식 확장 전 게이트로, 수평 확장·고가용성·메시지 큐·보존 정책·알림 발송 준비 상태를 점검합니다.' }
+    };
+    const info = screenInfo[this.state.screen];
+    const popupCoin = coins.find(c => c.sym === this.state.popup);
+    const detailCoin = coins.find(c => c.sym === this.state.detail) || coins[0];
+
+    return {
+      crumb: info.crumb, milestone: info.milestone, title: info.title, desc: info.desc,
+      isOps: this.state.screen === 'ops',
+      isTargets: this.state.screen === 'targets',
+      isMarket: this.state.screen === 'market',
+      isDetail: this.state.screen === 'detail',
+      isScale: this.state.screen === 'scale',
+      navStyle: {
+        ops: this.navItem('ops'), targets: this.navItem('targets'),
+        market: this.navItem('market'), detail: this.navItem('detail'), scale: this.navItem('scale')
+      },
+      goOps: () => this.setState({ screen:'ops' }),
+      goTargets: () => this.setState({ screen:'targets' }),
+      goMarket: () => this.setState({ screen:'market' }),
+      goDetail: () => this.setState({ screen:'detail' }),
+      goScale: () => this.setState({ screen:'scale' }),
+      rows, targetRows, selCount,
+      onSortSym: this.setSort('sym', 'asc'),
+      onSortTurnover: this.setSort('turnover', 'desc'),
+      onSortQuality: this.setSort('quality', 'asc'),
+      onSortCov: this.setSort('cov', 'desc'),
+      symArrow: this.sortArrow('sym'),
+      turnoverArrow: this.sortArrow('turnover'),
+      qualityArrow: this.sortArrow('quality'),
+      covArrow: this.sortArrow('cov'),
+      activityGrid: this.genActivityGrid(), hourTicks,
+      dc: this.deriveDetail(detailCoin),
+      popupOpen: !!popupCoin,
+      pc: popupCoin ? this.deriveDetail(popupCoin) : {},
+      closePopup: () => this.setState({ popup: null }),
+      stop: (e) => { if (e && e.stopPropagation) e.stopPropagation(); }
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import httpx
@@ -9,8 +9,9 @@ import pytest
 
 from goodmoneying_shared.models import SourceCandle
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
+from goodmoneying_shared.time import KST
 from goodmoneying_worker.collector import UpbitCollectionWorker
-from goodmoneying_worker.main import create_upbit_client_from_environment
+from goodmoneying_worker.runtime import create_upbit_client_from_environment
 from goodmoneying_worker.upbit_client import (
     FixtureUpbitClient,
     LiveUpbitClient,
@@ -68,20 +69,20 @@ def test_worker_uses_live_client_when_live_profile_is_enabled(
 
 def test_live_client_fetches_historical_minute_candles_with_to_pagination() -> None:
     calls: list[httpx.Request] = []
-    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
-    end_at = datetime(2026, 1, 1, 0, 4, tzinfo=UTC)
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 4, tzinfo=KST)
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
         if len(calls) == 1:
             payload = [
-                _upbit_candle("KRW-BTC", "2026-01-01T00:03:00", "103"),
-                _upbit_candle("KRW-BTC", "2026-01-01T00:02:00", "102"),
+                _upbit_candle("KRW-BTC", "2025-12-31T15:03:00", "103"),
+                _upbit_candle("KRW-BTC", "2025-12-31T15:02:00", "102"),
             ]
         else:
             payload = [
-                _upbit_candle("KRW-BTC", "2026-01-01T00:01:00", "101"),
-                _upbit_candle("KRW-BTC", "2026-01-01T00:00:00", "100"),
+                _upbit_candle("KRW-BTC", "2025-12-31T15:01:00", "101"),
+                _upbit_candle("KRW-BTC", "2025-12-31T15:00:00", "100"),
             ]
         return httpx.Response(200, json=payload, headers={"Remaining-Req": "group=candle; sec=9"})
 
@@ -96,21 +97,21 @@ def test_live_client_fetches_historical_minute_candles_with_to_pagination() -> N
     rows = client.fetch_minute_candles("KRW-BTC", start_at, end_at)
 
     assert [row["candle_start_at"] for row in rows] == [
-        "2026-01-01T00:00:00+00:00",
-        "2026-01-01T00:01:00+00:00",
-        "2026-01-01T00:02:00+00:00",
-        "2026-01-01T00:03:00+00:00",
+        "2026-01-01T00:00:00+09:00",
+        "2026-01-01T00:01:00+09:00",
+        "2026-01-01T00:02:00+09:00",
+        "2026-01-01T00:03:00+09:00",
     ]
     assert calls[0].url.params["market"] == "KRW-BTC"
     assert calls[0].url.params["count"] == "200"
-    assert calls[0].url.params["to"].startswith("2026-01-01T00:04:00")
-    assert calls[1].url.params["to"].startswith("2026-01-01T00:02:00")
+    assert calls[0].url.params["to"].startswith("2025-12-31T15:04:00")
+    assert calls[1].url.params["to"].startswith("2025-12-31T15:02:00")
 
 
 def test_live_client_retries_429_before_succeeding() -> None:
     calls = 0
-    start_at = datetime(2026, 1, 1, 0, 1, tzinfo=UTC)
-    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=UTC)
+    start_at = datetime(2026, 1, 1, 0, 1, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=KST)
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
@@ -119,7 +120,7 @@ def test_live_client_retries_429_before_succeeding() -> None:
             return httpx.Response(429, json={"error": {"message": "too many requests"}})
         return httpx.Response(
             200,
-            json=[_upbit_candle("KRW-BTC", "2026-01-01T00:01:00", "101")],
+            json=[_upbit_candle("KRW-BTC", "2025-12-31T15:01:00", "101")],
             headers={"Remaining-Req": "group=candle; sec=9"},
         )
 
@@ -169,8 +170,8 @@ def test_retry_delay_uses_418_block_duration_message() -> None:
 
 
 def test_live_client_raises_api_error_after_retry_exhaustion() -> None:
-    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
-    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=UTC)
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=KST)
     client = LiveUpbitClient(
         http_client=httpx.Client(
             base_url=LiveUpbitClient.BASE_URL,
@@ -188,8 +189,8 @@ def test_live_client_raises_api_error_after_retry_exhaustion() -> None:
 def test_worker_runs_approved_backfill_job_and_records_progress() -> None:
     repository = SQLiteOperationsRepository()
     instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
-    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
-    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=UTC)
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=KST)
     client = BackfillOnlyClient(
         [
             _worker_candle(instrument.id, start_at, "100"),
@@ -208,11 +209,98 @@ def test_worker_runs_approved_backfill_job_and_records_progress() -> None:
     assert len(repository.candles(instrument.id, "1m", start_at, end_at)) == 2
 
 
+def test_worker_reports_backfill_progress_during_long_job() -> None:
+    repository = SQLiteOperationsRepository()
+    instruments = [
+        repository.upsert_instrument("KRW-BTC", "비트코인"),
+        repository.upsert_instrument("KRW-ETH", "이더리움"),
+    ]
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=KST)
+    client = BackfillOnlyClient(
+        [
+            _worker_candle(instrument.id, start_at, "100")
+            for instrument in instruments
+        ]
+    )
+    worker = UpbitCollectionWorker(repository, client)
+    plan = repository.create_backfill_plan(
+        "source_candle",
+        start_at,
+        end_at,
+        [instrument.id for instrument in instruments],
+    )
+    repository.approve_backfill_job(plan.plan_id)
+    progress_events: list[None] = []
+
+    worker.run_backfill_once(on_progress=lambda: progress_events.append(None))
+
+    assert len(progress_events) >= 4
+
+
+def test_worker_marks_backfill_target_running_before_fetch() -> None:
+    repository = SQLiteOperationsRepository()
+    instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=KST)
+    plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
+    job = repository.approve_backfill_job(plan.plan_id)
+
+    def assert_target_is_running() -> None:
+        assert repository.backfill_job_targets(job.id)[0].status == "running"
+
+    client = StoppingBackfillClient(
+        {
+            "KRW-BTC": [
+                _worker_candle(instrument.id, start_at, "100"),
+            ]
+        },
+        on_first_fetch=assert_target_is_running,
+    )
+    worker = UpbitCollectionWorker(repository, client)
+
+    worker.run_backfill_once()
+
+    assert repository.backfill_job_targets(job.id)[0].status == "succeeded"
+
+
+def test_worker_starts_backfill_from_first_missing_candle_after_existing_start() -> None:
+    repository = SQLiteOperationsRepository()
+    instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 4, tzinfo=KST)
+    repository.record_incremental_collection(
+        [],
+        [],
+        [
+            _worker_candle(instrument.id, start_at, "100"),
+            _worker_candle(instrument.id, start_at + timedelta(minutes=1), "101"),
+            _worker_candle(instrument.id, start_at + timedelta(minutes=3), "103"),
+        ],
+    )
+    client = BackfillOnlyClient(
+        [
+            _worker_candle(instrument.id, start_at + timedelta(minutes=2), "102"),
+        ]
+    )
+    worker = UpbitCollectionWorker(repository, client)
+    plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
+    repository.approve_backfill_job(plan.plan_id)
+
+    written = worker.run_backfill_once()
+
+    assert written == 1
+    assert client.requests == [
+        ("KRW-BTC", start_at + timedelta(minutes=2), start_at + timedelta(minutes=3))
+    ]
+    assert len(repository.candles(instrument.id, "1m", start_at, end_at)) == 4
+
+
 def test_worker_records_failed_backfill_target_when_client_fails() -> None:
     repository = SQLiteOperationsRepository()
     instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
-    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
-    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=UTC)
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=KST)
     worker = UpbitCollectionWorker(repository, FailingBackfillClient())
     plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
     repository.approve_backfill_job(plan.plan_id)
@@ -230,8 +318,8 @@ def test_worker_stops_before_next_target_when_job_is_stopped() -> None:
     repository = SQLiteOperationsRepository()
     btc = repository.upsert_instrument("KRW-BTC", "비트코인")
     eth = repository.upsert_instrument("KRW-ETH", "이더리움")
-    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
-    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=UTC)
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=KST)
     plan = repository.create_backfill_plan("source_candle", start_at, end_at, [btc.id, eth.id])
     job = repository.approve_backfill_job(plan.plan_id)
     client = StoppingBackfillClient(
@@ -286,10 +374,12 @@ class BackfillOnlyClient(FixtureUpbitClient):
     def __init__(self, candles: list[SourceCandle]) -> None:
         super().__init__(market_count=1)
         self._candles = candles
+        self.requests: list[tuple[str, datetime, datetime]] = []
 
     def fetch_minute_candles(
         self, market: str, start_at: datetime, end_at: datetime
     ) -> list[dict[str, str]]:
+        self.requests.append((market, start_at, end_at))
         return [
             {
                 "market": market,

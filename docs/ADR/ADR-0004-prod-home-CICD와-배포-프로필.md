@@ -64,7 +64,7 @@ Slack 채팅을 통한 배포 요청은 후속 확장으로 둔다. 단, GitHub 
 - `deploy/profiles/prod-home/`과 서버별 compose 파일을 추가한다.
 - `ci.yml`과 `deploy.yml`을 추가한다.
 - `deploy/scripts/deploy-profile.sh`와 `deploy/scripts/healthcheck-profile.sh`를 작성한다.
-- worker 운영 실행 모드가 지속 실행인지 확인하고, `--once` 종료 동작이면 운영용 command 또는 재시작 정책을 조정한다.
+- 실시간 수집 워커와 백필 수집 워커 운영 실행 모드가 지속 실행인지 확인하고, 운영용 command 또는 재시작 정책을 조정한다.
 - 배포 후 healthcheck와 Tailscale 내부 URL 기준 E2E(End-to-End) 테스트를 자동화한다.
 - 향후 `staging-home`, `prod-aws`, `dev-aws` 같은 대상이 생기면 별도 배포 프로필과 Task로 추가한다.
 - Slack 배포 명령은 별도 Task로 설계하고, `workflow_dispatch` 호출 방식으로 연결한다.

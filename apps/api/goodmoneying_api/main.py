@@ -7,20 +7,31 @@ from typing import Annotated, cast
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
+from goodmoneying_api.dashboard_refresh import load_dashboard_refresh_seconds
 from goodmoneying_api.dependencies import verify_operator_token
 from goodmoneying_api.schemas import (
-    ApproveBackfillJobRequest,
     BackfillJobResponse,
     BackfillJobsResponse,
     BackfillPlanResponse,
     CandidateUniverseResponse,
     CandleSeriesResponse,
+    CollectionCoverageSegmentsResponse,
     CollectionRunsResponse,
     CollectionTargetsResponse,
+    CreateBackfillJobRequest,
     CreateBackfillPlanRequest,
+    DashboardAuditLogSummaryResponse,
+    DashboardCollectionActivityResponse,
+    DashboardCoverageResponse,
+    DashboardMissingRangesResponse,
+    DashboardOperationsTrendResponse,
+    DashboardOverviewResponse,
+    DashboardRealtimeHeatmapResponse,
+    DashboardStorageBreakdownResponse,
     DashboardSummaryResponse,
+    DashboardTargetsResponse,
     HealthResponse,
     InstrumentDetailResponse,
     MarketListResponse,
@@ -33,7 +44,7 @@ from goodmoneying_api.service import OperationsService
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
-from goodmoneying_shared.time import now_utc
+from goodmoneying_shared.time import now_kst
 from goodmoneying_worker.collector import seed_repository
 from goodmoneying_worker.upbit_client import FixtureUpbitClient
 
@@ -41,13 +52,10 @@ from goodmoneying_worker.upbit_client import FixtureUpbitClient
 def create_repository_from_environment() -> OperationsRepository:
     database_url = os.getenv("GOODMONEYING_DATABASE_URL")
     if database_url and database_url.startswith(("postgres://", "postgresql://")):
-        repository = PostgresOperationsRepository(database_url)
-        try:
-            repository.list_candidate_universe()
-        except ValueError:
-            seed_repository(repository, FixtureUpbitClient())
-        return repository
-    return create_seeded_repository()
+        return PostgresOperationsRepository(database_url)
+    if os.getenv("GOODMONEYING_DEMO_DATA") == "1":
+        return create_seeded_repository()
+    return SQLiteOperationsRepository()
 
 
 def create_seeded_repository() -> SQLiteOperationsRepository:
@@ -65,7 +73,7 @@ def create_seeded_repository() -> SQLiteOperationsRepository:
 def create_app(repository: OperationsRepository | None = None) -> FastAPI:
     repo = repository or create_repository_from_environment()
     operator_token = os.getenv("GOODMONEYING_OPERATOR_TOKEN", "local-dev-token")
-    service = OperationsService(repo)
+    service = OperationsService(repo, load_dashboard_refresh_seconds())
     app = FastAPI(title="goodmoneying M1 Operations API", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
@@ -100,11 +108,68 @@ def create_app(repository: OperationsRepository | None = None) -> FastAPI:
 
     @app.get("/health", response_model=HealthResponse)
     def get_health() -> HealthResponse:
-        return HealthResponse(status="ok", checkedAt=now_utc())
+        return HealthResponse(status="ok", checkedAt=now_kst())
 
     @app.get("/v1/dashboard/summary", response_model=DashboardSummaryResponse)
     def get_dashboard_summary() -> DashboardSummaryResponse:
         return service.dashboard_summary()
+
+    @app.get("/v1/dashboard/overview", response_model=DashboardOverviewResponse)
+    def get_dashboard_overview() -> DashboardOverviewResponse:
+        return service.dashboard_overview()
+
+    @app.get("/v1/dashboard/targets", response_model=DashboardTargetsResponse)
+    def get_dashboard_targets(
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> DashboardTargetsResponse:
+        return service.dashboard_targets(limit, offset)
+
+    @app.get("/v1/dashboard/coverage", response_model=DashboardCoverageResponse)
+    def get_dashboard_coverage(
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> DashboardCoverageResponse:
+        return service.dashboard_coverage(limit, offset)
+
+    @app.get(
+        "/v1/dashboard/collection-activity",
+        response_model=DashboardCollectionActivityResponse,
+    )
+    def get_dashboard_collection_activity() -> DashboardCollectionActivityResponse:
+        return service.dashboard_collection_activity()
+
+    @app.get("/v1/dashboard/realtime-heatmap", response_model=DashboardRealtimeHeatmapResponse)
+    def get_dashboard_realtime_heatmap(
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> DashboardRealtimeHeatmapResponse:
+        return service.dashboard_realtime_heatmap(limit, offset)
+
+    @app.get(
+        "/v1/dashboard/storage-breakdown",
+        response_model=DashboardStorageBreakdownResponse,
+    )
+    def get_dashboard_storage_breakdown() -> DashboardStorageBreakdownResponse:
+        return service.dashboard_storage_breakdown()
+
+    @app.get("/v1/dashboard/operations-trend", response_model=DashboardOperationsTrendResponse)
+    def get_dashboard_operations_trend() -> DashboardOperationsTrendResponse:
+        return service.dashboard_operations_trend()
+
+    @app.get("/v1/dashboard/missing-ranges", response_model=DashboardMissingRangesResponse)
+    def get_dashboard_missing_ranges(
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> DashboardMissingRangesResponse:
+        return service.dashboard_missing_ranges(limit, offset)
+
+    @app.get(
+        "/v1/dashboard/audit-log-summary",
+        response_model=DashboardAuditLogSummaryResponse,
+    )
+    def get_dashboard_audit_log_summary() -> DashboardAuditLogSummaryResponse:
+        return service.dashboard_audit_log_summary()
 
     @app.get("/v1/candidate-universe", response_model=CandidateUniverseResponse)
     def get_candidate_universe() -> CandidateUniverseResponse:
@@ -129,6 +194,15 @@ def create_app(repository: OperationsRepository | None = None) -> FastAPI:
     @app.get("/v1/market-list", response_model=MarketListResponse)
     def get_market_list() -> MarketListResponse:
         return service.market_list()
+
+    @app.get(
+        "/v1/collection-targets/{instrumentId}/coverage-segments",
+        response_model=CollectionCoverageSegmentsResponse,
+    )
+    def get_collection_coverage_segments(
+        instrumentId: int,
+    ) -> CollectionCoverageSegmentsResponse:
+        return service.collection_coverage_segments(instrumentId)
 
     @app.get("/v1/instruments/{instrumentId}", response_model=InstrumentDetailResponse)
     def get_instrument_detail(instrumentId: int) -> InstrumentDetailResponse:
@@ -211,11 +285,16 @@ def create_app(repository: OperationsRepository | None = None) -> FastAPI:
         status_code=status.HTTP_201_CREATED,
         dependencies=[Depends(require_operator_token)],
     )
-    def approve_backfill_job(
-        request: ApproveBackfillJobRequest,
+    def create_backfill_job(
+        request: CreateBackfillJobRequest,
     ) -> BackfillJobResponse:
         try:
-            return service.approve_backfill_job(request.planId)
+            return service.create_backfill_job(
+                request.dataType,
+                request.targetStartAt,
+                request.targetEndAt,
+                request.instrumentIds,
+            )
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -238,6 +317,21 @@ def create_app(repository: OperationsRepository | None = None) -> FastAPI:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={"code": "INVALID_BACKFILL_CONTROL", "message": str(exc)},
             ) from exc
+
+    @app.delete(
+        "/v1/backfill/jobs/{jobId}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        dependencies=[Depends(require_operator_token)],
+    )
+    def delete_backfill_job(jobId: int) -> Response:
+        try:
+            service.delete_backfill_job(jobId)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "INVALID_BACKFILL_DELETE", "message": str(exc)},
+            ) from exc
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.get("/v1/notifications", response_model=NotificationEventsResponse)
     def get_notification_events() -> NotificationEventsResponse:

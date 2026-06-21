@@ -14,6 +14,11 @@ BackfillStatus = Literal[
     "planned", "pending", "running", "paused", "stopped", "succeeded", "failed"
 ]
 CollectionRunStatus = Literal["running", "succeeded", "partial", "failed", "cancelled"]
+CollectionDataType = Literal["source_candle", "ticker_snapshot", "orderbook_summary"]
+CollectionRowsByType = dict[CollectionDataType, int]
+CollectionWorkerType = Literal["realtime_collection", "backfill_collection"]
+CollectionWorkerHeartbeatStatus = Literal["running", "failed"]
+CollectionWorkerStatus = Literal["running", "stale", "failed"]
 
 
 def decimal_string(value: Decimal | int | str | None) -> str | None:
@@ -99,6 +104,7 @@ class CoverageStatus:
     status: QualityStatus
     progress_percent: Decimal
     last_successful_at: datetime
+    missing_segment_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -110,7 +116,7 @@ class CollectionPlan:
     is_continuous: bool
     method: str
     display_range: str
-    range_time_zone: Literal["KST", "UTC"]
+    range_time_zone: Literal["KST"]
     progress_basis: str
 
 
@@ -145,6 +151,14 @@ class CollectionDashboardTarget:
     plan: CollectionPlan
     data_statuses: list[CollectionDataStatus]
     coverage_segments: list[CoverageSegment]
+    change_rate: Decimal
+    acc_trade_price_24h_display: str
+    ticker_collected_at: datetime
+    coverage_percent: Decimal
+    storage_row_count: int
+    storage_bytes_display: str
+    collected_start_at: datetime | None
+    collected_end_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -159,6 +173,7 @@ class MarketListRow:
     quality_status: Literal["normal", "warning", "incident"]
     coverage_percent: Decimal
     storage_bytes: int
+    storage_row_count: int
     storage_bytes_display: str
 
 
@@ -192,6 +207,117 @@ class HealthCheck:
 
 
 @dataclass(frozen=True)
+class CollectionActivityBucket:
+    bucket_start_at: datetime
+    run_count: int
+    result_count: int
+    status: Literal["none", "low", "collecting", "high"]
+
+
+@dataclass(frozen=True)
+class RealtimeCollectionHeatmapBucket:
+    bucket_start_at: datetime
+    actual_rows_all: int
+    expected_rows_all: int
+    expected_rows_by_type: CollectionRowsByType
+    actual_rows_by_type: CollectionRowsByType
+    actual_ratio_percent: Decimal
+    status: Literal["none", "low", "collecting", "high"]
+
+
+@dataclass(frozen=True)
+class RealtimeCollectionHeatmapRow:
+    instrument: Instrument
+    instrument_display_name: str
+    hourly_buckets: list[RealtimeCollectionHeatmapBucket]
+
+
+@dataclass(frozen=True)
+class StorageBreakdownItem:
+    data_type: Literal["source_candle", "ticker_snapshot", "orderbook_summary", "quality_result"]
+    label: str
+    row_count: int
+    bytes: int
+    bytes_display: str
+    share_percent: Decimal
+
+
+@dataclass(frozen=True)
+class OperationsTrendPoint:
+    bucket_date: datetime
+    coverage_percent: Decimal
+    storage_bytes: int
+    warning_targets: int
+    incident_targets: int
+
+
+@dataclass(frozen=True)
+class MissingRangeSummary:
+    instrument: Instrument
+    missing_segment_count: int
+    coverage_percent: Decimal
+    last_successful_at: datetime
+
+
+@dataclass(frozen=True)
+class AuditLogSummary:
+    target_change_count_24h: int
+    backfill_change_count_24h: int
+    latest_change_at: datetime | None
+    latest_change_label: str
+
+
+@dataclass(frozen=True)
+class CollectionWorkerError:
+    occurred_at: datetime
+    code: str
+    message: str
+
+
+@dataclass(frozen=True)
+class CollectionWorkerDiagnostic:
+    label: str
+    value: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class RealtimeWorkerStatus:
+    status: CollectionWorkerStatus
+    status_label: str
+    status_detail: str
+    last_heartbeat_at: datetime | None
+    last_collected_at: datetime | None
+    error_count_24h: int
+    failure_rate_24h: Decimal
+    diagnostics: list[CollectionWorkerDiagnostic]
+    recent_errors: list[CollectionWorkerError]
+
+
+@dataclass(frozen=True)
+class BackfillWorkerStatus:
+    status: CollectionWorkerStatus
+    status_label: str
+    status_detail: str
+    last_heartbeat_at: datetime | None
+    last_collected_at: datetime | None
+    total_error_count: int
+    failure_rate_all: Decimal
+    running_target_count: int
+    total_target_count: int
+    queued_job_count: int
+    queued_target_count: int
+    diagnostics: list[CollectionWorkerDiagnostic]
+    recent_errors: list[CollectionWorkerError]
+
+
+@dataclass(frozen=True)
+class CollectionWorkerStatusSummary:
+    realtime: RealtimeWorkerStatus
+    backfill: BackfillWorkerStatus
+
+
+@dataclass(frozen=True)
 class BackfillPlan:
     plan_id: str
     data_type: Literal["source_candle"]
@@ -209,6 +335,9 @@ class BackfillJob:
     status: BackfillStatus
     data_type: str
     progress_percent: Decimal
+    target_start_at: datetime
+    target_end_at: datetime
+    targets: list[Instrument]
     created_at: datetime
 
 
@@ -248,10 +377,19 @@ class DashboardSummary:
     missing_ranges_open: int
     storage_bytes_today: int
     storage_bytes_today_display: str
+    storage_rows_today: int
+    realtime_rows_last_minute: int
+    backfill_rows_last_minute: int
     recent_request_count: int
-    rate_limit_remaining_percent: Decimal
     coverage: list[CoverageStatus]
     targets: list[CollectionDashboardTarget]
     alerts: list[NotificationEvent]
     health_checks: list[HealthCheck]
+    collection_activity: list[CollectionActivityBucket]
+    realtime_collection_heatmap: list[RealtimeCollectionHeatmapRow]
+    storage_breakdown: list[StorageBreakdownItem]
+    operations_trend: list[OperationsTrendPoint]
+    missing_range_top: list[MissingRangeSummary]
+    audit_log_summary: AuditLogSummary
+    worker_status: CollectionWorkerStatusSummary
     refreshed_at: datetime

@@ -4,21 +4,31 @@ from datetime import datetime
 from typing import Protocol
 
 from goodmoneying_shared.models import (
+    AuditLogSummary,
     BackfillJob,
     BackfillJobDetail,
     BackfillJobTarget,
     BackfillPlan,
     CandidateUniverseEntry,
     CandleView,
+    CollectionActivityBucket,
     CollectionDashboardTarget,
     CollectionRun,
+    CollectionWorkerHeartbeatStatus,
+    CollectionWorkerStatusSummary,
+    CollectionWorkerType,
+    CoverageSegment,
     CoverageStatus,
     DashboardSummary,
     Instrument,
     MarketListRow,
+    MissingRangeSummary,
     NotificationEvent,
+    OperationsTrendPoint,
     OrderbookSummary,
+    RealtimeCollectionHeatmapRow,
     SourceCandle,
+    StorageBreakdownItem,
     TickerSnapshot,
 )
 
@@ -49,7 +59,27 @@ class OperationsRepository(Protocol):
 
     def dashboard_summary(self) -> DashboardSummary: ...
 
-    def collection_dashboard_targets(self) -> list[CollectionDashboardTarget]: ...
+    def dashboard_coverage(self) -> list[CoverageStatus]: ...
+
+    def dashboard_collection_activity(self) -> list[CollectionActivityBucket]: ...
+
+    def dashboard_realtime_heatmap(self) -> list[RealtimeCollectionHeatmapRow]: ...
+
+    def dashboard_storage_breakdown(self) -> list[StorageBreakdownItem]: ...
+
+    def dashboard_operations_trend(self) -> list[OperationsTrendPoint]: ...
+
+    def dashboard_missing_ranges(self) -> list[MissingRangeSummary]: ...
+
+    def dashboard_audit_log_summary(self) -> AuditLogSummary: ...
+
+    def dashboard_worker_status(self) -> CollectionWorkerStatusSummary: ...
+
+    def collection_dashboard_targets(
+        self, include_segments: bool = False
+    ) -> list[CollectionDashboardTarget]: ...
+
+    def coverage_segments_for(self, instrument_id: int) -> list[CoverageSegment]: ...
 
     def market_list(self) -> list[MarketListRow]: ...
 
@@ -74,6 +104,22 @@ class OperationsRepository(Protocol):
     ) -> list[OrderbookSummary]: ...
 
     def collection_runs(self, limit: int) -> list[CollectionRun]: ...
+
+    def record_collection_worker_heartbeat(
+        self,
+        worker_type: CollectionWorkerType,
+        status: CollectionWorkerHeartbeatStatus,
+        error_message: str | None = None,
+    ) -> None: ...
+
+    def record_collection_run_failure(
+        self,
+        run_type: str,
+        data_type: str,
+        started_at: datetime,
+        error_code: str,
+        error_message: str,
+    ) -> CollectionRun: ...
 
     def create_backfill_plan(
         self,
@@ -104,6 +150,8 @@ class OperationsRepository(Protocol):
     ) -> None: ...
 
     def control_backfill_job(self, job_id: int, action: str) -> BackfillJob: ...
+
+    def delete_backfill_job(self, job_id: int) -> None: ...
 
     def backfill_jobs(self) -> list[BackfillJob]: ...
 

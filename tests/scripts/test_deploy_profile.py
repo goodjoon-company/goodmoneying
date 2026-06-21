@@ -86,8 +86,10 @@ def test_prod_home_profile_has_required_files() -> None:
     assert (profile_dir / "target/app/stop.sh").is_file()
     assert (profile_dir / "target/app/start-api.sh").is_file()
     assert (profile_dir / "target/app/stop-api.sh").is_file()
-    assert (profile_dir / "target/app/start-worker.sh").is_file()
-    assert (profile_dir / "target/app/stop-worker.sh").is_file()
+    assert (profile_dir / "target/app/start-realtime-collection-worker.sh").is_file()
+    assert (profile_dir / "target/app/stop-realtime-collection-worker.sh").is_file()
+    assert (profile_dir / "target/app/start-backfill-collection-worker.sh").is_file()
+    assert (profile_dir / "target/app/stop-backfill-collection-worker.sh").is_file()
     assert (profile_dir / "target/web/start.sh").is_file()
     assert (profile_dir / "target/web/stop.sh").is_file()
     assert (profile_dir / "README.md").is_file()
@@ -124,7 +126,11 @@ def test_prod_home_compose_files_assign_expected_services() -> None:
 
     assert set(services(infra)) == {"postgres"}
     assert services(infra)["postgres"]["image"] == "postgres:17"
-    assert set(services(app)) == {"api", "worker"}
+    assert set(services(app)) == {
+        "api",
+        "realtime-collection-worker",
+        "backfill-collection-worker",
+    }
     assert set(services(web)) == {"web"}
 
 
@@ -137,7 +143,12 @@ def test_prod_home_compose_uses_external_env_files() -> None:
         "env_file"
     ]
     assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["api"]["env_file"]
-    assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["worker"]["env_file"]
+    assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app[
+        "realtime-collection-worker"
+    ]["env_file"]
+    assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app[
+        "backfill-collection-worker"
+    ]["env_file"]
     assert "${GOODMONEYING_WEB_BASE_DIR}/env/web.env" in web["web"]["env_file"]
 
 
@@ -161,7 +172,8 @@ def test_prod_home_hosts_env_defines_server_specific_data_and_config_paths() -> 
         "/Users/goodjoon/DATA/applications/goodmoneying/.docker"
     ) in hosts_env
     assert "GOODMONEYING_APP_API_DATA_DIR=" in hosts_env
-    assert "GOODMONEYING_APP_WORKER_DATA_DIR=" in hosts_env
+    assert "GOODMONEYING_APP_REALTIME_COLLECTION_WORKER_DATA_DIR=" in hosts_env
+    assert "GOODMONEYING_APP_BACKFILL_COLLECTION_WORKER_DATA_DIR=" in hosts_env
     assert "GOODMONEYING_APP_CONFIG_DIR=" in hosts_env
     assert "GOODMONEYING_APP_DOCKER_CONFIG=/home/goodjoon/.docker" in hosts_env
     assert "GOODMONEYING_WEB_NGINX_CACHE_DIR=" in hosts_env
@@ -184,11 +196,19 @@ def test_prod_home_compose_mounts_data_cache_and_config_dirs_from_host_variables
     assert "${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro" in app["api"][
         "volumes"
     ]
-    assert "${GOODMONEYING_APP_WORKER_DATA_DIR}:/var/lib/goodmoneying/worker" in app[
-        "worker"
-    ]["volumes"]
+    assert (
+        "${GOODMONEYING_APP_REALTIME_COLLECTION_WORKER_DATA_DIR}"
+        ":/var/lib/goodmoneying/realtime-collection-worker"
+    ) in app["realtime-collection-worker"]["volumes"]
     assert "${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro" in app[
-        "worker"
+        "realtime-collection-worker"
+    ]["volumes"]
+    assert (
+        "${GOODMONEYING_APP_BACKFILL_COLLECTION_WORKER_DATA_DIR}"
+        ":/var/lib/goodmoneying/backfill-collection-worker"
+    ) in app["backfill-collection-worker"]["volumes"]
+    assert "${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro" in app[
+        "backfill-collection-worker"
     ]["volumes"]
     assert "${GOODMONEYING_WEB_NGINX_CACHE_DIR}:/var/cache/nginx" in web["web"][
         "volumes"
@@ -221,7 +241,11 @@ def test_prod_home_compose_uses_fixed_ghcr_image_names() -> None:
         == "ghcr.io/goodjoon-company/goodmoneying-api:${GOODMONEYING_IMAGE_TAG}"
     )
     assert (
-        app["worker"]["image"]
+        app["realtime-collection-worker"]["image"]
+        == "ghcr.io/goodjoon-company/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}"
+    )
+    assert (
+        app["backfill-collection-worker"]["image"]
         == "ghcr.io/goodjoon-company/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}"
     )
     assert (
@@ -239,8 +263,10 @@ def test_prod_home_target_local_scripts_use_local_compose_env() -> None:
             "stop.sh",
             "start-api.sh",
             "stop-api.sh",
-            "start-worker.sh",
-            "stop-worker.sh",
+            "start-realtime-collection-worker.sh",
+            "stop-realtime-collection-worker.sh",
+            "start-backfill-collection-worker.sh",
+            "stop-backfill-collection-worker.sh",
         ],
         "web": ["start.sh", "stop.sh"],
     }
@@ -261,8 +287,18 @@ def test_prod_home_target_local_scripts_use_local_compose_env() -> None:
     assert '"$@"' in (target_dir / "app/start-api.sh").read_text()
     assert "up -d api" in (target_dir / "app/start-api.sh").read_text()
     assert "stop api" in (target_dir / "app/stop-api.sh").read_text()
-    assert "up -d worker" in (target_dir / "app/start-worker.sh").read_text()
-    assert "stop worker" in (target_dir / "app/stop-worker.sh").read_text()
+    assert "up -d realtime-collection-worker" in (
+        target_dir / "app/start-realtime-collection-worker.sh"
+    ).read_text()
+    assert "stop realtime-collection-worker" in (
+        target_dir / "app/stop-realtime-collection-worker.sh"
+    ).read_text()
+    assert "up -d backfill-collection-worker" in (
+        target_dir / "app/start-backfill-collection-worker.sh"
+    ).read_text()
+    assert "stop backfill-collection-worker" in (
+        target_dir / "app/stop-backfill-collection-worker.sh"
+    ).read_text()
 
 
 def test_deploy_script_rejects_unknown_profile() -> None:
@@ -338,9 +374,13 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
     )
     assert "mkdir -p '/home/goodjoon/project/goodmoneying/app/api-data'" in result.stdout
     assert (
-        "mkdir -p '/home/goodjoon/project/goodmoneying/app/worker-data'"
-        in result.stdout
-    )
+        "mkdir -p '/home/goodjoon/project/goodmoneying/app/"
+        "realtime-collection-worker-data'"
+    ) in result.stdout
+    assert (
+        "mkdir -p '/home/goodjoon/project/goodmoneying/app/"
+        "backfill-collection-worker-data'"
+    ) in result.stdout
     assert "mkdir -p '/home/goodjoon/project/goodmoneying/app/config'" in result.stdout
     assert (
         "mkdir -p '/home/goodjoon/applications/goodmoneying/web/nginx-cache'"
@@ -423,7 +463,14 @@ def test_healthcheck_script_dry_run_prints_checks() -> None:
         "docker exec goodmoneying-postgres sh -c "
         '\'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"\''
     ) in result.stdout.splitlines()
-    assert "docker inspect -f '{{.State.Running}}' goodmoneying-worker" in result.stdout
+    assert (
+        "docker inspect -f '{{.State.Running}}' "
+        "goodmoneying-realtime-collection-worker"
+    ) in result.stdout
+    assert (
+        "docker inspect -f '{{.State.Running}}' "
+        "goodmoneying-backfill-collection-worker"
+    ) in result.stdout
 
 
 def test_healthcheck_script_rejects_unknown_profile() -> None:
@@ -440,8 +487,10 @@ def test_healthcheck_script_dry_run_prints_checks_in_order() -> None:
     api_index = result.stdout.index("http://100.115.38.59:8000/health")
     web_index = result.stdout.index("http://100.68.208.102:8080/")
     postgres_index = result.stdout.index("docker exec goodmoneying-postgres")
-    worker_index = result.stdout.index("goodmoneying-worker")
-    assert api_index < web_index < postgres_index < worker_index
+    realtime_worker_index = result.stdout.index("goodmoneying-realtime-collection-worker")
+    backfill_worker_index = result.stdout.index("goodmoneying-backfill-collection-worker")
+    assert api_index < web_index < postgres_index < realtime_worker_index
+    assert realtime_worker_index < backfill_worker_index
 
 
 def test_start_script_dry_run_uses_target_compose_env_in_start_order() -> None:

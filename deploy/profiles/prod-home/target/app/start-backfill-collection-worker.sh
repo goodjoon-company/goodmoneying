@@ -10,4 +10,4 @@ source "$COMPOSE_ENV"
 set +a
 export DOCKER_CONFIG="${GOODMONEYING_DOCKER_CONFIG:-$HOME/.docker}"
 
-docker compose --env-file "$COMPOSE_ENV" -f "$COMPOSE_FILE" stop worker "$@"
+docker compose --env-file "$COMPOSE_ENV" -f "$COMPOSE_FILE" up -d backfill-collection-worker "$@"

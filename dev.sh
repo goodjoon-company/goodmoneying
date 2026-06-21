@@ -51,7 +51,8 @@ WEB_PORT="${GOODMONEYING_WEB_PORT:-5173}"
 POSTGRES_PORT="${GOODMONEYING_POSTGRES_PORT:-5432}"
 OPERATOR_TOKEN="${GOODMONEYING_OPERATOR_TOKEN:-local-dev-token}"
 DATABASE_URL="${GOODMONEYING_DATABASE_URL:-postgresql://goodmoneying:goodmoneying@127.0.0.1:${POSTGRES_PORT}/goodmoneying}"
-WORKER_INTERVAL_SECONDS="${GOODMONEYING_WORKER_INTERVAL_SECONDS:-60}"
+REALTIME_COLLECTION_INTERVAL_SECONDS="${GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS:-60}"
+BACKFILL_POLL_SECONDS="${GOODMONEYING_BACKFILL_POLL_SECONDS:-10}"
 PYTHON_BIN="${GOODMONEYING_PYTHON_BIN:-"$ROOT_DIR/.venv/bin/python"}"
 
 usage() {
@@ -65,12 +66,12 @@ usage() {
   ./dev.sh infra restart [postgres|all]
   ./dev.sh infra status [postgres|all]
 
-  ./dev.sh app start [api|web|worker|all]
-  ./dev.sh app stop [api|web|worker|all]
-  ./dev.sh app restart [api|web|worker|all]
-  ./dev.sh app status [api|web|worker|all]
+  ./dev.sh app start [api|web|realtime-collection-worker|backfill-collection-worker|all]
+  ./dev.sh app stop [api|web|realtime-collection-worker|backfill-collection-worker|all]
+  ./dev.sh app restart [api|web|realtime-collection-worker|backfill-collection-worker|all]
+  ./dev.sh app status [api|web|realtime-collection-worker|backfill-collection-worker|all]
 
-  ./dev.sh logs [api|web|worker]
+  ./dev.sh logs [api|web|realtime-collection-worker|backfill-collection-worker]
 
 설명:
   infra 는 Podman Compose 로 PostgreSQL 을 관리한다.
@@ -88,7 +89,8 @@ usage() {
   GOODMONEYING_OPERATOR_TOKEN
   GOODMONEYING_API_PORT
   GOODMONEYING_WEB_PORT
-  GOODMONEYING_WORKER_INTERVAL_SECONDS
+  GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS
+  GOODMONEYING_BACKFILL_POLL_SECONDS
   GOODMONEYING_PYTHON_BIN
 USAGE
 }
@@ -128,8 +130,8 @@ require_infra_port() {
 service_list() {
   local target="${1:-all}"
   case "$target" in
-    all) printf '%s\n' api web worker ;;
-    api | web | worker) printf '%s\n' "$target" ;;
+    all) printf '%s\n' api web realtime-collection-worker backfill-collection-worker ;;
+    api | web | realtime-collection-worker | backfill-collection-worker) printf '%s\n' "$target" ;;
     *) print_error "알 수 없는 app 대상: $target"; return 2 ;;
   esac
 }
@@ -200,7 +202,8 @@ pid_from_process_table() {
   local unit="$1"
   local pattern
   case "$unit" in
-    worker) pattern="goodmoneying_worker.main" ;;
+    realtime-collection-worker) pattern="goodmoneying_worker.realtime_collection_worker" ;;
+    backfill-collection-worker) pattern="goodmoneying_worker.backfill_collection_worker" ;;
     *) return 1 ;;
   esac
 
@@ -284,23 +287,36 @@ start_web() {
       node scripts/dev-vite-server.mjs
 }
 
-start_worker() {
+start_realtime_collection_worker() {
   require_infra_port
-  start_background worker \
+  start_background realtime-collection-worker \
     env PYTHONPATH=apps/api:apps/worker:packages/shared \
       GOODMONEYING_DATABASE_URL="$DATABASE_URL" \
       GOODMONEYING_OPERATOR_TOKEN="$OPERATOR_TOKEN" \
       GOODMONEYING_LIVE_UPBIT="${GOODMONEYING_LIVE_UPBIT:-1}" \
-      GOODMONEYING_WORKER_INTERVAL_SECONDS="$WORKER_INTERVAL_SECONDS" \
+      GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS="$REALTIME_COLLECTION_INTERVAL_SECONDS" \
       GOODMONEYING_PYTHON_BIN="$PYTHON_BIN" \
-      bash -c 'while true; do "$GOODMONEYING_PYTHON_BIN" -m goodmoneying_worker.main; sleep "$GOODMONEYING_WORKER_INTERVAL_SECONDS"; done'
+      bash -c 'while true; do "$GOODMONEYING_PYTHON_BIN" -m goodmoneying_worker.realtime_collection_worker; sleep "$GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS"; done'
+}
+
+start_backfill_collection_worker() {
+  require_infra_port
+  start_background backfill-collection-worker \
+    env PYTHONPATH=apps/api:apps/worker:packages/shared \
+      GOODMONEYING_DATABASE_URL="$DATABASE_URL" \
+      GOODMONEYING_OPERATOR_TOKEN="$OPERATOR_TOKEN" \
+      GOODMONEYING_LIVE_UPBIT="${GOODMONEYING_LIVE_UPBIT:-1}" \
+      GOODMONEYING_BACKFILL_POLL_SECONDS="$BACKFILL_POLL_SECONDS" \
+      GOODMONEYING_PYTHON_BIN="$PYTHON_BIN" \
+      bash -c '"$GOODMONEYING_PYTHON_BIN" -m goodmoneying_worker.backfill_collection_worker'
 }
 
 start_app_unit() {
   case "$1" in
     api) start_api ;;
     web) start_web ;;
-    worker) start_worker ;;
+    realtime-collection-worker) start_realtime_collection_worker ;;
+    backfill-collection-worker) start_backfill_collection_worker ;;
     *) print_error "알 수 없는 app 대상: $1"; return 2 ;;
   esac
 }
@@ -409,12 +425,12 @@ app_stop() {
 show_logs() {
   local unit="${1:-}"
   if [[ -z "$unit" ]]; then
-    print_error "logs 대상이 필요합니다: api, web, worker"
+    print_error "logs 대상이 필요합니다: api, web, realtime-collection-worker, backfill-collection-worker"
     usage
     return 2
   fi
   case "$unit" in
-    api | web | worker) ;;
+    api | web | realtime-collection-worker | backfill-collection-worker) ;;
     *) print_error "알 수 없는 logs 대상: $unit"; return 2 ;;
   esac
   tail -n 120 -f "$(log_file_for "$unit")"

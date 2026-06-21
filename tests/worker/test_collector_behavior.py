@@ -10,7 +10,7 @@ import pytest
 from goodmoneying_shared.models import SourceCandle
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_worker.collector import UpbitCollectionWorker
-from goodmoneying_worker.main import create_upbit_client_from_environment
+from goodmoneying_worker.runtime import create_upbit_client_from_environment
 from goodmoneying_worker.upbit_client import (
     FixtureUpbitClient,
     LiveUpbitClient,

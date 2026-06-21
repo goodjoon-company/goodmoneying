@@ -35,7 +35,8 @@ def test_dev_script_status_lists_infra_and_app_units() -> None:
     assert "app" in result.stdout
     assert "api" in result.stdout
     assert "web" in result.stdout
-    assert "worker" in result.stdout
+    assert "realtime-collection-worker" in result.stdout
+    assert "backfill-collection-worker" in result.stdout
 
 
 def test_dev_script_rejects_unknown_command() -> None:
@@ -75,7 +76,14 @@ def test_dev_script_uses_python_binary_for_long_running_python_processes() -> No
     script = Path("dev.sh").read_text()
 
     assert '"$PYTHON_BIN" -m uvicorn goodmoneying_api.main:app' in script
-    assert '"$GOODMONEYING_PYTHON_BIN" -m goodmoneying_worker.main' in script
+    assert (
+        '"$GOODMONEYING_PYTHON_BIN" -m '
+        "goodmoneying_worker.realtime_collection_worker"
+    ) in script
+    assert (
+        '"$GOODMONEYING_PYTHON_BIN" -m '
+        "goodmoneying_worker.backfill_collection_worker"
+    ) in script
     assert '"$PYTHON_BIN" scripts/dev-start-background.py' in script
 
 

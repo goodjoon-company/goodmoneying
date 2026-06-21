@@ -1,7 +1,7 @@
 # 업비트 수집 파이프라인 설계
 
 Status: Draft
-Last Updated: 2026-06-19
+Last Updated: 2026-06-21
 Related Product: `docs/01_Product.md`
 Related Task: `docs/Task/M1-T01-2026-06-17-업비트-수집-운영-mvp-아키텍처-계약-설계.md`
 Related DB Contract: `docs/contracts/db/schema.sql`
@@ -34,7 +34,8 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 
 | 구성요소 | 책임 | 구현 기준 |
 |---|---|---|
-| 수집 워커(Collection Worker) | 업비트 API 호출, rate limit 관리, 수집/백필/완전성 검사 실행 | Python 단일 프로세스 |
+| 실시간 수집 워커(Realtime Collection Worker) | 업비트 API 호출, rate limit 관리, 후보 유니버스와 증분 수집 실행 | Python 단일 프로세스 |
+| 백필 수집 워커(Backfill Collection Worker) | DB 상태 폴링으로 승인된 백필 작업 확인, 원천 캔들 백필 실행 | Python 단일 프로세스, 기본 10초 폴링 |
 | 운영 서버(Operations Server) | 화면 단위 View Model API, 원천 리소스 API, 쓰기 API, 저장된 상태 조회 | FastAPI |
 | 운영 화면 | 데이터 수집관리 내비게이션, 대시보드, 수집 대상/설정, 백필 제어, 시장 리스트, 코인 상세 레이어 | React, React Query, HTTP 폴링 |
 | PostgreSQL | 원천 사실, 설정, 품질, 감사, 알림 이벤트 저장 | `docs/contracts/db/schema.sql` |
@@ -73,11 +74,11 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 
 ### 증분 수집
 
-1. 수집 워커가 활성 수집 대상을 읽는다.
+1. 실시간 수집 워커가 활성 수집 대상을 읽는다.
 2. 현재가 스냅샷과 호가 요약은 대상 전체가 1~3분 안에 갱신되도록 1분 주기 목표로 수집한다.
 3. 1분 원천 캔들은 매분 직전 완성 캔들을 수집한다.
 4. 일봉은 10~30분 주기 또는 하루 마감 후 보정한다.
-5. 모든 API 호출은 워커 내부 전역 rate limiter를 통과한다.
+5. 모든 API 호출은 워커 내부 rate limiter를 통과한다. M1은 두 수집 워커 프로세스가 있으므로 백필 수집 워커 동시성은 1로 제한한다.
 6. 각 수집은 수집 실행과 대상별 수집 결과를 남긴다.
 7. 수집 또는 배치 시점에 코인별 수집 계획의 기간, 데이터별 최신성, 결측 구간, 구간형 진행 상태를 계산해 저장된 View Model을 갱신한다.
 
@@ -89,8 +90,8 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 4. 백필 계획은 대상, 기간, 예상 요청 수, 저장 예상량을 보수적 추정치로 보여준다.
 5. 운영 화면은 생성된 계획들을 백필 승인 패널에 목록으로 구성하고, 계획 추가/삭제/변경 시 백필 계획 승인 버튼을 활성화한다.
 6. 사용자가 승인하면 계획별 백필 작업이 생성된다.
-7. 수집 워커는 DB 폴링으로 작업 상태를 읽고 백필을 실행한다.
-8. 워커는 이미 저장된 기간의 데이터를 중복 요청하지 않는다.
+7. 백필 수집 워커는 DB 폴링으로 작업 상태를 10초 주기로 읽고 백필을 실행한다.
+8. 백필 수집 워커는 이미 저장된 기간의 데이터를 중복 요청하지 않는다.
 9. 기간이 조정된 경우 수집 범위 시작일부터 재검사하되, 시작일 데이터가 이미 있으면 그 이후 첫 빈 구간부터 요청한다.
 10. 백필은 일시정지, 중지, 이어서하기, 안전 재시작을 지원한다.
 11. 삭제 후 재수집은 M1 이후 기능이다.

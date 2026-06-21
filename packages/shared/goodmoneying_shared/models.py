@@ -14,6 +14,8 @@ BackfillStatus = Literal[
     "planned", "pending", "running", "paused", "stopped", "succeeded", "failed"
 ]
 CollectionRunStatus = Literal["running", "succeeded", "partial", "failed", "cancelled"]
+CollectionDataType = Literal["source_candle", "ticker_snapshot", "orderbook_summary"]
+CollectionRowsByType = dict[CollectionDataType, int]
 
 
 def decimal_string(value: Decimal | int | str | None) -> str | None:
@@ -212,12 +214,8 @@ class RealtimeCollectionHeatmapBucket:
     bucket_start_at: datetime
     actual_rows_all: int
     expected_rows_all: int
-    expected_rows_by_type: dict[
-        Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int
-    ]
-    actual_rows_by_type: dict[
-        Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int
-    ]
+    expected_rows_by_type: CollectionRowsByType
+    actual_rows_by_type: CollectionRowsByType
     actual_ratio_percent: Decimal
     status: Literal["none", "low", "collecting", "high"]
 

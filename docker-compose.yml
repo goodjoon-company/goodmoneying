@@ -28,14 +28,31 @@ services:
       postgres:
         condition: service_healthy
 
-  worker:
+  realtime-collection-worker:
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
+    container_name: goodmoneying-realtime-collection-worker
     environment:
       GOODMONEYING_OPERATOR_TOKEN: local-dev-token
       GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
       GOODMONEYING_LIVE_UPBIT: "1"
+      GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS: "60"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backfill-collection-worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    container_name: goodmoneying-backfill-collection-worker
+    command: ["uv", "run", "--no-sync", "python", "-m", "goodmoneying_worker.backfill_collection_worker"]
+    environment:
+      GOODMONEYING_OPERATOR_TOKEN: local-dev-token
+      GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
+      GOODMONEYING_LIVE_UPBIT: "1"
+      GOODMONEYING_BACKFILL_POLL_SECONDS: "10"
     depends_on:
       postgres:
         condition: service_healthy

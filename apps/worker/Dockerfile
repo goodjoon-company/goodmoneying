@@ -9,4 +9,4 @@ RUN pip install --no-cache-dir uv \
   && uv sync --frozen --no-dev
 
 ENV PYTHONPATH=/app/apps/api:/app/apps/worker:/app/packages/shared
-CMD ["uv", "run", "--no-sync", "python", "-m", "goodmoneying_worker.main", "--loop"]
+CMD ["sh", "-c", "while true; do uv run --no-sync python -m goodmoneying_worker.realtime_collection_worker; sleep ${GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS:-60}; done"]

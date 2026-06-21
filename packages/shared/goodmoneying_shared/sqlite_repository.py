@@ -20,6 +20,7 @@ from goodmoneying_shared.models import (
     CollectionDashboardTarget,
     CollectionDataStatus,
     CollectionPlan,
+    CollectionRowsByType,
     CollectionRun,
     CoverageSegment,
     CoverageStatus,
@@ -1089,9 +1090,7 @@ class SQLiteOperationsRepository:
         active_targets = self.list_active_targets()[:50]
         if not active_targets:
             return []
-        expected_rows_by_type: dict[
-            Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int
-        ] = {
+        expected_rows_by_type: CollectionRowsByType = {
             "source_candle": 60,
             "ticker_snapshot": 60,
             "orderbook_summary": 60,
@@ -1158,9 +1157,7 @@ class SQLiteOperationsRepository:
             hourly_buckets: list[RealtimeCollectionHeatmapBucket] = []
             for offset in range(24):
                 bucket_start = first_hour + timedelta(hours=offset)
-                actual_rows_by_type: dict[
-                    Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int
-                ] = {
+                actual_rows_by_type: CollectionRowsByType = {
                     "source_candle": source_counts.get((target.id, bucket_start), 0),
                     "ticker_snapshot": ticker_counts.get((target.id, bucket_start), 0),
                     "orderbook_summary": orderbook_counts.get((target.id, bucket_start), 0),

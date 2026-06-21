@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -27,6 +27,10 @@ class UpbitClient(Protocol):
     def fetch_minute_candles(
         self, market: str, start_at: datetime, end_at: datetime
     ) -> list[dict[str, str]]: ...
+
+    def fetch_minute_candle_pages(
+        self, market: str, start_at: datetime, end_at: datetime
+    ) -> Iterable[list[dict[str, str]]]: ...
 
 
 class UpbitApiError(RuntimeError):
@@ -85,8 +89,17 @@ class FixtureUpbitClient:
     def fetch_minute_candles(
         self, market: str, start_at: datetime, end_at: datetime
     ) -> list[dict[str, str]]:
-        minutes = max(1, int((end_at - start_at).total_seconds() // 60))
         return [
+            row
+            for page in self.fetch_minute_candle_pages(market, start_at, end_at)
+            for row in page
+        ]
+
+    def fetch_minute_candle_pages(
+        self, market: str, start_at: datetime, end_at: datetime
+    ) -> Iterable[list[dict[str, str]]]:
+        minutes = max(1, int((end_at - start_at).total_seconds() // 60))
+        yield [
             row
             for row in fixture_candle_rows([market], minutes=minutes)
             if start_at <= datetime.fromisoformat(row["candle_start_at"]).astimezone(KST) < end_at
@@ -187,9 +200,22 @@ class LiveUpbitClient:
     def fetch_minute_candles(
         self, market: str, start_at: datetime, end_at: datetime
     ) -> list[dict[str, str]]:
+        rows_by_started_at: dict[datetime, dict[str, str]] = {}
+        for page in self.fetch_minute_candle_pages(market, start_at, end_at):
+            for row in page:
+                rows_by_started_at[
+                    datetime.fromisoformat(row["candle_start_at"]).astimezone(UTC)
+                ] = row
+        return [
+            rows_by_started_at[started_at]
+            for started_at in sorted(rows_by_started_at)
+        ]
+
+    def fetch_minute_candle_pages(
+        self, market: str, start_at: datetime, end_at: datetime
+    ) -> Iterable[list[dict[str, str]]]:
         if start_at >= end_at:
             raise ValueError("캔들 조회 종료 시각은 시작 시각보다 뒤여야 한다.")
-        rows_by_started_at: dict[datetime, dict[str, str]] = {}
         cursor = end_at.astimezone(UTC)
         start_at_utc = start_at.astimezone(UTC)
         end_at_utc = end_at.astimezone(UTC)
@@ -207,19 +233,21 @@ class LiveUpbitClient:
             page_times = [
                 _parse_upbit_candle_time(item["candle_date_time_utc"]) for item in payload
             ]
+            page_rows_by_started_at: dict[datetime, dict[str, str]] = {}
             for item, candle_start_at in zip(payload, page_times, strict=True):
                 if start_at_utc <= candle_start_at < end_at_utc:
-                    rows_by_started_at[candle_start_at] = _upbit_candle_to_row(market, item)
+                    page_rows_by_started_at[candle_start_at] = _upbit_candle_to_row(market, item)
+            if page_rows_by_started_at:
+                yield [
+                    page_rows_by_started_at[started_at]
+                    for started_at in sorted(page_rows_by_started_at)
+                ]
             oldest = min(page_times)
             if oldest <= start_at_utc:
                 break
             if oldest >= cursor:
                 break
             cursor = oldest.astimezone(UTC)
-        return [
-            rows_by_started_at[started_at]
-            for started_at in sorted(rows_by_started_at)
-        ]
 
     def _get_json(self, path: str, params: dict[str, str | int]) -> list[dict[str, Any]]:
         attempts = 0

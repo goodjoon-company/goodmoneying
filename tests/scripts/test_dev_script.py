@@ -87,6 +87,33 @@ def test_dev_script_uses_python_binary_for_long_running_python_processes() -> No
     assert '"$PYTHON_BIN" scripts/dev-start-background.py' in script
 
 
+def test_dev_script_passes_backfill_batch_size_to_worker() -> None:
+    script = Path("dev.sh").read_text()
+
+    start_worker_body = script.split("start_backfill_collection_worker() {", maxsplit=1)[
+        1
+    ].split("\n}", maxsplit=1)[0]
+
+    assert 'BACKFILL_BATCH_SIZE="${GOODMONEYING_BACKFILL_BATCH_SIZE:-3000}"' in script
+    assert 'GOODMONEYING_BACKFILL_BATCH_SIZE="$BACKFILL_BATCH_SIZE"' in start_worker_body
+
+
+def test_dev_script_passes_log_level_to_workers() -> None:
+    script = Path("dev.sh").read_text()
+
+    realtime_worker_body = script.split("start_realtime_collection_worker() {", maxsplit=1)[
+        1
+    ].split("\n}", maxsplit=1)[0]
+    backfill_worker_body = script.split("start_backfill_collection_worker() {", maxsplit=1)[
+        1
+    ].split("\n}", maxsplit=1)[0]
+
+    assert 'LOG_LEVEL="${GOODMONEYING_LOG_LEVEL:-INFO}"' in script
+    assert "GOODMONEYING_LOG_LEVEL" in script
+    assert 'GOODMONEYING_LOG_LEVEL="$LOG_LEVEL"' in realtime_worker_body
+    assert 'GOODMONEYING_LOG_LEVEL="$LOG_LEVEL"' in backfill_worker_body
+
+
 def test_dev_background_launcher_starts_process_in_new_session() -> None:
     launcher = Path("scripts/dev-start-background.py").read_text()
 

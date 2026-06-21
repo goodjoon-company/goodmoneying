@@ -447,7 +447,7 @@ function canPauseBackfillJob(job: BackfillJob): boolean {
 }
 
 function canResumeBackfillJob(job: BackfillJob): boolean {
-  return job.status === "paused";
+  return job.status === "paused" || job.status === "failed";
 }
 
 function canDeleteBackfillJob(job: BackfillJob): boolean {

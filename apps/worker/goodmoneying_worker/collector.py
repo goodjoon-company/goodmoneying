@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -9,11 +10,21 @@ from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.time import KST, minute_bucket, now_kst
 from goodmoneying_worker.upbit_client import UpbitClient
 
+logger = logging.getLogger(__name__)
+
 
 class UpbitCollectionWorker:
-    def __init__(self, repository: OperationsRepository, client: UpbitClient) -> None:
+    def __init__(
+        self,
+        repository: OperationsRepository,
+        client: UpbitClient,
+        backfill_batch_size: int = 3000,
+    ) -> None:
+        if backfill_batch_size < 1:
+            raise ValueError("backfill_batch_size는 1 이상의 값이어야 한다.")
         self._repository = repository
         self._client = client
+        self._backfill_batch_size = backfill_batch_size
 
     @property
     def repository(self) -> OperationsRepository:
@@ -112,6 +123,13 @@ class UpbitCollectionWorker:
             job = self._repository.claim_next_backfill_job()
             if job is None:
                 return total_written
+            logger.info(
+                "backfill_job_claimed job_id=%s data_type=%s target_start_at=%s target_end_at=%s",
+                job.id,
+                job.data_type,
+                job.target_start_at.isoformat(),
+                job.target_end_at.isoformat(),
+            )
             if on_progress is not None:
                 on_progress()
             written = 0
@@ -148,10 +166,28 @@ class UpbitCollectionWorker:
                     )
                     continue
                 try:
+                    logger.info(
+                        "backfill_target_started job_id=%s instrument_id=%s market=%s "
+                        "target_status=%s",
+                        job.id,
+                        target.instrument_id,
+                        instrument.market_code,
+                        target.status,
+                    )
                     missing_ranges = self._missing_source_candle_ranges(
                         target.instrument_id,
                         job.target_start_at,
                         job.target_end_at,
+                    )
+                    logger.debug(
+                        "backfill_missing_ranges job_id=%s instrument_id=%s market=%s "
+                        "range_count=%s target_start_at=%s target_end_at=%s",
+                        job.id,
+                        target.instrument_id,
+                        instrument.market_code,
+                        len(missing_ranges),
+                        job.target_start_at.isoformat(),
+                        job.target_end_at.isoformat(),
                     )
                     if not missing_ranges:
                         self._repository.mark_backfill_target(
@@ -165,6 +201,7 @@ class UpbitCollectionWorker:
                     processed_missing_ranges = 0
                     estimated_missing_ranges = len(missing_ranges)
                     last_completed_at = target.last_completed_at
+                    target_interrupted = False
                     self._repository.record_backfill_target_progress(
                         job.id,
                         target.instrument_id,
@@ -173,75 +210,175 @@ class UpbitCollectionWorker:
                         rows_written_count=target_written,
                         last_completed_at=last_completed_at,
                     )
-                    for fetch_start_at, fetch_end_at in missing_ranges:
+                    for range_index, (fetch_start_at, fetch_end_at) in enumerate(missing_ranges):
                         if self._backfill_job_status(job.id) in {
                             "paused",
                             "stopped",
                             "failed",
                             "succeeded",
                         }:
+                            target_interrupted = True
                             break
-                        if on_progress is not None:
-                            on_progress()
-                        rows = self._client.fetch_minute_candles(
+                        batch: list[SourceCandle] = []
+                        should_stop_current_target = False
+                        fetched_any_row = False
+                        logger.debug(
+                            "backfill_fetch_started job_id=%s instrument_id=%s market=%s "
+                            "range_index=%s range_start_at=%s range_end_at=%s",
+                            job.id,
+                            target.instrument_id,
+                            instrument.market_code,
+                            range_index + 1,
+                            fetch_start_at.isoformat(),
+                            fetch_end_at.isoformat(),
+                        )
+                        for rows in self._client.fetch_minute_candle_pages(
                             instrument.market_code,
                             fetch_start_at,
                             fetch_end_at,
-                        )
-                        collected_at = now_kst()
-                        candles = [
-                            SourceCandle(
-                                instrument_id=target.instrument_id,
-                                candle_unit="1m",
-                                candle_start_at=datetime.fromisoformat(
-                                    row["candle_start_at"]
-                                ).astimezone(KST),
-                                open_price=Decimal(row["open_price"]),
-                                high_price=Decimal(row["high_price"]),
-                                low_price=Decimal(row["low_price"]),
-                                close_price=Decimal(row["close_price"]),
-                                trade_volume=Decimal(row["trade_volume"]),
-                                trade_amount=Decimal(row["trade_amount"]),
-                                collected_at=collected_at,
+                        ):
+                            if on_progress is not None:
+                                on_progress()
+                            fetched_any_row = fetched_any_row or bool(rows)
+                            logger.debug(
+                                "backfill_fetch_succeeded job_id=%s instrument_id=%s "
+                                "market=%s range_index=%s row_count=%s",
+                                job.id,
+                                target.instrument_id,
+                                instrument.market_code,
+                                range_index + 1,
+                                len(rows),
                             )
-                            for row in rows
-                        ]
-                        rows_written = self._repository.record_backfill_candles(
-                            job.id,
-                            target.instrument_id,
-                            candles,
-                        )
-                        if on_progress is not None:
-                            on_progress()
-                        target_written += rows_written
-                        last_completed_at = (
-                            max((item.candle_start_at for item in candles), default=fetch_end_at)
-                            if candles
-                            else fetch_end_at
-                        )
-                        processed_missing_ranges += 1
-                        self._repository.record_backfill_target_progress(
-                            job.id,
-                            target.instrument_id,
-                            processed_missing_range_count=processed_missing_ranges,
-                            estimated_missing_range_count=estimated_missing_ranges,
-                            rows_written_count=target_written,
-                            last_completed_at=last_completed_at,
-                        )
+                            collected_at = now_kst()
+                            batch.extend(
+                                self._source_candles_from_rows(
+                                    target.instrument_id,
+                                    rows,
+                                    collected_at,
+                                )
+                            )
+                            while len(batch) >= self._backfill_batch_size:
+                                rows_written, batch_last_completed_at = (
+                                    self._record_backfill_candle_batch(
+                                        job.id,
+                                        target.instrument_id,
+                                        batch[: self._backfill_batch_size],
+                                    )
+                                )
+                                batch = batch[self._backfill_batch_size :]
+                                target_written += rows_written
+                                last_completed_at = batch_last_completed_at
+                                logger.info(
+                                    "backfill_batch_upserted job_id=%s instrument_id=%s "
+                                    "market=%s rows_written=%s batch_size=%s "
+                                    "last_completed_at=%s",
+                                    job.id,
+                                    target.instrument_id,
+                                    instrument.market_code,
+                                    rows_written,
+                                    self._backfill_batch_size,
+                                    last_completed_at.isoformat(),
+                                )
+                                self._repository.record_backfill_target_progress(
+                                    job.id,
+                                    target.instrument_id,
+                                    processed_missing_range_count=processed_missing_ranges,
+                                    estimated_missing_range_count=estimated_missing_ranges,
+                                    rows_written_count=target_written,
+                                    last_completed_at=last_completed_at,
+                                )
+                                if on_progress is not None:
+                                    on_progress()
+                                if self._backfill_job_status(job.id) in {
+                                    "paused",
+                                    "stopped",
+                                    "failed",
+                                    "succeeded",
+                                }:
+                                    should_stop_current_target = True
+                                    break
+                            if should_stop_current_target:
+                                break
+                        if should_stop_current_target:
+                            target_interrupted = True
+                            break
+                        if batch:
+                            rows_written, batch_last_completed_at = (
+                                self._record_backfill_candle_batch(
+                                    job.id,
+                                    target.instrument_id,
+                                    batch,
+                                )
+                            )
+                            target_written += rows_written
+                            last_completed_at = batch_last_completed_at
+                            logger.info(
+                                "backfill_batch_upserted job_id=%s instrument_id=%s market=%s "
+                                "rows_written=%s batch_size=%s last_completed_at=%s",
+                                job.id,
+                                target.instrument_id,
+                                instrument.market_code,
+                                rows_written,
+                                len(batch),
+                                last_completed_at.isoformat(),
+                            )
+                            self._repository.record_backfill_target_progress(
+                                job.id,
+                                target.instrument_id,
+                                processed_missing_range_count=processed_missing_ranges,
+                                estimated_missing_range_count=estimated_missing_ranges,
+                                rows_written_count=target_written,
+                                last_completed_at=last_completed_at,
+                            )
+                            if on_progress is not None:
+                                on_progress()
+                        if fetched_any_row:
+                            processed_missing_ranges += 1
+                            self._repository.record_backfill_target_progress(
+                                job.id,
+                                target.instrument_id,
+                                processed_missing_range_count=processed_missing_ranges,
+                                estimated_missing_range_count=estimated_missing_ranges,
+                                rows_written_count=target_written,
+                                last_completed_at=last_completed_at,
+                            )
+                        job_status = self._backfill_job_status(job.id)
+                        if job_status in {"paused", "stopped"}:
+                            should_claim_next_job = True
+                            target_interrupted = range_index < len(missing_ranges) - 1
+                            break
+                    written += target_written
+                    if target_interrupted:
+                        break
                     self._repository.mark_backfill_target(
                         job.id,
                         target.instrument_id,
                         status="succeeded",
-                        last_completed_at=last_completed_at or job.target_end_at,
+                        last_completed_at=last_completed_at,
                     )
                     if on_progress is not None:
                         on_progress()
-                    written += target_written
+                    logger.info(
+                        "backfill_target_succeeded job_id=%s instrument_id=%s market=%s "
+                        "rows_written=%s last_completed_at=%s",
+                        job.id,
+                        target.instrument_id,
+                        instrument.market_code,
+                        target_written,
+                        last_completed_at.isoformat() if last_completed_at is not None else "-",
+                    )
                     job_status = self._backfill_job_status(job.id)
                     if job_status in {"paused", "stopped"}:
                         should_claim_next_job = True
                         break
                 except Exception as exc:
+                    logger.exception(
+                        "backfill_target_failed job_id=%s instrument_id=%s market=%s error=%s",
+                        job.id,
+                        target.instrument_id,
+                        instrument.market_code,
+                        type(exc).__name__,
+                    )
                     self._repository.mark_backfill_target(
                         job.id,
                         target.instrument_id,
@@ -256,6 +393,42 @@ class UpbitCollectionWorker:
             if should_claim_next_job:
                 continue
             return total_written
+
+    def _source_candles_from_rows(
+        self,
+        instrument_id: int,
+        rows: list[dict[str, str]],
+        collected_at: datetime,
+    ) -> list[SourceCandle]:
+        return [
+            SourceCandle(
+                instrument_id=instrument_id,
+                candle_unit="1m",
+                candle_start_at=datetime.fromisoformat(row["candle_start_at"]).astimezone(KST),
+                open_price=Decimal(row["open_price"]),
+                high_price=Decimal(row["high_price"]),
+                low_price=Decimal(row["low_price"]),
+                close_price=Decimal(row["close_price"]),
+                trade_volume=Decimal(row["trade_volume"]),
+                trade_amount=Decimal(row["trade_amount"]),
+                collected_at=collected_at,
+            )
+            for row in rows
+        ]
+
+    def _record_backfill_candle_batch(
+        self,
+        job_id: int,
+        instrument_id: int,
+        candles: list[SourceCandle],
+    ) -> tuple[int, datetime]:
+        rows_written = self._repository.record_backfill_candles(
+            job_id,
+            instrument_id,
+            candles,
+        )
+        last_completed_at = max(item.candle_start_at for item in candles)
+        return rows_written, last_completed_at
 
     def _missing_source_candle_ranges(
         self,

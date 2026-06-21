@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -296,6 +297,149 @@ def test_worker_starts_backfill_from_first_missing_candle_after_existing_start()
     assert len(repository.candles(instrument.id, "1m", start_at, end_at)) == 4
 
 
+def test_worker_requests_only_missing_candle_ranges_between_existing_rows() -> None:
+    repository = SQLiteOperationsRepository()
+    instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 8, tzinfo=KST)
+    repository.record_incremental_collection(
+        [],
+        [],
+        [
+            _worker_candle(instrument.id, start_at, "100"),
+            _worker_candle(instrument.id, start_at + timedelta(minutes=1), "101"),
+            _worker_candle(instrument.id, start_at + timedelta(minutes=4), "104"),
+            _worker_candle(instrument.id, start_at + timedelta(minutes=5), "105"),
+            _worker_candle(instrument.id, start_at + timedelta(minutes=7), "107"),
+        ],
+    )
+    client = BackfillOnlyClient(
+        [
+            _worker_candle(instrument.id, start_at + timedelta(minutes=2), "102"),
+            _worker_candle(instrument.id, start_at + timedelta(minutes=3), "103"),
+            _worker_candle(instrument.id, start_at + timedelta(minutes=6), "106"),
+        ]
+    )
+    worker = UpbitCollectionWorker(repository, client)
+    plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
+    repository.approve_backfill_job(plan.plan_id)
+
+    written = worker.run_backfill_once()
+
+    assert written == 3
+    assert client.requests == [
+        ("KRW-BTC", start_at + timedelta(minutes=2), start_at + timedelta(minutes=4)),
+        ("KRW-BTC", start_at + timedelta(minutes=6), start_at + timedelta(minutes=7)),
+    ]
+    assert len(repository.candles(instrument.id, "1m", start_at, end_at)) == 8
+
+
+def test_worker_flushes_large_missing_range_in_configured_batches() -> None:
+    repository = CountingBackfillRepository()
+    instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 8, tzinfo=KST)
+    client = BackfillOnlyClient(
+        [
+            _worker_candle(instrument.id, start_at + timedelta(minutes=minute), str(100 + minute))
+            for minute in range(8)
+        ]
+    )
+    worker = UpbitCollectionWorker(repository, client, backfill_batch_size=3)
+    plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
+    repository.approve_backfill_job(plan.plan_id)
+
+    written = worker.run_backfill_once()
+
+    assert written == 8
+    assert repository.backfill_batch_sizes == [3, 3, 2]
+    target = repository.backfill_job_targets(repository.backfill_jobs()[0].id)[0]
+    target_progress = repository.backfill_target_progress(target.job_id, target.instrument_id)
+    assert target_progress["rows_written_count"] == 8
+    assert target.last_completed_at == start_at + timedelta(minutes=7)
+
+
+def test_worker_records_heartbeat_after_fetch_before_batch_progress_changes() -> None:
+    repository = CountingBackfillRepository()
+    instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=KST)
+    client = BackfillOnlyClient(
+        [
+            _worker_candle(instrument.id, start_at, "100"),
+            _worker_candle(instrument.id, start_at + timedelta(minutes=1), "101"),
+        ]
+    )
+    worker = UpbitCollectionWorker(repository, client, backfill_batch_size=10)
+    plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
+    job = repository.approve_backfill_job(plan.plan_id)
+    progress_snapshots: list[tuple[int, bool, int, datetime | None]] = []
+
+    def record_progress() -> None:
+        target = repository.backfill_job_targets(job.id)[0]
+        target_progress = repository.backfill_target_progress(job.id, target.instrument_id)
+        progress_snapshots.append(
+            (
+                len(client.requests),
+                repository.upsert_in_progress,
+                target_progress["rows_written_count"],
+                target.last_completed_at,
+            )
+        )
+
+    worker.run_backfill_once(on_progress=record_progress)
+
+    assert (1, False, 0, None) in progress_snapshots
+    assert (1, True, 0, None) not in progress_snapshots
+
+
+def test_worker_does_not_advance_last_completed_at_when_fetch_returns_no_rows() -> None:
+    repository = SQLiteOperationsRepository()
+    instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=KST)
+    worker = UpbitCollectionWorker(repository, BackfillOnlyClient([]))
+    plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
+    job = repository.approve_backfill_job(plan.plan_id)
+
+    written = worker.run_backfill_once()
+
+    target = repository.backfill_job_targets(job.id)[0]
+    assert written == 0
+    assert target.last_completed_at is None
+
+
+@pytest.mark.parametrize("action, expected_status", [("stop", "stopped"), ("pause", "paused")])
+def test_worker_honors_job_control_between_batches(
+    action: str,
+    expected_status: str,
+) -> None:
+    repository = ControllingBackfillRepository(action)
+    instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 5, tzinfo=KST)
+    client = BackfillOnlyClient(
+        [
+            _worker_candle(instrument.id, start_at + timedelta(minutes=minute), str(100 + minute))
+            for minute in range(5)
+        ]
+    )
+    worker = UpbitCollectionWorker(repository, client, backfill_batch_size=2)
+    plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
+    repository.approve_backfill_job(plan.plan_id)
+
+    written = worker.run_backfill_once()
+
+    job = repository.backfill_jobs()[0]
+    target = repository.backfill_job_targets(job.id)[0]
+    target_progress = repository.backfill_target_progress(job.id, target.instrument_id)
+    assert written == 2
+    assert job.status == expected_status
+    assert target_progress["rows_written_count"] == 2
+    assert target.last_completed_at == start_at + timedelta(minutes=1)
+    assert len(repository.candles(instrument.id, "1m", start_at, end_at)) == 2
+
+
 def test_worker_records_failed_backfill_target_when_client_fails() -> None:
     repository = SQLiteOperationsRepository()
     instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
@@ -312,6 +456,94 @@ def test_worker_records_failed_backfill_target_when_client_fails() -> None:
     assert repository.backfill_jobs()[0].status == "failed"
     assert targets[0].status == "failed"
     assert targets[0].error_code == "UpbitApiError"
+
+
+def test_worker_resumes_failed_backfill_with_only_missing_rows() -> None:
+    repository = SQLiteOperationsRepository()
+    instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 4, tzinfo=KST)
+    repository.record_incremental_collection(
+        [],
+        [],
+        [
+            _worker_candle(instrument.id, start_at, "100"),
+            _worker_candle(instrument.id, start_at + timedelta(minutes=2), "102"),
+        ],
+    )
+    plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
+    job = repository.approve_backfill_job(plan.plan_id)
+    repository.claim_next_backfill_job()
+    repository.mark_backfill_target(
+        job.id,
+        instrument.id,
+        "failed",
+        start_at,
+        "UpbitBackfillError",
+        "백필 캔들 조회 실패",
+    )
+    repository.control_backfill_job(job.id, "resume")
+    client = BackfillOnlyClient(
+        [
+            _worker_candle(instrument.id, start_at + timedelta(minutes=1), "101"),
+            _worker_candle(instrument.id, start_at + timedelta(minutes=3), "103"),
+        ]
+    )
+    worker = UpbitCollectionWorker(repository, client)
+
+    written = worker.run_backfill_once()
+
+    assert written == 2
+    assert client.requests == [
+        ("KRW-BTC", start_at + timedelta(minutes=1), start_at + timedelta(minutes=2)),
+        ("KRW-BTC", start_at + timedelta(minutes=3), end_at),
+    ]
+    assert repository.backfill_jobs()[0].status == "succeeded"
+    assert len(repository.candles(instrument.id, "1m", start_at, end_at)) == 4
+
+
+def test_backfill_worker_emits_debuggable_progress_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    repository = SQLiteOperationsRepository()
+    instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=KST)
+    plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
+    repository.approve_backfill_job(plan.plan_id)
+    worker = UpbitCollectionWorker(
+        repository,
+        BackfillOnlyClient(
+            [
+                _worker_candle(instrument.id, start_at, "100"),
+                _worker_candle(instrument.id, start_at + timedelta(minutes=1), "101"),
+            ]
+        ),
+        backfill_batch_size=1,
+    )
+    caplog.set_level(logging.DEBUG, logger="goodmoneying_worker.collector")
+
+    worker.run_backfill_once()
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("backfill_job_claimed job_id=" in message for message in messages)
+    assert any(
+        "backfill_missing_ranges job_id=" in message
+        and "market=KRW-BTC" in message
+        and "range_count=1" in message
+        for message in messages
+    )
+    assert any(
+        "backfill_fetch_succeeded job_id=" in message
+        and "market=KRW-BTC" in message
+        and "row_count=2" in message
+        for message in messages
+    )
+    assert any(
+        "backfill_batch_upserted job_id=" in message
+        and "rows_written=1" in message
+        for message in messages
+    )
 
 
 def test_worker_stops_before_next_target_when_job_is_stopped() -> None:
@@ -435,6 +667,65 @@ class BackfillOnlyClient(FixtureUpbitClient):
             if start_at <= item.candle_start_at < end_at
         ]
 
+    def fetch_minute_candle_pages(
+        self, market: str, start_at: datetime, end_at: datetime
+    ) -> list[list[dict[str, str]]]:
+        return [self.fetch_minute_candles(market, start_at, end_at)]
+
+
+class CountingBackfillRepository(SQLiteOperationsRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.backfill_batch_sizes: list[int] = []
+        self.upsert_in_progress = False
+
+    def record_backfill_candles(
+        self,
+        job_id: int,
+        instrument_id: int,
+        candles: list[SourceCandle],
+    ) -> int:
+        self.backfill_batch_sizes.append(len(candles))
+        self.upsert_in_progress = True
+        try:
+            return super().record_backfill_candles(job_id, instrument_id, candles)
+        finally:
+            self.upsert_in_progress = False
+
+    def backfill_target_progress(self, job_id: int, instrument_id: int) -> dict[str, int]:
+        row = self._execute(
+            """
+            SELECT rows_written_count, processed_missing_range_count, estimated_missing_range_count
+            FROM backfill_job_targets
+            WHERE backfill_job_id = ? AND instrument_id = ?
+            """,
+            (job_id, instrument_id),
+        ).fetchone()
+        if row is None:
+            raise AssertionError("백필 target progress를 찾을 수 없다.")
+        return {
+            "rows_written_count": int(row["rows_written_count"]),
+            "processed_missing_range_count": int(row["processed_missing_range_count"]),
+            "estimated_missing_range_count": int(row["estimated_missing_range_count"]),
+        }
+
+
+class ControllingBackfillRepository(CountingBackfillRepository):
+    def __init__(self, action_after_first_batch: str) -> None:
+        super().__init__()
+        self._action_after_first_batch = action_after_first_batch
+
+    def record_backfill_candles(
+        self,
+        job_id: int,
+        instrument_id: int,
+        candles: list[SourceCandle],
+    ) -> int:
+        rows_written = super().record_backfill_candles(job_id, instrument_id, candles)
+        if len(self.backfill_batch_sizes) == 1:
+            self.control_backfill_job(job_id, self._action_after_first_batch)
+        return rows_written
+
 
 class RankedTickerClient(FixtureUpbitClient):
     def __init__(self, markets: list[str]) -> None:
@@ -492,4 +783,9 @@ class FailingBackfillClient(FixtureUpbitClient):
     def fetch_minute_candles(
         self, market: str, start_at: datetime, end_at: datetime
     ) -> list[dict[str, str]]:
+        raise UpbitApiError(status_code=429, message="too many requests")
+
+    def fetch_minute_candle_pages(
+        self, market: str, start_at: datetime, end_at: datetime
+    ) -> list[list[dict[str, str]]]:
         raise UpbitApiError(status_code=429, message="too many requests")

@@ -284,6 +284,24 @@ describe("데이터 수집관리 화면", () => {
               targetEndAt: "2026-01-03T00:00:00+09:00",
               targets: createTestInstruments(1),
               createdAt: "2026-06-20T12:00:00+09:00"
+            },
+            {
+              id: 74,
+              status: "failed",
+              dataType: "source_candle",
+              progressPercent: "18.5",
+              estimatedRequestCount: 12,
+              totalTargetCount: 2,
+              completedTargetCount: 0,
+              runningTargetIndex: null,
+              currentTarget: null,
+              currentTargetBackfillRowCount: 0,
+              processedMissingRangeCount: 1,
+              estimatedMissingRangeCount: 4,
+              targetStartAt: "2026-01-01T00:00:00+09:00",
+              targetEndAt: "2026-01-03T00:00:00+09:00",
+              targets: createTestInstruments(2),
+              createdAt: "2026-06-20T11:00:00+09:00"
             }
           ]
         })
@@ -307,8 +325,8 @@ describe("데이터 수집관리 화면", () => {
     expect(within(runningCard as HTMLElement).getByText("백필 row 120")).toBeInTheDocument();
     expect(within(runningCard as HTMLElement).getByText("결측 구간 처리 3/9")).toBeInTheDocument();
     expect(within(runningCard as HTMLElement).getByText("예상 요청 42")).toBeInTheDocument();
-    expect(within(panel).getAllByText("1분 캔들(Source Candle)")).toHaveLength(3);
-    expect(within(panel).getByText("BTC, ETH")).toBeInTheDocument();
+    expect(within(panel).getAllByText("1분 캔들(Source Candle)")).toHaveLength(4);
+    expect(within(runningCard as HTMLElement).getByText("BTC, ETH")).toBeInTheDocument();
     expect(within(panel).getByText("2026년 01월 01일 00:00 ~ 2026년 02월 01일 00:00")).toBeInTheDocument();
     expect(within(panel).getByText(/06. 21./)).toBeInTheDocument();
     expect(within(panel).getByRole("button", { name: "작업 77 멈춤" })).toBeEnabled();
@@ -323,11 +341,13 @@ describe("데이터 수집관리 화면", () => {
     );
     expect(within(panel).getByLabelText("작업 76 대상 전체 보기")).toBeInTheDocument();
     expect(within(panel).getByRole("button", { name: "작업 76 재개" })).toBeEnabled();
+    expect(within(panel).getByRole("button", { name: "작업 74 재개" })).toBeEnabled();
     expect(within(panel).getByRole("button", { name: "작업 75 삭제" })).toBeEnabled();
 
     await user.click(within(panel).getByRole("button", { name: "작업 77 멈춤" }));
     await user.click(within(panel).getByRole("button", { name: "작업 77 중지" }));
     await user.click(within(panel).getByRole("button", { name: "작업 76 재개" }));
+    await user.click(within(panel).getByRole("button", { name: "작업 74 재개" }));
     await user.click(within(panel).getByRole("button", { name: "작업 75 삭제" }));
 
     const requests = vi.mocked(globalThis.fetch).mock.calls.map(([input, init]) => ({
@@ -344,6 +364,10 @@ describe("데이터 수집관리 화면", () => {
     });
     expect(requests).toContainEqual({
       url: "/api/v1/backfill/jobs/76/resume",
+      method: "POST"
+    });
+    expect(requests).toContainEqual({
+      url: "/api/v1/backfill/jobs/74/resume",
       method: "POST"
     });
     expect(requests).toContainEqual({

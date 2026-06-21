@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 import pytest
 
-from goodmoneying_worker import backfill_collection_worker, realtime_collection_worker
+from goodmoneying_worker import (
+    backfill_collection_worker,
+    realtime_collection_worker,
+    runtime,
+)
 
 
 class FakeRepository:
@@ -36,7 +41,12 @@ def test_realtime_collection_worker_runs_single_collection_by_default(
     calls: list[str] = []
 
     class FakeWorker:
-        def __init__(self, repository: object, client: object) -> None:
+        def __init__(
+            self,
+            repository: object,
+            client: object,
+            backfill_batch_size: int = 3000,
+        ) -> None:
             self.repository = repository
 
         def refresh_candidate_universe(self) -> None:
@@ -74,7 +84,12 @@ def test_backfill_collection_worker_polls_backfill_jobs_every_ten_seconds_by_def
     calls: list[str] = []
 
     class FakeWorker:
-        def __init__(self, repository: object, client: object) -> None:
+        def __init__(
+            self,
+            repository: object,
+            client: object,
+            backfill_batch_size: int = 3000,
+        ) -> None:
             self.repository = repository
 
         def run_backfill_once(self, on_progress: Callable[[], object] | None = None) -> int:
@@ -122,7 +137,12 @@ def test_backfill_collection_worker_uses_env_poll_interval(
     calls: list[str] = []
 
     class FakeWorker:
-        def __init__(self, repository: object, client: object) -> None:
+        def __init__(
+            self,
+            repository: object,
+            client: object,
+            backfill_batch_size: int = 3000,
+        ) -> None:
             self.repository = repository
 
         def run_backfill_once(self, on_progress: Callable[[], object] | None = None) -> int:
@@ -154,6 +174,33 @@ def test_backfill_collection_worker_uses_env_poll_interval(
     ]
 
 
+def test_backfill_collection_worker_uses_default_batch_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GOODMONEYING_BACKFILL_BATCH_SIZE", raising=False)
+
+    assert backfill_collection_worker.batch_size_from_environment() == 3000
+
+
+def test_backfill_collection_worker_uses_env_batch_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOODMONEYING_BACKFILL_BATCH_SIZE", "500")
+
+    assert backfill_collection_worker.batch_size_from_environment() == 500
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "abc"])
+def test_backfill_collection_worker_rejects_invalid_batch_size(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("GOODMONEYING_BACKFILL_BATCH_SIZE", value)
+
+    with pytest.raises(ValueError, match="1 이상의 정수"):
+        backfill_collection_worker.batch_size_from_environment()
+
+
 def test_backfill_collection_worker_rejects_negative_poll_interval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -161,3 +208,22 @@ def test_backfill_collection_worker_rejects_negative_poll_interval(
 
     with pytest.raises(ValueError, match="0 이상의 값"):
         backfill_collection_worker.poll_seconds_from_environment()
+
+
+def test_worker_logging_uses_info_level_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GOODMONEYING_LOG_LEVEL", raising=False)
+
+    assert runtime.log_level_from_environment() == logging.INFO
+
+
+def test_worker_logging_uses_env_log_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GOODMONEYING_LOG_LEVEL", "debug")
+
+    assert runtime.log_level_from_environment() == logging.DEBUG
+
+
+def test_worker_logging_rejects_invalid_log_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GOODMONEYING_LOG_LEVEL", "TRACE")
+
+    with pytest.raises(ValueError, match="GOODMONEYING_LOG_LEVEL"):
+        runtime.log_level_from_environment()

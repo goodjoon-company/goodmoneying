@@ -43,6 +43,7 @@ services:
       GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
       GOODMONEYING_LIVE_UPBIT: "1"
       GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS: "60"
+      GOODMONEYING_LOG_LEVEL: "INFO"
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,6 +60,8 @@ services:
       GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
       GOODMONEYING_LIVE_UPBIT: "1"
       GOODMONEYING_BACKFILL_POLL_SECONDS: "10"
+      GOODMONEYING_BACKFILL_BATCH_SIZE: "3000"
+      GOODMONEYING_LOG_LEVEL: "INFO"
     depends_on:
       postgres:
         condition: service_healthy

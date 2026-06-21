@@ -36,7 +36,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 | 구성요소 | 책임 | 구현 기준 |
 |---|---|---|
 | 실시간 수집 워커(Realtime Collection Worker) | 업비트 API 호출, rate limit 관리, 후보 유니버스와 증분 수집 실행 | Python 단일 프로세스 |
-| 백필 수집 워커(Backfill Collection Worker) | DB 상태 폴링으로 pending 백필 작업 확인, 원천 캔들 백필 실행 | Python 단일 프로세스, 기본 10초 폴링 |
+| 백필 수집 워커(Backfill Collection Worker) | DB 상태 폴링으로 pending 백필 작업 확인, 원천 캔들 결측 구간 백필 실행, fetch 성공 heartbeat와 DB batch upsert 완료 기준 진행 상태 기록 | Python 단일 프로세스, 기본 10초 폴링, 기본 최대 3000개 저장 배치(batch) |
 | 운영 서버(Operations Server) | 화면 단위 View Model API, 원천 리소스 API, 쓰기 API, 저장된 worker 상태 조회 | FastAPI |
 | 운영 화면 | 데이터 수집관리 내비게이션, worker 현황판, 대시보드, Backfill 관리, 백필 제어, 시장 리스트, 코인 상세 레이어 | React, React Query, HTTP 폴링 |
 | PostgreSQL | 원천 사실, 설정, 품질, 감사, 알림 이벤트 저장 | `docs/contracts/db/schema.sql` |
@@ -91,14 +91,16 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 3. 운영 서버는 선택 코인 세트, 데이터 유형, 목표 기간으로 백필 계획을 생성한다.
 4. 백필 계획은 대상, 기간, 예상 요청 수, 저장 예상량을 보수적 추정치로 보여준다.
 5. 사용자가 백필 시작 버튼을 누르면 계획별 백필 작업이 pending 상태로 저장된다.
-6. 운영 화면은 저장된 백필 작업을 백필 작업 패널에 목록으로 구성하고, 멈춤(Pause), 중지(Stop), 삭제(Delete) 제어를 제공한다.
+6. 운영 화면은 저장된 백필 작업을 백필 작업 패널에 목록으로 구성하고, 멈춤(Pause), 재개(Resume), 중지(Stop), 삭제(Delete) 제어를 제공한다. 일시정지 또는 실패 상태의 작업에는 재개 버튼을 제공한다.
 7. 백필 수집 워커는 DB 폴링으로 작업 상태를 10초 주기로 읽고 백필을 실행한다.
 8. 백필 수집 워커는 폴링 heartbeat와 성공/오류 상태를 `collection_worker_heartbeats`에 남긴다.
-   장시간 백필 작업 중에는 대상 처리와 캔들 요청 진행 지점마다 heartbeat를 갱신해 실행 중인 worker가 지연으로 오판되지 않게 한다.
-9. 백필 수집 워커는 이미 저장된 기간의 데이터를 중복 요청하지 않는다.
-10. 기간이 조정된 경우 수집 범위 시작일부터 재검사하되, 시작일 데이터가 이미 있으면 그 이후 첫 빈 구간부터 요청한다.
-11. 백필은 일시정지, 중지, 이어서하기, 안전 재시작을 지원한다.
-12. 삭제 후 재수집은 M1 이후 기능이다.
+   장시간 백필 작업 중에는 업비트 fetch 성공 지점마다 heartbeat를 갱신해 실행 중인 worker가 지연으로 오판되지 않게 한다.
+9. 백필 수집 워커는 목표 범위와 저장된 캔들 시작 시각을 비교해 이미 저장된 분(minute)을 업비트에 다시 요청하지 않고 없는 결측 구간만 요청한다.
+10. 업비트 fetch page는 200개 단위를 유지하고, DB 저장은 기본 최대 3000개 batch 단위로 upsert한다. batch 크기는 `GOODMONEYING_BACKFILL_BATCH_SIZE` 외부 설정으로 바꿀 수 있다.
+11. `rows_written_count`와 `last_completed_at`은 DB batch upsert가 성공한 뒤에만 갱신한다.
+12. 기간이 조정된 경우 수집 범위 시작일부터 재검사하되, 시작일 데이터가 이미 있으면 그 이후 첫 빈 구간부터 요청한다.
+13. 백필은 일시정지, 중지, 이어서하기, 안전 재시작을 지원한다. 실패 상태에서 이어서하기를 수행하면 기존 저장 데이터를 삭제하지 않고 결측 구간을 다시 계산해 없는 구간만 요청한다.
+14. 삭제 후 재수집은 M1 이후 기능이다.
 
 ### 데이터 완전성 검사
 
@@ -116,6 +118,9 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 - 원천 캔들 유니크 키는 `(instrument_id, source, candle_unit, candle_start_at)`이다.
 - 현재가 스냅샷과 호가 요약 유니크 키는 `(instrument_id, source, bucket_at)`이다.
 - 같은 수집 버킷 시간(Collection Bucket Time)에 재수집이 발생하면 더 늦은 `collected_at`을 가진 성공 수집 결과가 대표 행을 갱신한다.
+- 백필 수집의 `rows_written_count`와 `last_completed_at`은 fetch 성공이 아니라 DB batch upsert 성공을 기준으로 한다.
+- 백필 저장 배치(batch)는 기본 최대 3000개 row이며, 운영 환경에서는 `GOODMONEYING_BACKFILL_BATCH_SIZE`로 조정한다.
+- 워커 로그 레벨은 `GOODMONEYING_LOG_LEVEL`로 조정한다. 기본값은 `INFO`이며, 운영 장애 분석 시 `DEBUG`로 올려 백필 job, target, 결측 범위, fetch, DB batch upsert 경계를 확인한다.
 
 ## 운영 화면
 

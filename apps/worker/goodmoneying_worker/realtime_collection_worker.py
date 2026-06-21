@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
+
 from goodmoneying_shared.time import now_kst
 from goodmoneying_worker.collector import UpbitCollectionWorker
 from goodmoneying_worker.runtime import (
+    configure_logging_from_environment,
     create_repository_from_environment,
     create_upbit_client_from_environment,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def run_realtime_collection_once(worker: UpbitCollectionWorker) -> int:
@@ -27,13 +32,15 @@ def run_realtime_collection_once(worker: UpbitCollectionWorker) -> int:
             type(exc).__name__,
             str(exc),
         )
+        logger.exception("realtime_collection_failed error=%s", type(exc).__name__)
         raise
     worker.repository.record_collection_worker_heartbeat("realtime_collection", "running")
-    print(f"실시간 수집 완료: rows={written}")
+    logger.info("realtime_collection_completed rows=%s", written)
     return written
 
 
 def main() -> None:
+    configure_logging_from_environment()
     worker = UpbitCollectionWorker(
         create_repository_from_environment(),
         create_upbit_client_from_environment(),

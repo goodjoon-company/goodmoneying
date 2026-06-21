@@ -264,6 +264,31 @@ def test_backfill_plan_and_control_flow() -> None:
     assert restarted.status == "pending"
 
 
+def test_failed_backfill_job_can_resume() -> None:
+    repository = SQLiteOperationsRepository()
+    instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
+    start_at = now_kst() - timedelta(hours=2)
+    end_at = now_kst()
+    plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
+    job = repository.approve_backfill_job(plan.plan_id)
+    repository.claim_next_backfill_job()
+    repository.mark_backfill_target(
+        job.id,
+        instrument.id,
+        "failed",
+        None,
+        "UpbitBackfillError",
+        "백필 캔들 조회 실패",
+    )
+
+    resumed = repository.control_backfill_job(job.id, "resume")
+    claimed = repository.claim_next_backfill_job()
+
+    assert resumed.status == "running"
+    assert claimed is not None
+    assert claimed.id == job.id
+
+
 def test_backfill_job_claim_records_candle_chunk_and_progress() -> None:
     repository = SQLiteOperationsRepository()
     instrument = repository.upsert_instrument("KRW-BTC", "비트코인")

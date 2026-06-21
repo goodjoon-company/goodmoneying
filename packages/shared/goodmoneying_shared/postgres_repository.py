@@ -1064,7 +1064,13 @@ class PostgresOperationsRepository:
             ).fetchone()
             if current is None:
                 raise ValueError("존재하지 않는 백필 작업이다.")
-            if current["status"] in {"succeeded", "failed", "stopped"} and action != "safe-restart":
+            is_terminal_action_allowed = action == "safe-restart" or (
+                current["status"] == "failed" and action == "resume"
+            )
+            if (
+                current["status"] in {"succeeded", "failed", "stopped"}
+                and not is_terminal_action_allowed
+            ):
                 raise ValueError("완료 또는 중지된 백필 작업은 해당 명령을 수행할 수 없다.")
             row = _expect_row(
                 conn.execute(

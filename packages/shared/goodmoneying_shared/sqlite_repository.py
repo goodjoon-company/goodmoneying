@@ -1221,7 +1221,13 @@ class SQLiteOperationsRepository:
             raise ValueError("지원하지 않는 백필 제어 명령이다.")
         with self._lock, self._conn:
             current = self._backfill_job_by_id(job_id)
-            if current.status in {"succeeded", "failed", "stopped"} and action != "safe-restart":
+            is_terminal_action_allowed = action == "safe-restart" or (
+                current.status == "failed" and action == "resume"
+            )
+            if (
+                current.status in {"succeeded", "failed", "stopped"}
+                and not is_terminal_action_allowed
+            ):
                 raise ValueError("완료 또는 중지된 백필 작업은 해당 명령을 수행할 수 없다.")
             self._execute(
                 "UPDATE backfill_jobs SET status = ?, updated_at = ? WHERE id = ?",

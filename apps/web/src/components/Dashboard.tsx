@@ -1,5 +1,5 @@
-import { Fragment, useState } from "react";
-import { Bell, X } from "lucide-react";
+import { Fragment, useMemo, useState } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Bell, X } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import {
   type BackfillWorkerStatus,
@@ -36,6 +36,20 @@ import {
   statusFromTarget
 } from "./common";
 
+type DashboardTargetSortKey =
+  | "coin"
+  | "status"
+  | "change"
+  | "trade"
+  | "freshness"
+  | "coverage"
+  | "rows";
+type SortDirection = "asc" | "desc";
+type DashboardTargetSort = {
+  key: DashboardTargetSortKey;
+  direction: SortDirection;
+};
+
 export function Dashboard({
   snapshot,
   onSelectInstrument
@@ -52,6 +66,22 @@ export function Dashboard({
     title: string;
     diagnostics: CollectionWorkerDiagnostic[];
   } | null>(null);
+  const [targetSort, setTargetSort] = useState<DashboardTargetSort>({
+    key: "trade",
+    direction: "desc"
+  });
+  const sortedTargets = useMemo(
+    () => sortDashboardTargets(snapshot.dashboard.targets, targetSort),
+    [snapshot.dashboard.targets, targetSort]
+  );
+  const changeTargetSort = (key: DashboardTargetSortKey) => {
+    setTargetSort((current) => {
+      if (current.key === key) {
+        return { key, direction: current.direction === "desc" ? "asc" : "desc" };
+      }
+      return { key, direction: defaultTargetSortDirection(key) };
+    });
+  };
   return (
     <section className="dashboard-page">
       <div className="ops-kpi-grid">
@@ -140,15 +170,50 @@ export function Dashboard({
         </div>
         <div className="dashboard-table ops-coin-table">
           <div className="dashboard-table-head ops-coin-table-head">
-            <span>코인</span>
-            <span>상태</span>
-            <span>등락률</span>
-            <span>24H 거래대금</span>
-            <span>최신성</span>
-            <span>수집 커버리지</span>
-            <span>저장 행</span>
+            <DashboardSortButton
+              label="코인"
+              sortKey="coin"
+              currentSort={targetSort}
+              onSort={changeTargetSort}
+            />
+            <DashboardSortButton
+              label="상태"
+              sortKey="status"
+              currentSort={targetSort}
+              onSort={changeTargetSort}
+            />
+            <DashboardSortButton
+              label="등락률"
+              sortKey="change"
+              currentSort={targetSort}
+              onSort={changeTargetSort}
+            />
+            <DashboardSortButton
+              label="24H 거래대금"
+              sortKey="trade"
+              currentSort={targetSort}
+              onSort={changeTargetSort}
+            />
+            <DashboardSortButton
+              label="최신성"
+              sortKey="freshness"
+              currentSort={targetSort}
+              onSort={changeTargetSort}
+            />
+            <DashboardSortButton
+              label="수집 커버리지"
+              sortKey="coverage"
+              currentSort={targetSort}
+              onSort={changeTargetSort}
+            />
+            <DashboardSortButton
+              label="저장 행"
+              sortKey="rows"
+              currentSort={targetSort}
+              onSort={changeTargetSort}
+            />
           </div>
-          {snapshot.dashboard.targets.slice(0, 8).map((target) => (
+          {sortedTargets.map((target) => (
             <CollectionTargetRow
               key={target.instrument.id}
               target={target}
@@ -173,6 +238,96 @@ export function Dashboard({
       ) : null}
     </section>
   );
+}
+
+function DashboardSortButton({
+  label,
+  sortKey,
+  currentSort,
+  onSort
+}: {
+  label: string;
+  sortKey: DashboardTargetSortKey;
+  currentSort: DashboardTargetSort;
+  onSort: (key: DashboardTargetSortKey) => void;
+}) {
+  const isActive = currentSort.key === sortKey;
+  const Icon = isActive
+    ? currentSort.direction === "desc"
+      ? ArrowDown
+      : ArrowUp
+    : ArrowUpDown;
+  return (
+    <button
+      type="button"
+      className={`dashboard-sort-button ${isActive ? "active" : ""}`}
+      aria-sort={isActive ? (currentSort.direction === "desc" ? "descending" : "ascending") : "none"}
+      onClick={() => onSort(sortKey)}
+    >
+      {label}
+      <Icon size={13} />
+    </button>
+  );
+}
+
+function sortDashboardTargets(
+  targets: CollectionDashboardTarget[],
+  sort: DashboardTargetSort
+): CollectionDashboardTarget[] {
+  return [...targets].sort((left, right) => {
+    const order = compareDashboardTarget(left, right, sort.key);
+    if (order !== 0) return sort.direction === "desc" ? -order : order;
+    return left.instrument.marketCode.localeCompare(right.instrument.marketCode, "ko-KR");
+  });
+}
+
+function compareDashboardTarget(
+  left: CollectionDashboardTarget,
+  right: CollectionDashboardTarget,
+  key: DashboardTargetSortKey
+): number {
+  if (key === "coin") {
+    return left.instrument.baseAsset.localeCompare(right.instrument.baseAsset, "ko-KR");
+  }
+  if (key === "status") {
+    return left.overallStatusLabel.localeCompare(right.overallStatusLabel, "ko-KR");
+  }
+  if (key === "change") {
+    return numericValue(left.changeRate) - numericValue(right.changeRate);
+  }
+  if (key === "trade") {
+    return numericDisplay(left.accTradePrice24hDisplay) - numericDisplay(
+      right.accTradePrice24hDisplay
+    );
+  }
+  if (key === "freshness") {
+    return freshnessTimestamp(left) - freshnessTimestamp(right);
+  }
+  if (key === "coverage") {
+    return numericValue(left.coveragePercent) - numericValue(right.coveragePercent);
+  }
+  return left.storageRowCount - right.storageRowCount;
+}
+
+function defaultTargetSortDirection(key: DashboardTargetSortKey): SortDirection {
+  return key === "coin" || key === "status" || key === "freshness" ? "asc" : "desc";
+}
+
+function numericDisplay(value: string): number {
+  return numericValue(value.replace(/[^\d.-]/g, ""));
+}
+
+function numericValue(value: string): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function freshnessTimestamp(target: CollectionDashboardTarget): number {
+  const orderbookStatus = target.dataStatuses.find(
+    (status) => status.dataType === "orderbook_summary"
+  );
+  const timestamp = Date.parse(orderbookStatus?.lastSuccessfulAt ?? target.plan.rangeStartAt);
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 function WorkerStatusPanel({
@@ -217,6 +372,10 @@ function WorkerStatusPanel({
             <div>
               <dt>마지막 저장 성공</dt>
               <dd>{formatNullableDateTime(realtime.lastCollectedAt)}</dd>
+            </div>
+            <div aria-label={`Realtime worker 24시간 수집 ${realtime.collectedRowCount24h.toLocaleString("ko-KR")} rows`}>
+              <dt>24시간 수집</dt>
+              <dd>{realtime.collectedRowCount24h.toLocaleString("ko-KR")} rows</dd>
             </div>
             <div>
               <dt>실패율</dt>

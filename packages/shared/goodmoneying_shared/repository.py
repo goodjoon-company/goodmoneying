@@ -139,6 +139,16 @@ class OperationsRepository(Protocol):
         self, job_id: int, instrument_id: int, candles: list[SourceCandle]
     ) -> int: ...
 
+    def record_backfill_target_progress(
+        self,
+        job_id: int,
+        instrument_id: int,
+        processed_missing_range_count: int,
+        estimated_missing_range_count: int,
+        rows_written_count: int,
+        last_completed_at: datetime | None,
+    ) -> None: ...
+
     def mark_backfill_target(
         self,
         job_id: int,

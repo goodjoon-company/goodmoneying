@@ -296,12 +296,22 @@ CREATE TABLE IF NOT EXISTS backfill_job_targets (
   instrument_id BIGINT NOT NULL REFERENCES instruments(id),
   status TEXT NOT NULL,
   last_completed_at TIMESTAMPTZ,
+  processed_missing_range_count INTEGER NOT NULL DEFAULT 0,
+  estimated_missing_range_count INTEGER NOT NULL DEFAULT 0,
+  rows_written_count INTEGER NOT NULL DEFAULT 0,
   error_code TEXT,
   error_message TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (backfill_job_id, instrument_id),
   CONSTRAINT backfill_job_targets_status_ck CHECK (status IN ('pending', 'running', 'paused', 'stopped', 'succeeded', 'failed'))
 );
+
+ALTER TABLE backfill_job_targets
+  ADD COLUMN IF NOT EXISTS processed_missing_range_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE backfill_job_targets
+  ADD COLUMN IF NOT EXISTS estimated_missing_range_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE backfill_job_targets
+  ADD COLUMN IF NOT EXISTS rows_written_count INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS audit_logs (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

@@ -237,6 +237,7 @@ def test_dashboard_summary_exposes_collection_worker_status() -> None:
     assert worker_status["realtime"]["status"] == "running"
     assert worker_status["realtime"]["lastHeartbeatAt"]
     assert worker_status["realtime"]["lastCollectedAt"]
+    assert worker_status["realtime"]["collectedRowCount24h"] > 0
     assert worker_status["realtime"]["errorCount24h"] == 1
     assert worker_status["realtime"]["failureRate24h"] != "0"
     assert {
@@ -265,6 +266,82 @@ def test_dashboard_summary_exposes_collection_worker_status() -> None:
         "detail": "현재 계획 이후 대기 중인 백필 job/target",
     } in worker_status["backfill"]["diagnostics"]
     assert worker_status["backfill"]["recentErrors"][0]["code"] == "UpbitBackfillError"
+
+
+def test_backfill_jobs_expose_live_progress_and_hide_old_stopped_jobs() -> None:
+    repository, client = seeded_repository_and_client()
+    instruments = repository.list_active_targets()
+    start_at = now_kst() - timedelta(minutes=5)
+    end_at = now_kst()
+    recent_stopped_plan = repository.create_backfill_plan(
+        "source_candle",
+        start_at,
+        end_at,
+        [instruments[0].id],
+    )
+    recent_stopped_job = repository.approve_backfill_job(recent_stopped_plan.plan_id)
+    repository.control_backfill_job(recent_stopped_job.id, "stop")
+    old_stopped_plan = repository.create_backfill_plan(
+        "source_candle",
+        start_at,
+        end_at,
+        [instruments[1].id],
+    )
+    old_stopped_job = repository.approve_backfill_job(old_stopped_plan.plan_id)
+    repository.control_backfill_job(old_stopped_job.id, "stop")
+    repository._execute(  # noqa: SLF001 - API 필터 검증을 위해 생성 시각만 고정한다.
+        "UPDATE backfill_jobs SET created_at = ?, updated_at = ? WHERE id = ?",
+        (
+            (now_kst() - timedelta(days=40)).isoformat(),
+            (now_kst() - timedelta(days=40)).isoformat(),
+            old_stopped_job.id,
+        ),
+    )
+    running_plan = repository.create_backfill_plan(
+        "source_candle",
+        start_at,
+        end_at,
+        [item.id for item in instruments[2:5]],
+    )
+    running_job = repository.approve_backfill_job(running_plan.plan_id)
+    repository.claim_next_backfill_job()
+    repository.mark_backfill_target(
+        running_job.id,
+        instruments[2].id,
+        "succeeded",
+        end_at,
+    )
+    repository.mark_backfill_target(
+        running_job.id,
+        instruments[3].id,
+        "running",
+        start_at,
+    )
+    repository.record_backfill_target_progress(
+        running_job.id,
+        instruments[3].id,
+        processed_missing_range_count=3,
+        estimated_missing_range_count=9,
+        rows_written_count=120,
+        last_completed_at=start_at + timedelta(minutes=2),
+    )
+
+    response = client.get("/v1/backfill/jobs")
+
+    assert response.status_code == 200
+    jobs_by_id = {item["id"]: item for item in response.json()["items"]}
+    assert old_stopped_job.id not in jobs_by_id
+    assert recent_stopped_job.id in jobs_by_id
+    running = jobs_by_id[running_job.id]
+    assert running["progressPercent"] == "44.44"
+    assert running["totalTargetCount"] == 3
+    assert running["completedTargetCount"] == 1
+    assert running["runningTargetIndex"] == 2
+    assert running["currentTarget"]["id"] == instruments[3].id
+    assert running["currentTargetBackfillRowCount"] == 120
+    assert running["processedMissingRangeCount"] == 3
+    assert running["estimatedMissingRangeCount"] == 9
+    assert running["estimatedRequestCount"] == running_plan.estimated_request_count
 
 
 def test_dashboard_panel_endpoints_return_summary_slices() -> None:

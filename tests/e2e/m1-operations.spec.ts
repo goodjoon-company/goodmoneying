@@ -82,15 +82,24 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.locator(".ops-summary-card").filter({ hasText: "worker 현황" })).toBeVisible();
   await expect(page.getByText("Realtime worker")).toBeVisible();
   await expect(page.getByText("Backfill worker")).toBeVisible();
+  await expect(page.getByLabel(/Realtime worker 24시간 수집 [0-9,]+ rows/)).toBeVisible();
   await expect(page.getByText(/동작중 코인 [0-9]+\/[0-9]+개/)).toBeVisible();
   await expect(page.getByRole("heading", { name: "코인별 수집 상태" })).toBeVisible();
-  await expect(page.locator(".dashboard-row-button").first()).toBeVisible();
+  const dashboardRows = page.locator(".ops-coin-table .dashboard-row-button");
+  await expect(dashboardRows).toHaveCount(50);
+  await expect(dashboardRows.first()).toBeVisible();
   await expect(page.getByText("실시간 / 백필 row")).toBeVisible();
   await expect(page.getByText("상태", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("최신성", { exact: true })).toBeVisible();
   await expect(page.getByText("수집 커버리지", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("저장 행", { exact: true })).toBeVisible();
-  await expect(page.getByText(/24H 거래대금/).first()).toBeVisible();
+  const tradeSortButton = page.getByRole("button", { name: /24H 거래대금/ });
+  await expect(tradeSortButton).toBeVisible();
+  const firstDashboardRowBeforeSort = await dashboardRows.first().innerText();
+  await tradeSortButton.click();
+  await expect
+    .poll(async () => dashboardRows.first().innerText())
+    .not.toBe(firstDashboardRowBeforeSort);
   await expect(page.getByText("최근 1분 수집 건수")).toBeVisible();
   await expect(page.getByRole("heading", { name: "구간형 수집 진행 상태" })).toBeVisible();
   await expect(page.getByLabel("실시간 정보 수집 현황 히트맵")).toBeVisible();
@@ -128,6 +137,8 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.getByRole("button", { name: "백필 계획 생성" })).toBeEnabled();
   await expect(page.getByText(`작업 ${pausedBackfillJob.id}`)).toBeVisible();
   await expect(page.getByText("일시정지")).toBeVisible();
+  await expect(page.getByText(/결측 구간 처리/).first()).toBeVisible();
+  await expect(page.getByLabel(`작업 ${pausedBackfillJob.id} 대상 전체 보기`)).toBeVisible();
   const pausedBackfillSummary = page
     .locator(".approved-backfill-card")
     .filter({ hasText: `작업 ${pausedBackfillJob.id}` })

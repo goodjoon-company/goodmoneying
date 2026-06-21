@@ -178,6 +178,7 @@ export type RealtimeWorkerStatus = {
   statusDetail: string;
   lastHeartbeatAt: string | null;
   lastCollectedAt: string | null;
+  collectedRowCount24h: number;
   errorCount24h: number;
   failureRate24h: string;
   diagnostics: CollectionWorkerDiagnostic[];
@@ -317,6 +318,14 @@ export type BackfillJob = {
   status: "planned" | "pending" | "running" | "paused" | "stopped" | "succeeded" | "failed";
   dataType: string;
   progressPercent: string;
+  estimatedRequestCount: number;
+  totalTargetCount: number;
+  completedTargetCount: number;
+  runningTargetIndex: number | null;
+  currentTarget: Instrument | null;
+  currentTargetBackfillRowCount: number;
+  processedMissingRangeCount: number;
+  estimatedMissingRangeCount: number;
   targetStartAt: string;
   targetEndAt: string;
   targets: Instrument[];
@@ -415,6 +424,7 @@ function normalizeCollectionWorkerStatus(
       statusDetail: workerStatus?.realtime?.statusDetail ?? "worker 상태 데이터가 없습니다.",
       lastHeartbeatAt: workerStatus?.realtime?.lastHeartbeatAt ?? null,
       lastCollectedAt: workerStatus?.realtime?.lastCollectedAt ?? null,
+      collectedRowCount24h: numberOrZero(workerStatus?.realtime?.collectedRowCount24h),
       errorCount24h: numberOrZero(workerStatus?.realtime?.errorCount24h),
       failureRate24h: workerStatus?.realtime?.failureRate24h ?? "0",
       diagnostics: workerStatus?.realtime?.diagnostics ?? [],
@@ -442,6 +452,14 @@ function normalizeBackfillJob(job: BackfillJob): BackfillJob {
   return {
     ...job,
     progressPercent: job.progressPercent ?? "0",
+    estimatedRequestCount: numberOrZero(job.estimatedRequestCount),
+    totalTargetCount: numberOrZero(job.totalTargetCount || job.targets?.length),
+    completedTargetCount: numberOrZero(job.completedTargetCount),
+    runningTargetIndex: job.runningTargetIndex ?? null,
+    currentTarget: job.currentTarget ?? null,
+    currentTargetBackfillRowCount: numberOrZero(job.currentTargetBackfillRowCount),
+    processedMissingRangeCount: numberOrZero(job.processedMissingRangeCount),
+    estimatedMissingRangeCount: numberOrZero(job.estimatedMissingRangeCount),
     targetStartAt: job.targetStartAt ?? JANUARY_2026_BACKFILL_START,
     targetEndAt: job.targetEndAt ?? JANUARY_2026_BACKFILL_END,
     targets: job.targets ?? []

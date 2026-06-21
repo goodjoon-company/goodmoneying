@@ -1170,7 +1170,7 @@ components:
         detail:
           type: string
     RealtimeWorkerStatus:
-      description: 실시간 수집 워커의 heartbeat, 최근 수집 시각, 24시간 오류 지표.
+      description: 실시간 수집 워커의 heartbeat, 최근 수집 시각, 24시간 수집 row와 오류 지표.
       type: object
       required:
         - status
@@ -1178,6 +1178,7 @@ components:
         - statusDetail
         - lastHeartbeatAt
         - lastCollectedAt
+        - collectedRowCount24h
         - errorCount24h
         - failureRate24h
         - diagnostics
@@ -1196,6 +1197,9 @@ components:
         lastCollectedAt:
           type: [string, "null"]
           format: date-time
+        collectedRowCount24h:
+          type: integer
+          description: 최근 24시간 실시간 수집이 저장한 ticker/orderbook/candle row 합계.
         errorCount24h:
           type: integer
         failureRate24h:
@@ -1826,7 +1830,7 @@ components:
     BackfillJob:
       description: 백필 작업의 상태, 데이터 유형, 진행률, 대상 범위, 대상 코인, 생성 시각 모델.
       type: object
-      required: [id, status, dataType, progressPercent, targetStartAt, targetEndAt, targets, createdAt]
+      required: [id, status, dataType, progressPercent, estimatedRequestCount, totalTargetCount, completedTargetCount, runningTargetIndex, currentTarget, currentTargetBackfillRowCount, processedMissingRangeCount, estimatedMissingRangeCount, targetStartAt, targetEndAt, targets, createdAt]
       properties:
         id:
           type: integer
@@ -1838,6 +1842,33 @@ components:
           type: string
         progressPercent:
           $ref: "#/components/schemas/DecimalString"
+        estimatedRequestCount:
+          type: integer
+          description: 백필 계획 생성 시 계산한 예상 업비트 요청 수.
+        totalTargetCount:
+          type: integer
+          description: 백필 작업의 전체 대상 코인 수.
+        completedTargetCount:
+          type: integer
+          description: 백필 작업에서 완료된 대상 코인 수.
+        runningTargetIndex:
+          type: integer
+          nullable: true
+          description: 현재 실행 중인 대상 코인의 1부터 시작하는 순번.
+        currentTarget:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Instrument"
+          description: 현재 백필 중인 대상 코인.
+        currentTargetBackfillRowCount:
+          type: integer
+          description: 현재 대상 코인에서 이번 백필 실행으로 기록한 row 수.
+        processedMissingRangeCount:
+          type: integer
+          description: 현재 대상 코인에서 처리한 결측 구간 수.
+        estimatedMissingRangeCount:
+          type: integer
+          description: 현재 대상 코인에서 처리해야 하는 전체 결측 구간 수.
         targetStartAt:
           type: string
           format: date-time

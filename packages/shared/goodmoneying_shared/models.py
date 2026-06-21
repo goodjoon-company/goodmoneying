@@ -288,6 +288,7 @@ class RealtimeWorkerStatus:
     status_detail: str
     last_heartbeat_at: datetime | None
     last_collected_at: datetime | None
+    collected_row_count_24h: int
     error_count_24h: int
     failure_rate_24h: Decimal
     diagnostics: list[CollectionWorkerDiagnostic]
@@ -335,6 +336,14 @@ class BackfillJob:
     status: BackfillStatus
     data_type: str
     progress_percent: Decimal
+    estimated_request_count: int
+    total_target_count: int
+    completed_target_count: int
+    running_target_index: int | None
+    current_target: Instrument | None
+    current_target_backfill_row_count: int
+    processed_missing_range_count: int
+    estimated_missing_range_count: int
     target_start_at: datetime
     target_end_at: datetime
     targets: list[Instrument]

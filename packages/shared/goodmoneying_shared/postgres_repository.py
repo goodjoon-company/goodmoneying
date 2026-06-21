@@ -899,7 +899,7 @@ class PostgresOperationsRepository:
                     """,
                     (row["id"], instrument_id),
                 )
-            return _backfill_job(row, self._backfill_job_target_instruments(conn, int(row["id"])))
+            return self._backfill_job_by_id(conn, int(row["id"]))
 
     def claim_next_backfill_job(self) -> BackfillJobDetail | None:
         with self._connect() as conn:
@@ -996,6 +996,36 @@ class PostgresOperationsRepository:
             )
         return rows_written
 
+    def record_backfill_target_progress(
+        self,
+        job_id: int,
+        instrument_id: int,
+        processed_missing_range_count: int,
+        estimated_missing_range_count: int,
+        rows_written_count: int,
+        last_completed_at: datetime | None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE backfill_job_targets
+                SET processed_missing_range_count = %s,
+                    estimated_missing_range_count = %s,
+                    rows_written_count = %s,
+                    last_completed_at = %s,
+                    updated_at = now()
+                WHERE backfill_job_id = %s AND instrument_id = %s
+                """,
+                (
+                    max(0, processed_missing_range_count),
+                    max(0, estimated_missing_range_count),
+                    max(0, rows_written_count),
+                    last_completed_at,
+                    job_id,
+                    instrument_id,
+                ),
+            )
+
     def mark_backfill_target(
         self,
         job_id: int,
@@ -1047,7 +1077,7 @@ class PostgresOperationsRepository:
                     (transitions[action], job_id),
                 ).fetchone()
             )
-            return _backfill_job(row, self._backfill_job_target_instruments(conn, job_id))
+            return self._backfill_job_by_id(conn, int(row["id"]))
 
     def delete_backfill_job(self, job_id: int) -> None:
         with self._connect() as conn:
@@ -1060,29 +1090,143 @@ class PostgresOperationsRepository:
                 raise ValueError("실행 중인 백필 작업은 먼저 중지해야 한다.")
             conn.execute("DELETE FROM backfill_jobs WHERE id = %s", (job_id,))
 
-    def backfill_jobs(self) -> list[BackfillJob]:
-        with self._connect() as conn:
-            rows = conn.execute(
+    def _backfill_job_by_id(self, conn: psycopg.Connection[Any], job_id: int) -> BackfillJob:
+        row = _expect_row(
+            conn.execute(
                 """
                 SELECT
                   bj.*,
+                  running.instrument_id AS current_target_id,
+                  running.processed_missing_range_count,
+                  running.estimated_missing_range_count,
+                  running.rows_written_count AS current_target_backfill_row_count,
+                  COUNT(bjt.instrument_id) AS total_target_count,
+                  COUNT(bjt.instrument_id) FILTER (WHERE bjt.status = 'succeeded')
+                    AS completed_target_count,
+                  CASE
+                    WHEN running.instrument_id IS NULL THEN NULL
+                    ELSE (
+                      SELECT COUNT(*)
+                      FROM backfill_job_targets bjt_index
+                      WHERE bjt_index.backfill_job_id = bj.id
+                        AND bjt_index.instrument_id <= running.instrument_id
+                    )
+                  END AS running_target_index,
                   COALESCE(
                     ROUND(
-                      100.0 * COUNT(bjt.instrument_id)
-                        FILTER (WHERE bjt.status = 'succeeded')
-                        / NULLIF(COUNT(bjt.instrument_id), 0),
+                      100.0 * SUM(
+                        CASE
+                          WHEN bjt.status = 'succeeded' THEN 1.0
+                          WHEN bjt.estimated_missing_range_count > 0 THEN
+                            LEAST(
+                              1.0,
+                              bjt.processed_missing_range_count::numeric
+                                / bjt.estimated_missing_range_count
+                            )
+                          ELSE 0
+                        END
+                      ) / NULLIF(COUNT(bjt.instrument_id), 0),
                       2
                     ),
                     0
                   ) AS progress_percent
                 FROM backfill_jobs bj
                 LEFT JOIN backfill_job_targets bjt ON bjt.backfill_job_id = bj.id
+                LEFT JOIN LATERAL (
+                  SELECT *
+                  FROM backfill_job_targets running_target
+                  WHERE running_target.backfill_job_id = bj.id
+                    AND running_target.status = 'running'
+                  ORDER BY running_target.instrument_id
+                  LIMIT 1
+                ) running ON true
+                WHERE bj.id = %s
                 GROUP BY bj.id
-                ORDER BY bj.created_at DESC
+                       , running.instrument_id
+                       , running.processed_missing_range_count
+                       , running.estimated_missing_range_count
+                       , running.rows_written_count
+                """,
+                (job_id,),
+            ).fetchone()
+        )
+        return _backfill_job(
+            row,
+            self._backfill_job_target_instruments(conn, job_id),
+            _instrument_by_id(conn, int(row["current_target_id"]))
+            if row["current_target_id"] is not None
+            else None,
+        )
+
+    def backfill_jobs(self) -> list[BackfillJob]:
+        stopped_since = now_kst() - timedelta(days=30)
+        with self._connect() as conn:
+            rows = conn.execute(
                 """
+                SELECT
+                  bj.*,
+                  running.instrument_id AS current_target_id,
+                  running.processed_missing_range_count,
+                  running.estimated_missing_range_count,
+                  running.rows_written_count AS current_target_backfill_row_count,
+                  COUNT(bjt.instrument_id) AS total_target_count,
+                  COUNT(bjt.instrument_id) FILTER (WHERE bjt.status = 'succeeded')
+                    AS completed_target_count,
+                  CASE
+                    WHEN running.instrument_id IS NULL THEN NULL
+                    ELSE (
+                      SELECT COUNT(*)
+                      FROM backfill_job_targets bjt_index
+                      WHERE bjt_index.backfill_job_id = bj.id
+                        AND bjt_index.instrument_id <= running.instrument_id
+                    )
+                  END AS running_target_index,
+                  COALESCE(
+                    ROUND(
+                      100.0 * SUM(
+                        CASE
+                          WHEN bjt.status = 'succeeded' THEN 1.0
+                          WHEN bjt.estimated_missing_range_count > 0 THEN
+                            LEAST(
+                              1.0,
+                              bjt.processed_missing_range_count::numeric
+                                / bjt.estimated_missing_range_count
+                            )
+                          ELSE 0
+                        END
+                      ) / NULLIF(COUNT(bjt.instrument_id), 0),
+                      2
+                    ),
+                    0
+                  ) AS progress_percent
+                FROM backfill_jobs bj
+                LEFT JOIN backfill_job_targets bjt ON bjt.backfill_job_id = bj.id
+                LEFT JOIN LATERAL (
+                  SELECT *
+                  FROM backfill_job_targets running_target
+                  WHERE running_target.backfill_job_id = bj.id
+                    AND running_target.status = 'running'
+                  ORDER BY running_target.instrument_id
+                  LIMIT 1
+                ) running ON true
+                WHERE bj.status != 'stopped' OR bj.created_at >= %s
+                GROUP BY bj.id
+                       , running.instrument_id
+                       , running.processed_missing_range_count
+                       , running.estimated_missing_range_count
+                       , running.rows_written_count
+                ORDER BY bj.created_at DESC
+                """,
+                (stopped_since,),
             ).fetchall()
             return [
-                _backfill_job(row, self._backfill_job_target_instruments(conn, int(row["id"])))
+                _backfill_job(
+                    row,
+                    self._backfill_job_target_instruments(conn, int(row["id"])),
+                    _instrument_by_id(conn, int(row["current_target_id"]))
+                    if row["current_target_id"] is not None
+                    else None,
+                )
                 for row in rows
             ]
 
@@ -1470,6 +1614,7 @@ class PostgresOperationsRepository:
         )
         error_count_24h = self._realtime_error_count_24h()
         run_count_24h = self._realtime_run_count_24h()
+        collected_row_count_24h = self._realtime_collected_row_count_24h()
         failure_rate_24h = (
             Decimal(error_count_24h) / Decimal(run_count_24h) * Decimal("100")
             if run_count_24h > 0
@@ -1482,12 +1627,14 @@ class PostgresOperationsRepository:
             status_detail=status_detail,
             last_heartbeat_at=last_heartbeat_at,
             last_collected_at=last_collected_at,
+            collected_row_count_24h=collected_row_count_24h,
             error_count_24h=error_count_24h,
             failure_rate_24h=failure_rate_24h,
             diagnostics=self._realtime_worker_diagnostics(
                 status_detail,
                 last_heartbeat_at,
                 last_collected_at,
+                collected_row_count_24h,
                 error_count_24h,
                 failure_rate_24h,
             ),
@@ -1544,6 +1691,7 @@ class PostgresOperationsRepository:
         status_detail: str,
         last_heartbeat_at: datetime | None,
         last_collected_at: datetime | None,
+        collected_row_count: int,
         error_count: int,
         failure_rate: Decimal,
     ) -> list[CollectionWorkerDiagnostic]:
@@ -1557,6 +1705,11 @@ class PostgresOperationsRepository:
                 "마지막 저장 성공",
                 _diagnostic_datetime(last_collected_at),
                 "최근 성공 또는 부분 성공한 실시간 저장 시각",
+            ),
+            CollectionWorkerDiagnostic(
+                "24시간 수집 row",
+                f"{collected_row_count:,} rows",
+                "최근 24시간 실시간 수집이 저장한 ticker/orderbook/candle row 합계",
             ),
             CollectionWorkerDiagnostic(
                 "24시간 오류",
@@ -1672,6 +1825,19 @@ class PostgresOperationsRepository:
                 SELECT COUNT(*) AS count
                 FROM collection_runs
                 WHERE run_type = 'incremental' AND started_at >= %s
+                """,
+                (now_kst() - timedelta(hours=24),),
+            ).fetchone()
+        return int(_expect_row(row)["count"])
+
+    def _realtime_collected_row_count_24h(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(tcr.rows_written), 0) AS count
+                FROM target_collection_results tcr
+                JOIN collection_runs cr ON cr.id = tcr.collection_run_id
+                WHERE cr.run_type = 'incremental' AND tcr.created_at >= %s
                 """,
                 (now_kst() - timedelta(hours=24),),
             ).fetchone()
@@ -2643,6 +2809,15 @@ def _instrument(row: Row) -> Instrument:
     )
 
 
+def _instrument_by_id(conn: psycopg.Connection[Any], instrument_id: int) -> Instrument | None:
+    row = conn.execute("SELECT * FROM instruments WHERE id = %s", (instrument_id,)).fetchone()
+    return _instrument(row) if row is not None else None
+
+
+def _progress_decimal(value: object) -> Decimal:
+    return Decimal(str(value or "0")).normalize()
+
+
 def _ticker(row: dict[str, Any]) -> TickerSnapshot:
     return TickerSnapshot(
         instrument_id=int(row["instrument_id"]),
@@ -2752,7 +2927,11 @@ def _notification(row: dict[str, Any]) -> NotificationEvent:
     )
 
 
-def _backfill_job(row: dict[str, Any], targets: list[Instrument] | None = None) -> BackfillJob:
+def _backfill_job(
+    row: dict[str, Any],
+    targets: list[Instrument] | None = None,
+    current_target: Instrument | None = None,
+) -> BackfillJob:
     return BackfillJob(
         id=int(row["id"]),
         status=cast(
@@ -2760,7 +2939,21 @@ def _backfill_job(row: dict[str, Any], targets: list[Instrument] | None = None) 
             row["status"],
         ),
         data_type=str(row["data_type"]),
-        progress_percent=Decimal(str(row.get("progress_percent") or "0")),
+        progress_percent=_progress_decimal(row.get("progress_percent")),
+        estimated_request_count=int(row.get("estimated_request_count") or 0),
+        total_target_count=int(row.get("total_target_count") or 0),
+        completed_target_count=int(row.get("completed_target_count") or 0),
+        running_target_index=(
+            int(row["running_target_index"])
+            if row.get("running_target_index") is not None
+            else None
+        ),
+        current_target=current_target,
+        current_target_backfill_row_count=int(
+            row.get("current_target_backfill_row_count") or 0
+        ),
+        processed_missing_range_count=int(row.get("processed_missing_range_count") or 0),
+        estimated_missing_range_count=int(row.get("estimated_missing_range_count") or 0),
         target_start_at=cast(datetime, row["target_start_at"]),
         target_end_at=cast(datetime, row["target_end_at"]),
         targets=targets or [],

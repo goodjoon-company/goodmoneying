@@ -69,6 +69,10 @@ def _decimal(value: str | int | float | Decimal | None) -> Decimal:
     return Decimal(str(value))
 
 
+def _progress_decimal(value: str | int | float | Decimal | None) -> Decimal:
+    return _decimal(value).normalize()
+
+
 def _required_lastrowid(cursor: sqlite3.Cursor) -> int:
     if cursor.lastrowid is None:
         raise RuntimeError("SQLite insert did not return lastrowid.")
@@ -285,6 +289,9 @@ class SQLiteOperationsRepository:
                   instrument_id INTEGER NOT NULL,
                   status TEXT NOT NULL,
                   last_completed_at TEXT,
+                  processed_missing_range_count INTEGER NOT NULL DEFAULT 0,
+                  estimated_missing_range_count INTEGER NOT NULL DEFAULT 0,
+                  rows_written_count INTEGER NOT NULL DEFAULT 0,
                   error_code TEXT,
                   error_message TEXT,
                   updated_at TEXT NOT NULL,
@@ -1141,6 +1148,37 @@ class SQLiteOperationsRepository:
             )
         return rows_written
 
+    def record_backfill_target_progress(
+        self,
+        job_id: int,
+        instrument_id: int,
+        processed_missing_range_count: int,
+        estimated_missing_range_count: int,
+        rows_written_count: int,
+        last_completed_at: datetime | None,
+    ) -> None:
+        with self._lock, self._conn:
+            self._execute(
+                """
+                UPDATE backfill_job_targets
+                SET processed_missing_range_count = ?,
+                    estimated_missing_range_count = ?,
+                    rows_written_count = ?,
+                    last_completed_at = ?,
+                    updated_at = ?
+                WHERE backfill_job_id = ? AND instrument_id = ?
+                """,
+                (
+                    max(0, processed_missing_range_count),
+                    max(0, estimated_missing_range_count),
+                    max(0, rows_written_count),
+                    _to_db_time(last_completed_at) if last_completed_at else None,
+                    _to_db_time(now_kst()),
+                    job_id,
+                    instrument_id,
+                ),
+            )
+
     def mark_backfill_target(
         self,
         job_id: int,
@@ -1204,16 +1242,62 @@ class SQLiteOperationsRepository:
             self._execute("DELETE FROM backfill_jobs WHERE id = ?", (job_id,))
 
     def backfill_jobs(self) -> list[BackfillJob]:
+        stopped_since = _to_db_time(now_kst() - timedelta(days=30))
         rows = self._execute(
             """
             SELECT
               bj.*,
               bp.target_start_at,
-              bp.target_end_at
+              bp.target_end_at,
+              bp.estimated_request_count,
+              COALESCE(
+                ROUND(
+                  100.0 * SUM(
+                    CASE
+                      WHEN bjt.status = 'succeeded' THEN 1.0
+                      WHEN bjt.estimated_missing_range_count > 0 THEN
+                        MIN(
+                          1.0,
+                          CAST(bjt.processed_missing_range_count AS REAL)
+                            / bjt.estimated_missing_range_count
+                        )
+                      ELSE 0
+                    END
+                  ) / NULLIF(COUNT(bjt.instrument_id), 0),
+                  2
+                ),
+                0
+              ) AS live_progress_percent,
+              COUNT(bjt.instrument_id) AS total_target_count,
+              COUNT(CASE WHEN bjt.status = 'succeeded' THEN 1 END) AS completed_target_count,
+              running.instrument_id AS current_target_id,
+              running.processed_missing_range_count,
+              running.estimated_missing_range_count,
+              running.rows_written_count AS current_target_backfill_row_count,
+              CASE
+                WHEN running.instrument_id IS NULL THEN NULL
+                ELSE (
+                  SELECT COUNT(*)
+                  FROM backfill_job_targets bjt_index
+                  WHERE bjt_index.backfill_job_id = bj.id
+                    AND bjt_index.instrument_id <= running.instrument_id
+                )
+              END AS running_target_index
             FROM backfill_jobs bj
             JOIN backfill_plans bp ON bp.plan_id = bj.plan_id
+            LEFT JOIN backfill_job_targets bjt ON bjt.backfill_job_id = bj.id
+            LEFT JOIN backfill_job_targets running
+              ON running.backfill_job_id = bj.id
+             AND running.instrument_id = (
+               SELECT MIN(instrument_id)
+               FROM backfill_job_targets
+               WHERE backfill_job_id = bj.id AND status = 'running'
+             )
+            WHERE bj.status != 'stopped' OR bj.created_at >= ?
+            GROUP BY bj.id
             ORDER BY bj.created_at DESC
-            """
+            """,
+            (stopped_since,),
         ).fetchall()
         return [self._backfill_job_from_row(row) for row in rows]
 
@@ -1560,6 +1644,7 @@ class SQLiteOperationsRepository:
         )
         error_count_24h = self._realtime_error_count_24h()
         run_count_24h = self._realtime_run_count_24h()
+        collected_row_count_24h = self._realtime_collected_row_count_24h()
         failure_rate_24h = (
             Decimal(error_count_24h) / Decimal(run_count_24h) * Decimal("100")
             if run_count_24h > 0
@@ -1572,12 +1657,14 @@ class SQLiteOperationsRepository:
             status_detail=status_detail,
             last_heartbeat_at=last_heartbeat_at,
             last_collected_at=last_collected_at,
+            collected_row_count_24h=collected_row_count_24h,
             error_count_24h=error_count_24h,
             failure_rate_24h=failure_rate_24h,
             diagnostics=self._realtime_worker_diagnostics(
                 status_detail,
                 last_heartbeat_at,
                 last_collected_at,
+                collected_row_count_24h,
                 error_count_24h,
                 failure_rate_24h,
             ),
@@ -1634,6 +1721,7 @@ class SQLiteOperationsRepository:
         status_detail: str,
         last_heartbeat_at: datetime | None,
         last_collected_at: datetime | None,
+        collected_row_count: int,
         error_count: int,
         failure_rate: Decimal,
     ) -> list[CollectionWorkerDiagnostic]:
@@ -1647,6 +1735,11 @@ class SQLiteOperationsRepository:
                 "마지막 저장 성공",
                 _diagnostic_datetime(last_collected_at),
                 "최근 성공 또는 부분 성공한 실시간 저장 시각",
+            ),
+            CollectionWorkerDiagnostic(
+                "24시간 수집 row",
+                f"{collected_row_count:,} rows",
+                "최근 24시간 실시간 수집이 저장한 ticker/orderbook/candle row 합계",
             ),
             CollectionWorkerDiagnostic(
                 "24시간 오류",
@@ -1759,6 +1852,19 @@ class SQLiteOperationsRepository:
             SELECT COUNT(*) AS count
             FROM collection_runs
             WHERE run_type = 'incremental' AND started_at >= ?
+            """,
+            (cutoff,),
+        ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def _realtime_collected_row_count_24h(self) -> int:
+        cutoff = _to_db_time(now_kst() - timedelta(hours=24))
+        row = self._execute(
+            """
+            SELECT COALESCE(SUM(tcr.rows_written), 0) AS count
+            FROM target_collection_results tcr
+            JOIN collection_runs cr ON cr.id = tcr.collection_run_id
+            WHERE cr.run_type = 'incremental' AND tcr.created_at >= ?
             """,
             (cutoff,),
         ).fetchone()
@@ -2632,9 +2738,59 @@ class SQLiteOperationsRepository:
             SELECT
               bj.*,
               bp.target_start_at,
-              bp.target_end_at
+              bp.target_end_at,
+              bp.estimated_request_count,
+              (
+                SELECT COALESCE(
+                  ROUND(
+                    100.0 * SUM(
+                      CASE
+                        WHEN progress_target.status = 'succeeded' THEN 1.0
+                        WHEN progress_target.estimated_missing_range_count > 0 THEN
+                          MIN(
+                            1.0,
+                            CAST(progress_target.processed_missing_range_count AS REAL)
+                              / progress_target.estimated_missing_range_count
+                          )
+                        ELSE 0
+                      END
+                    ) / NULLIF(COUNT(progress_target.instrument_id), 0),
+                    2
+                  ),
+                  0
+                )
+                FROM backfill_job_targets progress_target
+                WHERE progress_target.backfill_job_id = bj.id
+              ) AS live_progress_percent,
+              (SELECT COUNT(*) FROM backfill_job_targets WHERE backfill_job_id = bj.id)
+                AS total_target_count,
+              (
+                SELECT COUNT(*)
+                FROM backfill_job_targets
+                WHERE backfill_job_id = bj.id AND status = 'succeeded'
+              ) AS completed_target_count,
+              running.instrument_id AS current_target_id,
+              running.processed_missing_range_count,
+              running.estimated_missing_range_count,
+              running.rows_written_count AS current_target_backfill_row_count,
+              CASE
+                WHEN running.instrument_id IS NULL THEN NULL
+                ELSE (
+                  SELECT COUNT(*)
+                  FROM backfill_job_targets bjt_index
+                  WHERE bjt_index.backfill_job_id = bj.id
+                    AND bjt_index.instrument_id <= running.instrument_id
+                )
+              END AS running_target_index
             FROM backfill_jobs bj
             JOIN backfill_plans bp ON bp.plan_id = bj.plan_id
+            LEFT JOIN backfill_job_targets running
+              ON running.backfill_job_id = bj.id
+             AND running.instrument_id = (
+               SELECT MIN(instrument_id)
+               FROM backfill_job_targets
+               WHERE backfill_job_id = bj.id AND status = 'running'
+             )
             WHERE bj.id = ?
             """,
             (job_id,),
@@ -2730,6 +2886,17 @@ class SQLiteOperationsRepository:
         )
 
     def _backfill_job_from_row(self, row: sqlite3.Row) -> BackfillJob:
+        row_keys = set(row.keys())
+        current_target_id = row["current_target_id"] if "current_target_id" in row_keys else None
+        current_target = None
+        if current_target_id is not None:
+            instrument_row = self._execute(
+                "SELECT * FROM instruments WHERE id = ?",
+                (int(current_target_id),),
+            ).fetchone()
+            current_target = (
+                self._instrument_from_row(instrument_row) if instrument_row is not None else None
+            )
         return BackfillJob(
             id=int(row["id"]),
             status=cast(
@@ -2745,7 +2912,25 @@ class SQLiteOperationsRepository:
                 row["status"],
             ),
             data_type=str(row["data_type"]),
-            progress_percent=_decimal(row["progress_percent"]),
+            progress_percent=_progress_decimal(
+                row["live_progress_percent"]
+                if "live_progress_percent" in row_keys
+                else row["progress_percent"]
+            ),
+            estimated_request_count=int(row["estimated_request_count"]),
+            total_target_count=int(row["total_target_count"] or 0),
+            completed_target_count=int(row["completed_target_count"] or 0),
+            running_target_index=(
+                int(row["running_target_index"])
+                if row["running_target_index"] is not None
+                else None
+            ),
+            current_target=current_target,
+            current_target_backfill_row_count=int(
+                row["current_target_backfill_row_count"] or 0
+            ),
+            processed_missing_range_count=int(row["processed_missing_range_count"] or 0),
+            estimated_missing_range_count=int(row["estimated_missing_range_count"] or 0),
             target_start_at=_from_db_time(row["target_start_at"]),
             target_end_at=_from_db_time(row["target_end_at"]),
             targets=self._backfill_job_target_instruments(int(row["id"])),

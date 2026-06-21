@@ -205,6 +205,7 @@ class RealtimeWorkerStatusResponse(BaseModel):
     statusDetail: str
     lastHeartbeatAt: datetime | None
     lastCollectedAt: datetime | None
+    collectedRowCount24h: int
     errorCount24h: int
     failureRate24h: str
     diagnostics: list[CollectionWorkerDiagnosticResponse]
@@ -478,6 +479,14 @@ class BackfillJobResponse(BaseModel):
     status: Literal["planned", "pending", "running", "paused", "stopped", "succeeded", "failed"]
     dataType: str
     progressPercent: str
+    estimatedRequestCount: int
+    totalTargetCount: int
+    completedTargetCount: int
+    runningTargetIndex: int | None
+    currentTarget: InstrumentResponse | None
+    currentTargetBackfillRowCount: int
+    processedMissingRangeCount: int
+    estimatedMissingRangeCount: int
     targetStartAt: datetime
     targetEndAt: datetime
     targets: list[InstrumentResponse]

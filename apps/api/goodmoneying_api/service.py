@@ -613,6 +613,7 @@ def worker_status_to_response(
             statusDetail=item.realtime.status_detail,
             lastHeartbeatAt=item.realtime.last_heartbeat_at,
             lastCollectedAt=item.realtime.last_collected_at,
+            collectedRowCount24h=item.realtime.collected_row_count_24h,
             errorCount24h=item.realtime.error_count_24h,
             failureRate24h=decimal_string(item.realtime.failure_rate_24h) or "0",
             diagnostics=[
@@ -826,6 +827,16 @@ def backfill_job_to_response(item: BackfillJob) -> BackfillJobResponse:
         status=item.status,
         dataType=item.data_type,
         progressPercent=decimal_string(item.progress_percent) or "0",
+        estimatedRequestCount=item.estimated_request_count,
+        totalTargetCount=item.total_target_count,
+        completedTargetCount=item.completed_target_count,
+        runningTargetIndex=item.running_target_index,
+        currentTarget=(
+            instrument_to_response(item.current_target) if item.current_target is not None else None
+        ),
+        currentTargetBackfillRowCount=item.current_target_backfill_row_count,
+        processedMissingRangeCount=item.processed_missing_range_count,
+        estimatedMissingRangeCount=item.estimated_missing_range_count,
         targetStartAt=item.target_start_at,
         targetEndAt=item.target_end_at,
         targets=[instrument_to_response(target) for target in item.targets],

@@ -221,6 +221,39 @@
   line-height: 1.35;
 }
 
+.backfill-target-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.inline-info-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: #8fb8a5;
+}
+
+.approved-backfill-live-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.approved-backfill-live-metrics span {
+  min-width: 0;
+  border: 1px solid #2d463b;
+  border-radius: 6px;
+  background: #101a16;
+  color: #c6d3cb;
+  padding: 5px 7px;
+  font-size: 11px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
 .backfill-job-status {
   display: inline-flex;
   align-items: center;

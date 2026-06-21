@@ -3,7 +3,11 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import { createTestInstruments, createTestOperationsFetch } from "./testOperationsApi";
+import {
+  createTestDashboardSummary,
+  createTestInstruments,
+  createTestOperationsFetch
+} from "./testOperationsApi";
 
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(createTestOperationsFetch()));
@@ -54,6 +58,7 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.getAllByText("수집 커버리지")[0]).toBeInTheDocument();
     expect(screen.getByText("저장 행")).toBeInTheDocument();
     expect(screen.getAllByText(/24H 거래대금/)[0]).toBeInTheDocument();
+    expect(screen.getByLabelText("Realtime worker 24시간 수집 450 rows")).toBeInTheDocument();
     expect(screen.getByText("24시간 오류 2건")).toBeInTheDocument();
     expect(screen.getByText("전체 오류 1건")).toBeInTheDocument();
     expect(screen.getByText("동작중 코인 1/3개")).toBeInTheDocument();
@@ -68,6 +73,31 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.getAllByText("현재가")[0]).toBeInTheDocument();
     expect(screen.getByText(/구간형 진행 상태/)).toBeInTheDocument();
     expect(document.querySelector(".coverage-bar")).toBeInTheDocument();
+  });
+
+  it("운영 상태의 코인별 수집 상태는 전체 대상 50개를 표시하고 24H 거래대금 헤더로 정렬한다", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        createTestOperationsFetch({
+          dashboard: createTestDashboardSummary()
+        })
+      )
+    );
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "코인별 수집 상태" });
+
+    const rows = () => Array.from(document.querySelectorAll(".ops-coin-table .dashboard-row-button"));
+    expect(rows()).toHaveLength(50);
+    expect(rows()[0]).toHaveTextContent("BTC / KRW");
+    expect(rows()[49]).toHaveTextContent("GM050 / KRW");
+
+    await user.click(screen.getByRole("button", { name: /24H 거래대금/ }));
+
+    expect(rows()[0]).toHaveTextContent("GM050 / KRW");
+    expect(rows()[49]).toHaveTextContent("BTC / KRW");
   });
 
   it("worker 현황판에서 수집 오류 상세를 레이어 팝업으로 표시한다", async () => {
@@ -182,6 +212,21 @@ describe("데이터 수집관리 화면", () => {
               status: "running",
               dataType: "source_candle",
               progressPercent: "42.5",
+              totalTargetCount: 3,
+              completedTargetCount: 1,
+              runningTargetIndex: 2,
+              currentTarget: {
+                id: 2,
+                exchange: "UPBIT",
+                marketCode: "KRW-ETH",
+                quoteCurrency: "KRW",
+                baseAsset: "ETH",
+                displayName: "이더리움"
+              },
+              currentTargetBackfillRowCount: 120,
+              processedMissingRangeCount: 3,
+              estimatedMissingRangeCount: 9,
+              estimatedRequestCount: 42,
               targetStartAt: "2026-01-01T00:00:00+09:00",
               targetEndAt: "2026-02-01T00:00:00+09:00",
               targets: [
@@ -209,6 +254,14 @@ describe("데이터 수집관리 화면", () => {
               status: "paused",
               dataType: "source_candle",
               progressPercent: "10",
+              estimatedRequestCount: 3,
+              totalTargetCount: 50,
+              completedTargetCount: 5,
+              runningTargetIndex: null,
+              currentTarget: null,
+              currentTargetBackfillRowCount: 0,
+              processedMissingRangeCount: 0,
+              estimatedMissingRangeCount: 0,
               targetStartAt: "2026-01-01T00:00:00+09:00",
               targetEndAt: "2026-01-03T00:00:00+09:00",
               targets: createTestInstruments(50),
@@ -219,6 +272,14 @@ describe("데이터 수집관리 화면", () => {
               status: "succeeded",
               dataType: "source_candle",
               progressPercent: "100",
+              estimatedRequestCount: 1,
+              totalTargetCount: 1,
+              completedTargetCount: 1,
+              runningTargetIndex: null,
+              currentTarget: null,
+              currentTargetBackfillRowCount: 0,
+              processedMissingRangeCount: 0,
+              estimatedMissingRangeCount: 0,
               targetStartAt: "2026-01-01T00:00:00+09:00",
               targetEndAt: "2026-01-03T00:00:00+09:00",
               targets: createTestInstruments(1),
@@ -236,9 +297,16 @@ describe("데이터 수집관리 화면", () => {
 
     expect(await screen.findByRole("heading", { name: "백필 작업" })).toBeInTheDocument();
     const panel = screen.getByLabelText("백필 작업 목록");
-    expect(within(panel).getByText("작업 77")).toBeInTheDocument();
-    expect(within(panel).getByText("실행 중")).toBeInTheDocument();
-    expect(within(panel).getByText("42.5%")).toBeInTheDocument();
+    const runningCard = within(panel).getByText("작업 77").closest("article");
+    expect(runningCard).not.toBeNull();
+    expect(within(runningCard as HTMLElement).getByText("실행 중")).toBeInTheDocument();
+    expect(within(runningCard as HTMLElement).getByText("42.5%")).toBeInTheDocument();
+    expect(within(runningCard as HTMLElement).getByText("대상 2/3")).toBeInTheDocument();
+    expect(within(runningCard as HTMLElement).getByText("완료 1개")).toBeInTheDocument();
+    expect(within(runningCard as HTMLElement).getByText("현재 ETH")).toBeInTheDocument();
+    expect(within(runningCard as HTMLElement).getByText("백필 row 120")).toBeInTheDocument();
+    expect(within(runningCard as HTMLElement).getByText("결측 구간 처리 3/9")).toBeInTheDocument();
+    expect(within(runningCard as HTMLElement).getByText("예상 요청 42")).toBeInTheDocument();
     expect(within(panel).getAllByText("1분 캔들(Source Candle)")).toHaveLength(3);
     expect(within(panel).getByText("BTC, ETH")).toBeInTheDocument();
     expect(within(panel).getByText("2026년 01월 01일 00:00 ~ 2026년 02월 01일 00:00")).toBeInTheDocument();
@@ -253,6 +321,7 @@ describe("데이터 수집관리 화면", () => {
       "title",
       createTestInstruments(50).map((target) => target.baseAsset).join(", ")
     );
+    expect(within(panel).getByLabelText("작업 76 대상 전체 보기")).toBeInTheDocument();
     expect(within(panel).getByRole("button", { name: "작업 76 재개" })).toBeEnabled();
     expect(within(panel).getByRole("button", { name: "작업 75 삭제" })).toBeEnabled();
 

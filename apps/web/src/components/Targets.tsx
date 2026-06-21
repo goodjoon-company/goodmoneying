@@ -3,6 +3,7 @@ import {
   AlertCircle,
   CheckCircle2,
   CircleDashed,
+  Info,
   ListChecks,
   PauseCircle,
   PlayCircle,
@@ -278,7 +279,19 @@ function BackfillJobs({
               <span>{formatFreshness(job.createdAt)}</span>
             </div>
             <div className="approved-backfill-detail">
-              <span title={backfillJobTargetTooltip(job)}>{backfillJobTargetSummary(job)}</span>
+              <span className="backfill-target-summary">
+                <span title={backfillJobTargetTooltip(job)}>{backfillJobTargetSummary(job)}</span>
+                {hasBackfillJobTargetTooltip(job) ? (
+                  <span
+                    className="inline-info-icon"
+                    role="img"
+                    aria-label={`작업 ${job.id} 대상 전체 보기`}
+                    title={backfillJobTargetTooltip(job)}
+                  >
+                    <Info size={13} />
+                  </span>
+                ) : null}
+              </span>
               <span>
                 {formatBackfillJobRange(job.targetStartAt, job.targetEndAt)}
               </span>
@@ -292,6 +305,19 @@ function BackfillJobs({
             <div className="approved-backfill-footer">
               <span>진행률</span>
               <strong>{job.progressPercent}%</strong>
+            </div>
+            <div className="approved-backfill-live-metrics" aria-label={`작업 ${job.id} 진행 상세`}>
+              <span>대상 {backfillTargetProgressLabel(job)}</span>
+              <span>완료 {job.completedTargetCount.toLocaleString("ko-KR")}개</span>
+              <span>현재 {job.currentTarget?.baseAsset ?? "-"}</span>
+              <span>
+                백필 row {job.currentTargetBackfillRowCount.toLocaleString("ko-KR")}
+              </span>
+              <span>
+                결측 구간 처리 {job.processedMissingRangeCount.toLocaleString("ko-KR")}/
+                {job.estimatedMissingRangeCount.toLocaleString("ko-KR")}
+              </span>
+              <span>예상 요청 {job.estimatedRequestCount.toLocaleString("ko-KR")}</span>
             </div>
             <div className="approved-backfill-actions">
               {canResumeBackfillJob(job) ? (
@@ -378,6 +404,16 @@ function backfillJobTargetSummary(job: BackfillJob): string {
 function backfillJobTargetTooltip(job: BackfillJob): string {
   if (job.targets.length === 0) return "대상 없음";
   return job.targets.map((target) => target.baseAsset).join(", ");
+}
+
+function hasBackfillJobTargetTooltip(job: BackfillJob): boolean {
+  return job.targets.length > 4;
+}
+
+function backfillTargetProgressLabel(job: BackfillJob): string {
+  const current =
+    job.runningTargetIndex ?? Math.min(job.completedTargetCount + 1, job.totalTargetCount);
+  return `${current.toLocaleString("ko-KR")}/${job.totalTargetCount.toLocaleString("ko-KR")}`;
 }
 
 function formatBackfillJobRange(startAt: string, endAt: string): string {

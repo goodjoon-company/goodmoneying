@@ -162,7 +162,17 @@ class UpbitCollectionWorker:
                         )
                         continue
                     target_written = 0
+                    processed_missing_ranges = 0
+                    estimated_missing_ranges = len(missing_ranges)
                     last_completed_at = target.last_completed_at
+                    self._repository.record_backfill_target_progress(
+                        job.id,
+                        target.instrument_id,
+                        processed_missing_range_count=processed_missing_ranges,
+                        estimated_missing_range_count=estimated_missing_ranges,
+                        rows_written_count=target_written,
+                        last_completed_at=last_completed_at,
+                    )
                     for fetch_start_at, fetch_end_at in missing_ranges:
                         if self._backfill_job_status(job.id) in {
                             "paused",
@@ -208,6 +218,15 @@ class UpbitCollectionWorker:
                             max((item.candle_start_at for item in candles), default=fetch_end_at)
                             if candles
                             else fetch_end_at
+                        )
+                        processed_missing_ranges += 1
+                        self._repository.record_backfill_target_progress(
+                            job.id,
+                            target.instrument_id,
+                            processed_missing_range_count=processed_missing_ranges,
+                            estimated_missing_range_count=estimated_missing_ranges,
+                            rows_written_count=target_written,
+                            last_completed_at=last_completed_at,
                         )
                     self._repository.mark_backfill_target(
                         job.id,

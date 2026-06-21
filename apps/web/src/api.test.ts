@@ -48,6 +48,7 @@ const dashboard = {
       statusDetail: "최근 heartbeat 정상",
       lastHeartbeatAt: "2026-06-19T00:00:00.000Z",
       lastCollectedAt: "2026-06-19T00:00:00.000Z",
+      collectedRowCount24h: 150,
       errorCount24h: 0,
       failureRate24h: "0",
       recentErrors: []

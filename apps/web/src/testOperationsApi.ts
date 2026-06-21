@@ -107,6 +107,7 @@ export function createTestDashboardSummary(
         statusDetail: "최근 heartbeat 정상",
         lastHeartbeatAt: NOW,
         lastCollectedAt: NOW,
+        collectedRowCount24h: 450,
         errorCount24h: 2,
         failureRate24h: "1.5",
         diagnostics: [
@@ -290,6 +291,14 @@ export function createTestBackfillJob(overrides: Partial<BackfillJob> = {}): Bac
     status: "pending",
     dataType: "source_candle",
     progressPercent: "0",
+    estimatedRequestCount: 1,
+    totalTargetCount: 2,
+    completedTargetCount: 0,
+    runningTargetIndex: null,
+    currentTarget: null,
+    currentTargetBackfillRowCount: 0,
+    processedMissingRangeCount: 0,
+    estimatedMissingRangeCount: 0,
     targetStartAt: "2026-01-01T00:00:00+09:00",
     targetEndAt: "2026-02-01T00:00:00+09:00",
     targets: createTestInstruments(2),
@@ -368,6 +377,7 @@ export function createTestOperationsFetch(
 }
 
 function createDashboardTarget(instrument: Instrument): CollectionDashboardTarget {
+  const accTradePrice24h = 100000000000 - (instrument.id - 1) * 1000000;
   return {
     instrument,
     overallStatus: "latest_collecting",
@@ -417,7 +427,7 @@ function createDashboardTarget(instrument: Instrument): CollectionDashboardTarge
     ],
     coverageSegments: [],
     changeRate: "0.012",
-    accTradePrice24hDisplay: "₩100,000,000,000",
+    accTradePrice24hDisplay: `₩${accTradePrice24h.toLocaleString("ko-KR")}`,
     tickerFreshnessLabel: NOW,
     coveragePercent: "99.1",
     storageRowCount: 1000,

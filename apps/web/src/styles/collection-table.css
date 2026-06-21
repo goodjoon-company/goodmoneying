@@ -20,6 +20,30 @@
   letter-spacing: 0.02em;
 }
 
+.dashboard-sort-button {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 5px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+}
+
+.dashboard-sort-button:hover,
+.dashboard-sort-button.active {
+  color: #dce8e0;
+}
+
+.dashboard-sort-button svg {
+  flex: none;
+  opacity: 0.78;
+}
+
 .accordion-row {
   border-top: 1px solid rgb(255 255 255 / 0.05);
   background: transparent;

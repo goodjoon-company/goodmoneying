@@ -19,6 +19,8 @@ CollectionRowsByType = dict[CollectionDataType, int]
 CollectionWorkerType = Literal["realtime_collection", "backfill_collection"]
 CollectionWorkerHeartbeatStatus = Literal["running", "failed"]
 CollectionWorkerStatus = Literal["running", "stale", "failed"]
+TradeDirection = Literal["ASK", "BID"]
+TradeFrequencyStatus = Literal["red", "orange", "yellow", "blue", "green"]
 
 
 def decimal_string(value: Decimal | int | str | None) -> str | None:
@@ -82,6 +84,18 @@ class SourceCandle:
     close_price: Decimal
     trade_volume: Decimal
     trade_amount: Decimal
+    collected_at: datetime
+
+
+@dataclass(frozen=True)
+class TradeEvent:
+    instrument_id: int
+    sequential_id: int
+    trade_timestamp_at: datetime
+    trade_price: Decimal
+    trade_volume: Decimal
+    trade_amount: Decimal
+    ask_bid: TradeDirection
     collected_at: datetime
 
 
@@ -217,12 +231,12 @@ class CollectionActivityBucket:
 @dataclass(frozen=True)
 class RealtimeCollectionHeatmapBucket:
     bucket_start_at: datetime
-    actual_rows_all: int
-    expected_rows_all: int
-    expected_rows_by_type: CollectionRowsByType
-    actual_rows_by_type: CollectionRowsByType
-    actual_ratio_percent: Decimal
-    status: Literal["none", "low", "collecting", "high"]
+    trade_count: int
+    average_trades_per_minute: Decimal
+    trade_strength: Decimal
+    trade_volume: Decimal
+    trade_amount: Decimal
+    status: TradeFrequencyStatus
 
 
 @dataclass(frozen=True)
@@ -234,7 +248,7 @@ class RealtimeCollectionHeatmapRow:
 
 @dataclass(frozen=True)
 class StorageBreakdownItem:
-    data_type: Literal["source_candle", "ticker_snapshot", "orderbook_summary", "quality_result"]
+    data_type: Literal["source_candle", "ticker_snapshot", "orderbook_summary"]
     label: str
     row_count: int
     bytes: int

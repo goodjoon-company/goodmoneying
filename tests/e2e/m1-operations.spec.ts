@@ -102,13 +102,14 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
     .not.toBe(firstDashboardRowBeforeSort);
   await expect(page.getByText("최근 1분 수집 건수")).toBeVisible();
   await expect(page.getByRole("heading", { name: "구간형 수집 진행 상태" })).toBeVisible();
-  await expect(page.getByLabel("실시간 정보 수집 현황 히트맵")).toBeVisible();
+  await expect(page.getByLabel("실시간 체결 빈도 히트맵")).toBeVisible();
   await expect(page.getByText("오늘 저장 Row Count")).toBeVisible();
   await expect(page.getByRole("heading", { name: "운영 헬스" })).toBeVisible();
   await expect(page.getByText("Rate limit 여유 64%")).toHaveCount(0);
   await expect(page.getByText("중복 행 0")).toHaveCount(0);
   await expect(page.getByText("표시 KST")).toBeVisible();
   await expect(page.getByText("저장 KST")).toBeVisible();
+  await expect(page.getByText("SSE 실시간")).toBeVisible();
   await page.getByRole("button", { name: "Realtime worker 24시간 오류 상세" }).click();
   await expect(page.getByRole("dialog", { name: "Realtime worker 오류 상세" })).toBeVisible();
   await page.getByLabel("닫기").click();

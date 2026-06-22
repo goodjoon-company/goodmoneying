@@ -51,6 +51,22 @@ export function useOperationsConsole(
     );
   }, [query.data]);
 
+  useEffect(() => {
+    if (!dataClient.subscribeDashboardSummary) return;
+    return dataClient.subscribeDashboardSummary((dashboard) => {
+      setSnapshot((previous) =>
+        previous
+          ? {
+              ...previous,
+              dashboard,
+              notifications: dashboard.alerts
+            }
+          : previous
+      );
+      setSelectedInstrumentId((current) => current ?? dashboard.targets[0]?.instrument.id ?? null);
+    });
+  }, [dataClient]);
+
   const openInstrumentDetail = async (instrumentId: number) => {
     setSelectedInstrumentId(instrumentId);
     setDetailOpen(true);

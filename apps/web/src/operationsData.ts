@@ -7,6 +7,7 @@ import {
   loadInstrumentSnapshot,
   loadMarketList,
   loadOperationsSnapshot,
+  subscribeDashboardSummary,
   startBackfillJob,
   updateCollectionTargets,
   type BackfillJob,
@@ -15,11 +16,13 @@ import {
   type CoverageSegment,
   type CreateBackfillPlanOptions,
   type MarketListRow,
+  type DashboardSummary,
   type OperationsSnapshot
 } from "./api";
 
 export type OperationsDataClient = {
   loadOperationsSnapshot: () => Promise<OperationsSnapshot>;
+  subscribeDashboardSummary?: (handler: (dashboard: DashboardSummary) => void) => () => void;
   loadCandidateUniverse: () => Promise<CandidateUniverseEntry[]>;
   loadMarketList: () => Promise<MarketListRow[]>;
   loadCollectionCoverageSegments: (instrumentId: number) => Promise<CoverageSegment[]>;
@@ -50,6 +53,7 @@ export function createHttpOperationsDataClient(
 ): OperationsDataClient {
   return {
     loadOperationsSnapshot,
+    subscribeDashboardSummary,
     loadCandidateUniverse,
     loadMarketList,
     loadCollectionCoverageSegments,

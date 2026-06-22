@@ -33,7 +33,12 @@ describe("운영 표시 모델", () => {
   it("빈 저장 breakdown과 운영 추이 fallback을 제공한다", () => {
     vi.setSystemTime(new Date("2026-06-20T00:00:00.000Z"));
 
-    expect(emptyStorageBreakdown()).toHaveLength(4);
+    expect(emptyStorageBreakdown()).toHaveLength(3);
+    expect(emptyStorageBreakdown().map((item) => item.dataType)).toEqual([
+      "source_candle",
+      "ticker_snapshot",
+      "orderbook_summary"
+    ]);
     expect(emptyTrendPoints()).toHaveLength(7);
     expect(emptyTrendPoints().at(-1)?.coveragePercent).toBe("0");
 
@@ -65,20 +70,12 @@ describe("운영 표시 모델", () => {
         hourlyBuckets: [
           {
             bucketStartAt: "2026-06-20T00:00:00.000Z",
-            expectedRowsAll: 180,
-            actualRowsAll: 0,
-            expectedRowsByType: {
-              source_candle: 60,
-              ticker_snapshot: 60,
-              orderbook_summary: 60
-            },
-            actualRowsByType: {
-              source_candle: 0,
-              ticker_snapshot: 0,
-              orderbook_summary: 0
-            },
-            actualRatioPercent: "0",
-            status: "none" as const
+            tradeCount: 0,
+            averageTradesPerMinute: "0",
+            tradeStrength: "0",
+            tradeVolume: "0",
+            tradeAmount: "0",
+            status: "red" as const
           }
         ]
       }
@@ -86,6 +83,7 @@ describe("운영 표시 모델", () => {
     const normalizedRows = normalizeRealtimeCollectionHeatmapRows(rows);
     expect(normalizedRows).toHaveLength(1);
     expect(normalizedRows[0].hourlyBuckets).toHaveLength(24);
-    expect(normalizedRows[0].hourlyBuckets[0].status).toBe("none");
+    expect(normalizedRows[0].hourlyBuckets[0].status).toBe("red");
+    expect(normalizedRows[0].hourlyBuckets[0].averageTradesPerMinute).toBe("0");
   });
 });

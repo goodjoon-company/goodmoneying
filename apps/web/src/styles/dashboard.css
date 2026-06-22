@@ -352,15 +352,23 @@
   border-radius: 2px;
 }
 
-.heatmap-legend .none {
+.heatmap-legend .red {
   background: rgb(229 122 94 / 0.85);
 }
 
-.heatmap-legend .low {
+.heatmap-legend .orange {
+  background: rgb(226 135 75 / 0.9);
+}
+
+.heatmap-legend .yellow {
   background: rgb(216 179 94 / 0.82);
 }
 
-.heatmap-legend .high {
+.heatmap-legend .blue {
+  background: rgb(91 141 239 / 0.8);
+}
+
+.heatmap-legend .green {
   background: rgb(55 210 143 / 0.9);
 }
 
@@ -401,20 +409,24 @@
   background: rgb(255 255 255 / 0.05);
 }
 
-.realtime-cell.low {
+.realtime-cell.red {
+  background: rgb(229 122 94 / 0.85);
+}
+
+.realtime-cell.orange {
+  background: rgb(226 135 75 / 0.9);
+}
+
+.realtime-cell.yellow {
   background: rgb(216 179 94 / 0.82);
 }
 
-.realtime-cell.collecting {
+.realtime-cell.blue {
   background: rgb(91 141 239 / 0.8);
 }
 
-.realtime-cell.high {
+.realtime-cell.green {
   background: rgb(55 210 143 / 0.88);
-}
-
-.realtime-cell.none {
-  background: rgb(229 122 94 / 0.85);
 }
 
 @media (max-width: 860px) {
@@ -509,10 +521,6 @@
 
 .storage-rows-table .orderbook_summary::before {
   background: #9d7bef;
-}
-
-.storage-rows-table .quality_result::before {
-  background: #d8b35e;
 }
 
 .ops-content-grid {

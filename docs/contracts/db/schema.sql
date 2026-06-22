@@ -179,6 +179,38 @@ CREATE TABLE IF NOT EXISTS target_collection_results (
   CONSTRAINT target_collection_results_rows_written_ck CHECK (rows_written >= 0)
 );
 
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'collection_runs'::regclass
+      AND conname = 'collection_runs_data_type_ck'
+      AND pg_get_constraintdef(oid) LIKE '%trade_event%'
+  ) THEN
+    ALTER TABLE collection_runs
+      DROP CONSTRAINT IF EXISTS collection_runs_data_type_ck;
+    ALTER TABLE collection_runs
+      ADD CONSTRAINT collection_runs_data_type_ck CHECK (data_type IN ('candidate_universe', 'source_candle', 'ticker_snapshot', 'orderbook_summary', 'trade_event', 'missing_range'));
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'target_collection_results'::regclass
+      AND conname = 'target_collection_results_data_type_ck'
+      AND pg_get_constraintdef(oid) LIKE '%trade_event%'
+  ) THEN
+    ALTER TABLE target_collection_results
+      DROP CONSTRAINT IF EXISTS target_collection_results_data_type_ck;
+    ALTER TABLE target_collection_results
+      ADD CONSTRAINT target_collection_results_data_type_ck CHECK (data_type IN ('source_candle', 'ticker_snapshot', 'orderbook_summary', 'trade_event', 'candidate_universe', 'missing_range'));
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS source_candles (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   instrument_id BIGINT NOT NULL REFERENCES instruments(id),

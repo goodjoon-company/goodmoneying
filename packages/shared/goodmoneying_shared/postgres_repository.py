@@ -82,7 +82,13 @@ class PostgresOperationsRepository:
     def _apply_schema_if_empty(self) -> None:
         with self._connect() as conn:
             conn.autocommit = True
-            conn.execute(self._schema_path.read_text())
+            conn.execute("SELECT pg_advisory_lock(hashtext('goodmoneying_schema_contract'))")
+            try:
+                conn.execute(self._schema_path.read_text())
+            finally:
+                conn.execute(
+                    "SELECT pg_advisory_unlock(hashtext('goodmoneying_schema_contract'))"
+                )
 
     def upsert_instrument(self, market_code: str, display_name: str) -> Instrument:
         quote_currency, base_asset = market_code.split("-", maxsplit=1)

@@ -46,4 +46,26 @@ def test_postgres_repository_applies_schema_even_when_existing_tables_are_presen
 
     repository._apply_schema_if_empty()
 
-    assert connection.statements[-1] == schema_path.read_text()
+    assert schema_path.read_text() in connection.statements
+
+
+def test_postgres_repository_serializes_schema_application_with_advisory_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema_path = tmp_path / "schema.sql"
+    schema_path.write_text("CREATE TABLE IF NOT EXISTS collection_runs (id BIGINT);\n")
+    repository = PostgresOperationsRepository.__new__(PostgresOperationsRepository)
+    connection = FakeConnection()
+    repository._schema_path = schema_path
+    monkeypatch.setattr(repository, "_connect", lambda: connection)
+
+    repository._apply_schema_if_empty()
+
+    assert connection.statements[0] == (
+        "SELECT pg_advisory_lock(hashtext('goodmoneying_schema_contract'))"
+    )
+    assert connection.statements[1] == schema_path.read_text()
+    assert connection.statements[2] == (
+        "SELECT pg_advisory_unlock(hashtext('goodmoneying_schema_contract'))"
+    )

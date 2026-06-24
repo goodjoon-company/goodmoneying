@@ -138,16 +138,12 @@ class CollectionActivityBucketResponse(BaseModel):
 
 class RealtimeCollectionHeatmapCellResponse(BaseModel):
     bucketStartAt: datetime
-    expectedRowsAll: int
-    actualRowsAll: int
-    expectedRowsByType: dict[
-        Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int
-    ]
-    actualRowsByType: dict[
-        Literal["source_candle", "ticker_snapshot", "orderbook_summary"], int
-    ]
-    actualRatioPercent: str
-    status: Literal["none", "low", "collecting", "high"]
+    tradeCount: int
+    averageTradesPerMinute: str
+    tradeStrength: str
+    tradeVolume: str
+    tradeAmount: str
+    status: Literal["red", "orange", "yellow", "blue", "green"]
 
 
 class RealtimeCollectionHeatmapRowResponse(BaseModel):
@@ -157,7 +153,7 @@ class RealtimeCollectionHeatmapRowResponse(BaseModel):
 
 
 class StorageBreakdownItemResponse(BaseModel):
-    dataType: Literal["source_candle", "ticker_snapshot", "orderbook_summary", "quality_result"]
+    dataType: Literal["source_candle", "ticker_snapshot", "orderbook_summary"]
     label: str
     rowCount: int
     bytes: int

@@ -38,6 +38,7 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.getByText(/마지막 갱신/)).toBeInTheDocument();
     expect(screen.getByText("표시 KST")).toBeInTheDocument();
     expect(screen.getByText("저장 KST")).toBeInTheDocument();
+    expect(screen.getByText("SSE 실시간")).toBeInTheDocument();
     expect(container.querySelector(".app-shell")).toHaveAttribute("data-theme", "dark");
   });
 

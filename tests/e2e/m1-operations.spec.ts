@@ -102,13 +102,14 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
     .not.toBe(firstDashboardRowBeforeSort);
   await expect(page.getByText("최근 1분 수집 건수")).toBeVisible();
   await expect(page.getByRole("heading", { name: "구간형 수집 진행 상태" })).toBeVisible();
-  await expect(page.getByLabel("실시간 정보 수집 현황 히트맵")).toBeVisible();
+  await expect(page.getByLabel("실시간 체결 빈도 히트맵")).toBeVisible();
   await expect(page.getByText("오늘 저장 Row Count")).toBeVisible();
   await expect(page.getByRole("heading", { name: "운영 헬스" })).toBeVisible();
   await expect(page.getByText("Rate limit 여유 64%")).toHaveCount(0);
   await expect(page.getByText("중복 행 0")).toHaveCount(0);
   await expect(page.getByText("표시 KST")).toBeVisible();
   await expect(page.getByText("저장 KST")).toBeVisible();
+  await expect(page.getByText("SSE 실시간")).toBeVisible();
   await page.getByRole("button", { name: "Realtime worker 24시간 오류 상세" }).click();
   await expect(page.getByRole("dialog", { name: "Realtime worker 오류 상세" })).toBeVisible();
   await page.getByLabel("닫기").click();
@@ -139,16 +140,16 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.getByText("일시정지")).toBeVisible();
   await expect(page.getByText(/결측 구간 처리/).first()).toBeVisible();
   await expect(page.getByLabel(`작업 ${pausedBackfillJob.id} 대상 전체 보기`)).toBeVisible();
-  const pausedBackfillSummary = page
+  const pausedBackfillCard = page
     .locator(".approved-backfill-card")
-    .filter({ hasText: `작업 ${pausedBackfillJob.id}` })
-    .getByText(/외 1개/);
+    .filter({ hasText: `작업 ${pausedBackfillJob.id}` });
+  const pausedBackfillSummary = pausedBackfillCard.getByText(/외 1개/);
   await expect(pausedBackfillSummary).toHaveAttribute("title", pausedBackfillTargetSymbols);
   await expect(
     page.getByRole("button", { name: `작업 ${pausedBackfillJob.id} 재개` })
   ).toBeVisible();
   await page.getByRole("button", { name: `작업 ${pausedBackfillJob.id} 재개` }).click();
-  await expect(page.getByText("실행 중")).toBeVisible();
+  await expect(pausedBackfillCard.getByText("실행 중", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "백필 계획 생성" }).click();
   await expect(page.getByRole("dialog", { name: "백필 계획 생성" })).toBeVisible();
   await expect(page.getByText("선택 코인 50개")).toBeVisible();

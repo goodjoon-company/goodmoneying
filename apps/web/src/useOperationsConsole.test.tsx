@@ -10,6 +10,7 @@ import {
   createTestOperationsSnapshot
 } from "./testOperationsApi";
 import type { OperationsDataClient } from "./operationsData";
+import type { DashboardSummary } from "./api";
 
 function Harness() {
   const dataClient: OperationsDataClient = {
@@ -68,6 +69,22 @@ function RefetchHarness({
       <button type="button" onClick={() => consoleState.setActiveSection("targets")}>
         Backfill 관리
       </button>
+    </section>
+  );
+}
+
+function StreamHarness({ dataClient }: { dataClient: OperationsDataClient }) {
+  const consoleState = useOperationsConsole({
+    dataClient,
+    refetchOnDashboard: false
+  });
+
+  if (!consoleState.snapshot) return <span>loading</span>;
+
+  return (
+    <section>
+      <strong>{consoleState.snapshot.dashboard.status}</strong>
+      <span>실시간 row {consoleState.snapshot.dashboard.totals.realtimeRowsLastMinute}</span>
     </section>
   );
 }
@@ -138,5 +155,61 @@ describe("운영 화면 상태 Module", () => {
     await vi.advanceTimersByTimeAsync(10_000);
 
     expect(loadOperationsSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it("대시보드 SSE 이벤트를 받으면 기존 스냅샷의 dashboard만 갱신한다", async () => {
+    const streamHandlers: Array<(dashboard: DashboardSummary) => void> = [];
+    const initial = createTestOperationsSnapshot();
+    const streamed = {
+      ...initial.dashboard,
+      status: "warning" as const,
+      totals: {
+        ...initial.dashboard.totals,
+        realtimeRowsLastMinute: 99
+      }
+    };
+    const dataClient: OperationsDataClient = {
+      loadOperationsSnapshot: async () => initial,
+      subscribeDashboardSummary: (handler) => {
+        streamHandlers.push(handler);
+        return () => undefined;
+      },
+      loadCandidateUniverse: async () => [],
+      loadMarketList: async () => [],
+      loadCollectionCoverageSegments: async () => [],
+      loadInstrumentSnapshot: async (instrumentId) => ({
+        detail: createTestInstrumentDetail(instrumentId),
+        candles: []
+      }),
+      updateCollectionTargets: async () => undefined,
+      createBackfillPlan: async () => ({
+        planId: "plan-1",
+        dataType: "source_candle",
+        estimatedRequestCount: 1,
+        estimatedRowCount: 1,
+        estimatedStorageBytes: 1,
+        targets: [1]
+      }),
+      startBackfillJob: async () => createTestBackfillJob({ id: 1, status: "pending" }),
+      controlBackfillJob: async () => createTestBackfillJob({ id: 1, status: "running" }),
+      deleteBackfillJob: async () => undefined
+    };
+    const queryClient = new QueryClient();
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <StreamHarness dataClient={dataClient} />
+      </QueryClientProvider>
+    );
+
+    await waitFor(() => expect(screen.getByText("normal")).toBeInTheDocument());
+    const emitDashboard = streamHandlers[0];
+    if (!emitDashboard) {
+      throw new Error("대시보드 SSE 구독이 등록되지 않았습니다.");
+    }
+    emitDashboard(streamed);
+
+    await waitFor(() => expect(screen.getByText("warning")).toBeInTheDocument());
+    expect(screen.getByText("실시간 row 99")).toBeInTheDocument();
   });
 });

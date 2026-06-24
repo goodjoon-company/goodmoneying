@@ -45,3 +45,15 @@ def test_db_contract_is_idempotent_for_existing_development_database() -> None:
     assert "CREATE INDEX source_candles_instrument_time_idx" not in schema
     assert "CREATE INDEX IF NOT EXISTS source_candles_instrument_time_idx" in schema
     assert "CREATE INDEX IF NOT EXISTS collection_plans_status_idx" in schema
+
+
+def test_db_contract_migrates_trade_event_data_type_constraints() -> None:
+    schema = SCHEMA_PATH.read_text()
+
+    assert "ALTER TABLE collection_runs" in schema
+    assert "DROP CONSTRAINT IF EXISTS collection_runs_data_type_ck" in schema
+    assert "ADD CONSTRAINT collection_runs_data_type_ck" in schema
+    assert "ALTER TABLE target_collection_results" in schema
+    assert "DROP CONSTRAINT IF EXISTS target_collection_results_data_type_ck" in schema
+    assert "ADD CONSTRAINT target_collection_results_data_type_ck" in schema
+    assert "'trade_event'" in schema

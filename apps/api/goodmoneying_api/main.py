@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import os
+import time
+from collections.abc import Iterator
 from datetime import datetime
 from typing import Annotated, cast
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from goodmoneying_api.dashboard_refresh import load_dashboard_refresh_seconds
 from goodmoneying_api.dependencies import verify_operator_token
@@ -113,6 +115,19 @@ def create_app(repository: OperationsRepository | None = None) -> FastAPI:
     @app.get("/v1/dashboard/summary", response_model=DashboardSummaryResponse)
     def get_dashboard_summary() -> DashboardSummaryResponse:
         return service.dashboard_summary()
+
+    @app.get("/v1/dashboard/summary/stream")
+    def stream_dashboard_summary(
+        once: Annotated[bool, Query(description="테스트와 진단용 단일 이벤트 전송 여부")] = False,
+    ) -> StreamingResponse:
+        def events() -> Iterator[str]:
+            while True:
+                yield f"event: dashboard\ndata: {service.dashboard_summary().model_dump_json()}\n\n"
+                if once:
+                    break
+                time.sleep(service.dashboard_stream_interval_seconds())
+
+        return StreamingResponse(events(), media_type="text/event-stream")
 
     @app.get("/v1/dashboard/overview", response_model=DashboardOverviewResponse)
     def get_dashboard_overview() -> DashboardOverviewResponse:

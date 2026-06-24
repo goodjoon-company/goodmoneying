@@ -95,19 +95,20 @@ export function Dashboard({
         <section className="panel ops-activity-card">
           <div className="ops-card-title">
             <div>
-              <span className="panel-kicker">실시간 수집 현황</span>
-              <strong>실시간 정보 수집 현황</strong>
+              <span className="panel-kicker">실시간 체결 빈도</span>
+              <strong>실시간 체결 빈도 히트맵</strong>
               <em>최근 24시간 기준 · 최대 50개 코인</em>
             </div>
-            <div className="heatmap-legend" aria-label="실시간 수집 상태 범례">
-              <span><i className="none" />예상 미달</span>
-              <span><i className="none" />없음</span>
-              <span><i className="low" />적음</span>
-              <span><i className="high" />많음</span>
+            <div className="heatmap-legend" aria-label="실시간 체결 빈도 범례">
+              <span><i className="red" />10 미만</span>
+              <span><i className="orange" />10~50</span>
+              <span><i className="yellow" />50~100</span>
+              <span><i className="blue" />100~200</span>
+              <span><i className="green" />200 이상</span>
             </div>
           </div>
           <RealtimeCollectionHeatmap rows={snapshot.dashboard.realtimeCollectionHeatmap} />
-          <p className="panel-note">칸 하나는 1시간 기준 수집 기대치 대비 수집량</p>
+          <p className="panel-note">칸 하나는 1시간 기준 분당 평균 체결 빈도</p>
         </section>
 
         <section className="panel ops-storage-card">
@@ -557,7 +558,7 @@ function RealtimeCollectionHeatmap({ rows }: { rows: RealtimeCollectionHeatmapRo
   return (
     <section
       className="panel activity-panel"
-      aria-label="실시간 정보 수집 현황 히트맵"
+      aria-label="실시간 체결 빈도 히트맵"
     >
       <div className="realtime-heatmap-grid">
         {rowGroups.map((group, groupIndex) => (
@@ -575,14 +576,14 @@ function RealtimeCollectionHeatmap({ rows }: { rows: RealtimeCollectionHeatmapRo
             <div className="realtime-cell-grid">
               {group.flatMap((row) =>
                 row.hourlyBuckets.map((bucket, index) => {
-                  const tooltip = [
-                    `${row.instrumentDisplayName} (${row.instrument.marketCode})`,
-                    `${formatShortDateTime(bucket.bucketStartAt)} 수집`,
-                    `전체 실제 ${bucket.actualRowsAll} / 예상 ${bucket.expectedRowsAll}`,
-                    `현재가 ${bucket.actualRowsByType.ticker_snapshot}`,
-                    `캔들 ${bucket.actualRowsByType.source_candle}`,
-                    `호가 ${bucket.actualRowsByType.orderbook_summary}`
-                  ].join(" · ");
+	                  const tooltip = [
+	                    `${row.instrumentDisplayName} (${row.instrument.marketCode})`,
+	                    `${formatShortDateTime(bucket.bucketStartAt)} 체결`,
+	                    `시간 평균 체결빈도 ${formatMetric(bucket.averageTradesPerMinute)}건/분`,
+	                    `체결강도 ${formatMetric(bucket.tradeStrength)}`,
+	                    `체결량 ${formatMetric(bucket.tradeVolume)}`,
+	                    `체결금액 ${formatCurrency(bucket.tradeAmount)}`
+	                  ].join(" · ");
                   return (
                     <span
                       aria-label={tooltip}
@@ -609,6 +610,14 @@ function formatHeatmapHour(value: string): string {
     hour12: false
   });
   return hour;
+}
+
+function formatMetric(value: string): string {
+  return Number(value).toLocaleString("ko-KR", { maximumFractionDigits: 2 });
+}
+
+function formatCurrency(value: string): string {
+  return `₩${Number(value).toLocaleString("ko-KR", { maximumFractionDigits: 0 })}`;
 }
 
 function StorageRowsTable({ items }: { items: StorageBreakdownItem[] }) {

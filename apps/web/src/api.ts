@@ -138,20 +138,12 @@ export type CollectionActivityBucket = {
 
 export type RealtimeCollectionHeatmapCell = {
   bucketStartAt: string;
-  expectedRowsAll: number;
-  actualRowsAll: number;
-  expectedRowsByType: {
-    source_candle: number;
-    ticker_snapshot: number;
-    orderbook_summary: number;
-  };
-  actualRowsByType: {
-    source_candle: number;
-    ticker_snapshot: number;
-    orderbook_summary: number;
-  };
-  actualRatioPercent: string;
-  status: "none" | "low" | "collecting" | "high";
+  tradeCount: number;
+  averageTradesPerMinute: string;
+  tradeStrength: string;
+  tradeVolume: string;
+  tradeAmount: string;
+  status: "red" | "orange" | "yellow" | "blue" | "green";
 };
 
 export type RealtimeCollectionHeatmapRow = {
@@ -207,7 +199,7 @@ export type CollectionWorkerStatus = {
 };
 
 export type StorageBreakdownItem = {
-  dataType: "source_candle" | "ticker_snapshot" | "orderbook_summary" | "quality_result";
+  dataType: "source_candle" | "ticker_snapshot" | "orderbook_summary";
   label: string;
   rowCount: number;
   bytes: number;
@@ -379,6 +371,20 @@ export async function loadOperationsSnapshot(): Promise<OperationsSnapshot> {
   };
 }
 
+export function subscribeDashboardSummary(
+  handler: (dashboard: DashboardSummary) => void
+): () => void {
+  if (typeof EventSource === "undefined") {
+    return () => undefined;
+  }
+  const source = new EventSource(`${API_BASE_URL}/v1/dashboard/summary/stream`);
+  source.addEventListener("dashboard", (event) => {
+    const message = event as MessageEvent<string>;
+    handler(normalizeDashboardSummary(JSON.parse(message.data) as DashboardSummary));
+  });
+  return () => source.close();
+}
+
 function normalizeDashboardSummary(response: DashboardSummary): DashboardSummary {
   const dashboard = response as DashboardSummary & Partial<DashboardSummary>;
   const totals = dashboard.totals as DashboardSummary["totals"] &
@@ -508,28 +514,16 @@ function normalizeRealtimeHeatmapBuckets(
     (left, right) =>
       new Date(left.bucketStartAt).getTime() - new Date(right.bucketStartAt).getTime()
   );
-  const seed = existingBuckets[existingBuckets.length - 1];
-  const fallbackExpectedRowsByType = {
-    source_candle: 60,
-    ticker_snapshot: 60,
-    orderbook_summary: 60
-  };
-  const expectedRowsByType = seed?.expectedRowsByType ?? fallbackExpectedRowsByType;
-  const expectedRowsAll = seed?.expectedRowsAll ?? 180;
   const bucketsToPrepend = wanted - buckets.length;
   const firstStart = new Date(currentHourStart.getTime() - 3600 * 1000 * (bucketsToPrepend));
   const padding = Array.from({ length: bucketsToPrepend }, (_, index) => ({
     bucketStartAt: new Date(firstStart.getTime() + index * 3600 * 1000).toISOString(),
-    expectedRowsAll,
-    actualRowsAll: 0,
-    expectedRowsByType,
-    actualRowsByType: {
-      source_candle: 0,
-      ticker_snapshot: 0,
-      orderbook_summary: 0
-    },
-    actualRatioPercent: "0",
-    status: "none" as const
+    tradeCount: 0,
+    averageTradesPerMinute: "0",
+    tradeStrength: "0",
+    tradeVolume: "0",
+    tradeAmount: "0",
+    status: "red" as const
   }));
   return [...padding, ...existingBuckets].slice(-wanted);
 }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -99,8 +100,10 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
         "source_candle",
         "ticker_snapshot",
         "orderbook_summary",
-        "quality_result",
     }
+    assert sum(item["rowCount"] for item in dashboard.json()["storageBreakdown"]) == totals[
+        "storageRowsToday"
+    ]
     assert len(dashboard.json()["realtimeCollectionHeatmap"]) == 50
     assert dashboard.json()["workerStatus"]["realtime"]["status"] in {
         "running",
@@ -113,8 +116,15 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
     assert len(first_realtime_row["hourlyBuckets"]) == 24
     assert {
         bucket["status"] for bucket in first_realtime_row["hourlyBuckets"]
-    }.issubset({"none", "low", "collecting", "high"})
-    assert all(bucket["expectedRowsAll"] > 0 for bucket in first_realtime_row["hourlyBuckets"])
+    }.issubset({"red", "orange", "yellow", "blue", "green"})
+    assert {
+        "tradeCount",
+        "averageTradesPerMinute",
+        "tradeStrength",
+        "tradeVolume",
+        "tradeAmount",
+        "status",
+    }.issubset(first_realtime_row["hourlyBuckets"][0])
     assert len(dashboard.json()["operationsTrend"]) == 7
     assert dashboard.json()["missingRangeTop"][0]["missingSegmentCount"] >= 0
     assert dashboard.json()["auditLogSummary"]["targetChangeCount24h"] >= 50
@@ -153,6 +163,23 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
     assert detail.json()["orderbookFreshnessLabel"].endswith("전")
     assert detail.json()["qualityHistory"][0]["status"] in {"normal", "warning", "incident"}
     assert detail.json()["qualityHistory"][0]["title"]
+
+
+def test_dashboard_summary_stream_emits_dashboard_sse_event() -> None:
+    client = seeded_client()
+
+    with client.stream("GET", "/v1/dashboard/summary/stream?once=true") as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        lines = response.iter_lines()
+
+        assert next(lines) == "event: dashboard"
+        data_line = next(lines)
+
+    assert data_line.startswith("data: ")
+    payload = json.loads(data_line.removeprefix("data: "))
+    assert payload["status"] in {"normal", "warning", "incident"}
+    assert payload["realtimeCollectionHeatmap"]
 
 
 def test_dashboard_summary_exposes_collection_worker_status() -> None:

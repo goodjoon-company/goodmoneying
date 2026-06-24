@@ -78,6 +78,22 @@ def test_realtime_collection_worker_runs_single_collection_by_default(
     ]
 
 
+def test_realtime_collection_worker_uses_websocket_stream_in_live_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setenv("GOODMONEYING_LIVE_UPBIT", "1")
+    monkeypatch.setattr(
+        realtime_collection_worker,
+        "run_realtime_stream_worker",
+        lambda: calls.append("stream"),
+    )
+
+    realtime_collection_worker.main()
+
+    assert calls == ["stream"]
+
+
 def test_backfill_collection_worker_polls_backfill_jobs_every_ten_seconds_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

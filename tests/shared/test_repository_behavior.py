@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from goodmoneying_shared.models import OrderbookSummary, SourceCandle, TickerSnapshot
+from goodmoneying_shared.models import OrderbookSummary, SourceCandle, TickerSnapshot, TradeEvent
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_shared.time import KST, minute_bucket, now_kst
 from goodmoneying_worker.collector import UpbitCollectionWorker
@@ -73,19 +73,19 @@ def test_repository_dashboard_exposes_operations_observability_summaries() -> No
     first_row = summary.realtime_collection_heatmap[0]
     assert len(first_row.hourly_buckets) == 24
     assert first_row.instrument_display_name
-    assert first_row.hourly_buckets[0].expected_rows_all > 0
-    assert first_row.hourly_buckets[0].status in {"none", "low", "collecting", "high"}
+    assert first_row.hourly_buckets[0].trade_count >= 0
+    assert first_row.hourly_buckets[0].status in {"red", "orange", "yellow", "blue", "green"}
 
     breakdown = {item.data_type: item for item in summary.storage_breakdown}
     assert set(breakdown) == {
         "source_candle",
         "ticker_snapshot",
         "orderbook_summary",
-        "quality_result",
     }
     assert breakdown["source_candle"].row_count > 0
     assert breakdown["ticker_snapshot"].bytes > 0
     assert sum(item.bytes for item in breakdown.values()) == summary.storage_bytes_today
+    assert sum(item.row_count for item in breakdown.values()) == summary.storage_rows_today
 
     assert len(summary.operations_trend) == 7
     today = summary.operations_trend[-1]
@@ -95,6 +95,39 @@ def test_repository_dashboard_exposes_operations_observability_summaries() -> No
     assert summary.missing_range_top[0].missing_segment_count >= 0
     assert summary.audit_log_summary.target_change_count_24h >= 50
     assert summary.audit_log_summary.latest_change_at is not None
+
+
+def test_repository_dashboard_realtime_heatmap_uses_trade_frequency_metrics() -> None:
+    repository = SQLiteOperationsRepository()
+    instrument = repository.refresh_candidate_universe(
+        [("KRW-BTC", "비트코인", "1000000000")]
+    )[0].instrument
+    repository.ensure_default_active_targets(limit=1)
+    bucket_start = now_kst().replace(minute=0, second=0, microsecond=0)
+    trades = [
+        TradeEvent(
+            instrument_id=instrument.id,
+            sequential_id=1_000_000 + index,
+            trade_timestamp_at=bucket_start + timedelta(seconds=index % 3600),
+            trade_price=Decimal("100"),
+            trade_volume=Decimal("1"),
+            trade_amount=Decimal("100"),
+            ask_bid="BID" if index < 400 else "ASK",
+            collected_at=bucket_start + timedelta(seconds=index % 3600),
+        )
+        for index in range(600)
+    ]
+
+    assert repository.record_trade_events(trades) == 600
+
+    row = repository.dashboard_realtime_heatmap()[0]
+    current_bucket = row.hourly_buckets[-1]
+    assert current_bucket.trade_count == 600
+    assert current_bucket.average_trades_per_minute == Decimal("10")
+    assert current_bucket.status == "orange"
+    assert current_bucket.trade_volume == Decimal("600")
+    assert current_bucket.trade_amount == Decimal("60000")
+    assert current_bucket.trade_strength == Decimal("200")
 
 
 def test_repository_dashboard_panel_methods_match_summary_source_data() -> None:

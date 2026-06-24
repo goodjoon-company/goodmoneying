@@ -140,7 +140,7 @@ export function OperationsConsole() {
           <div className="runtime-pills" aria-label="화면 갱신 기준">
             <span>표시 KST</span>
             <span>저장 KST</span>
-            <span>폴링 15초</span>
+            <span>SSE 실시간</span>
             <span>마지막 갱신 {formatFreshness(snapshot.dashboard.refreshedAt)}</span>
           </div>
         </section>

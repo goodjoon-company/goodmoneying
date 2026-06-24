@@ -30,6 +30,7 @@ from goodmoneying_shared.models import (
     SourceCandle,
     StorageBreakdownItem,
     TickerSnapshot,
+    TradeEvent,
 )
 
 
@@ -56,6 +57,8 @@ class OperationsRepository(Protocol):
         orderbooks: list[OrderbookSummary],
         candles: list[SourceCandle],
     ) -> CollectionRun: ...
+
+    def record_trade_events(self, trades: list[TradeEvent]) -> int: ...
 
     def dashboard_summary(self) -> DashboardSummary: ...
 

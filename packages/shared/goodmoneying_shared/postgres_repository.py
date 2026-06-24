@@ -23,7 +23,6 @@ from goodmoneying_shared.models import (
     CollectionDashboardTarget,
     CollectionDataStatus,
     CollectionPlan,
-    CollectionRowsByType,
     CollectionRun,
     CollectionWorkerDiagnostic,
     CollectionWorkerError,
@@ -47,6 +46,8 @@ from goodmoneying_shared.models import (
     SourceCandle,
     StorageBreakdownItem,
     TickerSnapshot,
+    TradeEvent,
+    TradeFrequencyStatus,
 )
 from goodmoneying_shared.time import KST, isoformat_kst, minute_bucket, now_kst
 
@@ -81,7 +82,13 @@ class PostgresOperationsRepository:
     def _apply_schema_if_empty(self) -> None:
         with self._connect() as conn:
             conn.autocommit = True
-            conn.execute(self._schema_path.read_text())
+            conn.execute("SELECT pg_advisory_lock(hashtext('goodmoneying_schema_contract'))")
+            try:
+                conn.execute(self._schema_path.read_text())
+            finally:
+                conn.execute(
+                    "SELECT pg_advisory_unlock(hashtext('goodmoneying_schema_contract'))"
+                )
 
     def upsert_instrument(self, market_code: str, display_name: str) -> Instrument:
         quote_currency, base_asset = market_code.split("-", maxsplit=1)
@@ -314,6 +321,72 @@ class PostgresOperationsRepository:
             started_at=started_at,
             finished_at=finished_at,
         )
+
+    def record_trade_events(self, trades: list[TradeEvent]) -> int:
+        if not trades:
+            return 0
+        started_at = now_kst()
+        with self._connect() as conn:
+            run_id = int(
+                _expect_row(
+                    conn.execute(
+                        """
+                        INSERT INTO collection_runs (
+                          run_type, data_type, status, trigger_type, started_at
+                        )
+                        VALUES ('incremental', 'trade_event', 'running', 'schedule', %s)
+                        RETURNING id
+                        """,
+                        (started_at,),
+                    ).fetchone()
+                )["id"]
+            )
+            inserted_by_instrument: dict[int, int] = {}
+            for trade in trades:
+                row = conn.execute(
+                    """
+                    INSERT INTO trade_events (
+                      instrument_id, source, sequential_id, trade_timestamp_at,
+                      trade_price, trade_volume, trade_amount, ask_bid,
+                      collected_at, collection_run_id
+                    )
+                    VALUES (%s, 'UPBIT', %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (instrument_id, source, sequential_id) DO NOTHING
+                    RETURNING instrument_id
+                    """,
+                    (
+                        trade.instrument_id,
+                        trade.sequential_id,
+                        trade.trade_timestamp_at,
+                        trade.trade_price,
+                        trade.trade_volume,
+                        trade.trade_amount,
+                        trade.ask_bid,
+                        trade.collected_at,
+                        run_id,
+                    ),
+                ).fetchone()
+                if row is not None:
+                    inserted_by_instrument[trade.instrument_id] = (
+                        inserted_by_instrument.get(trade.instrument_id, 0) + 1
+                    )
+            for instrument_id, rows_written in inserted_by_instrument.items():
+                conn.execute(
+                    """
+                    INSERT INTO target_collection_results (
+                      collection_run_id, instrument_id, data_type, status,
+                      latency_ms, rows_written
+                    )
+                    VALUES (%s, %s, 'trade_event', 'succeeded', 0, %s)
+                    """,
+                    (run_id, instrument_id, rows_written),
+                )
+            finished_at = now_kst()
+            conn.execute(
+                "UPDATE collection_runs SET status = 'succeeded', finished_at = %s WHERE id = %s",
+                (finished_at, run_id),
+            )
+        return sum(inserted_by_instrument.values())
 
     def dashboard_summary(self) -> DashboardSummary:
         targets = self.collection_dashboard_targets()
@@ -1307,7 +1380,6 @@ class PostgresOperationsRepository:
                 ("source_candles", 256),
                 ("ticker_snapshots", 160),
                 ("orderbook_summaries", 224),
-                ("target_collection_results", 128),
             )
         )
 
@@ -1317,7 +1389,6 @@ class PostgresOperationsRepository:
             self._table_count_since("source_candles", "collected_at", day_start) * 256
             + self._table_count_since("ticker_snapshots", "collected_at", day_start) * 160
             + self._table_count_since("orderbook_summaries", "collected_at", day_start) * 224
-            + self._table_count_since("target_collection_results", "created_at", day_start) * 128
         )
 
     def _storage_rows_today(self) -> int:
@@ -1326,97 +1397,84 @@ class PostgresOperationsRepository:
             self._table_count_since("source_candles", "collected_at", day_start)
             + self._table_count_since("ticker_snapshots", "collected_at", day_start)
             + self._table_count_since("orderbook_summaries", "collected_at", day_start)
-            + self._table_count_since("target_collection_results", "created_at", day_start)
         )
 
     def _realtime_collection_heatmap(self) -> list[RealtimeCollectionHeatmapRow]:
         active_targets = self.list_active_targets()[:50]
         if not active_targets:
             return []
-        expected_rows_by_type: CollectionRowsByType = {
-            "source_candle": 60,
-            "ticker_snapshot": 60,
-            "orderbook_summary": 60,
-        }
         now = now_kst()
         current_hour = now.replace(minute=0, second=0, microsecond=0)
         first_hour = current_hour - timedelta(hours=23)
         target_ids = [target.id for target in active_targets]
         placeholders = ", ".join(["%s"] * len(target_ids))
-
-        source_counts: dict[tuple[int, datetime], int] = {}
-        ticker_counts: dict[tuple[int, datetime], int] = {}
-        orderbook_counts: dict[tuple[int, datetime], int] = {}
+        aggregates: dict[tuple[int, datetime], dict[str, Decimal | int]] = {}
 
         with self._connect() as conn:
             for row in conn.execute(
                 f"""
-                SELECT instrument_id, collected_at
-                FROM source_candles
-                WHERE candle_unit = '1m'
-                  AND collected_at >= %s
+                SELECT
+                  instrument_id,
+                  date_trunc('hour', trade_timestamp_at) AS bucket_start,
+                  COUNT(*) AS trade_count,
+                  COALESCE(
+                    SUM(CASE WHEN ask_bid = 'BID' THEN trade_volume ELSE 0 END), 0
+                  ) AS bid_volume,
+                  COALESCE(
+                    SUM(CASE WHEN ask_bid = 'ASK' THEN trade_volume ELSE 0 END), 0
+                  ) AS ask_volume,
+                  COALESCE(SUM(trade_volume), 0) AS trade_volume,
+                  COALESCE(SUM(trade_amount), 0) AS trade_amount
+                FROM trade_events
+                WHERE trade_timestamp_at >= %s
                   AND instrument_id IN ({placeholders})
+                GROUP BY instrument_id, bucket_start
                 """,
                 (first_hour, *target_ids),
             ).fetchall():
-                bucket = row["collected_at"].replace(minute=0, second=0, microsecond=0)
-                source_counts[(row["instrument_id"], bucket)] = source_counts.get(
-                    (row["instrument_id"], bucket),
-                    0,
-                ) + 1
-            for row in conn.execute(
-                f"""
-                SELECT instrument_id, collected_at
-                FROM ticker_snapshots
-                WHERE collected_at >= %s AND instrument_id IN ({placeholders})
-                """,
-                (first_hour, *target_ids),
-            ).fetchall():
-                bucket = row["collected_at"].replace(minute=0, second=0, microsecond=0)
-                ticker_counts[(row["instrument_id"], bucket)] = ticker_counts.get(
-                    (row["instrument_id"], bucket),
-                    0,
-                ) + 1
-            for row in conn.execute(
-                f"""
-                SELECT instrument_id, collected_at
-                FROM orderbook_summaries
-                WHERE collected_at >= %s AND instrument_id IN ({placeholders})
-                """,
-                (first_hour, *target_ids),
-            ).fetchall():
-                bucket = row["collected_at"].replace(minute=0, second=0, microsecond=0)
-                orderbook_counts[(row["instrument_id"], bucket)] = orderbook_counts.get(
-                    (row["instrument_id"], bucket),
-                    0,
-                ) + 1
+                bucket = row["bucket_start"].replace(minute=0, second=0, microsecond=0)
+                aggregates[(int(row["instrument_id"]), bucket)] = {
+                    "trade_count": int(row["trade_count"]),
+                    "bid_volume": Decimal(row["bid_volume"]),
+                    "ask_volume": Decimal(row["ask_volume"]),
+                    "trade_volume": Decimal(row["trade_volume"]),
+                    "trade_amount": Decimal(row["trade_amount"]),
+                }
 
         heatmap: list[RealtimeCollectionHeatmapRow] = []
         for target in active_targets:
             hourly_buckets: list[RealtimeCollectionHeatmapBucket] = []
             for offset in range(24):
                 bucket_start = first_hour + timedelta(hours=offset)
-                actual_rows_by_type: CollectionRowsByType = {
-                    "source_candle": source_counts.get((target.id, bucket_start), 0),
-                    "ticker_snapshot": ticker_counts.get((target.id, bucket_start), 0),
-                    "orderbook_summary": orderbook_counts.get((target.id, bucket_start), 0),
-                }
-                actual_rows_all = sum(actual_rows_by_type.values())
-                expected_rows_all = sum(expected_rows_by_type.values())
-                actual_ratio_percent = (
-                    Decimal(actual_rows_all) / Decimal(expected_rows_all) * Decimal("100")
-                    if expected_rows_all > 0
+                aggregate = aggregates.get(
+                    (target.id, bucket_start),
+                    {
+                        "trade_count": 0,
+                        "bid_volume": Decimal("0"),
+                        "ask_volume": Decimal("0"),
+                        "trade_volume": Decimal("0"),
+                        "trade_amount": Decimal("0"),
+                    },
+                )
+                trade_count = int(aggregate["trade_count"])
+                average_trades_per_minute = Decimal(trade_count) / Decimal("60")
+                ask_volume = cast(Decimal, aggregate["ask_volume"])
+                trade_strength = (
+                    cast(Decimal, aggregate["bid_volume"]) / ask_volume * Decimal("100")
+                    if ask_volume > 0
                     else Decimal("0")
                 )
                 hourly_buckets.append(
                     RealtimeCollectionHeatmapBucket(
                         bucket_start_at=bucket_start,
-                        expected_rows_all=expected_rows_all,
-                        actual_rows_all=actual_rows_all,
-                        expected_rows_by_type=expected_rows_by_type,
-                        actual_rows_by_type=actual_rows_by_type,
-                        actual_ratio_percent=actual_ratio_percent,
-                        status=self._realtime_collection_heatmap_status(actual_ratio_percent),
+                        trade_count=trade_count,
+                        average_trades_per_minute=average_trades_per_minute,
+                        trade_strength=trade_strength,
+                        trade_volume=cast(Decimal, aggregate["trade_volume"]),
+                        trade_amount=cast(Decimal, aggregate["trade_amount"]),
+                        status=self._realtime_collection_heatmap_status(
+                            average_trades_per_minute
+                        ),
                     )
                 )
             heatmap.append(
@@ -1484,22 +1542,11 @@ class PostgresOperationsRepository:
                 self._table_count_since("orderbook_summaries", "collected_at", day_start),
                 224,
             ),
-            (
-                "quality_result",
-                "품질/결과",
-                self._table_count_since("target_collection_results", "created_at", day_start),
-                128,
-            ),
         ]
         return [
             StorageBreakdownItem(
                 data_type=cast(
-                    Literal[
-                        "source_candle",
-                        "ticker_snapshot",
-                        "orderbook_summary",
-                        "quality_result",
-                    ],
+                    Literal["source_candle", "ticker_snapshot", "orderbook_summary"],
                     data_type,
                 ),
                 label=label,
@@ -1985,10 +2032,6 @@ class PostgresOperationsRepository:
             * 160
             + self._table_count_between("orderbook_summaries", "collected_at", start_at, end_at)
             * 224
-            + self._table_count_between(
-                "target_collection_results", "created_at", start_at, end_at
-            )
-            * 128
         )
 
     def _table_count_between(
@@ -2021,17 +2064,17 @@ class PostgresOperationsRepository:
 
     @staticmethod
     def _realtime_collection_heatmap_status(
-        actual_ratio_percent: Decimal,
-    ) -> Literal["none", "low", "collecting", "high"]:
-        if actual_ratio_percent <= Decimal("0"):
-            return "none"
-        if actual_ratio_percent < Decimal("24"):
-            return "low"
-        if actual_ratio_percent < Decimal("50"):
-            return "collecting"
-        if actual_ratio_percent < Decimal("90"):
-            return "collecting"
-        return "high"
+        average_trades_per_minute: Decimal,
+    ) -> TradeFrequencyStatus:
+        if average_trades_per_minute < Decimal("10"):
+            return "red"
+        if average_trades_per_minute < Decimal("50"):
+            return "orange"
+        if average_trades_per_minute < Decimal("100"):
+            return "yellow"
+        if average_trades_per_minute < Decimal("200"):
+            return "blue"
+        return "green"
 
     @staticmethod
     def _average_coverage_percent(coverage: list[CoverageStatus]) -> Decimal:

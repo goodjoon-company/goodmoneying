@@ -118,6 +118,9 @@ class OperationsService:
     def dashboard_summary(self) -> DashboardSummaryResponse:
         return dashboard_to_response(self._repository.dashboard_summary())
 
+    def dashboard_stream_interval_seconds(self) -> int:
+        return self._refresh_seconds("realtimeHeatmap")
+
     def dashboard_overview(self) -> DashboardOverviewResponse:
         summary = self.dashboard_summary()
         return DashboardOverviewResponse(
@@ -674,11 +677,11 @@ def realtime_heatmap_row_to_response(
         hourlyBuckets=[
             RealtimeCollectionHeatmapCellResponse(
                 bucketStartAt=bucket.bucket_start_at,
-                expectedRowsAll=bucket.expected_rows_all,
-                actualRowsAll=bucket.actual_rows_all,
-                expectedRowsByType=bucket.expected_rows_by_type,
-                actualRowsByType=bucket.actual_rows_by_type,
-                actualRatioPercent=decimal_string(bucket.actual_ratio_percent) or "0",
+                tradeCount=bucket.trade_count,
+                averageTradesPerMinute=decimal_string(bucket.average_trades_per_minute) or "0",
+                tradeStrength=decimal_string(bucket.trade_strength) or "0",
+                tradeVolume=decimal_string(bucket.trade_volume) or "0",
+                tradeAmount=decimal_string(bucket.trade_amount) or "0",
                 status=bucket.status,
             )
             for bucket in heatmap_row.hourly_buckets

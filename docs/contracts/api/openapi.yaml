@@ -48,6 +48,28 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DashboardSummary"
+  /v1/dashboard/summary/stream:
+    get:
+      tags:
+        - 대시보드(Dashboard)
+      summary: 운영 상태 대시보드 요약 SSE 스트림
+      operationId: streamDashboardSummary
+      parameters:
+        - name: once
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: 테스트와 진단용 단일 이벤트 전송 여부
+      responses:
+        "200":
+          description: 대시보드 요약을 dashboard 이벤트로 전송하는 SSE 스트림
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: "event: dashboard 형식의 SSE 스트림. data 필드는 DashboardSummary JSON이다."
   /v1/dashboard/overview:
     get:
       tags:
@@ -1020,53 +1042,37 @@ components:
           type: string
           enum: [none, low, collecting, high]
     RealtimeCollectionHeatmapCell:
-      description: 1시간 단위 실시간 수집량과 타입별 기대/실측 row 수를 담은 셀.
+      description: 1시간 단위 체결 빈도와 체결 강도, 체결량, 체결금액을 담은 셀.
       type: object
       required:
         - bucketStartAt
-        - expectedRowsAll
-        - actualRowsAll
-        - expectedRowsByType
-        - actualRowsByType
-        - actualRatioPercent
+        - tradeCount
+        - averageTradesPerMinute
+        - tradeStrength
+        - tradeVolume
+        - tradeAmount
         - status
       properties:
         bucketStartAt:
           type: string
           format: date-time
-        expectedRowsAll:
+        tradeCount:
           type: integer
-          description: 1시간 동안 소스 캔들/현재가/호가를 합산한 기대 row 수.
-        actualRowsAll:
-          type: integer
-          description: 1시간 동안 실측 수집된 row 수 합.
-        expectedRowsByType:
-          type: object
-          description: 데이터 유형별 기대 row 수.
-          properties:
-            source_candle:
-              type: integer
-            ticker_snapshot:
-              type: integer
-            orderbook_summary:
-              type: integer
-        actualRowsByType:
-          type: object
-          description: 데이터 유형별 실제 row 수.
-          properties:
-            source_candle:
-              type: integer
-            ticker_snapshot:
-              type: integer
-            orderbook_summary:
-              type: integer
-        actualRatioPercent:
+          description: 1시간 동안 수신한 체결 이벤트 수.
+        averageTradesPerMinute:
+          $ref: "#/components/schemas/DecimalString"
+        tradeStrength:
+          $ref: "#/components/schemas/DecimalString"
+          description: BID 체결량을 ASK 체결량으로 나눈 뒤 100을 곱한 값.
+        tradeVolume:
+          $ref: "#/components/schemas/DecimalString"
+        tradeAmount:
           $ref: "#/components/schemas/DecimalString"
         status:
           type: string
-          enum: [none, low, collecting, high]
+          enum: [red, orange, yellow, blue, green]
     RealtimeCollectionHeatmapRow:
-      description: 대상별 24개 시간대 실시간 수집 히트맵 행.
+      description: 대상별 24개 시간대 실시간 체결 빈도 히트맵 행.
       type: object
       required: [instrument, instrumentDisplayName, hourlyBuckets]
       properties:
@@ -1085,7 +1091,7 @@ components:
       properties:
         dataType:
           type: string
-          enum: [source_candle, ticker_snapshot, orderbook_summary, quality_result]
+          enum: [source_candle, ticker_snapshot, orderbook_summary]
         label:
           type: string
         rowCount:

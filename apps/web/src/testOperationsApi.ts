@@ -166,23 +166,19 @@ export function createTestDashboardSummary(
     realtimeCollectionHeatmap: targets.map((target) => ({
       instrument: target.instrument,
       instrumentDisplayName: target.instrument.displayName,
-      hourlyBuckets: Array.from({ length: 24 }, (_, hourIndex) => ({
-        bucketStartAt: new Date(Date.parse(NOW) - (23 - hourIndex) * 60 * 60 * 1000).toISOString(),
-        expectedRowsAll: 180,
-        actualRowsAll: hourIndex % 3 === 0 ? 180 : 60,
-        expectedRowsByType: {
-          source_candle: 60,
-          ticker_snapshot: 60,
-          orderbook_summary: 60
-        },
-        actualRowsByType: {
-          source_candle: hourIndex % 3 === 0 ? 60 : 30,
-          ticker_snapshot: hourIndex % 3 === 0 ? 60 : 20,
-          orderbook_summary: hourIndex % 3 === 0 ? 60 : 10
-        },
-        actualRatioPercent: hourIndex % 3 === 0 ? "100" : "33.3",
-        status: hourIndex % 3 === 0 ? "high" : "collecting"
-      }))
+      hourlyBuckets: Array.from({ length: 24 }, (_, hourIndex) => {
+        const averageTradesPerMinute = [8, 24, 72, 144, 240][hourIndex % 5];
+        const status = (["red", "orange", "yellow", "blue", "green"] as const)[hourIndex % 5];
+        return {
+          bucketStartAt: new Date(Date.parse(NOW) - (23 - hourIndex) * 60 * 60 * 1000).toISOString(),
+          tradeCount: averageTradesPerMinute * 60,
+          averageTradesPerMinute: String(averageTradesPerMinute),
+          tradeStrength: String(90 + hourIndex),
+          tradeVolume: String(1000 + hourIndex * 10),
+          tradeAmount: String(100000000 + hourIndex * 1000000),
+          status
+        };
+      })
     })),
     storageBreakdown: [
       { dataType: "source_candle", label: "캔들", rowCount: 100, bytes: 1024, bytesDisplay: "1.0KB", sharePercent: "60" },

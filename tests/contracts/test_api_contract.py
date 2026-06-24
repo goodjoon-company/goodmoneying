@@ -18,6 +18,7 @@ def test_openapi_contract_contains_m1_paths() -> None:
     assert set(contract["paths"]) >= {
         "/health",
         "/v1/dashboard/summary",
+        "/v1/dashboard/summary/stream",
         "/v1/dashboard/overview",
         "/v1/dashboard/targets",
         "/v1/dashboard/coverage",
@@ -63,6 +64,7 @@ def test_openapi_contract_groups_operations_with_described_tags() -> None:
     expected_operation_tags = {
         ("get", "/health"): ["상태(Health)"],
         ("get", "/v1/dashboard/summary"): ["대시보드(Dashboard)"],
+        ("get", "/v1/dashboard/summary/stream"): ["대시보드(Dashboard)"],
         ("get", "/v1/dashboard/overview"): ["대시보드(Dashboard)"],
         ("get", "/v1/dashboard/targets"): ["대시보드(Dashboard)"],
         ("get", "/v1/dashboard/coverage"): ["대시보드(Dashboard)"],
@@ -278,6 +280,7 @@ def test_openapi_contract_exposes_dashboard_panel_endpoints() -> None:
         assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
             "$ref": f"#/components/schemas/{schema_name}"
         }
+
         assert schema_name in schemas
         assert "recommendedRefreshSeconds" in schemas[schema_name]["required"]
         assert "refreshedAt" in schemas[schema_name]["required"]
@@ -307,6 +310,46 @@ def test_openapi_contract_exposes_dashboard_panel_endpoints() -> None:
     assert schemas["DashboardCoverageResponse"]["properties"]["items"]["items"]["$ref"] == (
         "#/components/schemas/CoverageStatus"
     )
+
+
+def test_openapi_contract_exposes_trade_frequency_heatmap_cells() -> None:
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+    cell = contract["components"]["schemas"]["RealtimeCollectionHeatmapCell"]
+
+    assert cell["required"] == [
+        "bucketStartAt",
+        "tradeCount",
+        "averageTradesPerMinute",
+        "tradeStrength",
+        "tradeVolume",
+        "tradeAmount",
+        "status",
+    ]
+    assert cell["properties"]["status"]["enum"] == ["red", "orange", "yellow", "blue", "green"]
+
+
+def test_openapi_storage_breakdown_excludes_collection_result_logs() -> None:
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+    schemas = contract["components"]["schemas"]
+
+    storage_breakdown = schemas["StorageBreakdownItem"]
+
+    assert storage_breakdown["properties"]["dataType"]["enum"] == [
+        "source_candle",
+        "ticker_snapshot",
+        "orderbook_summary",
+    ]
+
+
+def test_openapi_contract_exposes_dashboard_sse_stream() -> None:
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+
+    operation = contract["paths"]["/v1/dashboard/summary/stream"]["get"]
+    assert operation["operationId"] == "streamDashboardSummary"
+    assert operation["responses"]["200"]["content"]["text/event-stream"]["schema"] == {
+        "type": "string",
+        "description": "event: dashboard 형식의 SSE 스트림. data 필드는 DashboardSummary JSON이다.",
+    }
 
 
 def _resolve_parameter(

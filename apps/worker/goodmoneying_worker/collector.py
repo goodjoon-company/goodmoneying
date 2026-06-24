@@ -219,9 +219,10 @@ class UpbitCollectionWorker:
                         }:
                             target_interrupted = True
                             break
+                        if on_progress is not None:
+                            on_progress()
                         batch: list[SourceCandle] = []
                         should_stop_current_target = False
-                        fetched_any_row = False
                         logger.debug(
                             "backfill_fetch_started job_id=%s instrument_id=%s market=%s "
                             "range_index=%s range_start_at=%s range_end_at=%s",
@@ -239,7 +240,6 @@ class UpbitCollectionWorker:
                         ):
                             if on_progress is not None:
                                 on_progress()
-                            fetched_any_row = fetched_any_row or bool(rows)
                             logger.debug(
                                 "backfill_fetch_succeeded job_id=%s instrument_id=%s "
                                 "market=%s range_index=%s row_count=%s",
@@ -332,16 +332,17 @@ class UpbitCollectionWorker:
                             )
                             if on_progress is not None:
                                 on_progress()
-                        if fetched_any_row:
-                            processed_missing_ranges += 1
-                            self._repository.record_backfill_target_progress(
-                                job.id,
-                                target.instrument_id,
-                                processed_missing_range_count=processed_missing_ranges,
-                                estimated_missing_range_count=estimated_missing_ranges,
-                                rows_written_count=target_written,
-                                last_completed_at=last_completed_at,
-                            )
+                        processed_missing_ranges += 1
+                        self._repository.record_backfill_target_progress(
+                            job.id,
+                            target.instrument_id,
+                            processed_missing_range_count=processed_missing_ranges,
+                            estimated_missing_range_count=estimated_missing_ranges,
+                            rows_written_count=target_written,
+                            last_completed_at=last_completed_at,
+                        )
+                        if on_progress is not None:
+                            on_progress()
                         job_status = self._backfill_job_status(job.id)
                         if job_status in {"paused", "stopped"}:
                             should_claim_next_job = True

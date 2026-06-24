@@ -393,6 +393,41 @@ def test_worker_records_heartbeat_after_fetch_before_batch_progress_changes() ->
     assert (1, True, 0, None) not in progress_snapshots
 
 
+def test_worker_records_progress_when_missing_range_returns_no_rows() -> None:
+    repository = CountingBackfillRepository()
+    instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 2, tzinfo=KST)
+    client = NoYieldBackfillClient()
+    worker = UpbitCollectionWorker(repository, client)
+    plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
+    job = repository.approve_backfill_job(plan.plan_id)
+    progress_snapshots: list[tuple[int, int, int]] = []
+
+    def record_progress() -> None:
+        target_progress = repository.backfill_target_progress(job.id, instrument.id)
+        progress_snapshots.append(
+            (
+                len(client.requests),
+                target_progress["processed_missing_range_count"],
+                target_progress["estimated_missing_range_count"],
+            )
+        )
+
+    written = worker.run_backfill_once(on_progress=record_progress)
+
+    target = repository.backfill_job_targets(job.id)[0]
+    target_progress = repository.backfill_target_progress(job.id, instrument.id)
+    assert written == 0
+    assert target.status == "succeeded"
+    assert target.last_completed_at is None
+    assert client.requests == [("KRW-BTC", start_at, end_at)]
+    assert target_progress["rows_written_count"] == 0
+    assert target_progress["processed_missing_range_count"] == 1
+    assert target_progress["estimated_missing_range_count"] == 1
+    assert (1, 1, 1) in progress_snapshots
+
+
 def test_worker_does_not_advance_last_completed_at_when_fetch_returns_no_rows() -> None:
     repository = SQLiteOperationsRepository()
     instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
@@ -671,6 +706,18 @@ class BackfillOnlyClient(FixtureUpbitClient):
         self, market: str, start_at: datetime, end_at: datetime
     ) -> list[list[dict[str, str]]]:
         return [self.fetch_minute_candles(market, start_at, end_at)]
+
+
+class NoYieldBackfillClient(FixtureUpbitClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.requests: list[tuple[str, datetime, datetime]] = []
+
+    def fetch_minute_candle_pages(
+        self, market: str, start_at: datetime, end_at: datetime
+    ) -> list[list[dict[str, str]]]:
+        self.requests.append((market, start_at, end_at))
+        return []
 
 
 class CountingBackfillRepository(SQLiteOperationsRepository):

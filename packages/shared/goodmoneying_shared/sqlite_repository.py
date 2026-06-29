@@ -725,10 +725,20 @@ class SQLiteOperationsRepository:
             storage_rows_by_instrument = self._instrument_storage_row_counts_by_instrument(
                 instrument_ids
             )
+            plans_by_instrument = self._collection_plans_by_instrument(instrument_ids)
             for instrument in active_targets:
                 ticker = self.latest_ticker(instrument.id)
+                orderbook = self.latest_orderbook(instrument.id)
+                plan = plans_by_instrument[instrument.id]
                 coverage = sorted(
-                    self.coverage_for(instrument.id),
+                    self._dashboard_target_coverage(
+                        instrument.id,
+                        plan,
+                        source_candle_counts.get(instrument.id, 0),
+                        source_candle_ranges.get(instrument.id, (None, None)),
+                        ticker,
+                        orderbook,
+                    ),
                     key=lambda item: {
                         "source_candle": 0,
                         "ticker_snapshot": 1,
@@ -758,7 +768,7 @@ class SQLiteOperationsRepository:
                         else "장애"
                         if overall_status == "incident"
                         else "주의",
-                        plan=self._collection_plan_for(instrument.id),
+                        plan=plan,
                         data_statuses=data_statuses,
                         coverage_segments=[
                             segment
@@ -893,6 +903,31 @@ class SQLiteOperationsRepository:
         candle_status = self._source_candle_coverage_status(instrument_id)
         return [
             candle_status,
+            self._freshness_coverage_status(
+                instrument_id,
+                "ticker_snapshot",
+                latest_ticker.collected_at if latest_ticker else None,
+            ),
+            self._freshness_coverage_status(
+                instrument_id,
+                "orderbook_summary",
+                latest_orderbook.collected_at if latest_orderbook else None,
+            ),
+        ]
+
+    def _dashboard_target_coverage(
+        self,
+        instrument_id: int,
+        plan: CollectionPlan,
+        source_candle_count: int,
+        source_candle_range: tuple[datetime | None, datetime | None],
+        latest_ticker: TickerSnapshot | None,
+        latest_orderbook: OrderbookSummary | None,
+    ) -> list[CoverageStatus]:
+        return [
+            self._source_candle_coverage_status_from_summary(
+                instrument_id, plan, source_candle_count, source_candle_range
+            ),
             self._freshness_coverage_status(
                 instrument_id,
                 "ticker_snapshot",
@@ -2380,6 +2415,56 @@ class SQLiteOperationsRepository:
                 "SELECT * FROM collection_plans WHERE instrument_id = ?",
                 (instrument_id,),
             ).fetchone()
+        if row is None:
+            raise RuntimeError(f"수집 계획을 생성하지 못했다: instrument_id={instrument_id}")
+        return self._collection_plan_from_row(instrument_id, row)
+
+    def _collection_plans_by_instrument(
+        self, instrument_ids: list[int]
+    ) -> dict[int, CollectionPlan]:
+        if not instrument_ids:
+            return {}
+        placeholders = ",".join("?" for _ in instrument_ids)
+        rows = self._execute(
+            f"""
+            SELECT *
+            FROM collection_plans
+            WHERE instrument_id IN ({placeholders})
+            """,
+            tuple(instrument_ids),
+        ).fetchall()
+        plans = {
+            row["instrument_id"]: self._collection_plan_from_row(row["instrument_id"], row)
+            for row in rows
+        }
+        missing_ids = [
+            instrument_id for instrument_id in instrument_ids if instrument_id not in plans
+        ]
+        for instrument_id in missing_ids:
+            self._ensure_collection_plan(instrument_id)
+        if missing_ids:
+            missing_placeholders = ",".join("?" for _ in missing_ids)
+            rows = self._execute(
+                f"""
+                SELECT *
+                FROM collection_plans
+                WHERE instrument_id IN ({missing_placeholders})
+                """,
+                tuple(missing_ids),
+            ).fetchall()
+            plans.update(
+                {
+                    row["instrument_id"]: self._collection_plan_from_row(
+                        row["instrument_id"], row
+                    )
+                    for row in rows
+                }
+            )
+        return plans
+
+    def _collection_plan_from_row(
+        self, instrument_id: int, row: sqlite3.Row
+    ) -> CollectionPlan:
         return CollectionPlan(
             instrument_id=instrument_id,
             preset=str(row["preset"]),
@@ -2500,6 +2585,47 @@ class SQLiteOperationsRepository:
             status=status,
             progress_percent=progress.normalize(),
             last_successful_at=last_successful_at,
+            missing_segment_count=missing_segments,
+        )
+
+    def _source_candle_coverage_status_from_summary(
+        self,
+        instrument_id: int,
+        plan: CollectionPlan,
+        stored_count: int,
+        source_candle_range: tuple[datetime | None, datetime | None],
+    ) -> CoverageStatus:
+        range_end = self._coverage_range_end(plan)
+        expected_minutes = self._expected_minutes(plan.range_start_at, range_end)
+        first_start_at, latest_start_at = source_candle_range
+        progress = (
+            Decimal(stored_count) * Decimal("100") / Decimal(expected_minutes)
+        ).quantize(Decimal("0.01"))
+        if latest_start_at is None:
+            return CoverageStatus(
+                instrument_id=instrument_id,
+                data_type="source_candle",
+                status="incident",
+                progress_percent=Decimal("0"),
+                last_successful_at=now_kst() - timedelta(days=365),
+                missing_segment_count=1,
+            )
+        missing_segments = 0
+        if first_start_at is not None and first_start_at > plan.range_start_at:
+            missing_segments += 1
+        if latest_start_at + timedelta(minutes=1) < range_end:
+            missing_segments += 1
+        if stored_count < expected_minutes and missing_segments == 0:
+            missing_segments = 1
+        status: Literal["normal", "warning", "incident"] = (
+            "normal" if missing_segments == 0 and progress == Decimal("100.00") else "warning"
+        )
+        return CoverageStatus(
+            instrument_id=instrument_id,
+            data_type="source_candle",
+            status=status,
+            progress_percent=progress.normalize(),
+            last_successful_at=latest_start_at,
             missing_segment_count=missing_segments,
         )
 

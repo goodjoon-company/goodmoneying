@@ -410,9 +410,13 @@ CREATE INDEX IF NOT EXISTS source_candles_instrument_time_idx ON source_candles 
 CREATE INDEX IF NOT EXISTS ticker_snapshots_instrument_bucket_idx ON ticker_snapshots (instrument_id, bucket_at DESC);
 CREATE INDEX IF NOT EXISTS orderbook_summaries_instrument_bucket_idx ON orderbook_summaries (instrument_id, bucket_at DESC);
 CREATE INDEX IF NOT EXISTS trade_events_instrument_time_idx ON trade_events (instrument_id, trade_timestamp_at DESC);
+CREATE INDEX IF NOT EXISTS source_candles_collected_at_idx ON source_candles (collected_at DESC);
+CREATE INDEX IF NOT EXISTS ticker_snapshots_collected_at_idx ON ticker_snapshots (collected_at DESC);
+CREATE INDEX IF NOT EXISTS orderbook_summaries_collected_at_idx ON orderbook_summaries (collected_at DESC);
 CREATE INDEX IF NOT EXISTS collection_runs_started_at_idx ON collection_runs (started_at DESC);
 CREATE INDEX IF NOT EXISTS collection_worker_heartbeats_status_idx ON collection_worker_heartbeats (status, last_heartbeat_at DESC);
 CREATE INDEX IF NOT EXISTS target_collection_results_run_idx ON target_collection_results (collection_run_id, instrument_id);
+CREATE INDEX IF NOT EXISTS target_collection_results_created_at_idx ON target_collection_results (created_at DESC, collection_run_id) INCLUDE (rows_written);
 CREATE INDEX IF NOT EXISTS collection_plans_status_idx ON collection_plans (status, instrument_id);
 CREATE INDEX IF NOT EXISTS collection_coverage_snapshots_latest_idx ON collection_coverage_snapshots (instrument_id, data_type, calculated_at DESC);
 CREATE INDEX IF NOT EXISTS collection_coverage_segments_snapshot_idx ON collection_coverage_segments (snapshot_id, data_type);

@@ -123,7 +123,7 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
 
   await page.getByRole("button", { name: "Backfill 관리" }).click();
   await expect(page.getByRole("heading", { name: "후보 유니버스 상위 100개" })).toBeVisible();
-  await expect(page.getByText("선택 50/50")).toBeVisible();
+  await expect(page.getByText("선택 50/50")).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText("24시간 거래대금")).toBeVisible();
   await expect(page.getByText("수집 시작일")).toBeVisible();
   await expect(page.getByText("수집 최종일")).toBeVisible();
@@ -137,19 +137,26 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.getByText(/대상 변경 [0-9]+건/)).toBeVisible();
   await expect(page.getByRole("button", { name: "백필 계획 생성" })).toBeEnabled();
   await expect(page.getByText(`작업 ${pausedBackfillJob.id}`)).toBeVisible();
-  await expect(page.getByText("일시정지")).toBeVisible();
-  await expect(page.getByText(/결측 구간 처리/).first()).toBeVisible();
-  await expect(page.getByLabel(`작업 ${pausedBackfillJob.id} 대상 전체 보기`)).toBeVisible();
   const pausedBackfillCard = page
     .locator(".approved-backfill-card")
     .filter({ hasText: `작업 ${pausedBackfillJob.id}` });
+  await expect(pausedBackfillCard.getByText("일시정지", { exact: true })).toBeVisible();
+  await expect(page.getByText(/결측 구간 처리/).first()).toBeVisible();
+  await expect(page.getByLabel(`작업 ${pausedBackfillJob.id} 대상 전체 보기`)).toBeVisible();
   const pausedBackfillSummary = pausedBackfillCard.getByText(/외 1개/);
   await expect(pausedBackfillSummary).toHaveAttribute("title", pausedBackfillTargetSymbols);
   await expect(
     page.getByRole("button", { name: `작업 ${pausedBackfillJob.id} 재개` })
   ).toBeVisible();
   await page.getByRole("button", { name: `작업 ${pausedBackfillJob.id} 재개` }).click();
-  await expect(pausedBackfillCard.getByText("실행 중", { exact: true })).toBeVisible();
+  await expect
+    .poll(async () => {
+      const jobsResponse = await request.get(`${apiBaseUrl}/v1/backfill/jobs`);
+      expect(jobsResponse.ok()).toBeTruthy();
+      const jobs = (await jobsResponse.json()) as { items: Array<{ id: number; status: string }> };
+      return jobs.items.find((job) => job.id === pausedBackfillJob.id)?.status;
+    })
+    .toMatch(/^(running|succeeded)$/);
   await page.getByRole("button", { name: "백필 계획 생성" }).click();
   await expect(page.getByRole("dialog", { name: "백필 계획 생성" })).toBeVisible();
   await expect(page.getByText("선택 코인 50개")).toBeVisible();

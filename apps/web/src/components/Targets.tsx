@@ -84,6 +84,7 @@ export function Targets({
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["operations"] });
       void queryClient.invalidateQueries({ queryKey: ["candidate-universe"] });
+      void queryClient.invalidateQueries({ queryKey: ["market-list"] });
     }
   });
   const startJobMutation = useMutation({

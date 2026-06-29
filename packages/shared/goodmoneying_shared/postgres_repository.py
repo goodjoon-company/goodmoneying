@@ -1489,23 +1489,39 @@ class PostgresOperationsRepository:
     def _collection_activity_buckets(self) -> list[CollectionActivityBucket]:
         current_hour = now_kst().replace(minute=0, second=0, microsecond=0)
         first_hour = current_hour - timedelta(hours=(7 * 24) - 1)
-        run_counts: dict[datetime, int] = {}
-        result_counts: dict[datetime, int] = {}
         with self._connect() as conn:
             run_rows = conn.execute(
-                "SELECT started_at FROM collection_runs WHERE started_at >= %s",
+                """
+                SELECT date_trunc('hour', started_at) AS bucket_start_at,
+                       COUNT(*) AS run_count
+                FROM collection_runs
+                WHERE started_at >= %s
+                GROUP BY bucket_start_at
+                """,
                 (first_hour,),
             ).fetchall()
             result_rows = conn.execute(
-                "SELECT created_at FROM target_collection_results WHERE created_at >= %s",
+                """
+                SELECT date_trunc('hour', created_at) AS bucket_start_at,
+                       COUNT(*) AS result_count
+                FROM target_collection_results
+                WHERE created_at >= %s
+                GROUP BY bucket_start_at
+                """,
                 (first_hour,),
             ).fetchall()
-        for row in run_rows:
-            bucket = row["started_at"].replace(minute=0, second=0, microsecond=0)
-            run_counts[bucket] = run_counts.get(bucket, 0) + 1
-        for row in result_rows:
-            bucket = row["created_at"].replace(minute=0, second=0, microsecond=0)
-            result_counts[bucket] = result_counts.get(bucket, 0) + 1
+        run_counts = {
+            row["bucket_start_at"].replace(minute=0, second=0, microsecond=0): int(
+                row["run_count"]
+            )
+            for row in run_rows
+        }
+        result_counts = {
+            row["bucket_start_at"].replace(minute=0, second=0, microsecond=0): int(
+                row["result_count"]
+            )
+            for row in result_rows
+        }
         return [
             CollectionActivityBucket(
                 bucket_start_at=bucket_start,

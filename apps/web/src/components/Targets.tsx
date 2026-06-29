@@ -22,6 +22,7 @@ import {
   updateCollectionTargets,
   type BackfillJob,
   type CandidateUniverseEntry,
+  type MarketListRow,
   type OperationsSnapshot
 } from "../api";
 import {
@@ -43,7 +44,13 @@ const EMPTY_CANDIDATE_ENTRIES: CandidateUniverseEntry[] = [];
 const DEFAULT_BACKFILL_START_INPUT = "2026-01-01T00:00";
 const DEFAULT_BACKFILL_END_INPUT = "2026-02-01T00:00";
 
-export function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
+export function Targets({
+  snapshot,
+  favoriteRows
+}: {
+  snapshot: OperationsSnapshot;
+  favoriteRows: MarketListRow[];
+}) {
   const queryClient = useQueryClient();
   const [isBackfillDialogOpen, setBackfillDialogOpen] = useState(false);
   const [startedJobId, setStartedJobId] = useState<number | null>(null);
@@ -58,16 +65,20 @@ export function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
     () => filterAndSortCandidateEntries(entries, searchText, sortMode),
     [entries, searchText, sortMode]
   );
+  const favoriteInstrumentIds = useMemo(
+    () => favoriteRows.map((row) => row.instrument.id),
+    [favoriteRows]
+  );
   const [selectedIds, setSelectedIds] = useState<Set<number>>(
-    () => initialSelectedInstrumentIds(entries)
+    () => initialSelectedInstrumentIds(entries, favoriteInstrumentIds)
   );
   const selectedInstrumentIds = useMemo(
-    () => orderedSelectedInstrumentIds(entries, selectedIds),
-    [entries, selectedIds]
+    () => orderedSelectedInstrumentIds(entries, selectedIds, favoriteInstrumentIds),
+    [entries, favoriteInstrumentIds, selectedIds]
   );
   useEffect(() => {
-    setSelectedIds(initialSelectedInstrumentIds(entries));
-  }, [entries]);
+    setSelectedIds(initialSelectedInstrumentIds(entries, favoriteInstrumentIds));
+  }, [entries, favoriteInstrumentIds]);
   const mutation = useMutation({
     mutationFn: (ids: number[]) => updateCollectionTargets(ids),
     onSuccess: () => {

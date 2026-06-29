@@ -2,7 +2,13 @@ import type { CandidateUniverseEntry } from "./api";
 
 export type SortMode = "trade";
 
-export function initialSelectedInstrumentIds(entries: CandidateUniverseEntry[]): Set<number> {
+export function initialSelectedInstrumentIds(
+  entries: CandidateUniverseEntry[],
+  preferredOrderIds: number[] = []
+): Set<number> {
+  if (preferredOrderIds.length > 0) {
+    return new Set(preferredOrderIds);
+  }
   return new Set(
     orderedSelectedInstrumentIds(
       entries,
@@ -13,16 +19,20 @@ export function initialSelectedInstrumentIds(entries: CandidateUniverseEntry[]):
 
 export function orderedSelectedInstrumentIds(
   entries: CandidateUniverseEntry[],
-  selectedIds: Set<number>
+  selectedIds: Set<number>,
+  preferredOrderIds: number[] = []
 ): number[] {
+  const preferredSelectedIds = preferredOrderIds.filter((id) => selectedIds.has(id));
+  const preferredSelectedIdSet = new Set(preferredSelectedIds);
   const selectedEntries = entries.filter((entry) => selectedIds.has(entry.instrument.id));
   const orderedFavoriteIds = selectedEntries
     .filter((entry) => entry.favoriteOrder !== null)
     .sort((left, right) => Number(left.favoriteOrder) - Number(right.favoriteOrder))
-    .map((entry) => entry.instrument.id);
-  const orderedFavoriteIdSet = new Set(orderedFavoriteIds);
-  const appendedIds = [...selectedIds].filter((id) => !orderedFavoriteIdSet.has(id));
-  return [...orderedFavoriteIds, ...appendedIds];
+    .map((entry) => entry.instrument.id)
+    .filter((id) => !preferredSelectedIdSet.has(id));
+  const orderedIdSet = new Set([...preferredSelectedIds, ...orderedFavoriteIds]);
+  const appendedIds = [...selectedIds].filter((id) => !orderedIdSet.has(id));
+  return [...preferredSelectedIds, ...orderedFavoriteIds, ...appendedIds];
 }
 
 export function filterAndSortCandidateEntries(

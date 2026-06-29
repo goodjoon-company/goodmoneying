@@ -190,7 +190,9 @@ export function OperationsConsole() {
         {activeSection === "dashboard" ? (
           <Dashboard snapshot={snapshot} onSelectInstrument={openInstrumentDetail} />
         ) : null}
-        {activeSection === "targets" ? <Targets snapshot={snapshot} /> : null}
+        {activeSection === "targets" ? (
+          <Targets snapshot={snapshot} favoriteRows={favoriteCoinRows} />
+        ) : null}
         {activeSection === "markets" ? (
           <Markets
             rows={marketRows}

@@ -63,6 +63,17 @@ describe("수집 대상과 백필 workflow", () => {
     expect(orderedSelectedInstrumentIds(entries, selectedIds)).toEqual([3, 1, 2]);
   });
 
+  it("Backfill 저장 요청은 최신 관심종목 화면 순서를 후보 유니버스보다 우선한다", () => {
+    const entries = [
+      entry(1, "BTC", true, "100", "normal", 1),
+      entry(2, "ETH", true, "90", "normal", 2),
+      entry(3, "XRP", true, "80", "normal", 3)
+    ];
+    const selectedIds = new Set([1, 2, 3]);
+
+    expect(orderedSelectedInstrumentIds(entries, selectedIds, [2, 1, 3])).toEqual([2, 1, 3]);
+  });
+
   it("거래대금순으로 후보를 검색하고 정렬한다", () => {
     const entries = [
       entry(1, "BTC", true, "100", "normal"),

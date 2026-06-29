@@ -394,7 +394,7 @@ describe("데이터 수집관리 화면", () => {
     });
   });
 
-  it("관심종목에서 코인과 주식을 전환하고 코인 관심 목록을 조정한다", async () => {
+  it("관심종목은 코인 목록의 가격, 기준일시, 캔들 커버리지를 표시한다", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -434,6 +434,15 @@ describe("데이터 수집관리 화면", () => {
     expect(noCandleRow).not.toBeNull();
     expect(within(noCandleRow as HTMLElement).getByText("2026. 01. 01.")).toBeInTheDocument();
     expect(within(noCandleRow as HTMLElement).getByText("0")).toBeInTheDocument();
+  });
+
+  it("관심종목에서 코인 관심 순서와 관심 추가 상태를 조정한다", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "업비트 수집 운영 상태" });
+    await user.click(screen.getByRole("button", { name: "관심종목" }));
+    expect((await screen.findAllByRole("heading", { name: "관심종목" }))[0]).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "ETH 관심 순서 위로" }));
     const reorderedRequest = [...vi.mocked(globalThis.fetch).mock.calls]
@@ -473,6 +482,31 @@ describe("데이터 수집관리 화면", () => {
     await user.click(screen.getByRole("button", { name: "GM051 관심 추가" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "GM051 관심 제거" })).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "관심 코인 50개 보기" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Backfill 관리" }));
+    await user.click(screen.getByRole("button", { name: /^저장$/ }));
+    await waitFor(() => {
+      const targetRequest = [...vi.mocked(globalThis.fetch).mock.calls]
+        .reverse()
+        .find(
+          ([input, init]) =>
+            String(input).endsWith("/v1/collection-targets") && init?.method === "PUT"
+        );
+      expect(targetRequest).toBeDefined();
+      const body = JSON.parse(String((targetRequest?.[1] as RequestInit).body));
+      expect(body.instrumentIds[0]).toBe(2);
+      expect(body.instrumentIds).not.toContain(1);
+      expect(body.reason).toBe("운영 화면에서 수집 대상 변경");
+    });
+  });
+
+  it("관심종목에서 주식 전환과 코인 상세 열기를 제공한다", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "업비트 수집 운영 상태" });
+    await user.click(screen.getByRole("button", { name: "관심종목" }));
+    expect((await screen.findAllByRole("heading", { name: "관심종목" }))[0]).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /^주식$/ }));
     expect(screen.getByRole("button", { name: /^주식$/ })).toHaveAttribute(

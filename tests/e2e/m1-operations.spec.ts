@@ -25,7 +25,12 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
     baseAsset: string;
     quoteCurrency: string;
   };
+  const secondInstrument = baselineEntries[1].instrument as {
+    baseAsset: string;
+    quoteCurrency: string;
+  };
   const firstInstrumentName = `${firstInstrument.baseAsset} / ${firstInstrument.quoteCurrency}`;
+  const secondInstrumentName = `${secondInstrument.baseAsset} / ${secondInstrument.quoteCurrency}`;
   const pausedBackfillTargets = baselineEntries.slice(0, 5);
   const pausedBackfillTargetIds = pausedBackfillTargets.map(
     (entry: { instrument: { id: number } }) => entry.instrument.id
@@ -84,8 +89,10 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.getByRole("button", { name: "관심 코인 50개 보기" })).toBeVisible();
   await page.getByRole("button", { name: "관심 코인 50개 보기" }).click();
   await expect(page.getByRole("dialog", { name: "관심 코인 목록" })).toBeVisible();
-  await expect(page.getByRole("dialog", { name: "관심 코인 목록" })).toContainText("BTC / KRW");
-  await expect(page.getByRole("dialog", { name: "관심 코인 목록" })).toContainText("GM050 / KRW");
+  await expect(page.getByRole("dialog", { name: "관심 코인 목록" })).toContainText("50개");
+  await expect(page.getByRole("dialog", { name: "관심 코인 목록" })).toContainText(
+    firstInstrumentName
+  );
   await page.getByLabel("닫기").click();
   await expect(page.getByRole("heading", { name: "업비트 수집 운영 상태" })).toBeVisible();
   await expect(page.locator(".app-shell")).toHaveAttribute("data-theme", "dark");
@@ -199,15 +206,14 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.getByText("KRW").first()).toBeVisible();
   await expect(page.locator(".market-row-button").first()).toBeVisible();
   expect(await page.locator(".market-row-button").count()).toBeGreaterThan(0);
-  const noCandleMarketRow = page.locator(".table-row").filter({ hasText: "GM076 / KRW" });
-  await expect(noCandleMarketRow).toContainText("2026. 01. 01.");
-  await expect(noCandleMarketRow).toContainText("0");
-  await page.getByRole("button", { name: "ETH 관심 순서 위로" }).click();
-  await expect(page.locator(".market-row-button").first()).toContainText("ETH / KRW");
+  const firstMarketRow = page.locator(".table-row").filter({ hasText: firstInstrumentName });
+  await expect(firstMarketRow).toContainText("2026. 01. 01.");
+  await page.getByRole("button", { name: `${secondInstrument.baseAsset} 관심 순서 위로` }).click();
+  await expect(page.locator(".market-row-button").first()).toContainText(secondInstrumentName);
   await page.getByRole("button", { name: "관심 코인 50개 보기" }).click();
   const reorderedFavoriteDialog = page.getByRole("dialog", { name: "관심 코인 목록" });
   await expect(reorderedFavoriteDialog.locator(".favorite-coin-item").first()).toContainText(
-    "ETH / KRW"
+    secondInstrumentName
   );
   await page.getByLabel("닫기").click();
   await page.getByRole("button", { name: "Backfill 관리" }).click();
@@ -219,9 +225,9 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
       const marketList = await marketListResponse.json();
       return marketList.rows[0].instrument.baseAsset;
     })
-    .toBe("ETH");
+    .toBe(secondInstrument.baseAsset);
   await page.getByRole("button", { name: "관심종목" }).click();
-  await expect(page.locator(".market-row-button").first()).toContainText("ETH / KRW");
+  await expect(page.locator(".market-row-button").first()).toContainText(secondInstrumentName);
   await page.getByRole("button", { name: "주식", exact: true }).click();
   await expect(page.getByText("표시할 주식 관심종목이 없습니다.")).toBeVisible();
   await page.getByRole("button", { name: "코인", exact: true }).click();

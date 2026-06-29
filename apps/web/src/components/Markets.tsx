@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Star } from "lucide-react";
-import { updateFavoriteTargets, type MarketListRow } from "../api";
+import { updateFavoriteTargets, type CandidateUniverseEntry, type MarketListRow } from "../api";
 import { formatCurrencyAmount, formatPercent } from "../operationsDisplay";
 import { CoverageMeter, InstrumentName } from "./common";
 
@@ -28,15 +28,25 @@ export function Markets({
     mutationFn: updateFavoriteTargets,
     onMutate: async (nextIds) => {
       await queryClient.cancelQueries({ queryKey: ["market-list"] });
+      await queryClient.cancelQueries({ queryKey: ["candidate-universe"] });
       const previousRows = queryClient.getQueryData<MarketListRow[]>(["market-list"]);
+      const previousUniverse = queryClient.getQueryData<CandidateUniverseEntry[]>([
+        "candidate-universe"
+      ]);
       queryClient.setQueryData<MarketListRow[]>(["market-list"], (currentRows) =>
         applyFavoriteOrder(currentRows ?? marketRows, nextIds)
       );
-      return { previousRows };
+      queryClient.setQueryData<CandidateUniverseEntry[]>(["candidate-universe"], (currentEntries) =>
+        applyFavoriteOrderToCandidateUniverse(currentEntries ?? [], nextIds)
+      );
+      return { previousRows, previousUniverse };
     },
     onError: (_error, _nextIds, context) => {
       if (context?.previousRows) {
         queryClient.setQueryData(["market-list"], context.previousRows);
+      }
+      if (context?.previousUniverse) {
+        queryClient.setQueryData(["candidate-universe"], context.previousUniverse);
       }
     },
     onSuccess: () => {
@@ -194,6 +204,22 @@ function applyFavoriteOrder(rows: MarketListRow[], favoriteIds: number[]): Marke
       }
       return left.instrument.id - right.instrument.id;
     });
+}
+
+function applyFavoriteOrderToCandidateUniverse(
+  entries: CandidateUniverseEntry[],
+  favoriteIds: number[]
+): CandidateUniverseEntry[] {
+  const orderById = new Map(favoriteIds.map((id, index) => [id, index + 1]));
+  return entries.map((entry) => {
+    const favoriteOrder = orderById.get(entry.instrument.id) ?? null;
+    return {
+      ...entry,
+      selected: favoriteOrder !== null,
+      favoriteOrder,
+      isRealtimeTarget: favoriteOrder !== null
+    };
+  });
 }
 
 function MoneyCell({ value, currency }: { value: string | null; currency: string }) {

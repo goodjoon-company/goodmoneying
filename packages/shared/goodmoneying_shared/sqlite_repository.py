@@ -1526,20 +1526,36 @@ class SQLiteOperationsRepository:
     def _collection_activity_buckets(self) -> list[CollectionActivityBucket]:
         current_hour = now_kst().replace(minute=0, second=0, microsecond=0)
         first_hour = current_hour - timedelta(hours=(7 * 24) - 1)
-        run_counts: dict[datetime, int] = {}
-        for row in self._execute(
-            "SELECT started_at FROM collection_runs WHERE started_at >= ?",
-            (_to_db_time(first_hour),),
-        ).fetchall():
-            bucket = _from_db_time(row["started_at"]).replace(minute=0, second=0, microsecond=0)
-            run_counts[bucket] = run_counts.get(bucket, 0) + 1
-        result_counts: dict[datetime, int] = {}
-        for row in self._execute(
-            "SELECT created_at FROM target_collection_results WHERE created_at >= ?",
-            (_to_db_time(first_hour),),
-        ).fetchall():
-            bucket = _from_db_time(row["created_at"]).replace(minute=0, second=0, microsecond=0)
-            result_counts[bucket] = result_counts.get(bucket, 0) + 1
+        run_counts = {
+            _from_db_time(row["bucket_start_at"]).replace(
+                minute=0, second=0, microsecond=0
+            ): int(row["run_count"])
+            for row in self._execute(
+                """
+                SELECT substr(started_at, 1, 13) || ':00:00+09:00' AS bucket_start_at,
+                       COUNT(*) AS run_count
+                FROM collection_runs
+                WHERE started_at >= ?
+                GROUP BY bucket_start_at
+                """,
+                (_to_db_time(first_hour),),
+            ).fetchall()
+        }
+        result_counts = {
+            _from_db_time(row["bucket_start_at"]).replace(
+                minute=0, second=0, microsecond=0
+            ): int(row["result_count"])
+            for row in self._execute(
+                """
+                SELECT substr(created_at, 1, 13) || ':00:00+09:00' AS bucket_start_at,
+                       COUNT(*) AS result_count
+                FROM target_collection_results
+                WHERE created_at >= ?
+                GROUP BY bucket_start_at
+                """,
+                (_to_db_time(first_hour),),
+            ).fetchall()
+        }
         buckets = []
         for offset in range(7 * 24):
             bucket_start = first_hour + timedelta(hours=offset)

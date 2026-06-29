@@ -713,12 +713,17 @@ class SQLiteOperationsRepository:
         with self._lock:
             targets: list[CollectionDashboardTarget] = []
             active_targets = self.list_active_targets()
+            instrument_ids = [instrument.id for instrument in active_targets]
             source_candle_counts = self._table_counts_by_instrument(
                 "source_candles",
-                [instrument.id for instrument in active_targets],
+                instrument_ids,
             )
-            source_candle_ranges = self._source_candle_ranges_by_instrument(
-                [instrument.id for instrument in active_targets]
+            source_candle_ranges = self._source_candle_ranges_by_instrument(instrument_ids)
+            storage_bytes_by_instrument = self._instrument_storage_bytes_by_instrument(
+                instrument_ids
+            )
+            storage_rows_by_instrument = self._instrument_storage_row_counts_by_instrument(
+                instrument_ids
             )
             for instrument in active_targets:
                 ticker = self.latest_ticker(instrument.id)
@@ -770,9 +775,9 @@ class SQLiteOperationsRepository:
                         ),
                         ticker_collected_at=ticker.collected_at if ticker else now_kst(),
                         coverage_percent=candle_status.progress_percent,
-                        storage_row_count=self._instrument_storage_row_count(instrument.id),
+                        storage_row_count=storage_rows_by_instrument.get(instrument.id, 0),
                         storage_bytes_display=_format_storage_bytes(
-                            self._instrument_storage_bytes(instrument.id)
+                            storage_bytes_by_instrument.get(instrument.id, 0)
                         ),
                         collected_start_at=source_candle_ranges.get(
                             instrument.id, (None, None)
@@ -821,12 +826,21 @@ class SQLiteOperationsRepository:
 
     def market_list(self) -> list[MarketListRow]:
         rows: list[MarketListRow] = []
-        for instrument in self.list_active_targets():
+        active_targets = self.list_active_targets()
+        instrument_ids = [instrument.id for instrument in active_targets]
+        storage_bytes_by_instrument = self._instrument_storage_bytes_by_instrument(
+            instrument_ids
+        )
+        storage_rows_by_instrument = self._instrument_storage_row_counts_by_instrument(
+            instrument_ids
+        )
+        for instrument in active_targets:
             ticker = self.latest_ticker(instrument.id)
             orderbook = self.latest_orderbook(instrument.id)
             if ticker is None or orderbook is None:
                 continue
             coverage = self.coverage_for(instrument.id)
+            storage_bytes = storage_bytes_by_instrument.get(instrument.id, 0)
             rows.append(
                 MarketListRow(
                     instrument=instrument,
@@ -838,11 +852,9 @@ class SQLiteOperationsRepository:
                     orderbook_collected_at=orderbook.collected_at,
                     quality_status=self._quality_status_from_coverage(coverage),
                     coverage_percent=self._market_coverage_percent_from_statuses(coverage),
-                    storage_bytes=self._instrument_storage_bytes(instrument.id),
-                    storage_row_count=self._instrument_storage_row_count(instrument.id),
-                    storage_bytes_display=_format_storage_bytes(
-                        self._instrument_storage_bytes(instrument.id)
-                    ),
+                    storage_bytes=storage_bytes,
+                    storage_row_count=storage_rows_by_instrument.get(instrument.id, 0),
+                    storage_bytes_display=_format_storage_bytes(storage_bytes),
                 )
             )
         return rows
@@ -2129,6 +2141,32 @@ class SQLiteOperationsRepository:
             + self._table_count("ticker_snapshots", instrument_id)
             + self._table_count("orderbook_summaries", instrument_id)
         )
+
+    def _instrument_storage_bytes_by_instrument(
+        self, instrument_ids: list[int]
+    ) -> dict[int, int]:
+        source_counts = self._table_counts_by_instrument("source_candles", instrument_ids)
+        ticker_counts = self._table_counts_by_instrument("ticker_snapshots", instrument_ids)
+        orderbook_counts = self._table_counts_by_instrument("orderbook_summaries", instrument_ids)
+        return {
+            instrument_id: source_counts.get(instrument_id, 0) * 256
+            + ticker_counts.get(instrument_id, 0) * 160
+            + orderbook_counts.get(instrument_id, 0) * 224
+            for instrument_id in instrument_ids
+        }
+
+    def _instrument_storage_row_counts_by_instrument(
+        self, instrument_ids: list[int]
+    ) -> dict[int, int]:
+        source_counts = self._table_counts_by_instrument("source_candles", instrument_ids)
+        ticker_counts = self._table_counts_by_instrument("ticker_snapshots", instrument_ids)
+        orderbook_counts = self._table_counts_by_instrument("orderbook_summaries", instrument_ids)
+        return {
+            instrument_id: source_counts.get(instrument_id, 0)
+            + ticker_counts.get(instrument_id, 0)
+            + orderbook_counts.get(instrument_id, 0)
+            for instrument_id in instrument_ids
+        }
 
     def _table_count(self, table: str, instrument_id: int | None = None) -> int:
         if instrument_id is None:

@@ -1,7 +1,7 @@
 # M1 prod-home CI/CD 배포 검증
 
 Date: 2026-06-19
-Related Task: `docs/Task/M1-T04-2026-06-19-001-운영계-prod-home-CICD-배포-설계.md`
+Related Task: `docs/Task/M1.md`
 Environment: macOS, Python 3.14 가상환경(Virtual Environment), Node.js 워크스페이스(Workspace), Playwright Chromium
 
 ## 검증 대상

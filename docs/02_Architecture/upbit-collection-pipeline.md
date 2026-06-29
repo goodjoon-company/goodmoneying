@@ -1,9 +1,9 @@
 # 업비트 수집 파이프라인 설계
 
 Status: Draft
-Last Updated: 2026-06-21
+Last Updated: 2026-06-30
 Related Product: `docs/01_Product.md`
-Related Task: `docs/Task/M1-T01-2026-06-17-업비트-수집-운영-mvp-아키텍처-계약-설계.md`
+Related Task: `docs/Task/M1.md`
 Related DB Contract: `docs/contracts/db/schema.sql`
 Related API Contract: `docs/contracts/api/openapi.yaml`
 
@@ -38,7 +38,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 | 실시간 수집 워커(Realtime Collection Worker) | 업비트 웹소켓(WebSocket) 시세 스트림 수신, 후보 유니버스와 증분 수집 저장, fixture 모드 REST 수집 | Python 단일 프로세스 |
 | 백필 수집 워커(Backfill Collection Worker) | DB 상태 폴링으로 pending 백필 작업 확인, 원천 캔들 결측 구간 백필 실행, fetch 성공 heartbeat와 DB batch upsert 완료 기준 진행 상태 기록 | Python 단일 프로세스, 기본 10초 폴링, 기본 최대 3000개 저장 배치(batch) |
 | 운영 서버(Operations Server) | 화면 단위 View Model API, 원천 리소스 API, 쓰기 API, 저장된 worker 상태 조회 | FastAPI |
-| 운영 화면 | 데이터 수집관리 내비게이션, worker 현황판, 대시보드, Backfill 관리, 백필 제어, 시장 리스트, 코인 상세 레이어 | React, SSE(Server-Sent Events) 대시보드 갱신, React Query HTTP 폴링(Polling) 보조 |
+| 운영 화면 | 데이터 수집관리 내비게이션, worker 현황판, 대시보드, Backfill 관리, 백필 제어, 관심종목, 코인 상세 레이어 | React, SSE(Server-Sent Events) 대시보드/관심종목 가격 갱신, React Query HTTP 폴링(Polling) 보조 |
 | PostgreSQL | 원천 사실, 설정, 품질, 감사, 알림 이벤트 저장 | `docs/contracts/db/schema.sql` |
 
 ## 입력과 출력
@@ -133,14 +133,18 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 | 운영 상태 대시보드 | worker 현황판, 코인별 수집 계획, 파이프라인 건강도, 최신성, 실패, 결측, 저장량, 구간형 진행 상태 | 10~15초 |
 | Backfill 관리 | 후보 유니버스, 활성 수집 대상 최대 50개, 24시간 거래대금, 수집 시작일/최종일, 실시간 수집 라벨, 백필 계획 생성 레이어, 백필 작업 패널 | 수동 또는 변경 후 갱신 |
 | 백필 작업 | 저장된 백필 작업 상태와 제어 | 실행 중 5~10초 |
-| 시장 리스트 | 현재가, 거래대금, 등락률, 품질 상태 | 30초 |
+| 관심종목 | 코인/주식 전환, 관심 추가 토글, 현재가, 24시간 거래대금, 전일 종가 대비 등락률, 기준일시, 캔들 커버리지, 1분 캔들 수 | SSE push, HTTP fallback |
 | 코인 상세 레이어 | 캔들 차트, 호가 요약, 품질 이력 | 30초 또는 사용자가 켜는 실시간 모드 |
 
-운영 상태 대시보드는 수집 대상 코인을 행(row) 단위로 표시한다. 각 행은 코인 전체 상태와 캔들(Candle), 현재가(Ticker), 호가 요약(Orderbook Summary)의 미니 상태를 함께 보여주고, 펼치면 데이터별 그래프, 결측 구간, 수집 계획 수정 버튼, 백필 제어를 표시한다.
+운영 상태 대시보드는 관심목록 코인을 행(row) 단위로 표시한다. 각 행은 코인 전체 상태와 캔들(Candle), 현재가(Ticker), 호가 요약(Orderbook Summary)의 미니 상태를 함께 보여주고, 펼치면 데이터별 그래프, 결측 구간, 수집 계획 수정 버튼, 백필 제어를 표시한다.
+
+관심종목 화면의 별 토글은 기존 활성 수집 대상 저장 API를 호출한다. 따라서 관심목록은 운영 상태 대시보드와 Backfill 관리의 대상 종목 기준과 동일하다.
 
 운영 상태 대시보드 첫 카드의 worker 현황판은 `DashboardSummary.workerStatus`를 사용한다. 실시간 수집 워커는 heartbeat, 마지막 저장 성공 시각, 24시간 수집 오류 수, 24시간 실패율, 최근 오류 상세를 표시한다. 백필 수집 워커는 heartbeat, 마지막 저장 성공 시각, 전체 백필 오류 수, 전체 실패율, 현재 실행 중인 단일 백필 계획 기준의 동작 중 대상 수(`runningTargetCount/totalTargetCount`), 대기 중인 백필 job/target 보조지표(`queuedJobCount/queuedTargetCount`), 최근 오류 상세를 표시한다. worker 상태 라벨은 클릭 가능한 진단 진입점이며, 상태 사유, 마지막 heartbeat, 마지막 저장 성공, 오류율, 동작 중 대상 수, 대기 백필 수 같은 `diagnostics` 항목을 레이어 팝업으로 표시한다.
 
 운영 서버는 `/v1/dashboard/summary/stream` SSE(Server-Sent Events)에서 `event: dashboard`와 `DashboardSummary` JSON payload를 전송한다. 운영 화면은 이 스트림을 구독해 dashboard 상태를 갱신하고, EventSource를 사용할 수 없거나 연결이 끊긴 경우 기존 React Query HTTP 폴링(Polling)을 보조 경로로 사용한다.
+
+운영 서버는 `/v1/market-list/stream` SSE(Server-Sent Events)에서 `event: marketList`와 `MarketListResponse` JSON payload를 전송한다. 실시간 수집 워커가 업비트 웹소켓(WebSocket)으로 받은 현재가 스냅샷(Ticker Snapshot)을 저장하면, 관심종목 화면은 이 스트림으로 최신 현재가, 24시간 거래대금, 등락률, 기준일시를 갱신한다.
 
 화면 시간 표시는 KST(Korea Standard Time)로 통일한다. 저장과 내부 계산, Docker 컨테이너, PostgreSQL 세션과 DB 기본 시간대도 KST 기준이고, 현재(지속) 수집의 진행 상태 기준일은 KST 전일 23:59:59다.
 
@@ -166,7 +170,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 
 ## 리스크와 후속 작업
 
-- M1은 단일 워커 구조이므로 다중 워커 장애 복구와 작업 분배는 M3.5에서 고도화한다.
-- M1은 삭제 없음 정책을 사용하므로 저장량 증가를 M3/M3.5에서 반드시 재검토한다.
-- 메시지 큐(Message Queue), 분산 rate limiter, PostgreSQL 복제/장애 조치(Failover)는 M3.5 필수 결정 항목이다.
+- M1은 단일 워커 구조이므로 다중 워커 장애 복구와 작업 분배는 M4에서 고도화한다.
+- M1은 삭제 없음 정책을 사용하므로 저장량 증가를 M3/M4에서 반드시 재검토한다.
+- 메시지 큐(Message Queue), 분산 rate limiter, PostgreSQL 복제/장애 조치(Failover)는 M4 필수 결정 항목이다.
 - 기술적 분석 지표와 외부 알림 발송은 MVP 이후 별도 결정 질문을 거쳐 설계한다. 대시보드 요약 갱신은 SSE(Server-Sent Events), 업비트 시세 수집은 서버 측 WebSocket을 사용한다.

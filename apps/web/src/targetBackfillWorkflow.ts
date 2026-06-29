@@ -4,8 +4,25 @@ export type SortMode = "trade";
 
 export function initialSelectedInstrumentIds(entries: CandidateUniverseEntry[]): Set<number> {
   return new Set(
-    entries.filter((entry) => entry.selected).map((entry) => entry.instrument.id)
+    orderedSelectedInstrumentIds(
+      entries,
+      new Set(entries.filter((entry) => entry.selected).map((entry) => entry.instrument.id))
+    )
   );
+}
+
+export function orderedSelectedInstrumentIds(
+  entries: CandidateUniverseEntry[],
+  selectedIds: Set<number>
+): number[] {
+  const selectedEntries = entries.filter((entry) => selectedIds.has(entry.instrument.id));
+  const orderedFavoriteIds = selectedEntries
+    .filter((entry) => entry.favoriteOrder !== null)
+    .sort((left, right) => Number(left.favoriteOrder) - Number(right.favoriteOrder))
+    .map((entry) => entry.instrument.id);
+  const orderedFavoriteIdSet = new Set(orderedFavoriteIds);
+  const appendedIds = [...selectedIds].filter((id) => !orderedFavoriteIdSet.has(id));
+  return [...orderedFavoriteIds, ...appendedIds];
 }
 
 export function filterAndSortCandidateEntries(

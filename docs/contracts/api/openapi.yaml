@@ -268,15 +268,37 @@ paths:
     get:
       tags:
         - 시장(Market)
-      summary: 시장 리스트 조회
+      summary: 관심종목 목록 조회
       operationId: getMarketList
       responses:
         "200":
-          description: 현재가, 거래대금, 등락률, 품질 상태 목록
+          description: 관심 여부, 현재가, 거래대금, 등락률, 캔들 커버리지 기준 시작일과 현재일 목록
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/MarketListResponse"
+  /v1/market-list/stream:
+    get:
+      tags:
+        - 시장(Market)
+      summary: 관심종목 목록 SSE 스트림
+      operationId: streamMarketList
+      parameters:
+        - name: once
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: 테스트와 진단용 단일 이벤트 전송 여부
+      responses:
+        "200":
+          description: 관심종목 가격 정보를 marketList 이벤트로 전송하는 SSE 스트림
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: "event: marketList 형식의 SSE 스트림. data 필드는 MarketListResponse JSON이다."
   /v1/instruments/{instrumentId}:
     get:
       tags:
@@ -1467,6 +1489,7 @@ components:
         - accTradePrice24h
         - accTradePrice24hDisplay
         - selected
+        - favoriteOrder
         - candidateStatus
         - qualityStatus
         - qualityDetail
@@ -1485,6 +1508,12 @@ components:
           type: string
         selected:
           type: boolean
+        favoriteOrder:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+          description: 관심목록 안에서 사용자가 지정한 순서. 비활성 후보는 null이다.
         candidateStatus:
           type: string
           enum: [in_universe, out_of_universe]
@@ -1531,7 +1560,7 @@ components:
           items:
             $ref: "#/components/schemas/Instrument"
     MarketListResponse:
-      description: 시장 리스트 화면에 표시할 거래 상품 row 목록 응답.
+      description: 관심종목 화면에 표시할 거래 상품 row 목록 응답.
       type: object
       required: [rows]
       properties:
@@ -1540,46 +1569,104 @@ components:
           items:
             $ref: "#/components/schemas/MarketListRow"
     MarketListRow:
-      description: 시장 리스트의 단일 거래 상품 가격, 거래대금, 품질, 저장량 row.
+      description: 관심종목의 단일 거래 상품 가격, 거래대금, 캔들 커버리지 row.
       type: object
       required:
         - instrument
+        - assetType
+        - isFavorite
+        - favoriteOrder
         - tradePrice
+        - priceCurrency
         - accTradePrice24h
         - accTradePrice24hDisplay
+        - tradeAmountCurrency
+        - changeRate
+        - changeRateBasis
+        - tickerCollectedAt
+        - orderbookCollectedAt
         - qualityStatus
         - coveragePercent
+        - candleCoverageStartAt
+        - candleCoverageEndAt
+        - candleCoverageCurrentAt
+        - oneMinuteCandleCount
         - storageBytes
         - storageRowCount
         - storageBytesDisplay
       properties:
         instrument:
           $ref: "#/components/schemas/Instrument"
+        assetType:
+          type: string
+          enum: [coin, stock]
+          description: 관심종목 자산 구분.
+        isFavorite:
+          type: boolean
+          description: 운영 상태와 Backfill 관리의 기준이 되는 관심목록 포함 여부.
+        favoriteOrder:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+          description: 관심목록 안에서 사용자가 지정한 순서. 비관심 종목은 null이다.
         tradePrice:
-          $ref: "#/components/schemas/DecimalString"
+          allOf:
+            - $ref: "#/components/schemas/DecimalString"
+          nullable: true
+        priceCurrency:
+          type: string
+          description: 현재가 화폐 단위.
         accTradePrice24h:
           $ref: "#/components/schemas/DecimalString"
         accTradePrice24hDisplay:
           type: string
           description: 화면 표시용 24시간 거래대금. 통화기호와 천 단위 구분자를 포함한다.
+        tradeAmountCurrency:
+          type: string
+          description: 24시간 거래대금 화폐 단위.
         changeRate:
-          $ref: "#/components/schemas/DecimalString"
+          allOf:
+            - $ref: "#/components/schemas/DecimalString"
+          nullable: true
+        changeRateBasis:
+          type: string
+          description: 등락률 비교 기준.
         tickerCollectedAt:
           type: string
           format: date-time
+          nullable: true
         orderbookCollectedAt:
           type: string
           format: date-time
+          nullable: true
         qualityStatus:
           type: string
           enum: [normal, warning, incident]
         coveragePercent:
           $ref: "#/components/schemas/DecimalString"
+        candleCoverageStartAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: 캔들 커버리지 산정 기준 시작일. 저장된 1분 캔들이 없어도 수집 계획의 시작일을 내려준다.
+        candleCoverageEndAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: 저장된 1분 캔들의 최신 시작 시각. 저장된 캔들이 없으면 null이다.
+        candleCoverageCurrentAt:
+          type: string
+          format: date-time
+          description: 캔들 커버리지 우측 기준일시.
+        oneMinuteCandleCount:
+          type: integer
+          description: 저장된 1분 캔들 row 수.
         storageBytes:
           type: integer
         storageRowCount:
           type: integer
-          description: 화면 표시용 저장 행 수.
+          description: 하위 호환용 저장 행 수. 현재 관심종목 화면에서는 1분 캔들 수와 동일하다.
         storageBytesDisplay:
           type: string
     InstrumentDetailResponse:

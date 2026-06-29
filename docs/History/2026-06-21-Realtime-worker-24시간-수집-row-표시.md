@@ -1,7 +1,7 @@
 # 2026-06-21 Realtime worker 24시간 수집 row 표시
 
 Date: 2026-06-21
-Related Task: `docs/Task/M3-T17-2026-06-21-001-Realtime-worker-24시간-수집-row-표시.md`
+Related Task: `docs/Task/M3.md`
 Related PR: TBD
 
 ## 변경 요약
@@ -14,7 +14,7 @@ Related PR: TBD
 
 ## 영향 문서
 
-- `docs/Task/M3-T17-2026-06-21-001-Realtime-worker-24시간-수집-row-표시.md`
+- `docs/Task/M3.md`
 - `docs/Test/2026-06-21-Realtime-worker-24시간-수집-row-표시-검증.md`
 
 ## 영향 계약

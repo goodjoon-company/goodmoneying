@@ -9,7 +9,7 @@ from time import perf_counter
 import pytest
 from fastapi.testclient import TestClient
 
-from goodmoneying_api.main import create_app
+from goodmoneying_api.main import create_app, create_repository_from_environment
 from goodmoneying_shared.models import SourceCandle
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_shared.time import now_kst
@@ -48,6 +48,18 @@ def test_default_api_repository_does_not_auto_seed_fixture_data(
     assert response.status_code == 200
     assert response.json()["totals"]["activeTargets"] == 0
     assert response.json()["targets"] == []
+
+
+def test_demo_data_repository_overrides_database_url_for_e2e(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOODMONEYING_DATABASE_URL", "postgresql://example.invalid/goodmoneying")
+    monkeypatch.setenv("GOODMONEYING_DEMO_DATA", "1")
+
+    repository = create_repository_from_environment()
+
+    assert isinstance(repository, SQLiteOperationsRepository)
+    assert len(repository.list_active_targets()) == 50
 
 
 def test_dashboard_candidate_market_and_detail_endpoints() -> None:
@@ -137,18 +149,32 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
     assert universe.json()["entries"][0]["qualityStatus"] in {"normal", "warning", "incident"}
     assert universe.json()["entries"][0]["qualityDetail"]
     first_universe_entry = universe.json()["entries"][0]
+    assert first_universe_entry["favoriteOrder"] == 1
     assert first_universe_entry["collectionRangeDisplay"].startswith("2026-01-01")
     assert first_universe_entry["collectedStartAt"]
     assert first_universe_entry["collectedEndAt"]
     assert first_universe_entry["collectedStartAt"] <= first_universe_entry["collectedEndAt"]
     assert first_universe_entry["isRealtimeTarget"] is True
     assert market_list.status_code == 200
-    assert len(market_list.json()["rows"]) == 50
+    assert len(market_list.json()["rows"]) == 100
     first_market_row = market_list.json()["rows"][0]
+    assert first_market_row["assetType"] == "coin"
+    assert first_market_row["isFavorite"] is True
+    assert first_market_row["priceCurrency"] == "KRW"
+    assert first_market_row["tradeAmountCurrency"] == "KRW"
+    assert first_market_row["changeRateBasis"] == "전일 종가 대비"
     assert first_market_row["accTradePrice24hDisplay"].startswith("₩")
     assert "," in first_market_row["accTradePrice24hDisplay"]
     assert first_market_row["coveragePercent"]
+    assert first_market_row["candleCoverageStartAt"]
+    assert first_market_row["candleCoverageCurrentAt"]
+    assert first_market_row["oneMinuteCandleCount"] > 0
+    assert first_market_row["storageRowCount"] == first_market_row["oneMinuteCandleCount"]
     assert first_market_row["storageBytesDisplay"].endswith(("MB", "GB"))
+    inactive_market_row = market_list.json()["rows"][75]
+    assert inactive_market_row["isFavorite"] is False
+    assert inactive_market_row["oneMinuteCandleCount"] == 0
+    assert inactive_market_row["candleCoverageStartAt"].startswith("2026-01-01T00:00:00")
 
     instrument_id = market_list.json()["rows"][0]["instrument"]["id"]
     detail = client.get(f"/v1/instruments/{instrument_id}")
@@ -163,6 +189,43 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
     assert detail.json()["orderbookFreshnessLabel"].endswith("전")
     assert detail.json()["qualityHistory"][0]["status"] in {"normal", "warning", "incident"}
     assert detail.json()["qualityHistory"][0]["title"]
+
+
+def test_collection_target_order_is_reflected_in_market_list_and_dashboard() -> None:
+    client = seeded_client()
+    universe = client.get("/v1/candidate-universe").json()
+    reordered_ids = [
+        universe["entries"][2]["instrument"]["id"],
+        universe["entries"][0]["instrument"]["id"],
+        universe["entries"][1]["instrument"]["id"],
+    ]
+
+    response = client.put(
+        "/v1/collection-targets",
+        headers={"X-Operator-Token": "local-dev-token"},
+        json={
+            "instrumentIds": reordered_ids,
+            "reason": "관심종목 화면에서 순서 변경",
+        },
+    )
+    market_list = client.get("/v1/market-list")
+    dashboard = client.get("/v1/dashboard/summary")
+    updated_universe = client.get("/v1/candidate-universe")
+    favorite_order_by_id = {
+        entry["instrument"]["id"]: entry["favoriteOrder"]
+        for entry in updated_universe.json()["entries"]
+        if entry["instrument"]["id"] in reordered_ids
+    }
+
+    assert response.status_code == 200
+    assert [target["id"] for target in response.json()["targets"]] == reordered_ids
+    assert [row["instrument"]["id"] for row in market_list.json()["rows"][:3]] == reordered_ids
+    assert [row["favoriteOrder"] for row in market_list.json()["rows"][:3]] == [1, 2, 3]
+    assert favorite_order_by_id == dict(zip(reordered_ids, [1, 2, 3], strict=True))
+    dashboard_target_ids = [
+        target["instrument"]["id"] for target in dashboard.json()["targets"][:3]
+    ]
+    assert dashboard_target_ids == reordered_ids
 
 
 def test_dashboard_summary_stream_emits_dashboard_sse_event() -> None:
@@ -180,6 +243,24 @@ def test_dashboard_summary_stream_emits_dashboard_sse_event() -> None:
     payload = json.loads(data_line.removeprefix("data: "))
     assert payload["status"] in {"normal", "warning", "incident"}
     assert payload["realtimeCollectionHeatmap"]
+
+
+def test_market_list_stream_emits_market_list_sse_event() -> None:
+    client = seeded_client()
+
+    with client.stream("GET", "/v1/market-list/stream?once=true") as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        lines = response.iter_lines()
+
+        assert next(lines) == "event: marketList"
+        data_line = next(lines)
+
+    assert data_line.startswith("data: ")
+    payload = json.loads(data_line.removeprefix("data: "))
+    assert len(payload["rows"]) == 100
+    assert payload["rows"][0]["tradePrice"]
+    assert payload["rows"][0]["tickerCollectedAt"]
 
 
 def test_dashboard_summary_exposes_collection_worker_status() -> None:

@@ -5,6 +5,7 @@ import {
   canSaveTargets,
   filterAndSortCandidateEntries,
   initialSelectedInstrumentIds,
+  orderedSelectedInstrumentIds,
   toggleSelectedInstrument
 } from "./targetBackfillWorkflow";
 
@@ -13,7 +14,8 @@ function entry(
   baseAsset: string,
   selected: boolean,
   accTradePrice24h: string,
-  qualityStatus: CandidateUniverseEntry["qualityStatus"] = "normal"
+  qualityStatus: CandidateUniverseEntry["qualityStatus"] = "normal",
+  favoriteOrder: number | null = selected ? id : null
 ): CandidateUniverseEntry {
   return {
     instrument: {
@@ -28,6 +30,7 @@ function entry(
     accTradePrice24h,
     accTradePrice24hDisplay: `₩${accTradePrice24h}`,
     selected,
+    favoriteOrder,
     candidateStatus: "in_universe",
     qualityStatus,
     qualityDetail: qualityStatus,
@@ -47,6 +50,17 @@ describe("수집 대상과 백필 workflow", () => {
     ]);
 
     expect([...ids]).toEqual([1, 3]);
+  });
+
+  it("Backfill 저장 요청은 기존 관심목록 순서를 보존하고 신규 선택을 뒤에 붙인다", () => {
+    const entries = [
+      entry(1, "BTC", true, "100", "normal", 2),
+      entry(2, "ETH", false, "90", "normal", null),
+      entry(3, "XRP", true, "80", "normal", 1)
+    ];
+    const selectedIds = new Set([1, 3, 2]);
+
+    expect(orderedSelectedInstrumentIds(entries, selectedIds)).toEqual([3, 1, 2]);
   });
 
   it("거래대금순으로 후보를 검색하고 정렬한다", () => {

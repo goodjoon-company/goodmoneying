@@ -28,6 +28,47 @@
   padding: 18px;
 }
 
+.favorite-coins-dialog {
+  position: relative;
+  width: min(560px, calc(100vw - 48px));
+  max-height: min(720px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid #2d463b;
+  border-radius: 8px;
+  background: #111916;
+  padding: 18px;
+}
+
+.favorite-coin-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.favorite-coin-item {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid #243a31;
+  border-radius: 8px;
+  background: #0d1311;
+  padding: 10px 12px;
+}
+
+.favorite-coin-item > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.favorite-coin-item small {
+  color: #9eaaa2;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .backfill-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

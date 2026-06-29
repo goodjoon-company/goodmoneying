@@ -53,10 +53,10 @@ from goodmoneying_worker.upbit_client import FixtureUpbitClient
 
 def create_repository_from_environment() -> OperationsRepository:
     database_url = os.getenv("GOODMONEYING_DATABASE_URL")
-    if database_url and database_url.startswith(("postgres://", "postgresql://")):
-        return PostgresOperationsRepository(database_url)
     if os.getenv("GOODMONEYING_DEMO_DATA") == "1":
         return create_seeded_repository()
+    if database_url and database_url.startswith(("postgres://", "postgresql://")):
+        return PostgresOperationsRepository(database_url)
     return SQLiteOperationsRepository()
 
 
@@ -209,6 +209,19 @@ def create_app(repository: OperationsRepository | None = None) -> FastAPI:
     @app.get("/v1/market-list", response_model=MarketListResponse)
     def get_market_list() -> MarketListResponse:
         return service.market_list()
+
+    @app.get("/v1/market-list/stream")
+    def stream_market_list(
+        once: Annotated[bool, Query(description="테스트와 진단용 단일 이벤트 전송 여부")] = False,
+    ) -> StreamingResponse:
+        def events() -> Iterator[str]:
+            while True:
+                yield f"event: marketList\ndata: {service.market_list().model_dump_json()}\n\n"
+                if once:
+                    break
+                time.sleep(service.market_list_stream_interval_seconds())
+
+        return StreamingResponse(events(), media_type="text/event-stream")
 
     @app.get(
         "/v1/collection-targets/{instrumentId}/coverage-segments",

@@ -121,6 +121,9 @@ class OperationsService:
     def dashboard_stream_interval_seconds(self) -> int:
         return self._refresh_seconds("realtimeHeatmap")
 
+    def market_list_stream_interval_seconds(self) -> int:
+        return self._refresh_seconds("realtimeHeatmap")
+
     def dashboard_overview(self) -> DashboardOverviewResponse:
         summary = self.dashboard_summary()
         return DashboardOverviewResponse(
@@ -251,6 +254,7 @@ class OperationsService:
                     accTradePrice24h=decimal_string(entry.acc_trade_price_24h) or "0",
                     accTradePrice24hDisplay=format_krw(entry.acc_trade_price_24h),
                     selected=entry.selected,
+                    favoriteOrder=entry.favorite_order,
                     candidateStatus=entry.candidate_status,
                     qualityStatus=candidate_quality_status(
                         targets_by_instrument_id.get(entry.instrument.id)
@@ -301,14 +305,24 @@ class OperationsService:
             rows=[
                 MarketListRowResponse(
                     instrument=instrument_to_response(row.instrument),
-                    tradePrice=decimal_string(row.trade_price) or "0",
+                    assetType=row.asset_type,
+                    isFavorite=row.is_favorite,
+                    favoriteOrder=row.favorite_order,
+                    tradePrice=decimal_string(row.trade_price),
+                    priceCurrency=row.price_currency,
                     accTradePrice24h=decimal_string(row.acc_trade_price_24h) or "0",
                     accTradePrice24hDisplay=format_krw(row.acc_trade_price_24h),
-                    changeRate=decimal_string(row.change_rate) or "0",
+                    tradeAmountCurrency=row.trade_amount_currency,
+                    changeRate=decimal_string(row.change_rate),
+                    changeRateBasis=row.change_rate_basis,
                     tickerCollectedAt=row.ticker_collected_at,
                     orderbookCollectedAt=row.orderbook_collected_at,
                     qualityStatus=row.quality_status,
                     coveragePercent=decimal_string(row.coverage_percent) or "0",
+                    candleCoverageStartAt=row.candle_coverage_start_at,
+                    candleCoverageEndAt=row.candle_coverage_end_at,
+                    candleCoverageCurrentAt=row.candle_coverage_current_at,
+                    oneMinuteCandleCount=row.one_minute_candle_count,
                     storageBytes=row.storage_bytes,
                     storageRowCount=row.storage_row_count,
                     storageBytesDisplay=row.storage_bytes_display,

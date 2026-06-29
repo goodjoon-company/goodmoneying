@@ -10,6 +10,13 @@ export function formatNumber(value: string): string {
   return Number(value).toLocaleString("ko-KR", { maximumFractionDigits: 4 });
 }
 
+export function formatCurrencyAmount(value: string, currency: string): string {
+  if (currency === "KRW") {
+    return Math.trunc(Number(value)).toLocaleString("ko-KR", { maximumFractionDigits: 0 });
+  }
+  return formatNumber(value);
+}
+
 export function formatCompactCount(value: number): string {
   if (value >= 1_000_000) {
     return `${(value / 1_000_000).toLocaleString("ko-KR", {

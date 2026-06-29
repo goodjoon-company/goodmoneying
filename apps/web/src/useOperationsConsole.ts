@@ -3,7 +3,7 @@ import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { createHttpOperationsDataClient, type OperationsDataClient } from "./operationsData";
 import type { OperationsSnapshot } from "./api";
 
-export type SectionId = "dashboard" | "targets" | "markets" | "scalability";
+export type SectionId = "dashboard" | "targets" | "markets";
 
 export type UseOperationsConsoleOptions = {
   dataClient?: OperationsDataClient;

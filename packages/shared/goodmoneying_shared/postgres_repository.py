@@ -175,9 +175,9 @@ class PostgresOperationsRepository:
                     """,
                     (snapshot_id, limit),
                 ).fetchall()
-                for row in rows:
+                for target_order, row in enumerate(rows, start=1):
                     self._activate_target(
-                        conn, int(row["instrument_id"]), "system", "default_top_50"
+                        conn, int(row["instrument_id"]), "system", "default_top_50", target_order
                     )
         return self.list_active_targets()
 
@@ -208,8 +208,8 @@ class PostgresOperationsRepository:
             next_ids = set(instrument_ids)
             for instrument_id in sorted(current_ids - next_ids):
                 self._deactivate_target(conn, instrument_id, "local_user", reason)
-            for instrument_id in instrument_ids:
-                self._activate_target(conn, instrument_id, "local_user", reason)
+            for target_order, instrument_id in enumerate(instrument_ids, start=1):
+                self._activate_target(conn, instrument_id, "local_user", reason, target_order)
         return self.list_active_targets()
 
     def list_candidate_universe(self) -> tuple[datetime, list[CandidateUniverseEntry]]:
@@ -223,6 +223,7 @@ class PostgresOperationsRepository:
                   cus.ranked_at,
                   i.*,
                   COALESCE(ct.status, 'inactive') AS target_status,
+                  ct.target_order AS favorite_order,
                   COALESCE(ct.candidate_status, 'in_universe') AS candidate_status
                 FROM candidate_universe_entries cue
                 JOIN candidate_universe_snapshots cus ON cus.id = cue.snapshot_id
@@ -244,6 +245,9 @@ class PostgresOperationsRepository:
                     Literal["in_universe", "out_of_universe"],
                     row["candidate_status"],
                 ),
+                favorite_order=(
+                    int(row["favorite_order"]) if row["favorite_order"] is not None else None
+                ),
             )
             for row in rows
         ]
@@ -256,7 +260,7 @@ class PostgresOperationsRepository:
                 FROM collection_targets ct
                 JOIN instruments i ON i.id = ct.instrument_id
                 WHERE ct.status = 'active'
-                ORDER BY i.market_code
+                ORDER BY ct.target_order, i.market_code
                 """
             ).fetchall()
         return [_instrument(row) for row in rows]
@@ -628,37 +632,74 @@ class PostgresOperationsRepository:
 
     def market_list(self) -> list[MarketListRow]:
         rows: list[MarketListRow] = []
-        active_targets = self.list_active_targets()
-        instrument_ids = [instrument.id for instrument in active_targets]
+        _, candidate_entries = self.list_candidate_universe()
+        instrument_ids = [entry.instrument.id for entry in candidate_entries]
         latest_tickers = self._latest_tickers_by_instrument(instrument_ids)
         latest_orderbooks = self._latest_orderbooks_by_instrument(instrument_ids)
-        storage_bytes_by_instrument, storage_rows_by_instrument = (
-            self._instrument_storage_totals_by_instrument(instrument_ids)
+        source_candle_counts = self._table_counts_by_instrument(
+            "source_candles",
+            instrument_ids,
         )
-        for instrument in active_targets:
+        source_candle_ranges = self._source_candle_ranges_by_instrument(instrument_ids)
+        storage_bytes_by_instrument, _ = self._instrument_storage_totals_by_instrument(
+            instrument_ids
+        )
+        collection_plans = self._collection_plans_by_instrument(instrument_ids)
+        current_at = now_kst()
+        for entry in candidate_entries:
+            instrument = entry.instrument
             ticker = latest_tickers.get(instrument.id)
             orderbook = latest_orderbooks.get(instrument.id)
-            if ticker is None or orderbook is None:
-                continue
-            coverage = self._coverage_for_with_latest(instrument.id, ticker, orderbook)
             storage_bytes = storage_bytes_by_instrument.get(instrument.id, 0)
+            one_minute_candle_count = source_candle_counts.get(instrument.id, 0)
+            stored_candle_start_at, candle_coverage_end_at = source_candle_ranges.get(
+                instrument.id,
+                (None, None),
+            )
+            plan = collection_plans[instrument.id]
+            candle_coverage = self._source_candle_coverage_status_from_summary(
+                instrument.id,
+                plan,
+                one_minute_candle_count,
+                (stored_candle_start_at, candle_coverage_end_at),
+            )
+            acc_trade_price_24h = (
+                ticker.acc_trade_price_24h if ticker else entry.acc_trade_price_24h
+            )
             rows.append(
                 MarketListRow(
                     instrument=instrument,
-                    trade_price=ticker.trade_price,
-                    acc_trade_price_24h=ticker.acc_trade_price_24h,
-                    acc_trade_price_24h_display=f"₩{int(ticker.acc_trade_price_24h):,}",
-                    change_rate=ticker.change_rate,
-                    ticker_collected_at=ticker.collected_at,
-                    orderbook_collected_at=orderbook.collected_at,
-                    quality_status=self._quality_status_from_coverage(coverage),
-                    coverage_percent=self._market_coverage_percent_from_statuses(coverage),
+                    asset_type="coin",
+                    is_favorite=entry.selected,
+                    favorite_order=entry.favorite_order,
+                    trade_price=ticker.trade_price if ticker else None,
+                    price_currency=instrument.quote_currency,
+                    acc_trade_price_24h=acc_trade_price_24h,
+                    acc_trade_price_24h_display=f"₩{int(acc_trade_price_24h):,}",
+                    trade_amount_currency=instrument.quote_currency,
+                    change_rate=ticker.change_rate if ticker else None,
+                    change_rate_basis="전일 종가 대비",
+                    ticker_collected_at=ticker.collected_at if ticker else None,
+                    orderbook_collected_at=orderbook.collected_at if orderbook else None,
+                    quality_status=self._quality_status_from_coverage([candle_coverage]),
+                    coverage_percent=candle_coverage.progress_percent,
+                    candle_coverage_start_at=plan.range_start_at,
+                    candle_coverage_end_at=candle_coverage_end_at,
+                    candle_coverage_current_at=current_at,
+                    one_minute_candle_count=one_minute_candle_count,
                     storage_bytes=storage_bytes,
-                    storage_row_count=storage_rows_by_instrument.get(instrument.id, 0),
+                    storage_row_count=one_minute_candle_count,
                     storage_bytes_display=_format_storage_bytes(storage_bytes),
                 )
             )
-        return rows
+        return sorted(
+            rows,
+            key=lambda row: (
+                0 if row.is_favorite else 1,
+                row.favorite_order if row.favorite_order is not None else row.instrument.id,
+                row.instrument.id,
+            ),
+        )
 
     def get_instrument(self, instrument_id: int) -> Instrument | None:
         with self._connect() as conn:
@@ -2342,6 +2383,7 @@ class PostgresOperationsRepository:
         instrument_id: int,
         actor: str,
         reason: str | None,
+        target_order: int,
     ) -> None:
         previous = conn.execute(
             "SELECT status FROM collection_targets WHERE instrument_id = %s",
@@ -2350,17 +2392,18 @@ class PostgresOperationsRepository:
         conn.execute(
             """
             INSERT INTO collection_targets (
-              instrument_id, status, activated_at, deactivated_at, candidate_status
+              instrument_id, status, activated_at, deactivated_at, target_order, candidate_status
             )
-            VALUES (%s, 'active', %s, NULL, 'in_universe')
+            VALUES (%s, 'active', %s, NULL, %s, 'in_universe')
             ON CONFLICT (instrument_id) DO UPDATE SET
               status = 'active',
               activated_at = COALESCE(collection_targets.activated_at, excluded.activated_at),
               deactivated_at = NULL,
+              target_order = excluded.target_order,
               candidate_status = 'in_universe',
               updated_at = now()
             """,
-            (instrument_id, now_kst()),
+            (instrument_id, now_kst(), target_order),
         )
         self._ensure_collection_plan(conn, instrument_id)
         self._record_target_change(
@@ -2381,7 +2424,7 @@ class PostgresOperationsRepository:
         conn.execute(
             """
             UPDATE collection_targets
-            SET status = 'inactive', deactivated_at = %s, updated_at = now()
+            SET status = 'inactive', target_order = NULL, deactivated_at = %s, updated_at = now()
             WHERE instrument_id = %s
             """,
             (now_kst(), instrument_id),

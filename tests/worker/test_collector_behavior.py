@@ -32,7 +32,9 @@ def test_fixture_worker_collects_m1_market_data() -> None:
     active_targets = repository.list_active_targets()
     assert len(active_targets) == 50
     assert written > 50
-    assert len(repository.market_list()) == 50
+    market_rows = repository.market_list()
+    assert len(market_rows) == 100
+    assert sum(1 for row in market_rows if row.is_favorite) == 50
     assert repository.latest_ticker(active_targets[0].id) is not None
     assert repository.latest_orderbook(active_targets[0].id) is not None
     assert repository.collection_runs(limit=10)[0].status == "succeeded"

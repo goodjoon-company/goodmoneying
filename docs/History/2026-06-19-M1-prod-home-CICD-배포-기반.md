@@ -1,7 +1,7 @@
 # M1 prod-home CI/CD 배포 기반
 
 Date: 2026-06-19
-Related Task: `docs/Task/M1-T04-2026-06-19-001-운영계-prod-home-CICD-배포-설계.md`
+Related Task: `docs/Task/M1.md`
 Related ADR: `docs/ADR/ADR-0004-prod-home-CICD와-배포-프로필.md`
 Related Test: `docs/Test/2026-06-19-M1-prod-home-CICD-배포-검증.md`
 

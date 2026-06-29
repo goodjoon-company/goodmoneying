@@ -182,6 +182,26 @@
   color: #101511;
 }
 
+.header-actions .favorite-summary-button {
+  border-color: #365c4e;
+  background: #102019;
+  color: #eff8f1;
+}
+
+.favorite-summary-button svg {
+  color: #f1bd4f;
+}
+
+.favorite-summary-button strong {
+  min-width: 22px;
+  border-radius: 999px;
+  background: #35e0a9;
+  color: #07120d;
+  padding: 2px 7px;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
 .dialog-actions .primary-action,
 .approve-backfill-button {
   border-color: #35e0a9;

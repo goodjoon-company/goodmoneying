@@ -27,6 +27,27 @@ def test_candidate_universe_defaults_to_top_50_active_targets() -> None:
     assert entries[50].selected is False
 
 
+def test_repository_preserves_user_defined_favorite_order_across_target_lists() -> None:
+    repository = SQLiteOperationsRepository()
+    worker = UpbitCollectionWorker(repository, FixtureUpbitClient())
+    worker.refresh_candidate_universe()
+
+    _, entries = repository.list_candidate_universe()
+    reordered_ids = [
+        entries[2].instrument.id,
+        entries[0].instrument.id,
+        entries[1].instrument.id,
+    ]
+    repository.update_active_targets(reordered_ids, "관심종목 화면에서 순서 변경")
+
+    assert [target.id for target in repository.list_active_targets()] == reordered_ids
+    market_rows = repository.market_list()
+    assert [row.instrument.id for row in market_rows[:3]] == reordered_ids
+    assert [row.favorite_order for row in market_rows[:3]] == [1, 2, 3]
+    assert market_rows[3].is_favorite is False
+    assert market_rows[3].favorite_order is None
+
+
 def test_repository_dashboard_omits_segments_until_lazy_request() -> None:
     repository = SQLiteOperationsRepository()
     worker = UpbitCollectionWorker(repository, FixtureUpbitClient())

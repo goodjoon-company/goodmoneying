@@ -228,6 +228,7 @@ export type CandidateUniverseEntry = {
   accTradePrice24h: string;
   accTradePrice24hDisplay: string;
   selected: boolean;
+  favoriteOrder: number | null;
   candidateStatus: "in_universe" | "out_of_universe";
   qualityStatus: Status;
   qualityDetail: string;
@@ -239,14 +240,24 @@ export type CandidateUniverseEntry = {
 
 export type MarketListRow = {
   instrument: Instrument;
-  tradePrice: string;
+  assetType: "coin" | "stock";
+  isFavorite: boolean;
+  favoriteOrder: number | null;
+  tradePrice: string | null;
+  priceCurrency: string;
   accTradePrice24h: string;
   accTradePrice24hDisplay: string;
-  changeRate: string;
-  tickerCollectedAt: string;
-  orderbookCollectedAt: string;
+  tradeAmountCurrency: string;
+  changeRate: string | null;
+  changeRateBasis: string;
+  tickerCollectedAt: string | null;
+  orderbookCollectedAt: string | null;
   qualityStatus: Status;
   coveragePercent: string;
+  candleCoverageStartAt: string | null;
+  candleCoverageEndAt: string | null;
+  candleCoverageCurrentAt: string;
+  oneMinuteCandleCount: number;
   storageBytes: number;
   storageRowCount: number;
   storageBytesDisplay: string;
@@ -381,6 +392,19 @@ export function subscribeDashboardSummary(
   source.addEventListener("dashboard", (event) => {
     const message = event as MessageEvent<string>;
     handler(normalizeDashboardSummary(JSON.parse(message.data) as DashboardSummary));
+  });
+  return () => source.close();
+}
+
+export function subscribeMarketList(handler: (rows: MarketListRow[]) => void): () => void {
+  if (typeof EventSource === "undefined") {
+    return () => undefined;
+  }
+  const source = new EventSource(`${API_BASE_URL}/v1/market-list/stream`);
+  source.addEventListener("marketList", (event) => {
+    const message = event as MessageEvent<string>;
+    const payload = JSON.parse(message.data) as { rows: MarketListRow[] };
+    handler(payload.rows.map(normalizeMarketListRow));
   });
   return () => source.close();
 }
@@ -554,6 +578,18 @@ export async function loadMarketList(): Promise<MarketListRow[]> {
 function normalizeMarketListRow(row: MarketListRow): MarketListRow {
   return {
     ...row,
+    assetType: row.assetType ?? "coin",
+    isFavorite: row.isFavorite ?? false,
+    favoriteOrder: row.favoriteOrder ?? null,
+    priceCurrency: row.priceCurrency ?? row.instrument.quoteCurrency,
+    tradeAmountCurrency: row.tradeAmountCurrency ?? row.instrument.quoteCurrency,
+    changeRateBasis: row.changeRateBasis ?? "전일 종가 대비",
+    tickerCollectedAt: row.tickerCollectedAt ?? null,
+    orderbookCollectedAt: row.orderbookCollectedAt ?? null,
+    candleCoverageStartAt: row.candleCoverageStartAt ?? null,
+    candleCoverageEndAt: row.candleCoverageEndAt ?? null,
+    candleCoverageCurrentAt: row.candleCoverageCurrentAt ?? new Date().toISOString(),
+    oneMinuteCandleCount: numberOrZero(row.oneMinuteCandleCount),
     storageRowCount: numberOrZero(row.storageRowCount)
   };
 }
@@ -615,6 +651,13 @@ export async function updateCollectionTargets(instrumentIds: number[]): Promise<
   await sendJson("/v1/collection-targets", "PUT", {
     instrumentIds,
     reason: "운영 화면에서 수집 대상 변경"
+  });
+}
+
+export async function updateFavoriteTargets(instrumentIds: number[]): Promise<void> {
+  await sendJson("/v1/collection-targets", "PUT", {
+    instrumentIds,
+    reason: "관심종목 화면에서 관심목록 변경"
   });
 }
 

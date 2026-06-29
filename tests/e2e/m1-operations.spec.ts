@@ -72,11 +72,21 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
     timeout: 60_000
   });
   await expect(page.locator("#root")).not.toHaveText("운영 상태를 불러오는 중");
+  await expect(page.getByLabel("제품 메뉴").getByRole("button").first()).toHaveText(/관심종목/);
   await expect(page.getByText("데이터 수집관리", { exact: true })).toBeVisible();
+  await expect(
+    page.locator(".product-nav section").filter({ hasText: "데이터 수집관리" })
+  ).not.toContainText("관심종목");
   await expect(page.getByRole("button", { name: "운영 상태" })).toBeVisible();
   await expect(page.getByRole("button", { name: "코인 상세" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "CSV 내보내기" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "운영 변경 저장" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "관심 코인 50개 보기" })).toBeVisible();
+  await page.getByRole("button", { name: "관심 코인 50개 보기" }).click();
+  await expect(page.getByRole("dialog", { name: "관심 코인 목록" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "관심 코인 목록" })).toContainText("BTC / KRW");
+  await expect(page.getByRole("dialog", { name: "관심 코인 목록" })).toContainText("GM050 / KRW");
+  await page.getByLabel("닫기").click();
   await expect(page.getByRole("heading", { name: "업비트 수집 운영 상태" })).toBeVisible();
   await expect(page.locator(".app-shell")).toHaveAttribute("data-theme", "dark");
   await expect(page.locator(".ops-summary-card").filter({ hasText: "worker 현황" })).toBeVisible();
@@ -168,12 +178,53 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await page.getByRole("button", { name: "저장", exact: true }).click();
   await expect(page.getByText("선택 50/50")).toBeVisible();
 
-  await page.getByRole("button", { name: "시장 리스트" }).click();
-  await expect(page.getByRole("heading", { name: "시장 리스트" })).toBeVisible();
-  await expect(page.getByText("등락률", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "시장 리스트" })).toHaveCount(0);
+  await page.getByRole("button", { name: "관심종목" }).click();
+  await expect(page.getByRole("heading", { name: "관심종목" }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "코인", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true"
+  );
+  await expect(page.getByRole("button", { name: "주식", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "false"
+  );
+  await expect(page.getByText("관심 추가", { exact: true })).toBeVisible();
+  await expect(page.getByText("등락률(전일 종가 대비)", { exact: true })).toBeVisible();
   await expect(page.getByText("24시간 거래대금", { exact: true })).toBeVisible();
+  await expect(page.getByText("기준일시", { exact: true })).toBeVisible();
+  await expect(page.getByText("캔들 커버리지", { exact: true })).toBeVisible();
+  await expect(page.getByText("1분 캔들 수", { exact: true })).toBeVisible();
+  await expect(page.getByText("품질", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("KRW").first()).toBeVisible();
   await expect(page.locator(".market-row-button").first()).toBeVisible();
   expect(await page.locator(".market-row-button").count()).toBeGreaterThan(0);
+  const noCandleMarketRow = page.locator(".table-row").filter({ hasText: "GM076 / KRW" });
+  await expect(noCandleMarketRow).toContainText("2026. 01. 01.");
+  await expect(noCandleMarketRow).toContainText("0");
+  await page.getByRole("button", { name: "ETH 관심 순서 위로" }).click();
+  await expect(page.locator(".market-row-button").first()).toContainText("ETH / KRW");
+  await page.getByRole("button", { name: "관심 코인 50개 보기" }).click();
+  const reorderedFavoriteDialog = page.getByRole("dialog", { name: "관심 코인 목록" });
+  await expect(reorderedFavoriteDialog.locator(".favorite-coin-item").first()).toContainText(
+    "ETH / KRW"
+  );
+  await page.getByLabel("닫기").click();
+  await page.getByRole("button", { name: "Backfill 관리" }).click();
+  await page.getByRole("button", { name: "저장", exact: true }).click();
+  await expect
+    .poll(async () => {
+      const marketListResponse = await request.get(`${apiBaseUrl}/v1/market-list`);
+      expect(marketListResponse.ok()).toBeTruthy();
+      const marketList = await marketListResponse.json();
+      return marketList.rows[0].instrument.baseAsset;
+    })
+    .toBe("ETH");
+  await page.getByRole("button", { name: "관심종목" }).click();
+  await expect(page.locator(".market-row-button").first()).toContainText("ETH / KRW");
+  await page.getByRole("button", { name: "주식", exact: true }).click();
+  await expect(page.getByText("표시할 주식 관심종목이 없습니다.")).toBeVisible();
+  await page.getByRole("button", { name: "코인", exact: true }).click();
   await page.locator(".market-row-button").first().click();
 
   await expect(page.getByRole("dialog", { name: "코인 상세" })).toBeVisible();
@@ -187,10 +238,7 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.locator(".modal-backdrop")).toBeVisible();
 
   await page.getByLabel("닫기").click();
-  await page.getByRole("button", { name: "확장성 점검" }).click();
-  await expect(page.getByRole("heading", { name: "확장성 점검" }).first()).toBeVisible();
-  await expect(page.getByText("수평 확장", { exact: true })).toBeVisible();
-  await expect(page.getByText("메시지 큐", { exact: true })).toBeVisible();
-  await expect(page.getByText(/CPU|메모리|TPS|QPS/)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "확장성 점검" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "확장성 점검" })).toHaveCount(0);
   expect(runtimeIssues).toEqual([]);
 });

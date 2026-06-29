@@ -1,7 +1,7 @@
 # 2026-06-17-제품-요구사항-source-of-truth-통합
 
 Date: 2026-06-17
-Related Task: `docs/Task/M0-T04-2026-06-17-제품-요구사항-source-of-truth-통합.md`
+Related Task: `docs/Task/M0.md`
 Related PR: 없음
 
 ## 변경 요약
@@ -12,7 +12,7 @@ Related PR: 없음
 
 - `docs/01_Product.md`: 최신 제품 범위, MVP, 요구사항, 프론트엔드(Frontend) 화면 로드맵, M0~M10 마일스톤을 단일 제품 기준으로 반영
 - `docs/History/2026-06-17-superpowers-설계근거-흡수.md`: 2026-06-16 설계 근거와 2026-06-17 재수립 근거를 후속 정리에서 흡수
-- `docs/Task/M0-T04-2026-06-17-제품-요구사항-source-of-truth-통합.md`: 실행 단위 기록 추가
+- `docs/Task/M0.md`: 실행 단위 기록 추가
 - `docs/Test/2026-06-17-제품-요구사항-source-of-truth-통합-검증.md`: 검증 증적 추가
 
 ## 영향 계약

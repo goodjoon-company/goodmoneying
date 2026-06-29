@@ -1,7 +1,6 @@
 .dashboard-page,
 .split-page,
-.detail-page,
-.readiness-page {
+.detail-page {
   display: grid;
   gap: 14px;
   padding: 0 20px 20px;
@@ -14,10 +13,6 @@
 .split-page,
 .detail-page {
   grid-template-columns: minmax(0, 1.3fr) minmax(340px, 0.8fr);
-}
-
-.readiness-page {
-  grid-template-columns: minmax(0, 1fr);
 }
 
 .detail-title {
@@ -252,46 +247,6 @@
   grid-column: 1 / -1;
   margin: 0;
   line-height: 1.55;
-}
-
-.readiness-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.readiness-card {
-  display: grid;
-  align-content: space-between;
-  min-height: 148px;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid #294238;
-  border-radius: 8px;
-  background: #0f1714;
-}
-
-.readiness-card strong {
-  font-size: 15px;
-}
-
-.readiness-card p,
-.readiness-note {
-  margin: 0;
-  color: #9eaaa2;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.readiness-card em {
-  color: #f1bd4f;
-  font-size: 12px;
-  font-style: normal;
-  font-weight: 900;
-}
-
-.readiness-note {
-  margin-top: 14px;
 }
 
 .panel {

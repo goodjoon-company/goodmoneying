@@ -11,8 +11,8 @@ This repository is initialized with a minimal documentation structure for produc
 | Module design documents | `docs/02_Architecture/` |
 | DB/API/message contracts | `docs/contracts/` |
 | Architecture decision records | `docs/ADR/` |
-| Task documents | `docs/Task/` |
+| Milestone task summaries | `docs/Task/` |
 | Test specs and reports | `docs/Test/` |
 | Handover and change history | `docs/History/` |
 
-Start new work from a Task document or external issue, update contracts before code when an interface changes, then record verification evidence in `docs/Test/` and handoff context in `docs/History/` when needed.
+Start new work from a GitHub Issue, update contracts before code when an interface changes, then record verification evidence in `docs/Test/` and handoff context in `docs/History/` when needed. `docs/Task/` keeps only short Milestone summaries.

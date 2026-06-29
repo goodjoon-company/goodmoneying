@@ -5,7 +5,6 @@ from datetime import timedelta
 from decimal import Decimal
 
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
-from goodmoneying_shared.time import now_kst
 from goodmoneying_worker.collector import seed_repository
 from goodmoneying_worker.realtime_stream_worker import (
     RealtimeStreamBuffer,
@@ -48,7 +47,11 @@ def test_realtime_stream_buffer_flushes_websocket_messages_to_repository() -> No
     repository = SQLiteOperationsRepository()
     seed_repository(repository, FixtureUpbitClient())
     target = repository.list_active_targets()[0]
-    collected_at = now_kst().replace(minute=30, second=0, microsecond=0)
+    seeded_ticker = repository.latest_ticker(target.id)
+    assert seeded_ticker is not None
+    collected_at = seeded_ticker.bucket_at.replace(minute=59, second=0, microsecond=0)
+    if collected_at <= seeded_ticker.bucket_at:
+        collected_at = seeded_ticker.bucket_at + timedelta(minutes=1)
     buffer = RealtimeStreamBuffer({target.market_code: target}, now=lambda: collected_at)
 
     buffer.apply(

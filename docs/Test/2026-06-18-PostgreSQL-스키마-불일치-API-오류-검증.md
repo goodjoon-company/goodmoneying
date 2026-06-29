@@ -1,7 +1,7 @@
 # 2026-06-18-PostgreSQL-스키마-불일치-API-오류-검증
 
 Date: 2026-06-18
-Related Task: `docs/Task/M2-T03-2026-06-18-001-PostgreSQL-스키마-불일치-API-오류-수정.md`
+Related Task: `docs/Task/M2.md`
 Environment: macOS, Python 3.14 가상환경(Virtual Environment), Podman PostgreSQL, FastAPI, Playwright Chromium
 
 ## 검증 대상

@@ -1,7 +1,7 @@
 # 2026-06-18-PostgreSQL-스키마-불일치-API-오류-수정
 
 Date: 2026-06-18
-Related Task: `docs/Task/M2-T03-2026-06-18-001-PostgreSQL-스키마-불일치-API-오류-수정.md`
+Related Task: `docs/Task/M2.md`
 Related PR: 없음
 
 ## 변경 요약
@@ -21,7 +21,7 @@ Related PR: 없음
 - `dev.sh`
 - `.env.sample`
 - `README.md`
-- `docs/Task/M2-T03-2026-06-18-001-PostgreSQL-스키마-불일치-API-오류-수정.md`
+- `docs/Task/M2.md`
 - `docs/Test/2026-06-18-PostgreSQL-스키마-불일치-API-오류-검증.md`
 
 ## 영향 계약

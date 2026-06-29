@@ -48,7 +48,7 @@ def test_realtime_stream_buffer_flushes_websocket_messages_to_repository() -> No
     repository = SQLiteOperationsRepository()
     seed_repository(repository, FixtureUpbitClient())
     target = repository.list_active_targets()[0]
-    collected_at = now_kst() + timedelta(minutes=1)
+    collected_at = now_kst().replace(minute=30, second=0, microsecond=0)
     buffer = RealtimeStreamBuffer({target.market_code: target}, now=lambda: collected_at)
 
     buffer.apply(

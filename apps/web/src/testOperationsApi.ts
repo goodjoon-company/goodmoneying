@@ -35,6 +35,7 @@ export function createTestCandidateUniverse(): CandidateUniverseEntry[] {
     accTradePrice24h: `${100000000000 - index * 1000000}`,
     accTradePrice24hDisplay: `₩${(100000000000 - index * 1000000).toLocaleString("ko-KR")}`,
     selected: index < 50,
+    favoriteOrder: index < 50 ? index + 1 : null,
     candidateStatus: "in_universe",
     qualityStatus: index % 9 === 0 ? "warning" : "normal",
     qualityDetail: index % 9 === 0 ? "품질 주의" : "정상",
@@ -46,20 +47,33 @@ export function createTestCandidateUniverse(): CandidateUniverseEntry[] {
 }
 
 export function createTestMarketRows(): MarketListRow[] {
-  return createTestInstruments(50).map((instrument, index) => ({
-    instrument,
-    tradePrice: `${1000000 + index * 1000}`,
-    accTradePrice24h: `${100000000000 - index * 1000000}`,
-    accTradePrice24hDisplay: `₩${(100000000000 - index * 1000000).toLocaleString("ko-KR")}`,
-    changeRate: index % 2 === 0 ? "0.012" : "-0.004",
-    tickerCollectedAt: NOW,
-    orderbookCollectedAt: NOW,
-    qualityStatus: index % 9 === 0 ? "warning" : "normal",
-    coveragePercent: "99.1",
-    storageBytes: 1024,
-    storageRowCount: 1000 + index,
-    storageBytesDisplay: "1.0KB"
-  }));
+  return createTestInstruments(100).map((instrument, index) => {
+    const isFavorite = index < 50;
+    return {
+      instrument,
+      assetType: "coin",
+      isFavorite,
+      favoriteOrder: isFavorite ? index + 1 : null,
+      tradePrice: isFavorite ? `${1000000 + index * 1000}${index === 0 ? ".9876" : ""}` : null,
+      priceCurrency: "KRW",
+      accTradePrice24h: `${100000000000 - index * 1000000}${index === 0 ? ".9876" : ""}`,
+      accTradePrice24hDisplay: `₩${(100000000000 - index * 1000000).toLocaleString("ko-KR")}`,
+      tradeAmountCurrency: "KRW",
+      changeRate: isFavorite ? (index % 2 === 0 ? "0.012" : "-0.004") : null,
+      changeRateBasis: "전일 종가 대비",
+      tickerCollectedAt: isFavorite ? NOW : null,
+      orderbookCollectedAt: isFavorite ? NOW : null,
+      qualityStatus: index % 9 === 0 ? "warning" : "normal",
+      coveragePercent: isFavorite ? "99.1" : "0",
+      candleCoverageStartAt: "2026-01-01T00:00:00+09:00",
+      candleCoverageEndAt: isFavorite ? "2026-06-19T09:00:00+09:00" : null,
+      candleCoverageCurrentAt: "2026-06-19T09:00:00+09:00",
+      oneMinuteCandleCount: isFavorite ? 1000 + index : 0,
+      storageBytes: isFavorite ? 1024 : 0,
+      storageRowCount: isFavorite ? 1000 + index : 0,
+      storageBytesDisplay: isFavorite ? "1.0KB" : "0B"
+    };
+  });
 }
 
 export function createTestDashboardSummary(

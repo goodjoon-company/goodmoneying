@@ -33,6 +33,7 @@ import {
   canSaveTargets,
   filterAndSortCandidateEntries,
   initialSelectedInstrumentIds,
+  orderedSelectedInstrumentIds,
   toggleSelectedInstrument,
   type SortMode
 } from "../targetBackfillWorkflow";
@@ -60,6 +61,10 @@ export function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(
     () => initialSelectedInstrumentIds(entries)
   );
+  const selectedInstrumentIds = useMemo(
+    () => orderedSelectedInstrumentIds(entries, selectedIds),
+    [entries, selectedIds]
+  );
   useEffect(() => {
     setSelectedIds(initialSelectedInstrumentIds(entries));
   }, [entries]);
@@ -72,7 +77,7 @@ export function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
   });
   const startJobMutation = useMutation({
     mutationFn: (options: { targetStartAt: string; targetEndAt: string }) =>
-      startBackfillJob(Array.from(selectedIds), options),
+      startBackfillJob(selectedInstrumentIds, options),
     onSuccess: (job) => {
       setStartedJobId(job.id);
       setBackfillDialogOpen(false);
@@ -145,7 +150,11 @@ export function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
             <ListChecks size={16} />
             백필 계획 생성
           </button>
-          <button type="button" disabled={!canSave} onClick={() => mutation.mutate(Array.from(selectedIds))}>
+          <button
+            type="button"
+            disabled={!canSave}
+            onClick={() => mutation.mutate(selectedInstrumentIds)}
+          >
             <CheckCircle2 size={16} />
             저장
           </button>

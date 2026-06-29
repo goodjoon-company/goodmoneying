@@ -29,7 +29,6 @@ describe("프론트엔드 Module 구조", () => {
       "components/Targets.tsx",
       "components/Markets.tsx",
       "components/Detail.tsx",
-      "components/ScalabilityReadiness.tsx",
       "components/common.tsx"
     ].forEach((path) => {
       expect(`./${path}` in componentModules, path).toBe(true);

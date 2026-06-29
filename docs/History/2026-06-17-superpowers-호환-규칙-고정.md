@@ -1,7 +1,7 @@
 # 2026-06-17-superpowers-호환-규칙-고정
 
 Date: 2026-06-17
-Related Task: `docs/Task/M0-T05-2026-06-17-superpowers-호환-규칙-고정.md`
+Related Task: `docs/Task/M0.md`
 Related PR: 없음
 
 ## 변경 요약
@@ -14,8 +14,7 @@ Related PR: 없음
 - `AGENTS.md`: repo-local superpowers 호환 규칙 추가
 - `docs/01_Product.md`: 설계 근거 링크를 History로 변경
 - `docs/History/2026-06-17-superpowers-설계근거-흡수.md`: 기존 superpowers 설계 근거 흡수
-- `docs/Task/M0-T03-2026-06-16-제품-범위-주요-시나리오-정의.md`: 설계 근거 참조 경로 정리
-- `docs/Task/M0-T04-2026-06-17-제품-요구사항-source-of-truth-통합.md`: 설계 근거 참조 경로 정리
+- `docs/Task/M0.md`: 설계 근거 참조 경로 정리 요약
 - `docs/Test/2026-06-16-제품-범위-시나리오-문서-검증.md`: 검증 대상 경로 정리
 - `docs/Test/2026-06-17-제품-요구사항-source-of-truth-통합-검증.md`: 검증 대상 경로 정리
 

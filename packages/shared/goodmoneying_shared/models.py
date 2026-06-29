@@ -46,6 +46,7 @@ class CandidateUniverseEntry:
     acc_trade_price_24h: Decimal
     selected: bool
     candidate_status: CandidateStatus
+    favorite_order: int | None = None
 
 
 @dataclass(frozen=True)
@@ -178,14 +179,24 @@ class CollectionDashboardTarget:
 @dataclass(frozen=True)
 class MarketListRow:
     instrument: Instrument
-    trade_price: Decimal
+    asset_type: Literal["coin", "stock"]
+    is_favorite: bool
+    favorite_order: int | None
+    trade_price: Decimal | None
+    price_currency: str
     acc_trade_price_24h: Decimal
     acc_trade_price_24h_display: str
-    change_rate: Decimal
-    ticker_collected_at: datetime
-    orderbook_collected_at: datetime
+    trade_amount_currency: str
+    change_rate: Decimal | None
+    change_rate_basis: str
+    ticker_collected_at: datetime | None
+    orderbook_collected_at: datetime | None
     quality_status: Literal["normal", "warning", "incident"]
     coverage_percent: Decimal
+    candle_coverage_start_at: datetime | None
+    candle_coverage_end_at: datetime | None
+    candle_coverage_current_at: datetime
+    one_minute_candle_count: int
     storage_bytes: int
     storage_row_count: int
     storage_bytes_display: str

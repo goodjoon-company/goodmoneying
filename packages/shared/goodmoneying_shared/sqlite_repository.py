@@ -142,6 +142,7 @@ class SQLiteOperationsRepository:
                   instrument_id INTEGER NOT NULL PRIMARY KEY,
                   status TEXT NOT NULL,
                   candidate_status TEXT NOT NULL DEFAULT 'in_universe',
+                  target_order INTEGER,
                   activated_at TEXT,
                   deactivated_at TEXT,
                   updated_at TEXT NOT NULL
@@ -324,6 +325,11 @@ class SQLiteOperationsRepository:
                 );
                 """
             )
+            columns = {
+                row["name"] for row in self._conn.execute("PRAGMA table_info(collection_targets)")
+            }
+            if "target_order" not in columns:
+                self._conn.execute("ALTER TABLE collection_targets ADD COLUMN target_order INTEGER")
 
     def upsert_instrument(self, market_code: str, display_name: str) -> Instrument:
         quote_currency, base_asset = market_code.split("-", maxsplit=1)
@@ -394,8 +400,10 @@ class SQLiteOperationsRepository:
                     """,
                     (limit,),
                 ).fetchall()
-                for row in rows:
-                    self._activate_target(row["instrument_id"], "system", "default_top_50")
+                for target_order, row in enumerate(rows, start=1):
+                    self._activate_target(
+                        row["instrument_id"], "system", "default_top_50", target_order
+                    )
         return self.list_active_targets()
 
     def update_active_targets(
@@ -421,8 +429,8 @@ class SQLiteOperationsRepository:
             next_ids = set(instrument_ids)
             for instrument_id in sorted(current_ids - next_ids):
                 self._deactivate_target(instrument_id, "local_user", reason)
-            for instrument_id in instrument_ids:
-                self._activate_target(instrument_id, "local_user", reason)
+            for target_order, instrument_id in enumerate(instrument_ids, start=1):
+                self._activate_target(instrument_id, "local_user", reason, target_order)
         return self.list_active_targets()
 
     def list_candidate_universe(self) -> tuple[datetime, list[CandidateUniverseEntry]]:
@@ -435,6 +443,7 @@ class SQLiteOperationsRepository:
                   cue.ranked_at,
                   i.*,
                   COALESCE(ct.status, 'inactive') AS target_status,
+                  ct.target_order AS favorite_order,
                   COALESCE(ct.candidate_status, 'in_universe') AS candidate_status
                 FROM candidate_universe_entries cue
                 JOIN instruments i ON i.id = cue.instrument_id
@@ -450,6 +459,7 @@ class SQLiteOperationsRepository:
                 acc_trade_price_24h=_decimal(row["acc_trade_price_24h"]),
                 selected=row["target_status"] == "active",
                 candidate_status=row["candidate_status"],
+                favorite_order=row["favorite_order"],
             )
             for row in rows
         ]
@@ -463,7 +473,7 @@ class SQLiteOperationsRepository:
                 FROM collection_targets ct
                 JOIN instruments i ON i.id = ct.instrument_id
                 WHERE ct.status = 'active'
-                ORDER BY i.market_code
+                ORDER BY ct.target_order, i.market_code
                 """
             ).fetchall()
         return [self._instrument_from_row(row) for row in rows]
@@ -836,38 +846,72 @@ class SQLiteOperationsRepository:
 
     def market_list(self) -> list[MarketListRow]:
         rows: list[MarketListRow] = []
-        active_targets = self.list_active_targets()
-        instrument_ids = [instrument.id for instrument in active_targets]
+        _, candidate_entries = self.list_candidate_universe()
+        instrument_ids = [entry.instrument.id for entry in candidate_entries]
+        source_candle_counts = self._table_counts_by_instrument(
+            "source_candles",
+            instrument_ids,
+        )
+        source_candle_ranges = self._source_candle_ranges_by_instrument(instrument_ids)
         storage_bytes_by_instrument = self._instrument_storage_bytes_by_instrument(
             instrument_ids
         )
-        storage_rows_by_instrument = self._instrument_storage_row_counts_by_instrument(
-            instrument_ids
-        )
-        for instrument in active_targets:
+        collection_plans = self._collection_plans_by_instrument(instrument_ids)
+        current_at = now_kst()
+        for entry in candidate_entries:
+            instrument = entry.instrument
             ticker = self.latest_ticker(instrument.id)
-            orderbook = self.latest_orderbook(instrument.id)
-            if ticker is None or orderbook is None:
-                continue
-            coverage = self.coverage_for(instrument.id)
+            orderbook = self.latest_orderbook(instrument.id) if ticker else None
             storage_bytes = storage_bytes_by_instrument.get(instrument.id, 0)
+            one_minute_candle_count = source_candle_counts.get(instrument.id, 0)
+            stored_candle_start_at, candle_coverage_end_at = source_candle_ranges.get(
+                instrument.id,
+                (None, None),
+            )
+            plan = collection_plans[instrument.id]
+            candle_coverage = self._source_candle_coverage_status_from_summary(
+                instrument.id,
+                plan,
+                one_minute_candle_count,
+                (stored_candle_start_at, candle_coverage_end_at),
+            )
+            acc_trade_price_24h = (
+                ticker.acc_trade_price_24h if ticker else entry.acc_trade_price_24h
+            )
             rows.append(
                 MarketListRow(
                     instrument=instrument,
-                    trade_price=ticker.trade_price,
-                    acc_trade_price_24h=ticker.acc_trade_price_24h,
-                    acc_trade_price_24h_display=f"₩{int(ticker.acc_trade_price_24h):,}",
-                    change_rate=ticker.change_rate,
-                    ticker_collected_at=ticker.collected_at,
-                    orderbook_collected_at=orderbook.collected_at,
-                    quality_status=self._quality_status_from_coverage(coverage),
-                    coverage_percent=self._market_coverage_percent_from_statuses(coverage),
+                    asset_type="coin",
+                    is_favorite=entry.selected,
+                    favorite_order=entry.favorite_order,
+                    trade_price=ticker.trade_price if ticker else None,
+                    price_currency=instrument.quote_currency,
+                    acc_trade_price_24h=acc_trade_price_24h,
+                    acc_trade_price_24h_display=f"₩{int(acc_trade_price_24h):,}",
+                    trade_amount_currency=instrument.quote_currency,
+                    change_rate=ticker.change_rate if ticker else None,
+                    change_rate_basis="전일 종가 대비",
+                    ticker_collected_at=ticker.collected_at if ticker else None,
+                    orderbook_collected_at=orderbook.collected_at if orderbook else None,
+                    quality_status=self._quality_status_from_coverage([candle_coverage]),
+                    coverage_percent=candle_coverage.progress_percent,
+                    candle_coverage_start_at=plan.range_start_at,
+                    candle_coverage_end_at=candle_coverage_end_at,
+                    candle_coverage_current_at=current_at,
+                    one_minute_candle_count=one_minute_candle_count,
                     storage_bytes=storage_bytes,
-                    storage_row_count=storage_rows_by_instrument.get(instrument.id, 0),
+                    storage_row_count=one_minute_candle_count,
                     storage_bytes_display=_format_storage_bytes(storage_bytes),
                 )
             )
-        return rows
+        return sorted(
+            rows,
+            key=lambda row: (
+                0 if row.is_favorite else 1,
+                row.favorite_order if row.favorite_order is not None else row.instrument.id,
+                row.instrument.id,
+            ),
+        )
 
     def get_instrument(self, instrument_id: int) -> Instrument | None:
         row = self._execute("SELECT * FROM instruments WHERE id = ?", (instrument_id,)).fetchone()
@@ -2327,7 +2371,9 @@ class SQLiteOperationsRepository:
             ).fetchone()
         return self._notification_from_row(row)
 
-    def _activate_target(self, instrument_id: int, actor: str, reason: str | None) -> None:
+    def _activate_target(
+        self, instrument_id: int, actor: str, reason: str | None, target_order: int
+    ) -> None:
         timestamp = _to_db_time(now_kst())
         previous = self._execute(
             "SELECT status FROM collection_targets WHERE instrument_id = ?",
@@ -2336,17 +2382,24 @@ class SQLiteOperationsRepository:
         self._execute(
             """
             INSERT INTO collection_targets (
-              instrument_id, status, candidate_status, activated_at, deactivated_at, updated_at
+              instrument_id,
+              status,
+              candidate_status,
+              target_order,
+              activated_at,
+              deactivated_at,
+              updated_at
             )
-            VALUES (?, 'active', 'in_universe', ?, NULL, ?)
+            VALUES (?, 'active', 'in_universe', ?, ?, NULL, ?)
             ON CONFLICT(instrument_id) DO UPDATE SET
               status = 'active',
               candidate_status = 'in_universe',
+              target_order = excluded.target_order,
               activated_at = COALESCE(collection_targets.activated_at, excluded.activated_at),
               deactivated_at = NULL,
               updated_at = excluded.updated_at
             """,
-            (instrument_id, timestamp, timestamp),
+            (instrument_id, target_order, timestamp, timestamp),
         )
         self._record_target_change(
             instrument_id, previous["status"] if previous else None, "active", actor, reason
@@ -2362,7 +2415,7 @@ class SQLiteOperationsRepository:
         self._execute(
             """
             UPDATE collection_targets
-            SET status = 'inactive', deactivated_at = ?, updated_at = ?
+            SET status = 'inactive', target_order = NULL, deactivated_at = ?, updated_at = ?
             WHERE instrument_id = ?
             """,
             (timestamp, timestamp, instrument_id),

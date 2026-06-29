@@ -47,13 +47,42 @@ CREATE TABLE IF NOT EXISTS collection_targets (
   status TEXT NOT NULL,
   activated_at TIMESTAMPTZ,
   deactivated_at TIMESTAMPTZ,
+  target_order INTEGER,
   candidate_status TEXT NOT NULL DEFAULT 'in_universe',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT collection_targets_instrument_uk UNIQUE (instrument_id),
+  CONSTRAINT collection_targets_order_ck CHECK (target_order IS NULL OR target_order >= 1),
   CONSTRAINT collection_targets_status_ck CHECK (status IN ('active', 'inactive')),
   CONSTRAINT collection_targets_candidate_status_ck CHECK (candidate_status IN ('in_universe', 'out_of_universe'))
 );
+
+ALTER TABLE collection_targets
+  ADD COLUMN IF NOT EXISTS target_order INTEGER;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'collection_targets'::regclass
+      AND conname = 'collection_targets_order_ck'
+  ) THEN
+    ALTER TABLE collection_targets
+      ADD CONSTRAINT collection_targets_order_ck CHECK (target_order IS NULL OR target_order >= 1);
+  END IF;
+END $$;
+
+WITH active_targets AS (
+  SELECT id, row_number() OVER (ORDER BY activated_at NULLS LAST, instrument_id) AS target_order
+  FROM collection_targets
+  WHERE status = 'active'
+)
+UPDATE collection_targets ct
+SET target_order = active_targets.target_order
+FROM active_targets
+WHERE ct.id = active_targets.id
+  AND ct.target_order IS NULL;
 
 CREATE TABLE IF NOT EXISTS collection_target_changes (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

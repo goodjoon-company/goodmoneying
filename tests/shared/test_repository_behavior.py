@@ -27,6 +27,53 @@ def test_candidate_universe_defaults_to_top_50_active_targets() -> None:
     assert entries[50].selected is False
 
 
+def test_repository_preserves_user_defined_favorite_order_across_target_lists() -> None:
+    repository = SQLiteOperationsRepository()
+    worker = UpbitCollectionWorker(repository, FixtureUpbitClient())
+    worker.refresh_candidate_universe()
+
+    _, entries = repository.list_candidate_universe()
+    reordered_ids = [
+        entries[2].instrument.id,
+        entries[0].instrument.id,
+        entries[1].instrument.id,
+    ]
+    repository.update_active_targets(reordered_ids, "관심종목 화면에서 순서 변경")
+
+    assert [target.id for target in repository.list_active_targets()] == reordered_ids
+    market_rows = repository.market_list()
+    assert [row.instrument.id for row in market_rows[:3]] == reordered_ids
+    assert [row.favorite_order for row in market_rows[:3]] == [1, 2, 3]
+    assert market_rows[3].is_favorite is False
+    assert market_rows[3].favorite_order is None
+
+
+def test_market_list_does_not_load_orderbook_for_candidates_without_ticker() -> None:
+    repository = SQLiteOperationsRepository()
+    worker = UpbitCollectionWorker(repository, FixtureUpbitClient())
+    worker.refresh_candidate_universe()
+    worker.collect_incremental()
+    _, entries = repository.list_candidate_universe()
+    inactive_ids = {
+        entry.instrument.id
+        for entry in entries
+        if not entry.selected and repository.latest_ticker(entry.instrument.id) is None
+    }
+    original_latest_orderbook = repository.latest_orderbook
+
+    def latest_orderbook_for_favorites_only(instrument_id: int) -> OrderbookSummary | None:
+        if instrument_id in inactive_ids:
+            raise AssertionError("현재가가 없는 후보는 호가를 조회하지 않아야 한다.")
+        return original_latest_orderbook(instrument_id)
+
+    repository.latest_orderbook = latest_orderbook_for_favorites_only  # type: ignore[method-assign]
+
+    market_rows = repository.market_list()
+
+    assert len(market_rows) == 100
+    assert any(row.instrument.id in inactive_ids for row in market_rows)
+
+
 def test_repository_dashboard_omits_segments_until_lazy_request() -> None:
     repository = SQLiteOperationsRepository()
     worker = UpbitCollectionWorker(repository, FixtureUpbitClient())

@@ -326,6 +326,7 @@ class CandidateUniverseEntryResponse(BaseModel):
     accTradePrice24h: str
     accTradePrice24hDisplay: str
     selected: bool
+    favoriteOrder: int | None
     candidateStatus: Literal["in_universe", "out_of_universe"]
     qualityStatus: Literal["normal", "warning", "incident"]
     qualityDetail: str
@@ -351,14 +352,24 @@ class CollectionTargetsResponse(BaseModel):
 
 class MarketListRowResponse(BaseModel):
     instrument: InstrumentResponse
-    tradePrice: str
+    assetType: Literal["coin", "stock"]
+    isFavorite: bool
+    favoriteOrder: int | None
+    tradePrice: str | None
+    priceCurrency: str
     accTradePrice24h: str
     accTradePrice24hDisplay: str
-    changeRate: str
-    tickerCollectedAt: datetime
-    orderbookCollectedAt: datetime
+    tradeAmountCurrency: str
+    changeRate: str | None
+    changeRateBasis: str
+    tickerCollectedAt: datetime | None
+    orderbookCollectedAt: datetime | None
     qualityStatus: Literal["normal", "warning", "incident"]
     coveragePercent: str
+    candleCoverageStartAt: datetime | None
+    candleCoverageEndAt: datetime | None
+    candleCoverageCurrentAt: datetime
+    oneMinuteCandleCount: int
     storageBytes: int
     storageRowCount: int
     storageBytesDisplay: str

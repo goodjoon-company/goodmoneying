@@ -1,23 +1,17 @@
 # Task
 
-이 디렉터리는 repo-local 실행 단위 문서를 둔다. 외부 GitHub Issue, Jira, Linear가 있으면 그 ticket을 우선하고, 접근할 수 없거나 없는 경우 이 디렉터리의 Task 문서를 기준으로 진행한다.
+이 디렉터리는 과거 repo-local Task 원문을 Milestone별로 요약한 색인만 둔다.
 
-## 파일 규칙
+## 운영 방식
 
-- 파일명: `M1-T01-YYYY-MM-DD-한글-태스크-제목.md`
-- 문서 제목도 한글로 작성한다.
-- 새 Task는 `docs/Task/템플릿.md`를 복사해 작성한다.
+- 새 실행 단위는 GitHub Issue로 관리한다.
+- `docs/Task/`에는 `M0.md`, `M1.md`, `M2.md`, `M3.md`처럼 Milestone별 요약 문서만 둔다.
+- 긴 실행 계획, 체크박스, 진행 로그는 GitHub Issue 또는 PR(Pull Request) 댓글에 남긴다.
+- 검증 증적은 `docs/Test/`, 오래 유지되는 변경 요약은 `docs/History/`에 남긴다.
 
-## 상태
+## 현재 요약
 
-- `Todo`: 아직 시작하지 않음
-- `In Progress`: 진행 중
-- `Ready for Verification`: 구현 완료, 검증 전
-- `Done`: 검증 완료
-- `Blocked`: 차단됨
-
-## 규칙
-
-- AI가 바로 실행할 수 있을 정도로 목표, 범위, 현재 맥락, 완료 기준, 검증 방법을 구체화한다.
-- 진행 로그와 완료 요약은 Task 또는 외부 ticket comment에 남긴다.
-- Product/Architecture 문서를 작업 로그 저장소로 쓰지 않는다.
+- `M0.md`: 제품/문서/단일 기준 정비
+- `M1.md`: 업비트 수집 운영 MVP와 배포 기반
+- `M2.md`: 데이터 수집관리, Backfill 관리, 관심종목
+- `M3.md`: 운영 콘솔 고도화, realtime/backfill 세부 운영, 체결 히트맵

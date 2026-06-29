@@ -32,6 +32,7 @@ def test_openapi_contract_contains_m1_paths() -> None:
         "/v1/collection-targets",
         "/v1/collection-targets/{instrumentId}/coverage-segments",
         "/v1/market-list",
+        "/v1/market-list/stream",
         "/v1/instruments/{instrumentId}",
         "/v1/instruments/{instrumentId}/candles",
         "/v1/instruments/{instrumentId}/ticker-snapshots",
@@ -78,6 +79,7 @@ def test_openapi_contract_groups_operations_with_described_tags() -> None:
         ("put", "/v1/collection-targets"): ["수집(Collection)"],
         ("get", "/v1/collection-targets/{instrumentId}/coverage-segments"): ["수집(Collection)"],
         ("get", "/v1/market-list"): ["시장(Market)"],
+        ("get", "/v1/market-list/stream"): ["시장(Market)"],
         ("get", "/v1/instruments/{instrumentId}"): ["상품(Instrument)"],
         ("get", "/v1/instruments/{instrumentId}/candles"): ["상품(Instrument)"],
         ("get", "/v1/instruments/{instrumentId}/ticker-snapshots"): ["상품(Instrument)"],
@@ -133,6 +135,18 @@ def test_openapi_contract_exposes_m2_collection_dashboard_view_model() -> None:
 
     market_row = schemas["MarketListRow"]
     assert "accTradePrice24hDisplay" in market_row["required"]
+    for field in [
+        "assetType",
+        "isFavorite",
+        "priceCurrency",
+        "tradeAmountCurrency",
+        "changeRateBasis",
+        "candleCoverageStartAt",
+        "candleCoverageEndAt",
+        "candleCoverageCurrentAt",
+        "oneMinuteCandleCount",
+    ]:
+        assert field in market_row["required"]
 
     data_status = schemas["CollectionDataStatus"]
     assert "storedRowCount" in data_status["required"]
@@ -206,6 +220,7 @@ def test_openapi_contract_exposes_m2_collection_dashboard_view_model() -> None:
     candidate = schemas["CandidateUniverseEntry"]
     assert "qualityDetail" in candidate["required"]
     assert {
+        "favoriteOrder",
         "collectedStartAt",
         "collectedEndAt",
         "isRealtimeTarget",
@@ -349,6 +364,19 @@ def test_openapi_contract_exposes_dashboard_sse_stream() -> None:
     assert operation["responses"]["200"]["content"]["text/event-stream"]["schema"] == {
         "type": "string",
         "description": "event: dashboard 형식의 SSE 스트림. data 필드는 DashboardSummary JSON이다.",
+    }
+
+
+def test_openapi_contract_exposes_market_list_sse_stream() -> None:
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+
+    operation = contract["paths"]["/v1/market-list/stream"]["get"]
+    assert operation["operationId"] == "streamMarketList"
+    assert operation["responses"]["200"]["content"]["text/event-stream"]["schema"] == {
+        "type": "string",
+        "description": (
+            "event: marketList 형식의 SSE 스트림. data 필드는 MarketListResponse JSON이다."
+        ),
     }
 
 

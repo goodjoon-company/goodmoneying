@@ -6,6 +6,7 @@ import { App } from "./App";
 import {
   createTestDashboardSummary,
   createTestInstruments,
+  createTestMarketRows,
   createTestOperationsFetch
 } from "./testOperationsApi";
 
@@ -23,7 +24,14 @@ describe("데이터 수집관리 화면", () => {
     const { container } = render(<App />);
 
     expect(await screen.findByText("goodmoneying")).toBeInTheDocument();
+    const productMenu = screen.getByLabelText("제품 메뉴");
+    expect(within(productMenu).getAllByRole("button")[0]).toHaveAccessibleName("관심종목");
     expect(await screen.findByText("데이터 수집관리")).toBeInTheDocument();
+    const collectionGroup = screen.getByRole("heading", { name: "데이터 수집관리" })
+      .parentElement;
+    expect(collectionGroup).not.toBeNull();
+    expect(within(collectionGroup as HTMLElement).queryByRole("button", { name: "관심종목" }))
+      .not.toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "운영 상태" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "코인 상세" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "CSV 내보내기" })).not.toBeInTheDocument();
@@ -32,6 +40,15 @@ describe("데이터 수집관리 화면", () => {
     expect(await screen.findByText("worker 현황")).toBeInTheDocument();
     expect(await screen.findByText("Realtime worker")).toBeInTheDocument();
     expect(await screen.findByText("Backfill worker")).toBeInTheDocument();
+    const favoriteSummary = await screen.findByRole("button", { name: "관심 코인 50개 보기" });
+    expect(favoriteSummary).toBeInTheDocument();
+    await userEvent.setup().click(favoriteSummary);
+    const favoriteDialog = await screen.findByRole("dialog", { name: "관심 코인 목록" });
+    expect(favoriteDialog).toBeInTheDocument();
+    expect(within(favoriteDialog).getByText("BTC / KRW")).toBeInTheDocument();
+    expect(within(favoriteDialog).getByText("GM050 / KRW")).toBeInTheDocument();
+    expect(within(favoriteDialog).queryByText("GM051 / KRW")).not.toBeInTheDocument();
+    await userEvent.setup().click(within(favoriteDialog).getByRole("button", { name: "닫기" }));
     expect(screen.getAllByText("BTC / KRW")[0]).toBeInTheDocument();
     expect(screen.getByText("코인별 수집 상태")).toBeInTheDocument();
     expect(screen.getByText("운영 헬스")).toBeInTheDocument();
@@ -377,17 +394,94 @@ describe("데이터 수집관리 화면", () => {
     });
   });
 
-  it("시장 리스트에서 코인을 누르면 dimmed 레이어 팝업으로 코인 상세를 표시한다", async () => {
+  it("관심종목에서 코인과 주식을 전환하고 코인 관심 목록을 조정한다", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await screen.findByRole("heading", { name: "업비트 수집 운영 상태" });
-    await user.click(screen.getByRole("button", { name: "시장 리스트" }));
+    expect(screen.queryByRole("button", { name: "시장 리스트" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "관심종목" }));
+    expect((await screen.findAllByRole("heading", { name: "관심종목" }))[0]).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^코인$/ })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(screen.getByRole("button", { name: /^주식$/ })).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    );
     expect(await screen.findByText("거래 상품")).toBeInTheDocument();
-    expect(screen.getByText("등락률")).toBeInTheDocument();
+    expect(screen.getByText("관심 추가")).toBeInTheDocument();
+    expect(screen.getByText("등락률(전일 종가 대비)")).toBeInTheDocument();
     expect(screen.getByText("24시간 거래대금")).toBeInTheDocument();
+    expect(screen.getByText("기준일시")).toBeInTheDocument();
+    expect(screen.getByText("캔들 커버리지")).toBeInTheDocument();
+    expect(screen.getByText("1분 캔들 수")).toBeInTheDocument();
+    expect(screen.queryByText("최신성")).not.toBeInTheDocument();
+    expect(screen.queryByText("저장 행")).not.toBeInTheDocument();
+    expect(screen.queryByText("품질")).not.toBeInTheDocument();
     expect(screen.getByText("BTC / KRW")).toBeInTheDocument();
+    expect(screen.getAllByText("KRW").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("1,000,000")).toBeInTheDocument();
+    expect(screen.queryByText("1,000,000.9876")).not.toBeInTheDocument();
+    expect(screen.getByText("100,000,000,000")).toBeInTheDocument();
+    expect(screen.queryByText("100,000,000,000.9876")).not.toBeInTheDocument();
+    expect(screen.getAllByText("2026. 01. 01.")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("2026. 06. 19.")[0]).toBeInTheDocument();
+    expect(screen.getByText("1,000")).toBeInTheDocument();
     expect(screen.getByText("GM050 / KRW")).toBeInTheDocument();
+    const noCandleRow = screen.getByText("GM076 / KRW").closest(".table-row");
+    expect(noCandleRow).not.toBeNull();
+    expect(within(noCandleRow as HTMLElement).getByText("2026. 01. 01.")).toBeInTheDocument();
+    expect(within(noCandleRow as HTMLElement).getByText("0")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "ETH 관심 순서 위로" }));
+    const reorderedRequest = [...vi.mocked(globalThis.fetch).mock.calls]
+      .reverse()
+      .find(
+        ([input, init]) =>
+          String(input).endsWith("/v1/collection-targets") && init?.method === "PUT"
+      );
+    expect(reorderedRequest).toBeDefined();
+    const reorderedBody = JSON.parse(String((reorderedRequest?.[1] as RequestInit).body));
+    expect(reorderedBody.instrumentIds.slice(0, 2)).toEqual([2, 1]);
+    await waitFor(() => {
+      const favoriteRows = screen.getAllByRole("button", { name: /관심 제거$/ });
+      expect(favoriteRows[0]).toHaveAccessibleName("ETH 관심 제거");
+      expect(favoriteRows[1]).toHaveAccessibleName("BTC 관심 제거");
+    });
+    await user.click(screen.getByRole("button", { name: "관심 코인 50개 보기" }));
+    const favoriteDialog = await screen.findByRole("dialog", { name: "관심 코인 목록" });
+    expect(within(favoriteDialog).getAllByText(/\/ KRW/)[0]).toHaveTextContent("ETH / KRW");
+    await user.click(within(favoriteDialog).getByRole("button", { name: "닫기" }));
+
+    await user.click(screen.getByRole("button", { name: "BTC 관심 제거" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "BTC 관심 추가" })).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "관심 코인 49개 보기" })).toBeInTheDocument();
+    await waitFor(() => {
+      const targetRequest = [...vi.mocked(globalThis.fetch).mock.calls]
+        .reverse()
+        .find(
+          ([input, init]) =>
+            String(input).endsWith("/v1/collection-targets") && init?.method === "PUT"
+        );
+      expect(targetRequest).toBeDefined();
+      const body = JSON.parse(String((targetRequest?.[1] as RequestInit).body));
+      expect(body.instrumentIds).not.toContain(1);
+      expect(body.reason).toBe("관심종목 화면에서 관심목록 변경");
+    });
+    await user.click(screen.getByRole("button", { name: "GM051 관심 추가" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "GM051 관심 제거" })).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "관심 코인 50개 보기" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^주식$/ }));
+    expect(screen.getByRole("button", { name: /^주식$/ })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(screen.getByText("표시할 주식 관심종목이 없습니다.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^코인$/ }));
     await user.click(screen.getByRole("button", { name: /GM003 \/ KRW/ }));
 
     expect(await screen.findByRole("dialog", { name: "코인 상세" })).toBeInTheDocument();
@@ -403,17 +497,65 @@ describe("데이터 수집관리 화면", () => {
     expect(document.querySelector(".modal-backdrop")).toBeInTheDocument();
   });
 
-  it("확장성 점검은 M3.5 준비 상태만 표시하고 실제 모니터링 수치를 만들지 않는다", async () => {
+  it("관심종목 SSE 이벤트를 받으면 가격 정보를 갱신한다", async () => {
     const user = userEvent.setup();
+    const eventSources: Array<{
+      url: string;
+      listeners: Map<string, (event: MessageEvent<string>) => void>;
+      close: () => void;
+    }> = [];
+    class FakeEventSource {
+      url: string;
+      listeners = new Map<string, (event: MessageEvent<string>) => void>();
+
+      constructor(url: string) {
+        this.url = url;
+        eventSources.push(this);
+      }
+
+      addEventListener(type: string, handler: EventListener) {
+        this.listeners.set(type, handler as (event: MessageEvent<string>) => void);
+      }
+
+      close() {
+        return undefined;
+      }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
     render(<App />);
 
     await screen.findByRole("heading", { name: "업비트 수집 운영 상태" });
-    await user.click(screen.getByRole("button", { name: "확장성 점검" }));
+    await user.click(screen.getByRole("button", { name: "관심종목" }));
+    expect(await screen.findByText("1,000,000")).toBeInTheDocument();
 
-    expect((await screen.findAllByRole("heading", { name: "확장성 점검" }))[0]).toBeInTheDocument();
-    expect(screen.getByText("수평 확장")).toBeInTheDocument();
-    expect(screen.getByText("메시지 큐")).toBeInTheDocument();
-    expect(screen.getAllByText(/M3.5/)[0]).toBeInTheDocument();
-    expect(screen.queryByText(/CPU|메모리|TPS|QPS/)).not.toBeInTheDocument();
+    const marketStream = eventSources.find((source) => source.url.endsWith("/v1/market-list/stream"));
+    const marketListHandler = marketStream?.listeners.get("marketList");
+    if (!marketListHandler) {
+      throw new Error("관심종목 SSE 구독이 등록되지 않았습니다.");
+    }
+    const streamedRows = createTestMarketRows();
+    streamedRows[0] = {
+      ...streamedRows[0],
+      tradePrice: "1234567.89",
+      accTradePrice24h: "2222222222.77",
+      tickerCollectedAt: "2026-06-20T09:30:00+09:00"
+    };
+    marketListHandler(
+      new MessageEvent("marketList", {
+        data: JSON.stringify({ rows: streamedRows })
+      })
+    );
+
+    await waitFor(() => expect(screen.getByText("1,234,567")).toBeInTheDocument());
+    expect(screen.getByText("2,222,222,222")).toBeInTheDocument();
+    expect(screen.queryByText("1,234,567.89")).not.toBeInTheDocument();
+  });
+
+  it("확장성 점검 메뉴를 노출하지 않는다", async () => {
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "업비트 수집 운영 상태" });
+    expect(screen.queryByRole("button", { name: "확장성 점검" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "확장성 점검" })).not.toBeInTheDocument();
   });
 });

@@ -1,6 +1,6 @@
 # 2026-06-20 M3-T07 App와 CSS 화면 Module 분리 검증
 
-Related Task: `docs/Task/M3-T07-2026-06-20-001-App와-CSS-화면-Module-분리.md`
+Related Task: `docs/Task/M3.md`
 
 ## 목적
 

@@ -204,7 +204,7 @@ describe("운영 API 클라이언트", () => {
     expect(snapshot.dashboard.targets[0].changeRate).toBe("0");
   });
 
-  it("구버전 시장 리스트 응답에 저장 행이 없어도 기본값을 채운다", async () => {
+  it("구버전 관심종목 응답에 저장 행이 없어도 기본값을 채운다", async () => {
     const fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/v1/market-list")) {
@@ -242,6 +242,87 @@ describe("운영 API 클라이언트", () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0].storageRowCount).toBe(0);
+    expect(rows[0].oneMinuteCandleCount).toBe(0);
+    expect(rows[0].isFavorite).toBe(false);
+    expect(rows[0].assetType).toBe("coin");
+    expect(rows[0].priceCurrency).toBe("KRW");
+  });
+
+  it("관심종목 SSE 이벤트를 정규화해 전달한다", async () => {
+    const listeners = new Map<string, (event: MessageEvent<string>) => void>();
+    const close = vi.fn();
+    class FakeEventSource {
+      url: string;
+
+      constructor(url: string) {
+        this.url = url;
+      }
+
+      addEventListener(type: string, handler: EventListener) {
+        listeners.set(type, handler as (event: MessageEvent<string>) => void);
+      }
+
+      close() {
+        close();
+      }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+
+    const { subscribeMarketList } = await import("./api");
+    const handler = vi.fn();
+    const unsubscribe = subscribeMarketList(handler);
+    const marketListHandler = listeners.get("marketList");
+    if (!marketListHandler) {
+      throw new Error("관심종목 SSE 구독이 등록되지 않았습니다.");
+    }
+    marketListHandler(
+      new MessageEvent("marketList", {
+        data: JSON.stringify({
+          rows: [
+            {
+              instrument: {
+                id: 1,
+                exchange: "UPBIT",
+                marketCode: "KRW-BTC",
+                quoteCurrency: "KRW",
+                baseAsset: "BTC",
+                displayName: "비트코인"
+              },
+              assetType: "coin",
+              isFavorite: true,
+              tradePrice: "101.5",
+              priceCurrency: "KRW",
+              accTradePrice24h: "1000",
+              accTradePrice24hDisplay: "₩1,000",
+              tradeAmountCurrency: "KRW",
+              changeRate: "0.02",
+              changeRateBasis: "전일 종가 대비",
+              tickerCollectedAt: "2026-06-20T00:00:00.000Z",
+              orderbookCollectedAt: "2026-06-20T00:00:00.000Z",
+              qualityStatus: "normal",
+              coveragePercent: "99.1",
+              candleCoverageStartAt: "2026-01-01T00:00:00+09:00",
+              candleCoverageEndAt: "2026-06-20T00:00:00.000Z",
+              candleCoverageCurrentAt: "2026-06-20T00:00:00.000Z",
+              oneMinuteCandleCount: 100,
+              storageBytes: 1024,
+              storageRowCount: 100,
+              storageBytesDisplay: "1.0KB"
+            }
+          ]
+        })
+      })
+    );
+
+    expect(handler).toHaveBeenCalledWith([
+      expect.objectContaining({
+        tradePrice: "101.5",
+        priceCurrency: "KRW",
+        oneMinuteCandleCount: 100
+      })
+    ]);
+    unsubscribe();
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it("쓰기 요청은 기본적으로 브라우저 번들 토큰을 보내지 않고 같은 출처 프록시에 맡긴다", async () => {

@@ -7,7 +7,7 @@ Date: 2026-06-19
 
 goodmoneying MVP(Minimum Viable Product)는 개인용 투자 데이터 플랫폼으로 시작한다. 현재 운영 대상은 집에 있는 홈 인프라(home)이며, 제품 접근은 Tailscale 내부망 전용이다. 개발 PC는 개발용으로만 사용하고, 운영 서비스는 별도 서버에서 실행해야 한다.
 
-현재 M1 아키텍처는 수집 워커(Collection Worker), 운영 서버(Operations Server), 운영 화면, PostgreSQL 단일 저장소로 구성된다. M1에서는 단일 워커와 단일 운영 서버를 사용하고, 수평 확장(Horizontal Scaling), 고가용성(High Availability), 메시지 큐(Message Queue)는 M3.5에서 다시 결정한다.
+현재 M1 아키텍처는 수집 워커(Collection Worker), 운영 서버(Operations Server), 운영 화면, PostgreSQL 단일 저장소로 구성된다. M1에서는 단일 워커와 단일 운영 서버를 사용하고, 수평 확장(Horizontal Scaling), 고가용성(High Availability), 메시지 큐(Message Queue)는 M4에서 다시 결정한다.
 
 운영 서버는 `bmax-ubuntu`, `APP SERVER 01`, `Mac Mini M4`를 사용한다. `Mac Mini M4`에는 GitHub organization self-hosted runner가 이미 있고, infra 서버 역할과 배포 제어 역할을 맡기기에 적합하다.
 

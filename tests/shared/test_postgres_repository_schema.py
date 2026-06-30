@@ -69,3 +69,19 @@ def test_postgres_repository_serializes_schema_application_with_advisory_lock(
     assert connection.statements[2] == (
         "SELECT pg_advisory_unlock(hashtext('goodmoneying_schema_contract'))"
     )
+
+
+def test_postgres_repository_rejects_fixture_candidate_entries_before_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = PostgresOperationsRepository.__new__(PostgresOperationsRepository)
+    monkeypatch.setattr(
+        repository,
+        "_connect",
+        lambda: pytest.fail("fixture 후보는 PostgreSQL 접속 전에 거부되어야 한다."),
+    )
+
+    with pytest.raises(ValueError, match="fixture"):
+        repository.refresh_candidate_universe(
+            [("KRW-GM006", "굿머니코인 006", "1000000000")]
+        )

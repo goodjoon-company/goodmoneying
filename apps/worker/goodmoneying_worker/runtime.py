@@ -6,7 +6,7 @@ import os
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
-from goodmoneying_worker.upbit_client import FixtureUpbitClient, LiveUpbitClient, UpbitClient
+from goodmoneying_worker.upbit_client import LiveUpbitClient, UpbitClient
 
 DEFAULT_LOG_LEVEL = "INFO"
 
@@ -39,4 +39,7 @@ def create_repository_from_environment(database: str = ":memory:") -> Operations
 def create_upbit_client_from_environment() -> UpbitClient:
     if os.getenv("GOODMONEYING_LIVE_UPBIT") == "1":
         return LiveUpbitClient()
-    return FixtureUpbitClient()
+    raise RuntimeError(
+        "운영 수집 런타임은 GOODMONEYING_LIVE_UPBIT=1 live 프로필만 허용한다. "
+        "fixture 데이터는 테스트에서 클라이언트를 직접 주입할 때만 사용할 수 있다."
+    )

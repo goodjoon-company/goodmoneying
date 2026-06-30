@@ -357,8 +357,17 @@ class SQLiteOperationsRepository:
     def refresh_candidate_universe(
         self, entries: list[tuple[str, str, str]]
     ) -> list[CandidateUniverseEntry]:
-        ranked_at = _to_db_time(now_kst())
+        started_at = now_kst()
+        ranked_at = _to_db_time(started_at)
         with self._lock, self._conn:
+            cursor = self._execute(
+                """
+                INSERT INTO collection_runs (run_type, data_type, status, trigger_type, started_at)
+                VALUES ('candidate_refresh', 'candidate_universe', 'running', 'schedule', ?)
+                """,
+                (_to_db_time(started_at),),
+            )
+            run_id = _required_lastrowid(cursor)
             self._execute("DELETE FROM candidate_universe_entries")
             for rank, (market_code, display_name, acc_trade_price_24h) in enumerate(
                 entries[:100], start=1
@@ -382,6 +391,15 @@ class SQLiteOperationsRepository:
                   ELSE 'out_of_universe'
                 END
                 """
+            )
+            finished_at = now_kst()
+            self._execute(
+                """
+                UPDATE collection_runs
+                SET status = 'succeeded', finished_at = ?
+                WHERE id = ?
+                """,
+                (_to_db_time(finished_at), run_id),
             )
         return self.list_candidate_universe()[1]
 
@@ -1046,7 +1064,7 @@ class SQLiteOperationsRepository:
         rows = self._execute(
             """
             SELECT * FROM collection_runs
-            ORDER BY started_at DESC
+            ORDER BY started_at DESC, id DESC
             LIMIT ?
             """,
             (limit,),

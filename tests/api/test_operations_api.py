@@ -57,16 +57,14 @@ def test_default_api_repository_does_not_auto_seed_fixture_data(
     assert response.json()["targets"] == []
 
 
-def test_demo_data_repository_overrides_database_url_for_e2e(
+def test_demo_data_repository_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("GOODMONEYING_DATABASE_URL", "postgresql://example.invalid/goodmoneying")
     monkeypatch.setenv("GOODMONEYING_DEMO_DATA", "1")
 
-    repository = create_repository_from_environment()
-
-    assert isinstance(repository, SQLiteOperationsRepository)
-    assert len(repository.list_active_targets()) == 50
+    with pytest.raises(RuntimeError, match="fixture"):
+        create_repository_from_environment()
 
 
 def test_dashboard_candidate_market_and_detail_endpoints() -> None:

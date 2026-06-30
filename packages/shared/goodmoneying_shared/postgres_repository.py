@@ -54,6 +54,27 @@ from goodmoneying_shared.time import KST, isoformat_kst, minute_bucket, now_kst
 Row = dict[str, Any]
 
 
+def _is_fixture_candidate_entry(market_code: str, display_name: str) -> bool:
+    return (
+        market_code.startswith("KRW-GM")
+        and market_code.removeprefix("KRW-GM").isdigit()
+    ) or display_name.startswith("굿머니코인")
+
+
+def _reject_fixture_candidate_entries(entries: list[tuple[str, str, str]]) -> None:
+    fixture_codes = [
+        market_code
+        for market_code, display_name, _acc_trade_price_24h in entries
+        if _is_fixture_candidate_entry(market_code, display_name)
+    ]
+    if fixture_codes:
+        sample = ", ".join(fixture_codes[:5])
+        raise ValueError(
+            "PostgreSQL 후보 유니버스에는 fixture 데이터를 저장할 수 없다. "
+            f"fixture 후보={sample}"
+        )
+
+
 def _format_storage_bytes(value: int) -> str:
     if value >= 1024**3:
         return f"{value / 1024**3:.1f}GB"
@@ -113,7 +134,25 @@ class PostgresOperationsRepository:
     def refresh_candidate_universe(
         self, entries: list[tuple[str, str, str]]
     ) -> list[CandidateUniverseEntry]:
+        _reject_fixture_candidate_entries(entries)
+        started_at = now_kst()
         with self._connect() as conn:
+            run_id = int(
+                _expect_row(
+                    conn.execute(
+                        """
+                        INSERT INTO collection_runs (
+                          run_type, data_type, status, trigger_type, started_at
+                        )
+                        VALUES (
+                          'candidate_refresh', 'candidate_universe', 'running', 'schedule', %s
+                        )
+                        RETURNING id
+                        """,
+                        (started_at,),
+                    ).fetchone()
+                )["id"]
+            )
             snapshot_id = _expect_row(
                 conn.execute(
                     """
@@ -153,6 +192,11 @@ class PostgresOperationsRepository:
                 END
                 """,
                 (snapshot_id,),
+            )
+            finished_at = now_kst()
+            conn.execute(
+                "UPDATE collection_runs SET status = 'succeeded', finished_at = %s WHERE id = %s",
+                (finished_at, run_id),
             )
         return self.list_candidate_universe()[1]
 
@@ -877,7 +921,7 @@ class PostgresOperationsRepository:
     def collection_runs(self, limit: int) -> list[CollectionRun]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM collection_runs ORDER BY started_at DESC LIMIT %s",
+                "SELECT * FROM collection_runs ORDER BY started_at DESC, id DESC LIMIT %s",
                 (limit,),
             ).fetchall()
         return [_collection_run(row) for row in rows]

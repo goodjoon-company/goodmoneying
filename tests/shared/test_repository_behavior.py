@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from goodmoneying_shared.models import OrderbookSummary, SourceCandle, TickerSnapshot, TradeEvent
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_shared.time import KST, minute_bucket, now_kst
@@ -46,6 +48,45 @@ def test_repository_preserves_user_defined_favorite_order_across_target_lists() 
     assert [row.favorite_order for row in market_rows[:3]] == [1, 2, 3]
     assert market_rows[3].is_favorite is False
     assert market_rows[3].favorite_order is None
+
+
+def test_repository_keeps_existing_active_target_that_left_candidate_universe() -> None:
+    repository = SQLiteOperationsRepository()
+    initial_entries = [
+        (f"KRW-GM{index:03d}", f"굿머니코인 {index}", str(100_000 - index))
+        for index in range(1, 101)
+    ]
+    next_entries = [
+        (f"KRW-GM{index:03d}", f"굿머니코인 {index}", str(100_000 - index))
+        for index in range(2, 102)
+    ]
+    repository.refresh_candidate_universe(initial_entries)
+    repository.ensure_default_active_targets()
+    stale_active_id = repository.list_active_targets()[0].id
+
+    repository.refresh_candidate_universe(next_entries)
+    candidate_id = repository.list_candidate_universe()[1][0].instrument.id
+
+    active_targets = repository.update_active_targets(
+        [stale_active_id, candidate_id],
+        "후보 밖 기존 관심 대상 유지",
+    )
+
+    assert {target.id for target in active_targets} == {stale_active_id, candidate_id}
+
+
+def test_repository_rejects_new_active_target_outside_candidate_universe() -> None:
+    repository = SQLiteOperationsRepository()
+    repository.refresh_candidate_universe(
+        [
+            (f"KRW-GM{index:03d}", f"굿머니코인 {index}", str(100_000 - index))
+            for index in range(1, 101)
+        ]
+    )
+    outside_candidate = repository.upsert_instrument("KRW-OUT", "후보밖코인")
+
+    with pytest.raises(ValueError, match="후보 유니버스"):
+        repository.update_active_targets([outside_candidate.id], "후보 밖 신규 대상 차단")
 
 
 def test_market_list_does_not_load_orderbook_for_candidates_without_ticker() -> None:

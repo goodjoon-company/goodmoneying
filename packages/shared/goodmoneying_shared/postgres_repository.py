@@ -197,8 +197,6 @@ class PostgresOperationsRepository:
                     (snapshot_id,),
                 ).fetchall()
             }
-            if not set(instrument_ids).issubset(candidate_ids):
-                raise ValueError("활성 수집 대상은 후보 유니버스 안에서만 선택할 수 있다.")
             current_ids = {
                 int(row["instrument_id"])
                 for row in conn.execute(
@@ -206,6 +204,9 @@ class PostgresOperationsRepository:
                 ).fetchall()
             }
             next_ids = set(instrument_ids)
+            newly_selected_ids = next_ids - current_ids
+            if not newly_selected_ids.issubset(candidate_ids):
+                raise ValueError("활성 수집 대상은 후보 유니버스 안에서만 선택할 수 있다.")
             for instrument_id in sorted(current_ids - next_ids):
                 self._deactivate_target(conn, instrument_id, "local_user", reason)
             for target_order, instrument_id in enumerate(instrument_ids, start=1):

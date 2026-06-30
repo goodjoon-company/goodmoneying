@@ -196,14 +196,23 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
     "aria-pressed",
     "false"
   );
-  await expect(page.getByText("관심 추가", { exact: true })).toBeVisible();
-  await expect(page.getByText("등락률(전일 종가 대비)", { exact: true })).toBeVisible();
-  await expect(page.getByText("24시간 거래대금", { exact: true })).toBeVisible();
-  await expect(page.getByText("기준일시", { exact: true })).toBeVisible();
-  await expect(page.getByText("캔들 커버리지", { exact: true })).toBeVisible();
-  await expect(page.getByText("1분 캔들 수", { exact: true })).toBeVisible();
+  await expect(page.getByPlaceholder("종목명 또는 심볼 검색")).toBeVisible();
+  await expect(page.getByText("관심추가 항목", { exact: true })).toBeVisible();
+  await expect(page.getByText("후보 종목", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /관심 추가 정렬/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /등락률 .* KST 기준 정렬/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /24시간 거래대금 정렬/ })).toHaveAttribute(
+    "aria-sort",
+    "descending"
+  );
+  await expect(page.getByRole("button", { name: /기준일시 정렬/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /캔들 커버리지 정렬/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /1분 캔들 수 정렬/ })).toBeVisible();
   await expect(page.getByText("품질", { exact: true })).toHaveCount(0);
   await expect(page.getByText("KRW").first()).toBeVisible();
+  await page.getByPlaceholder("종목명 또는 심볼 검색").fill(firstInstrument.baseAsset);
+  await expect(page.getByText(firstInstrumentName)).toBeVisible();
+  await page.getByPlaceholder("종목명 또는 심볼 검색").fill("");
   await expect(page.locator(".market-row-button").first()).toBeVisible();
   expect(await page.locator(".market-row-button").count()).toBeGreaterThan(0);
   const firstMarketRow = page.locator(".table-row").filter({ hasText: firstInstrumentName });
@@ -227,6 +236,7 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
     })
     .toBe(secondInstrument.baseAsset);
   await page.getByRole("button", { name: "관심종목" }).click();
+  await page.getByRole("button", { name: /관심 추가 정렬/ }).click();
   await expect(page.locator(".market-row-button").first()).toContainText(secondInstrumentName);
   await page.getByRole("button", { name: "주식", exact: true }).click();
   await expect(page.getByText("표시할 주식 관심종목이 없습니다.")).toBeVisible();

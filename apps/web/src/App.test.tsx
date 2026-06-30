@@ -412,11 +412,11 @@ describe("데이터 수집관리 화면", () => {
     );
     expect(await screen.findByText("거래 상품")).toBeInTheDocument();
     expect(screen.getByText("관심 추가")).toBeInTheDocument();
-    expect(screen.getByText("등락률(전일 종가 대비)")).toBeInTheDocument();
-    expect(screen.getByText("24시간 거래대금")).toBeInTheDocument();
-    expect(screen.getByText("기준일시")).toBeInTheDocument();
-    expect(screen.getByText("캔들 커버리지")).toBeInTheDocument();
-    expect(screen.getByText("1분 캔들 수")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /등락률 .* KST 기준 정렬/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /24시간 거래대금 정렬/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /기준일시 정렬/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /캔들 커버리지 정렬/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /1분 캔들 수 정렬/ })).toBeInTheDocument();
     expect(screen.queryByText("최신성")).not.toBeInTheDocument();
     expect(screen.queryByText("저장 행")).not.toBeInTheDocument();
     expect(screen.queryByText("품질")).not.toBeInTheDocument();
@@ -443,6 +443,23 @@ describe("데이터 수집관리 화면", () => {
     await screen.findByRole("heading", { name: "업비트 수집 운영 상태" });
     await user.click(screen.getByRole("button", { name: "관심종목" }));
     expect((await screen.findAllByRole("heading", { name: "관심종목" }))[0]).toBeInTheDocument();
+    expect(screen.getByText("관심추가 항목")).toBeInTheDocument();
+    expect(screen.getByText("후보 종목")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /24시간 거래대금 정렬/ })).toHaveAttribute(
+      "aria-sort",
+      "descending"
+    );
+    expect(screen.getByRole("button", { name: /등락률 .* KST 기준 정렬/ })).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("종목명 또는 심볼 검색"), "이더");
+    expect(screen.getByText("ETH / KRW")).toBeInTheDocument();
+    expect(screen.queryByText("BTC / KRW")).not.toBeInTheDocument();
+    await user.clear(screen.getByPlaceholderText("종목명 또는 심볼 검색"));
+    await user.click(screen.getByRole("button", { name: "거래 상품 정렬" }));
+    expect(screen.getByRole("button", { name: "거래 상품 정렬" })).toHaveAttribute(
+      "aria-sort",
+      "ascending"
+    );
 
     await user.click(screen.getByRole("button", { name: "ETH 관심 순서 위로" }));
     const reorderedRequest = [...vi.mocked(globalThis.fetch).mock.calls]

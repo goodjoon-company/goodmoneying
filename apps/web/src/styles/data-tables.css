@@ -54,6 +54,10 @@
   margin-bottom: 12px;
 }
 
+.market-toolbar {
+  margin-top: 10px;
+}
+
 .segmented-control {
   display: inline-flex;
   align-items: center;
@@ -119,6 +123,26 @@
   align-items: center;
   gap: 8px;
   font-weight: 800;
+}
+
+.table-section-heading {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  border-top: 1px solid #243a31;
+  background: #0b120f;
+  padding: 0 14px;
+  color: #9eaaa2;
+}
+
+.table-section-heading strong,
+.table-section-heading span {
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 900;
 }
 
 .collection-end-cell {

@@ -27,6 +27,13 @@ def seeded_client() -> TestClient:
     return seeded_repository_and_client()[1]
 
 
+def candidate_entries(start: int, stop: int) -> list[tuple[str, str, str]]:
+    return [
+        (f"KRW-GM{index:03d}", f"굿머니코인 {index}", str(100_000 - index))
+        for index in range(start, stop)
+    ]
+
+
 def without_relative_freshness(items: list[dict[str, object]]) -> list[dict[str, object]]:
     normalized = []
     for item in items:
@@ -659,6 +666,28 @@ def test_collection_targets_allow_up_to_50_candidate_instruments() -> None:
 
     assert response.status_code == 200
     assert len(response.json()["targets"]) == 2
+
+
+def test_collection_targets_keep_existing_active_target_that_left_candidate_universe() -> None:
+    repository = SQLiteOperationsRepository()
+    repository.refresh_candidate_universe(candidate_entries(1, 101))
+    repository.ensure_default_active_targets()
+    stale_active_id = repository.list_active_targets()[0].id
+    repository.refresh_candidate_universe(candidate_entries(2, 102))
+    candidate_id = repository.list_candidate_universe()[1][0].instrument.id
+    client = TestClient(create_app(repository))
+
+    response = client.put(
+        "/v1/collection-targets",
+        headers={"X-Operator-Token": "local-dev-token"},
+        json={"instrumentIds": [stale_active_id, candidate_id]},
+    )
+
+    assert response.status_code == 200
+    assert {target["id"] for target in response.json()["targets"]} == {
+        stale_active_id,
+        candidate_id,
+    }
 
 
 def test_candidate_universe_remains_available_after_target_update() -> None:

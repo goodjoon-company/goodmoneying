@@ -52,12 +52,11 @@ def test_candidate_refresh_replaces_stale_fixture_targets_with_latest_top_50() -
     assert active_market_codes == live_markets[:50]
 
 
-def test_worker_uses_fixture_client_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_rejects_implicit_fixture_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GOODMONEYING_LIVE_UPBIT", raising=False)
 
-    client = create_upbit_client_from_environment()
-
-    assert isinstance(client, FixtureUpbitClient)
+    with pytest.raises(RuntimeError, match="GOODMONEYING_LIVE_UPBIT=1"):
+        create_upbit_client_from_environment()
 
 
 def test_worker_uses_live_client_when_live_profile_is_enabled(

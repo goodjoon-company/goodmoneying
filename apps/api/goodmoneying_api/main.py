@@ -47,29 +47,18 @@ from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_shared.time import now_kst
-from goodmoneying_worker.collector import seed_repository
-from goodmoneying_worker.upbit_client import FixtureUpbitClient
 
 
 def create_repository_from_environment() -> OperationsRepository:
     database_url = os.getenv("GOODMONEYING_DATABASE_URL")
     if os.getenv("GOODMONEYING_DEMO_DATA") == "1":
-        return create_seeded_repository()
+        raise RuntimeError(
+            "fixture demo repository는 더 이상 런타임에서 사용할 수 없다. "
+            "E2E는 test-only HTTP mock helper 또는 명시적으로 주입한 테스트 저장소를 사용해야 한다."
+        )
     if database_url and database_url.startswith(("postgres://", "postgresql://")):
         return PostgresOperationsRepository(database_url)
     return SQLiteOperationsRepository()
-
-
-def create_seeded_repository() -> SQLiteOperationsRepository:
-    repository = SQLiteOperationsRepository()
-    seed_repository(repository, FixtureUpbitClient())
-    repository.add_notification(
-        "info",
-        "collector_bootstrap",
-        "M1 fixture 수집 완료",
-        "후보 유니버스와 기본 활성 수집 대상 50개를 fixture로 준비했습니다.",
-    )
-    return repository
 
 
 def create_app(repository: OperationsRepository | None = None) -> FastAPI:

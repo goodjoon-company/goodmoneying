@@ -20,9 +20,13 @@ def test_candidate_universe_defaults_to_top_50_active_targets() -> None:
 
     ranked_at, entries = repository.list_candidate_universe()
     active_targets = repository.list_active_targets()
+    latest_run = repository.collection_runs(limit=1)[0]
     assert ranked_at.tzinfo is not None
     assert len(entries) == 100
     assert len(active_targets) == 50
+    assert latest_run.run_type == "candidate_refresh"
+    assert latest_run.data_type == "candidate_universe"
+    assert latest_run.status == "succeeded"
     assert entries[0].rank == 1
     assert entries[0].selected is True
     assert entries[49].selected is True

@@ -2,6 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 const apiBaseURL = process.env.E2E_API_BASE_URL ?? "http://127.0.0.1:18000";
 const webBaseURL = process.env.E2E_WEB_BASE_URL ?? "http://127.0.0.1:15173";
+const operatorToken = process.env.E2E_OPERATOR_TOKEN ?? "local-dev-token";
 const skipWebServer = process.env.E2E_SKIP_WEBSERVER === "1";
 const apiURL = new URL(apiBaseURL);
 const webURL = new URL(webBaseURL);
@@ -28,7 +29,7 @@ export default defineConfig({
     : [
         {
           command:
-            `GOODMONEYING_DEMO_DATA=1 PYTHONPATH=apps/api:apps/worker:packages/shared uv run uvicorn goodmoneying_api.main:app --host ${apiURL.hostname} --port ${apiURL.port}`,
+            `bash -lc 'set -a; [ -f .env ] && source .env; set +a; GOODMONEYING_DEMO_DATA=0 GOODMONEYING_OPERATOR_TOKEN=${operatorToken} PYTHONPATH=apps/api:apps/worker:packages/shared uv run uvicorn goodmoneying_api.main:app --host ${apiURL.hostname} --port ${apiURL.port}'`,
           url: `${apiBaseURL}/health`,
           reuseExistingServer: false,
           timeout: 30_000

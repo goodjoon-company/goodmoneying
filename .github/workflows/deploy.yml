@@ -136,7 +136,7 @@ jobs:
             export DOCKER_CONFIG='${DOCKER_CONFIG}'
             export DOCKER_HOST='${DOCKER_HOST}'
             export DOCKER_BUILDKIT='${DOCKER_BUILDKIT}'
-            '${RUNNER_DOCKER_BIN}' buildx build --platform '${BUILD_PLATFORMS}' --push --build-arg VITE_API_BASE_URL=http://app-server01:8000 -f apps/web/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG} .
+            '${RUNNER_DOCKER_BIN}' buildx build --platform '${BUILD_PLATFORMS}' --push --build-arg VITE_API_BASE_URL=/api -f apps/web/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG} .
           "
 
       - name: Deploy profile
@@ -158,6 +158,6 @@ jobs:
       - name: E2E against prod-home
         env:
           E2E_SKIP_WEBSERVER: "1"
-          E2E_API_BASE_URL: http://app-server01:8000
-          E2E_WEB_BASE_URL: http://bmax-ubuntu:8080
+          E2E_API_BASE_URL: http://100.115.38.59:8000
+          E2E_WEB_BASE_URL: http://100.68.208.102:8080
         run: npm run e2e

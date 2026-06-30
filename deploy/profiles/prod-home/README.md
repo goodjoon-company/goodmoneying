@@ -7,7 +7,7 @@
 | 서버 | 역할 | 서비스 |
 |---|---|---|
 | Mac Mini M4 | infra, 배포 제어 | postgres, GitHub Actions runner |
-| APP SERVER 01 | application | api, worker |
+| APP SERVER 01 | application | api, realtime-collection-worker, backfill-collection-worker |
 | bmax-ubuntu | web | web |
 
 ## 배포 실행 흐름
@@ -15,9 +15,9 @@
 ![prod-home 배포 실행 흐름](./prod-home-deploy-flow.drawio.svg)
 
 - `release` 브랜치 push 또는 수동 실행(`workflow_dispatch`)은 Mac Mini M4의 GitHub Actions runner에서 `.github/workflows/deploy.yml`을 실행한다.
-- workflow는 검증 후 Mac Mini M4의 로그인 셸(login shell)에 SSH로 들어가 `api`, `worker`, `web` 이미지를 private GHCR(GitHub Container Registry)에 `release-{short-sha}` 태그(tag)로 push한다.
+- workflow는 검증 후 Mac Mini M4의 로그인 셸(login shell)에 SSH로 들어가 `api`, `worker`, `web` 이미지를 private GHCR(GitHub Container Registry)에 `release-{short-sha}` 태그(tag)로 push한다. `worker` 이미지는 실시간 수집 워커(Realtime Collection Worker)와 백필 수집 워커(Backfill Collection Worker)가 함께 사용한다.
 - runner에서 `deploy/scripts/deploy-profile.sh prod-home "${IMAGE_TAG}"`가 실행되고, `runner/profile.env`와 `runner/hosts.env`를 읽어 서버별 target compose 파일을 복사한 뒤 원격 `docker compose pull`과 `up -d`를 실행한다.
-- 배포 후 runner에서 `deploy/scripts/healthcheck-profile.sh prod-home`이 API, web, PostgreSQL, worker 상태를 점검하고, 통과하면 운영 URL 대상으로 `npm run e2e`를 실행한다.
+- 배포 후 runner에서 `deploy/scripts/healthcheck-profile.sh prod-home`이 API, web, PostgreSQL, 실시간 수집 워커, 백필 수집 워커 상태를 점검하고, 통과하면 운영 URL 대상으로 `npm run e2e`를 실행한다.
 
 ## 파일 실행 주체
 
@@ -27,7 +27,7 @@
 | `deploy/scripts/*.sh` | Mac Mini M4 runner | profile을 읽고 SSH로 target 서버를 제어하는 공통 스크립트 |
 | `deploy/profiles/prod-home/runner/` | Mac Mini M4 runner | runner가 읽는 profile/env/path 입력값 |
 | `deploy/profiles/prod-home/target/infra/compose.yml` | Mac Mini M4 target | PostgreSQL compose 정의 |
-| `deploy/profiles/prod-home/target/app/compose.yml` | APP SERVER 01 target | API, worker compose 정의 |
+| `deploy/profiles/prod-home/target/app/compose.yml` | APP SERVER 01 target | API, 실시간 수집 워커, 백필 수집 워커 compose 정의 |
 | `deploy/profiles/prod-home/target/web/compose.yml` | bmax-ubuntu target | web compose 정의 |
 | `deploy/profiles/prod-home/target/*/*.sh` | target 서버 | 각 서버에 복사되어 해당 서버에서 직접 start/stop 실행 |
 
@@ -50,7 +50,8 @@
 | Mac Mini M4 | `GOODMONEYING_INFRA_CONFIG_DIR` | `/Users/goodjoon/DATA/applications/goodmoneying/infra/config` | 별도 서비스에서 필요 시 사용 |
 | APP SERVER 01 | `GOODMONEYING_APP_BASE_DIR` | `/home/goodjoon/project/goodmoneying` | compose/env 파일 위치 |
 | APP SERVER 01 | `GOODMONEYING_APP_API_DATA_DIR` | `/home/goodjoon/project/goodmoneying/app/api-data` | `/var/lib/goodmoneying/api` |
-| APP SERVER 01 | `GOODMONEYING_APP_WORKER_DATA_DIR` | `/home/goodjoon/project/goodmoneying/app/worker-data` | `/var/lib/goodmoneying/worker` |
+| APP SERVER 01 | `GOODMONEYING_APP_REALTIME_COLLECTION_WORKER_DATA_DIR` | `/home/goodjoon/project/goodmoneying/app/realtime-collection-worker-data` | `/var/lib/goodmoneying/realtime-collection-worker` |
+| APP SERVER 01 | `GOODMONEYING_APP_BACKFILL_COLLECTION_WORKER_DATA_DIR` | `/home/goodjoon/project/goodmoneying/app/backfill-collection-worker-data` | `/var/lib/goodmoneying/backfill-collection-worker` |
 | APP SERVER 01 | `GOODMONEYING_APP_CONFIG_DIR` | `/home/goodjoon/project/goodmoneying/app/config` | `/etc/goodmoneying` |
 | bmax-ubuntu | `GOODMONEYING_WEB_BASE_DIR` | `/home/goodjoon/applications/goodmoneying` | compose/env 파일 위치 |
 | bmax-ubuntu | `GOODMONEYING_WEB_NGINX_CACHE_DIR` | `/home/goodjoon/applications/goodmoneying/web/nginx-cache` | `/var/cache/nginx` |
@@ -63,6 +64,7 @@
 ## 서버별 env 파일
 
 아래 값은 형식 예시다. 실제 운영 값은 별도로 생성하고 배포 전 회전(rotate)한다.
+배포 스크립트는 각 서버의 `{base}/env/{infra,app,web}.env.sample`도 함께 복사한다. 샘플은 새 환경변수 확인용이며, 실제 `{base}/env/*.env` 파일을 덮어쓰지 않는다.
 
 ### Mac Mini M4: `/Users/goodjoon/DATA/applications/goodmoneying/env/infra.env`
 
@@ -77,16 +79,23 @@ POSTGRES_PASSWORD=prod-home-example-postgres-password-rotate
 ```bash
 GOODMONEYING_DATABASE_URL=postgresql://goodmoneying:prod-home-example-postgres-password-rotate@100.107.98.22:5432/goodmoneying
 GOODMONEYING_OPERATOR_TOKEN=prod-home-example-operator-token-rotate
+GOODMONEYING_DASHBOARD_REFRESH_CONFIG=/etc/goodmoneying/operations-api.yaml
 GOODMONEYING_LIVE_UPBIT=1
+GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS=60
+GOODMONEYING_BACKFILL_POLL_SECONDS=10
+GOODMONEYING_BACKFILL_BATCH_SIZE=3000
+GOODMONEYING_LOG_LEVEL=INFO
 ```
 
 ### bmax-ubuntu: `/home/goodjoon/applications/goodmoneying/env/web.env`
 
 ```bash
-GOODMONEYING_WEB_INTERNAL_URL=http://bmax-ubuntu:8080
+GOODMONEYING_WEB_INTERNAL_URL=http://100.68.208.102:8080
+GOODMONEYING_API_INTERNAL_URL=http://100.115.38.59:8000
+GOODMONEYING_OPERATOR_TOKEN=prod-home-example-operator-token-rotate
 ```
 
-Web 정적 앱의 API base URL은 런타임 env가 아니라 Docker build arg로 이미지에 반영된다. `deploy.yml`은 운영 web 이미지 빌드 시 `VITE_API_BASE_URL=http://app-server01:8000`을 주입한다.
+Web 정적 앱의 API base URL은 `/api`로 빌드한다. Nginx 프록시(proxy)는 런타임(runtime) `GOODMONEYING_API_INTERNAL_URL`로 API 서버에 전달하고, `GOODMONEYING_OPERATOR_TOKEN`을 `X-Operator-Token` 헤더(header)로 붙인다. 브라우저 번들(bundle)에는 운영 토큰을 포함하지 않는다.
 
 ## GHCR pull 로그인
 
@@ -153,8 +162,10 @@ cd /home/goodjoon/project/goodmoneying
 ./stop.sh
 ./start-api.sh
 ./stop-api.sh
-./start-worker.sh
-./stop-worker.sh
+./start-realtime-collection-worker.sh
+./stop-realtime-collection-worker.sh
+./start-backfill-collection-worker.sh
+./stop-backfill-collection-worker.sh
 ```
 
 bmax-ubuntu:

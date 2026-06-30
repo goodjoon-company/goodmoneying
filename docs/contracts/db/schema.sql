@@ -1,6 +1,9 @@
 -- goodmoneying M1 DB contract
 -- Source of truth for PostgreSQL schema used by the Upbit Collection Pipeline.
 
+SET TIME ZONE 'Asia/Seoul';
+ALTER DATABASE goodmoneying SET timezone TO 'Asia/Seoul';
+
 CREATE TABLE IF NOT EXISTS instruments (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   exchange TEXT NOT NULL,
@@ -44,13 +47,42 @@ CREATE TABLE IF NOT EXISTS collection_targets (
   status TEXT NOT NULL,
   activated_at TIMESTAMPTZ,
   deactivated_at TIMESTAMPTZ,
+  target_order INTEGER,
   candidate_status TEXT NOT NULL DEFAULT 'in_universe',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT collection_targets_instrument_uk UNIQUE (instrument_id),
+  CONSTRAINT collection_targets_order_ck CHECK (target_order IS NULL OR target_order >= 1),
   CONSTRAINT collection_targets_status_ck CHECK (status IN ('active', 'inactive')),
   CONSTRAINT collection_targets_candidate_status_ck CHECK (candidate_status IN ('in_universe', 'out_of_universe'))
 );
+
+ALTER TABLE collection_targets
+  ADD COLUMN IF NOT EXISTS target_order INTEGER;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'collection_targets'::regclass
+      AND conname = 'collection_targets_order_ck'
+  ) THEN
+    ALTER TABLE collection_targets
+      ADD CONSTRAINT collection_targets_order_ck CHECK (target_order IS NULL OR target_order >= 1);
+  END IF;
+END $$;
+
+WITH active_targets AS (
+  SELECT id, row_number() OVER (ORDER BY activated_at NULLS LAST, instrument_id) AS target_order
+  FROM collection_targets
+  WHERE status = 'active'
+)
+UPDATE collection_targets ct
+SET target_order = active_targets.target_order
+FROM active_targets
+WHERE ct.id = active_targets.id
+  AND ct.target_order IS NULL;
 
 CREATE TABLE IF NOT EXISTS collection_target_changes (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -137,9 +169,22 @@ CREATE TABLE IF NOT EXISTS collection_runs (
   error_message TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT collection_runs_run_type_ck CHECK (run_type IN ('candidate_refresh', 'incremental', 'backfill', 'completeness_check')),
-  CONSTRAINT collection_runs_data_type_ck CHECK (data_type IN ('candidate_universe', 'source_candle', 'ticker_snapshot', 'orderbook_summary', 'missing_range')),
+  CONSTRAINT collection_runs_data_type_ck CHECK (data_type IN ('candidate_universe', 'source_candle', 'ticker_snapshot', 'orderbook_summary', 'trade_event', 'missing_range')),
   CONSTRAINT collection_runs_status_ck CHECK (status IN ('running', 'succeeded', 'partial', 'failed', 'cancelled')),
   CONSTRAINT collection_runs_trigger_type_ck CHECK (trigger_type IN ('schedule', 'manual', 'backfill_job', 'system'))
+);
+
+CREATE TABLE IF NOT EXISTS collection_worker_heartbeats (
+  worker_type TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  last_heartbeat_at TIMESTAMPTZ NOT NULL,
+  last_started_at TIMESTAMPTZ,
+  last_successful_at TIMESTAMPTZ,
+  last_error_at TIMESTAMPTZ,
+  last_error_message TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT collection_worker_heartbeats_worker_type_ck CHECK (worker_type IN ('realtime_collection', 'backfill_collection')),
+  CONSTRAINT collection_worker_heartbeats_status_ck CHECK (status IN ('running', 'failed'))
 );
 
 CREATE TABLE IF NOT EXISTS target_collection_results (
@@ -156,12 +201,44 @@ CREATE TABLE IF NOT EXISTS target_collection_results (
   error_code TEXT,
   error_message TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT target_collection_results_data_type_ck CHECK (data_type IN ('source_candle', 'ticker_snapshot', 'orderbook_summary', 'candidate_universe', 'missing_range')),
+  CONSTRAINT target_collection_results_data_type_ck CHECK (data_type IN ('source_candle', 'ticker_snapshot', 'orderbook_summary', 'trade_event', 'candidate_universe', 'missing_range')),
   CONSTRAINT target_collection_results_status_ck CHECK (status IN ('succeeded', 'failed', 'delayed', 'no_data', 'skipped')),
   CONSTRAINT target_collection_results_latency_ck CHECK (latency_ms IS NULL OR latency_ms >= 0),
   CONSTRAINT target_collection_results_retry_count_ck CHECK (retry_count >= 0),
   CONSTRAINT target_collection_results_rows_written_ck CHECK (rows_written >= 0)
 );
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'collection_runs'::regclass
+      AND conname = 'collection_runs_data_type_ck'
+      AND pg_get_constraintdef(oid) LIKE '%trade_event%'
+  ) THEN
+    ALTER TABLE collection_runs
+      DROP CONSTRAINT IF EXISTS collection_runs_data_type_ck;
+    ALTER TABLE collection_runs
+      ADD CONSTRAINT collection_runs_data_type_ck CHECK (data_type IN ('candidate_universe', 'source_candle', 'ticker_snapshot', 'orderbook_summary', 'trade_event', 'missing_range'));
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'target_collection_results'::regclass
+      AND conname = 'target_collection_results_data_type_ck'
+      AND pg_get_constraintdef(oid) LIKE '%trade_event%'
+  ) THEN
+    ALTER TABLE target_collection_results
+      DROP CONSTRAINT IF EXISTS target_collection_results_data_type_ck;
+    ALTER TABLE target_collection_results
+      ADD CONSTRAINT target_collection_results_data_type_ck CHECK (data_type IN ('source_candle', 'ticker_snapshot', 'orderbook_summary', 'trade_event', 'candidate_universe', 'missing_range'));
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS source_candles (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -230,6 +307,24 @@ CREATE TABLE IF NOT EXISTS orderbook_summaries (
   CONSTRAINT orderbook_summaries_source_ck CHECK (source IN ('UPBIT'))
 );
 
+CREATE TABLE IF NOT EXISTS trade_events (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  instrument_id BIGINT NOT NULL REFERENCES instruments(id),
+  source TEXT NOT NULL,
+  sequential_id BIGINT NOT NULL,
+  trade_timestamp_at TIMESTAMPTZ NOT NULL,
+  trade_price NUMERIC NOT NULL,
+  trade_volume NUMERIC NOT NULL,
+  trade_amount NUMERIC NOT NULL,
+  ask_bid TEXT NOT NULL,
+  collected_at TIMESTAMPTZ NOT NULL,
+  collection_run_id BIGINT REFERENCES collection_runs(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT trade_events_uk UNIQUE (instrument_id, source, sequential_id),
+  CONSTRAINT trade_events_source_ck CHECK (source IN ('UPBIT')),
+  CONSTRAINT trade_events_ask_bid_ck CHECK (ask_bid IN ('ASK', 'BID'))
+);
+
 CREATE TABLE IF NOT EXISTS missing_ranges (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   instrument_id BIGINT NOT NULL REFERENCES instruments(id),
@@ -280,12 +375,22 @@ CREATE TABLE IF NOT EXISTS backfill_job_targets (
   instrument_id BIGINT NOT NULL REFERENCES instruments(id),
   status TEXT NOT NULL,
   last_completed_at TIMESTAMPTZ,
+  processed_missing_range_count INTEGER NOT NULL DEFAULT 0,
+  estimated_missing_range_count INTEGER NOT NULL DEFAULT 0,
+  rows_written_count INTEGER NOT NULL DEFAULT 0,
   error_code TEXT,
   error_message TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (backfill_job_id, instrument_id),
   CONSTRAINT backfill_job_targets_status_ck CHECK (status IN ('pending', 'running', 'paused', 'stopped', 'succeeded', 'failed'))
 );
+
+ALTER TABLE backfill_job_targets
+  ADD COLUMN IF NOT EXISTS processed_missing_range_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE backfill_job_targets
+  ADD COLUMN IF NOT EXISTS estimated_missing_range_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE backfill_job_targets
+  ADD COLUMN IF NOT EXISTS rows_written_count INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS audit_logs (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -333,8 +438,14 @@ CREATE TABLE IF NOT EXISTS raw_response_samples (
 CREATE INDEX IF NOT EXISTS source_candles_instrument_time_idx ON source_candles (instrument_id, candle_unit, candle_start_at DESC);
 CREATE INDEX IF NOT EXISTS ticker_snapshots_instrument_bucket_idx ON ticker_snapshots (instrument_id, bucket_at DESC);
 CREATE INDEX IF NOT EXISTS orderbook_summaries_instrument_bucket_idx ON orderbook_summaries (instrument_id, bucket_at DESC);
+CREATE INDEX IF NOT EXISTS trade_events_instrument_time_idx ON trade_events (instrument_id, trade_timestamp_at DESC);
+CREATE INDEX IF NOT EXISTS source_candles_collected_at_idx ON source_candles (collected_at DESC);
+CREATE INDEX IF NOT EXISTS ticker_snapshots_collected_at_idx ON ticker_snapshots (collected_at DESC);
+CREATE INDEX IF NOT EXISTS orderbook_summaries_collected_at_idx ON orderbook_summaries (collected_at DESC);
 CREATE INDEX IF NOT EXISTS collection_runs_started_at_idx ON collection_runs (started_at DESC);
+CREATE INDEX IF NOT EXISTS collection_worker_heartbeats_status_idx ON collection_worker_heartbeats (status, last_heartbeat_at DESC);
 CREATE INDEX IF NOT EXISTS target_collection_results_run_idx ON target_collection_results (collection_run_id, instrument_id);
+CREATE INDEX IF NOT EXISTS target_collection_results_created_at_idx ON target_collection_results (created_at DESC, collection_run_id) INCLUDE (rows_written);
 CREATE INDEX IF NOT EXISTS collection_plans_status_idx ON collection_plans (status, instrument_id);
 CREATE INDEX IF NOT EXISTS collection_coverage_snapshots_latest_idx ON collection_coverage_snapshots (instrument_id, data_type, calculated_at DESC);
 CREATE INDEX IF NOT EXISTS collection_coverage_segments_snapshot_idx ON collection_coverage_segments (snapshot_id, data_type);

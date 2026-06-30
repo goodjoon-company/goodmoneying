@@ -145,7 +145,8 @@ def test_deploy_workflow_pushes_ghcr_and_runs_profile_scripts() -> None:
     ) in workflow_text
     assert "'${RUNNER_DOCKER_BIN}' push ghcr.io" not in workflow_text
     assert (
-        "'${RUNNER_DOCKER_BIN}' buildx build --platform '${BUILD_PLATFORMS}' --push --build-arg VITE_API_BASE_URL=http://app-server01:8000"
+        "'${RUNNER_DOCKER_BIN}' buildx build --platform '${BUILD_PLATFORMS}' "
+        "--push --build-arg VITE_API_BASE_URL=/api"
         in workflow_text
     )
 
@@ -156,8 +157,8 @@ def test_deploy_workflow_runs_e2e_against_deployed_urls() -> None:
     runs = workflow_step_runs(workflow, "deploy")
 
     assert 'E2E_SKIP_WEBSERVER: "1"' in workflow_text
-    assert "E2E_API_BASE_URL: http://app-server01:8000" in workflow_text
-    assert "E2E_WEB_BASE_URL: http://bmax-ubuntu:8080" in workflow_text
+    assert "E2E_API_BASE_URL: http://100.115.38.59:8000" in workflow_text
+    assert "E2E_WEB_BASE_URL: http://100.68.208.102:8080" in workflow_text
     assert "Load prod-home E2E operator token" in workflow_text
     assert "GOODMONEYING_OPERATOR_TOKEN" in workflow_text
     assert "::add-mask::$token" in workflow_text

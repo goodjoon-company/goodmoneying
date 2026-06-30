@@ -1,14 +1,14 @@
 # 2026-06-17-제품-요구사항-source-of-truth-통합-검증
 
 Date: 2026-06-17
-Related Task: `docs/Task/M0-T04-2026-06-17-제품-요구사항-source-of-truth-통합.md`
+Related Task: `docs/Task/M0.md`
 Environment: `/Users/goodjoon/project/goodjoon/goodmoneying`
 
 ## 검증 대상
 
 - `docs/01_Product.md`
 - `docs/History/2026-06-17-superpowers-설계근거-흡수.md`
-- `docs/Task/M0-T04-2026-06-17-제품-요구사항-source-of-truth-통합.md`
+- `docs/Task/M0.md`
 - `docs/History/2026-06-17-제품-요구사항-source-of-truth-통합.md`
 
 ## 실행 명령

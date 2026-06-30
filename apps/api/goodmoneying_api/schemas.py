@@ -51,7 +51,7 @@ class CollectionPlanResponse(BaseModel):
     isContinuous: bool
     method: str
     displayRange: str
-    rangeTimeZone: Literal["KST", "UTC"]
+    rangeTimeZone: Literal["KST"]
     progressBasis: str
 
 
@@ -63,6 +63,7 @@ class CollectionDataStatusResponse(BaseModel):
     lastSuccessfulAt: datetime
     progressPercent: str
     missingSegmentCount: int
+    storedRowCount: int
 
 
 class CoverageSegmentResponse(BaseModel):
@@ -82,6 +83,17 @@ class CollectionDashboardTargetResponse(BaseModel):
     plan: CollectionPlanResponse
     dataStatuses: list[CollectionDataStatusResponse]
     coverageSegments: list[CoverageSegmentResponse]
+    changeRate: str
+    accTradePrice24hDisplay: str
+    tickerFreshnessLabel: str
+    coveragePercent: str
+    storageRowCount: int
+    storageBytesDisplay: str
+
+
+class CollectionCoverageSegmentsResponse(BaseModel):
+    instrumentId: int
+    items: list[CoverageSegmentResponse]
 
 
 class DashboardTotalsResponse(BaseModel):
@@ -96,8 +108,18 @@ class DashboardTotalsResponse(BaseModel):
     missingRangesOpen: int
     storageBytesToday: int
     storageBytesTodayDisplay: str
+    storageRowsToday: int
+    realtimeRowsLastMinute: int
+    backfillRowsLastMinute: int
     recentRequestCount: int
-    rateLimitRemainingPercent: str
+
+
+class MetricPrincipleResponse(BaseModel):
+    metricKey: Literal["rateLimitRemainingPercent", "duplicateRows24h"]
+    label: str
+    displayStatus: Literal["displayed", "excluded"]
+    evidenceStatus: Literal["available", "missing_persistence", "missing_measurement"]
+    reason: str
 
 
 class HealthCheckResponse(BaseModel):
@@ -105,6 +127,106 @@ class HealthCheckResponse(BaseModel):
     status: Literal["normal", "warning", "incident"]
     statusLabel: str
     detail: str
+
+
+class CollectionActivityBucketResponse(BaseModel):
+    bucketStartAt: datetime
+    runCount: int
+    resultCount: int
+    status: Literal["none", "low", "collecting", "high"]
+
+
+class RealtimeCollectionHeatmapCellResponse(BaseModel):
+    bucketStartAt: datetime
+    tradeCount: int
+    averageTradesPerMinute: str
+    tradeStrength: str
+    tradeVolume: str
+    tradeAmount: str
+    status: Literal["red", "orange", "yellow", "blue", "green"]
+
+
+class RealtimeCollectionHeatmapRowResponse(BaseModel):
+    instrument: InstrumentResponse
+    instrumentDisplayName: str
+    hourlyBuckets: list[RealtimeCollectionHeatmapCellResponse]
+
+
+class StorageBreakdownItemResponse(BaseModel):
+    dataType: Literal["source_candle", "ticker_snapshot", "orderbook_summary"]
+    label: str
+    rowCount: int
+    bytes: int
+    bytesDisplay: str
+    sharePercent: str
+
+
+class OperationsTrendPointResponse(BaseModel):
+    bucketDate: datetime
+    coveragePercent: str
+    storageBytes: int
+    warningTargets: int
+    incidentTargets: int
+
+
+class MissingRangeSummaryResponse(BaseModel):
+    instrument: InstrumentResponse
+    missingSegmentCount: int
+    coveragePercent: str
+    lastSuccessfulAt: datetime
+
+
+class AuditLogSummaryResponse(BaseModel):
+    targetChangeCount24h: int
+    backfillChangeCount24h: int
+    latestChangeAt: datetime | None
+    latestChangeLabel: str
+
+
+class CollectionWorkerErrorResponse(BaseModel):
+    occurredAt: datetime
+    code: str
+    message: str
+
+
+class CollectionWorkerDiagnosticResponse(BaseModel):
+    label: str
+    value: str
+    detail: str
+
+
+class RealtimeWorkerStatusResponse(BaseModel):
+    status: Literal["running", "stale", "failed"]
+    statusLabel: str
+    statusDetail: str
+    lastHeartbeatAt: datetime | None
+    lastCollectedAt: datetime | None
+    collectedRowCount24h: int
+    errorCount24h: int
+    failureRate24h: str
+    diagnostics: list[CollectionWorkerDiagnosticResponse]
+    recentErrors: list[CollectionWorkerErrorResponse]
+
+
+class BackfillWorkerStatusResponse(BaseModel):
+    status: Literal["running", "stale", "failed"]
+    statusLabel: str
+    statusDetail: str
+    lastHeartbeatAt: datetime | None
+    lastCollectedAt: datetime | None
+    totalErrorCount: int
+    failureRateAll: str
+    runningTargetCount: int
+    totalTargetCount: int
+    queuedJobCount: int
+    queuedTargetCount: int
+    diagnostics: list[CollectionWorkerDiagnosticResponse]
+    recentErrors: list[CollectionWorkerErrorResponse]
+
+
+class CollectionWorkerStatusResponse(BaseModel):
+    realtime: RealtimeWorkerStatusResponse
+    backfill: BackfillWorkerStatusResponse
 
 
 class DashboardSummaryResponse(BaseModel):
@@ -115,6 +237,87 @@ class DashboardSummaryResponse(BaseModel):
     targets: list[CollectionDashboardTargetResponse]
     alerts: list[NotificationEventResponse]
     healthChecks: list[HealthCheckResponse]
+    metricPrinciples: list[MetricPrincipleResponse]
+    collectionActivity: list[CollectionActivityBucketResponse]
+    realtimeCollectionHeatmap: list[RealtimeCollectionHeatmapRowResponse]
+    storageBreakdown: list[StorageBreakdownItemResponse]
+    operationsTrend: list[OperationsTrendPointResponse]
+    missingRangeTop: list[MissingRangeSummaryResponse]
+    auditLogSummary: AuditLogSummaryResponse
+    workerStatus: CollectionWorkerStatusResponse
+
+
+class DashboardOverviewResponse(BaseModel):
+    status: Literal["normal", "warning", "incident"]
+    refreshedAt: datetime
+    recommendedRefreshSeconds: int
+    totals: DashboardTotalsResponse
+    alerts: list[NotificationEventResponse]
+    healthChecks: list[HealthCheckResponse]
+    metricPrinciples: list[MetricPrincipleResponse]
+
+
+class DashboardTargetsResponse(BaseModel):
+    items: list[CollectionDashboardTargetResponse]
+    total: int
+    limit: int
+    offset: int
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
+
+
+class DashboardCoverageResponse(BaseModel):
+    items: list[CoverageStatusResponse]
+    total: int
+    limit: int
+    offset: int
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
+
+
+class DashboardCollectionActivityResponse(BaseModel):
+    items: list[CollectionActivityBucketResponse]
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
+
+
+class DashboardRealtimeHeatmapResponse(BaseModel):
+    items: list[RealtimeCollectionHeatmapRowResponse]
+    total: int
+    limit: int
+    offset: int
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
+
+
+class DashboardStorageBreakdownResponse(BaseModel):
+    items: list[StorageBreakdownItemResponse]
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
+
+
+class DashboardOperationsTrendResponse(BaseModel):
+    items: list[OperationsTrendPointResponse]
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
+
+
+class DashboardMissingRangesResponse(BaseModel):
+    items: list[MissingRangeSummaryResponse]
+    total: int
+    limit: int
+    offset: int
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
+
+
+class DashboardAuditLogSummaryResponse(BaseModel):
+    targetChangeCount24h: int
+    backfillChangeCount24h: int
+    latestChangeAt: datetime | None
+    latestChangeLabel: str
+    recommendedRefreshSeconds: int
+    refreshedAt: datetime
 
 
 class CandidateUniverseEntryResponse(BaseModel):
@@ -123,9 +326,14 @@ class CandidateUniverseEntryResponse(BaseModel):
     accTradePrice24h: str
     accTradePrice24hDisplay: str
     selected: bool
+    favoriteOrder: int | None
     candidateStatus: Literal["in_universe", "out_of_universe"]
     qualityStatus: Literal["normal", "warning", "incident"]
+    qualityDetail: str
     collectionRangeDisplay: str
+    collectedStartAt: datetime | None
+    collectedEndAt: datetime | None
+    isRealtimeTarget: bool
 
 
 class CandidateUniverseResponse(BaseModel):
@@ -144,15 +352,26 @@ class CollectionTargetsResponse(BaseModel):
 
 class MarketListRowResponse(BaseModel):
     instrument: InstrumentResponse
-    tradePrice: str
+    assetType: Literal["coin", "stock"]
+    isFavorite: bool
+    favoriteOrder: int | None
+    tradePrice: str | None
+    priceCurrency: str
     accTradePrice24h: str
     accTradePrice24hDisplay: str
-    changeRate: str
-    tickerCollectedAt: datetime
-    orderbookCollectedAt: datetime
+    tradeAmountCurrency: str
+    changeRate: str | None
+    changeRateBasis: str
+    tickerCollectedAt: datetime | None
+    orderbookCollectedAt: datetime | None
     qualityStatus: Literal["normal", "warning", "incident"]
     coveragePercent: str
+    candleCoverageStartAt: datetime | None
+    candleCoverageEndAt: datetime | None
+    candleCoverageCurrentAt: datetime
+    oneMinuteCandleCount: int
     storageBytes: int
+    storageRowCount: int
     storageBytesDisplay: str
 
 
@@ -181,14 +400,25 @@ class OrderbookSummaryResponse(BaseModel):
     collectedAt: datetime
 
 
+class QualityHistoryEventResponse(BaseModel):
+    occurredAt: datetime
+    status: Literal["normal", "warning", "incident"]
+    title: str
+    detail: str
+
+
 class InstrumentDetailResponse(BaseModel):
     instrument: InstrumentResponse
     latestTicker: TickerSnapshotResponse
     latestOrderbook: OrderbookSummaryResponse
     coverage: list[CoverageStatusResponse]
-    duplicateRows24h: int
+    priceChangeAmount24h: str
+    priceChangeRate24h: str
+    tradeVolume24h: str
+    tradeVolumeChangeRate24h: str
     tickerFreshnessLabel: str
     orderbookFreshnessLabel: str
+    qualityHistory: list[QualityHistoryEventResponse]
 
 
 class CandleResponse(BaseModel):
@@ -235,6 +465,13 @@ class CreateBackfillPlanRequest(BaseModel):
     instrumentIds: list[int]
 
 
+class CreateBackfillJobRequest(BaseModel):
+    dataType: Literal["source_candle"]
+    targetStartAt: datetime
+    targetEndAt: datetime
+    instrumentIds: list[int]
+
+
 class BackfillPlanResponse(BaseModel):
     planId: str
     dataType: str
@@ -244,15 +481,22 @@ class BackfillPlanResponse(BaseModel):
     targets: list[int]
 
 
-class ApproveBackfillJobRequest(BaseModel):
-    planId: str
-
-
 class BackfillJobResponse(BaseModel):
     id: int
     status: Literal["planned", "pending", "running", "paused", "stopped", "succeeded", "failed"]
     dataType: str
     progressPercent: str
+    estimatedRequestCount: int
+    totalTargetCount: int
+    completedTargetCount: int
+    runningTargetIndex: int | None
+    currentTarget: InstrumentResponse | None
+    currentTargetBackfillRowCount: int
+    processedMissingRangeCount: int
+    estimatedMissingRangeCount: int
+    targetStartAt: datetime
+    targetEndAt: datetime
+    targets: list[InstrumentResponse]
     createdAt: datetime
 
 

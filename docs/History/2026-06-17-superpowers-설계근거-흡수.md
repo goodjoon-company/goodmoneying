@@ -1,7 +1,7 @@
 # 2026-06-17-superpowers-설계근거-흡수
 
 Date: 2026-06-17
-Related Task: `docs/Task/M0-T05-2026-06-17-superpowers-호환-규칙-고정.md`
+Related Task: `docs/Task/M0.md`
 Related PR: 없음
 
 ## 변경 요약
@@ -66,9 +66,9 @@ MVP 제외 및 후속 범위:
 ## 반영 위치
 
 - 현재 제품 기준: `docs/01_Product.md`
-- 실행 단위 기록: `docs/Task/M0-T03-2026-06-16-제품-범위-주요-시나리오-정의.md`, `docs/Task/M0-T04-2026-06-17-제품-요구사항-source-of-truth-통합.md`
+- 실행 단위 기록 요약: `docs/Task/M0.md`
 - 검증 증적: `docs/Test/2026-06-16-제품-범위-시나리오-문서-검증.md`, `docs/Test/2026-06-17-제품-요구사항-source-of-truth-통합-검증.md`
-- 후속 호환 규칙: `docs/Task/M0-T05-2026-06-17-superpowers-호환-규칙-고정.md`
+- 후속 호환 규칙: `docs/Task/M0.md`
 
 ## 리스크
 

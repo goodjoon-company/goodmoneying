@@ -2,9 +2,12 @@ services:
   postgres:
     image: postgres:18
     environment:
+      TZ: Asia/Seoul
+      PGTZ: Asia/Seoul
       POSTGRES_DB: goodmoneying
       POSTGRES_USER: goodmoneying
       POSTGRES_PASSWORD: goodmoneying
+    command: ["postgres", "-c", "timezone=Asia/Seoul"]
     ports:
       - "5432:5432"
     volumes:
@@ -20,6 +23,7 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     environment:
+      TZ: Asia/Seoul
       GOODMONEYING_OPERATOR_TOKEN: local-dev-token
       GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
     ports:
@@ -28,14 +32,36 @@ services:
       postgres:
         condition: service_healthy
 
-  worker:
+  realtime-collection-worker:
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
+    container_name: goodmoneying-realtime-collection-worker
     environment:
+      TZ: Asia/Seoul
       GOODMONEYING_OPERATOR_TOKEN: local-dev-token
       GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
       GOODMONEYING_LIVE_UPBIT: "1"
+      GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS: "60"
+      GOODMONEYING_LOG_LEVEL: "INFO"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backfill-collection-worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    container_name: goodmoneying-backfill-collection-worker
+    command: ["uv", "run", "--no-sync", "python", "-m", "goodmoneying_worker.backfill_collection_worker"]
+    environment:
+      TZ: Asia/Seoul
+      GOODMONEYING_OPERATOR_TOKEN: local-dev-token
+      GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
+      GOODMONEYING_LIVE_UPBIT: "1"
+      GOODMONEYING_BACKFILL_POLL_SECONDS: "10"
+      GOODMONEYING_BACKFILL_BATCH_SIZE: "3000"
+      GOODMONEYING_LOG_LEVEL: "INFO"
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,6 +70,10 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+    environment:
+      TZ: Asia/Seoul
+      GOODMONEYING_API_INTERNAL_URL: http://api:8000
+      GOODMONEYING_OPERATOR_TOKEN: local-dev-token
     ports:
       - "5173:80"
     depends_on:

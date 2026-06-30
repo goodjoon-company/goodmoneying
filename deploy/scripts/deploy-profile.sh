@@ -41,16 +41,26 @@ print_remote_compose() {
   local volume_dirs=("$@")
   local remote_hosts_env="$base_dir/deploy.hosts.env"
   local remote_compose_env="$base_dir/deploy.compose.env"
+  local remote_env_dir="$base_dir/env"
+  local env_sample="$PROFILE_DIR/env-samples/$target_role.env.sample"
   local script_path
   local script_name
   printf 'ssh %s "mkdir -p '\''%s'\''"\n' \
     "$host" \
     "$base_dir"
+  printf 'ssh %s "mkdir -p '\''%s'\''"\n' \
+    "$host" \
+    "$remote_env_dir"
   for volume_dir in "${volume_dirs[@]}"; do
     printf 'ssh %s "mkdir -p '\''%s'\''"\n' \
       "$host" \
       "$volume_dir"
   done
+  printf 'scp %s %s:%s/%s.env.sample\n' \
+    "$env_sample" \
+    "$host" \
+    "$remote_env_dir" \
+    "$target_role"
   printf 'scp %s/hosts.env %s:%s\n' \
     "$RUNNER_DIR" \
     "$host" \
@@ -117,12 +127,16 @@ run_remote_compose() {
   local volume_dirs=("$@")
   local remote_hosts_env="$base_dir/deploy.hosts.env"
   local remote_compose_env="$base_dir/deploy.compose.env"
+  local remote_env_dir="$base_dir/env"
+  local env_sample="$PROFILE_DIR/env-samples/$target_role.env.sample"
   local script_path
   local script_name
   ssh "$host" "mkdir -p '$base_dir'"
+  ssh "$host" "mkdir -p '$remote_env_dir'"
   for volume_dir in "${volume_dirs[@]}"; do
     ssh "$host" "mkdir -p '$volume_dir'"
   done
+  scp "$env_sample" "$host:$remote_env_dir/$target_role.env.sample"
   scp "$RUNNER_DIR/hosts.env" "$host:$remote_hosts_env"
   ssh "$host" "cp '$remote_hosts_env' '$remote_compose_env'"
   ssh "$host" "mkdir -p '$docker_config/cli-plugins' && if [ -x /Applications/Docker.app/Contents/Resources/cli-plugins/docker-compose ]; then rm -f '$docker_config/cli-plugins/docker-compose' && ln -s /Applications/Docker.app/Contents/Resources/cli-plugins/docker-compose '$docker_config/cli-plugins/docker-compose'; fi"
@@ -149,7 +163,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
     "$GOODMONEYING_INFRA_CONFIG_DIR"
   print_remote_compose "$GOODMONEYING_APP_HOST" "$GOODMONEYING_APP_BASE_DIR" "app" "app/compose.yml" "$GOODMONEYING_APP_COMPOSE" "$GOODMONEYING_APP_DOCKER_CONFIG" \
     "$GOODMONEYING_APP_API_DATA_DIR" \
-    "$GOODMONEYING_APP_WORKER_DATA_DIR" \
+    "$GOODMONEYING_APP_REALTIME_COLLECTION_WORKER_DATA_DIR" \
+    "$GOODMONEYING_APP_BACKFILL_COLLECTION_WORKER_DATA_DIR" \
     "$GOODMONEYING_APP_CONFIG_DIR"
   print_remote_compose "$GOODMONEYING_WEB_HOST" "$GOODMONEYING_WEB_BASE_DIR" "web" "web/compose.yml" "$GOODMONEYING_WEB_COMPOSE" "$GOODMONEYING_WEB_DOCKER_CONFIG" \
     "$GOODMONEYING_WEB_NGINX_CACHE_DIR" \
@@ -163,7 +178,8 @@ run_remote_compose "$GOODMONEYING_INFRA_HOST" "$GOODMONEYING_INFRA_BASE_DIR" "in
   "$GOODMONEYING_INFRA_CONFIG_DIR"
 run_remote_compose "$GOODMONEYING_APP_HOST" "$GOODMONEYING_APP_BASE_DIR" "app" "app/compose.yml" "$GOODMONEYING_APP_COMPOSE" "$GOODMONEYING_APP_DOCKER_CONFIG" \
   "$GOODMONEYING_APP_API_DATA_DIR" \
-  "$GOODMONEYING_APP_WORKER_DATA_DIR" \
+  "$GOODMONEYING_APP_REALTIME_COLLECTION_WORKER_DATA_DIR" \
+  "$GOODMONEYING_APP_BACKFILL_COLLECTION_WORKER_DATA_DIR" \
   "$GOODMONEYING_APP_CONFIG_DIR"
 run_remote_compose "$GOODMONEYING_WEB_HOST" "$GOODMONEYING_WEB_BASE_DIR" "web" "web/compose.yml" "$GOODMONEYING_WEB_COMPOSE" "$GOODMONEYING_WEB_DOCKER_CONFIG" \
   "$GOODMONEYING_WEB_NGINX_CACHE_DIR" \

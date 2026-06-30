@@ -1,0 +1,135 @@
+/* 운영 콘솔.dc.html fidelity layer */
+.brand-mark {
+  border-radius: 11px;
+  background: linear-gradient(150deg, #37d28f, #1e9e8f);
+  color: #06120d;
+  font-size: 17px;
+  box-shadow: 0 4px 14px rgb(55 210 143 / 0.28);
+}
+
+.brand-block strong {
+  font-size: 15.5px;
+  letter-spacing: 0;
+}
+
+.brand-block span {
+  color: #7d8a83;
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.product-nav {
+  gap: 0;
+}
+
+.product-nav h2 {
+  margin: 18px 0 7px;
+  padding: 0 10px;
+  color: #5f6b64;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+}
+
+.product-nav button {
+  min-height: 35px;
+  margin-bottom: 1px;
+  border-radius: 9px;
+  padding: 9px 14px;
+  color: #9aa39d;
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.product-nav button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 0.05);
+}
+
+.product-nav button.active {
+  background: rgb(55 210 143 / 0.12);
+  color: #eaf6ee;
+  box-shadow: inset 3px 0 0 #37d28f;
+}
+
+.product-nav em {
+  border-radius: 5px;
+  padding: 2px 6px;
+  background: rgb(55 210 143 / 0.12);
+  color: #37d28f;
+  font-size: 9.5px;
+}
+
+.workspace-header {
+  min-height: 62px;
+  padding: 16px 32px;
+}
+
+.breadcrumb {
+  color: #7d8a83;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.header-actions button {
+  min-height: 35px;
+  border-color: rgb(255 255 255 / 0.1);
+  border-radius: 9px;
+  background: transparent;
+  color: #c2ccc5;
+  padding: 8px 15px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.hero-row {
+  align-items: flex-start;
+  padding: 30px 32px 26px;
+}
+
+.eyebrow {
+  margin-bottom: 9px;
+  color: #37d28f;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+h1 {
+  max-width: 760px;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.page-desc {
+  max-width: 680px;
+  margin-top: 11px;
+  color: #8a958f;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.runtime-pills {
+  max-width: 330px;
+  justify-content: flex-end;
+}
+
+.runtime-pills span,
+.time-inline em {
+  border-color: rgb(255 255 255 / 0.08);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.04);
+  color: #9aa39d;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.runtime-pills span:nth-child(2) {
+  border-color: rgb(55 210 143 / 0.22);
+  background: rgb(55 210 143 / 0.1);
+  color: #37d28f;
+}

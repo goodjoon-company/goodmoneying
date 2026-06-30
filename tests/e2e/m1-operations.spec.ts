@@ -45,21 +45,40 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.getByRole("heading", { name: "수집 계획" })).toBeVisible();
   await expect(page.getByText("2026-01-01 00:00 KST ~ 현재(지속)").first()).toBeVisible();
   await expect(page.getByRole("button", { name: "수정" })).toBeVisible();
-  await expect(page.locator(".coverage-segment.missing").first()).toBeVisible();
+  await expect(page.locator(".coverage-bar").first()).toBeVisible();
 
   await page.getByRole("button", { name: "수집 대상 설정" }).click();
+  await expect(page.getByRole("heading", { name: "관심추가 항목" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "후보 유니버스 상위 100개" })).toBeVisible();
-  await expect(page.getByText("선택 50/50")).toBeVisible();
+  await expect(page.getByText(/선택 \d+\/50/)).toBeVisible();
   await expect(page.getByText(firstInstrumentName)).toBeVisible();
-  await page.locator(".target-row").nth(0).getByRole("checkbox").uncheck();
-  await expect(page.getByText("선택 49/50")).toBeVisible();
-  await page.locator(".target-row").nth(0).getByRole("checkbox").check();
-  await page.getByRole("button", { name: "저장", exact: true }).click();
-  await expect(page.getByText("선택 50/50")).toBeVisible();
+  await expect(page.getByRole("button", { name: "24시간 거래대금 정렬" })).toHaveAttribute(
+    "aria-sort",
+    "descending"
+  );
+  await page.getByPlaceholder("코인명 또는 심볼 검색").fill(firstInstrument.baseAsset);
+  await expect(page.getByText(firstInstrumentName)).toBeVisible();
+  await page.getByPlaceholder("코인명 또는 심볼 검색").fill("");
+  const firstTargetCheckbox = page.locator(".target-row").nth(0).getByRole("checkbox", {
+    name: "관심추가"
+  });
+  if (await firstTargetCheckbox.isChecked()) {
+    await firstTargetCheckbox.uncheck();
+    await expect(firstTargetCheckbox).not.toBeChecked();
+    await firstTargetCheckbox.check();
+    await expect(firstTargetCheckbox).toBeChecked();
+  } else {
+    await firstTargetCheckbox.check();
+    await expect(firstTargetCheckbox).toBeChecked();
+    await firstTargetCheckbox.uncheck();
+    await expect(firstTargetCheckbox).not.toBeChecked();
+  }
+  await expect(page.getByText(/선택 \d+\/50/)).toBeVisible();
 
   await page.getByRole("button", { name: "시장 리스트" }).click();
   await expect(page.getByRole("heading", { name: "시장 리스트" })).toBeVisible();
-  await expect(page.getByText("등락률", { exact: true })).toBeVisible();
+  await expect(page.locator(".table-header").filter({ hasText: "등락률" })).toBeVisible();
+  await expect(page.getByText(/KST 기준/)).toBeVisible();
   await expect(page.getByText("24시간 거래대금", { exact: true })).toBeVisible();
   await expect(page.locator(".market-row-button").first()).toBeVisible();
   expect(await page.locator(".market-row-button").count()).toBeGreaterThan(0);

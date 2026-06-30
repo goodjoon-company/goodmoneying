@@ -37,6 +37,48 @@ from goodmoneying_shared.time import minute_bucket, now_utc
 Row = dict[str, Any]
 
 
+def _coverage_segments_from_timeline(
+    data_type: Literal["source_candle", "ticker_snapshot", "orderbook_summary"],
+    timeline: list[tuple[Literal["collected", "missing"], datetime, datetime]],
+) -> list[CoverageSegment]:
+    if not timeline:
+        return []
+    timeline_start = timeline[0][1]
+    timeline_end = timeline[-1][2]
+    total_seconds = Decimal(str(max(1.0, (timeline_end - timeline_start).total_seconds())))
+    segments: list[CoverageSegment] = []
+    accumulated_width = Decimal("0")
+    for index, (status, start_at, end_at) in enumerate(timeline):
+        offset = (
+            Decimal(str(max(0.0, (start_at - timeline_start).total_seconds())))
+            / total_seconds
+            * Decimal("100")
+        ).quantize(Decimal("0.0001"))
+        if index == len(timeline) - 1:
+            width = Decimal("100") - accumulated_width
+        else:
+            width = (
+                Decimal(str(max(0.0, (end_at - start_at).total_seconds())))
+                / total_seconds
+                * Decimal("100")
+            ).quantize(Decimal("0.0001"))
+            accumulated_width += width
+        offset = offset.normalize()
+        width = width.normalize()
+        segments.append(
+            CoverageSegment(
+                data_type=data_type,
+                status=status,
+                offset_percent=offset,
+                width_percent=width,
+                segment_start_at=start_at,
+                segment_end_at=end_at,
+                label="수집 완료" if status == "collected" else "결측",
+            )
+        )
+    return segments
+
+
 def _format_storage_bytes(value: int) -> str:
     if value >= 1024**3:
         return f"{value / 1024**3:.1f}GB"
@@ -169,8 +211,6 @@ class PostgresOperationsRepository:
                     (snapshot_id,),
                 ).fetchall()
             }
-            if not set(instrument_ids).issubset(candidate_ids):
-                raise ValueError("활성 수집 대상은 후보 유니버스 안에서만 선택할 수 있다.")
             current_ids = {
                 int(row["instrument_id"])
                 for row in conn.execute(
@@ -178,9 +218,14 @@ class PostgresOperationsRepository:
                 ).fetchall()
             }
             next_ids = set(instrument_ids)
+            newly_selected_ids = next_ids - current_ids
+            if not newly_selected_ids.issubset(candidate_ids):
+                raise ValueError("활성 수집 대상은 후보 유니버스 안에서만 선택할 수 있다.")
             for instrument_id in sorted(current_ids - next_ids):
                 self._deactivate_target(conn, instrument_id, "local_user", reason)
             for instrument_id in instrument_ids:
+                if instrument_id in current_ids:
+                    continue
                 self._activate_target(conn, instrument_id, "local_user", reason)
         return self.list_active_targets()
 
@@ -1061,35 +1106,7 @@ class PostgresOperationsRepository:
         plan = self._collection_plan_for(instrument_id)
         segment_end = now_utc()
         if data_type == "source_candle":
-            return [
-                CoverageSegment(
-                    data_type=data_type,
-                    status="collected",
-                    offset_percent=Decimal("0"),
-                    width_percent=Decimal("64"),
-                    segment_start_at=plan.range_start_at,
-                    segment_end_at=segment_end,
-                    label="수집 완료",
-                ),
-                CoverageSegment(
-                    data_type=data_type,
-                    status="missing",
-                    offset_percent=Decimal("64"),
-                    width_percent=Decimal("8"),
-                    segment_start_at=plan.range_start_at,
-                    segment_end_at=segment_end,
-                    label="결측",
-                ),
-                CoverageSegment(
-                    data_type=data_type,
-                    status="collected",
-                    offset_percent=Decimal("72"),
-                    width_percent=Decimal("28"),
-                    segment_start_at=plan.range_start_at,
-                    segment_end_at=segment_end,
-                    label="수집 완료",
-                ),
-            ]
+            return self._source_candle_coverage_segments(instrument_id, plan.range_start_at)
         return [
             CoverageSegment(
                 data_type=data_type,
@@ -1101,6 +1118,52 @@ class PostgresOperationsRepository:
                 label="수집 완료",
             )
         ]
+
+    def _source_candle_coverage_segments(
+        self, instrument_id: int, fallback_start_at: datetime
+    ) -> list[CoverageSegment]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT candle_start_at
+                FROM source_candles
+                WHERE instrument_id = %s AND candle_unit = '1m'
+                ORDER BY candle_start_at
+                """,
+                (instrument_id,),
+            ).fetchall()
+        starts = [cast(datetime, row["candle_start_at"]) for row in rows]
+        if not starts:
+            segment_end = now_utc()
+            return [
+                CoverageSegment(
+                    data_type="source_candle",
+                    status="missing",
+                    offset_percent=Decimal("0"),
+                    width_percent=Decimal("100"),
+                    segment_start_at=fallback_start_at,
+                    segment_end_at=segment_end,
+                    label="캔들 없음",
+                )
+            ]
+        ranges: list[tuple[datetime, datetime]] = []
+        current_start = starts[0]
+        current_end = starts[0] + timedelta(minutes=1)
+        for candle_start in starts[1:]:
+            candle_end = candle_start + timedelta(minutes=1)
+            if candle_start <= current_end:
+                current_end = max(current_end, candle_end)
+                continue
+            ranges.append((current_start, current_end))
+            current_start = candle_start
+            current_end = candle_end
+        ranges.append((current_start, current_end))
+        timeline: list[tuple[Literal["collected", "missing"], datetime, datetime]] = []
+        for start_at, end_at in ranges:
+            if timeline and timeline[-1][2] < start_at:
+                timeline.append(("missing", timeline[-1][2], start_at))
+            timeline.append(("collected", start_at, end_at))
+        return _coverage_segments_from_timeline("source_candle", timeline)
 
     def _upsert_tickers(
         self,

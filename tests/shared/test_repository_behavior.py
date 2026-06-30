@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+
+import pytest
 
 from goodmoneying_shared.models import OrderbookSummary, SourceCandle, TickerSnapshot
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
@@ -25,6 +27,45 @@ def test_candidate_universe_defaults_to_top_50_active_targets() -> None:
     assert entries[0].selected is True
     assert entries[49].selected is True
     assert entries[50].selected is False
+
+
+def test_repository_keeps_existing_active_target_that_left_candidate_universe() -> None:
+    repository = SQLiteOperationsRepository()
+    initial_entries = [
+        (f"KRW-GM{index:03d}", f"굿머니코인 {index}", str(100_000 - index))
+        for index in range(1, 101)
+    ]
+    next_entries = [
+        (f"KRW-GM{index:03d}", f"굿머니코인 {index}", str(100_000 - index))
+        for index in range(2, 102)
+    ]
+    repository.refresh_candidate_universe(initial_entries)
+    repository.ensure_default_active_targets()
+    stale_active_id = repository.list_active_targets()[0].id
+
+    repository.refresh_candidate_universe(next_entries)
+    candidate_id = repository.list_candidate_universe()[1][0].instrument.id
+
+    active_targets = repository.update_active_targets(
+        [stale_active_id, candidate_id],
+        "후보 밖 기존 관심 대상 유지",
+    )
+
+    assert {target.id for target in active_targets} == {stale_active_id, candidate_id}
+
+
+def test_repository_rejects_new_active_target_outside_candidate_universe() -> None:
+    repository = SQLiteOperationsRepository()
+    repository.refresh_candidate_universe(
+        [
+            (f"KRW-GM{index:03d}", f"굿머니코인 {index}", str(100_000 - index))
+            for index in range(1, 101)
+        ]
+    )
+    outside_candidate = repository.upsert_instrument("KRW-OUT", "후보밖코인")
+
+    with pytest.raises(ValueError, match="후보 유니버스"):
+        repository.update_active_targets([outside_candidate.id], "후보 밖 신규 대상 차단")
 
 
 def test_repository_dashboard_contains_collection_plan_rows_and_segments() -> None:
@@ -51,6 +92,39 @@ def test_repository_dashboard_contains_collection_plan_rows_and_segments() -> No
     assert first.coverage_segments[0].status == "collected"
     assert first.coverage_segments[0].offset_percent == Decimal("0")
     assert first.coverage_segments[0].width_percent > Decimal("0")
+
+
+def test_repository_candle_coverage_segments_follow_actual_stored_ranges() -> None:
+    repository = SQLiteOperationsRepository()
+    repository.refresh_candidate_universe([("KRW-BTC", "비트코인", "100000")])
+    instrument = repository.ensure_default_active_targets(limit=1)[0]
+    first_start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    second_start = datetime(2026, 6, 29, 0, 0, tzinfo=UTC)
+
+    repository.record_incremental_collection(
+        tickers=[],
+        orderbooks=[],
+        candles=[
+            _source_candle(instrument.id, first_start),
+            _source_candle(instrument.id, first_start + timedelta(minutes=1)),
+            _source_candle(instrument.id, second_start),
+            _source_candle(instrument.id, second_start + timedelta(minutes=1)),
+        ],
+    )
+
+    target = repository.collection_dashboard_targets()[0]
+    candle_segments = [
+        segment for segment in target.coverage_segments if segment.data_type == "source_candle"
+    ]
+
+    assert [segment.status for segment in candle_segments] == ["collected", "missing", "collected"]
+    assert candle_segments[0].segment_start_at == first_start
+    assert candle_segments[0].segment_end_at == first_start + timedelta(minutes=2)
+    assert candle_segments[1].segment_start_at == first_start + timedelta(minutes=2)
+    assert candle_segments[1].segment_end_at == second_start
+    assert candle_segments[2].segment_start_at == second_start
+    assert candle_segments[2].segment_end_at == second_start + timedelta(minutes=2)
+    assert sum(segment.width_percent for segment in candle_segments) == Decimal("100")
 
 
 def test_repository_upserts_newer_market_snapshots_for_same_bucket() -> None:
@@ -114,6 +188,21 @@ def test_repository_upserts_newer_market_snapshots_for_same_bucket() -> None:
     assert latest is not None
     assert latest.trade_price == Decimal("120")
     assert latest.acc_trade_price_24h == Decimal("2000")
+
+
+def _source_candle(instrument_id: int, candle_start_at: datetime) -> SourceCandle:
+    return SourceCandle(
+        instrument_id=instrument_id,
+        candle_unit="1m",
+        candle_start_at=candle_start_at,
+        open_price=Decimal("100"),
+        high_price=Decimal("120"),
+        low_price=Decimal("90"),
+        close_price=Decimal("110"),
+        trade_volume=Decimal("1"),
+        trade_amount=Decimal("110"),
+        collected_at=candle_start_at + timedelta(seconds=1),
+    )
 
 
 def test_backfill_plan_and_control_flow() -> None:

@@ -1,5 +1,6 @@
 import {
   Activity,
+  ArrowUpDown,
   Bell,
   CheckCircle2,
   CircleAlert,
@@ -36,14 +37,18 @@ import {
   loadOperationsSnapshot,
   updateCollectionTargets,
   type Candle,
+  type CandidateUniverseEntry,
   type CollectionDashboardTarget,
   type CoverageSegment,
   type Instrument,
+  type MarketListRow,
   type OperationsSnapshot,
   type Status
 } from "./api";
 
 type SectionId = "dashboard" | "targets" | "markets";
+type TargetSortKey = "name" | "trade" | "quality" | "range";
+type SortDirection = "asc" | "desc";
 
 const menuGroups: {
   title: string;
@@ -458,6 +463,9 @@ function PlanEditor({ target }: { target: CollectionDashboardTarget }) {
 
 function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
   const queryClient = useQueryClient();
+  const [searchTerm, setSearchTerm] = useState("");
+  const [sortKey, setSortKey] = useState<TargetSortKey>("trade");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [selectedIds, setSelectedIds] = useState<Set<number>>(
     () =>
       new Set(
@@ -481,6 +489,24 @@ function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
   });
   const selected = selectedIds.size;
   const canSave = selected <= 50 && !mutation.isPending;
+  const sortEntries = (entries: CandidateUniverseEntry[]) =>
+    [...entries].sort((a, b) => compareTargetEntries(a, b, sortKey, sortDirection));
+  const normalizedSearch = normalizeSearch(searchTerm);
+  const filteredEntries = sortEntries(
+    snapshot.candidateEntries
+      .slice(0, 100)
+      .filter((entry) => targetMatchesSearch(entry, normalizedSearch))
+  );
+  const selectedEntries = filteredEntries.filter((entry) => selectedIds.has(entry.instrument.id));
+  const candidateEntries = filteredEntries.filter((entry) => !selectedIds.has(entry.instrument.id));
+  const setSort = (nextKey: TargetSortKey) => {
+    if (sortKey === nextKey) {
+      setSortDirection((current) => (current === "desc" ? "asc" : "desc"));
+      return;
+    }
+    setSortKey(nextKey);
+    setSortDirection(nextKey === "trade" ? "desc" : "asc");
+  };
   const toggle = (instrumentId: number) => {
     setSelectedIds((previous) => {
       const next = new Set(previous);
@@ -493,51 +519,90 @@ function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
     });
   };
   return (
-    <section className="split-page">
-      <section className="panel">
+    <section className="targets-page">
+      <section className="panel full">
         <div className="panel-heading">
-          <h2>후보 유니버스 상위 100개</h2>
+          <h2>관심종목 설정</h2>
           <span>선택 {selected}/50</span>
         </div>
         <div className="target-toolbar">
           <label>
             <Search size={16} />
-            <input placeholder="코인명 또는 심볼 검색" />
+            <input
+              placeholder="코인명 또는 심볼 검색"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+            />
           </label>
-          <select defaultValue="trade">
-            <option value="trade">거래대금순</option>
-            <option value="quality">품질순</option>
-          </select>
           <button type="button" disabled={!canSave} onClick={() => mutation.mutate(Array.from(selectedIds))}>
             <CheckCircle2 size={16} />
             저장
           </button>
         </div>
         {mutation.isError ? <p className="error-text">수집 대상 저장에 실패했습니다.</p> : null}
+        {searchTerm ? (
+          <p className="helper-text">검색 결과 {filteredEntries.length}개 · 관심추가 {selectedEntries.length}개</p>
+        ) : null}
         <div className="target-table">
+          <div className="target-section-heading">
+            <h3>관심추가 항목</h3>
+            <span>{selectedEntries.length}개</span>
+          </div>
           <div className="target-table-head">
             <span>활성</span>
-            <span>후보</span>
-            <span>거래대금</span>
-            <span>품질</span>
-            <span>수집 범위</span>
+            <TargetSortButton
+              active={sortKey === "name"}
+              direction={sortDirection}
+              label="종목"
+              onClick={() => setSort("name")}
+            />
+            <TargetSortButton
+              active={sortKey === "trade"}
+              direction={sortDirection}
+              label="24시간 거래대금"
+              onClick={() => setSort("trade")}
+            />
+            <TargetSortButton
+              active={sortKey === "quality"}
+              direction={sortDirection}
+              label="품질"
+              onClick={() => setSort("quality")}
+            />
+            <TargetSortButton
+              active={sortKey === "range"}
+              direction={sortDirection}
+              label="수집 범위"
+              onClick={() => setSort("range")}
+            />
           </div>
-          {snapshot.candidateEntries.slice(0, 100).map((entry) => (
-            <label className="target-row" key={entry.instrument.id}>
-              <span>
-                <input
-                  type="checkbox"
-                  checked={selectedIds.has(entry.instrument.id)}
-                  onChange={() => toggle(entry.instrument.id)}
-                />
-                수집
-              </span>
-              <InstrumentName instrument={entry.instrument} />
-              <strong>{entry.accTradePrice24hDisplay}</strong>
-              <em className={`quality ${entry.qualityStatus}`}>{statusText(entry.qualityStatus)}</em>
-              <span>{entry.collectionRangeDisplay}</span>
-            </label>
-          ))}
+          {selectedEntries.length > 0 ? (
+            selectedEntries.map((entry) => (
+              <TargetRow
+                entry={entry}
+                key={`selected-${entry.instrument.id}`}
+                selected={selectedIds.has(entry.instrument.id)}
+                onToggle={() => toggle(entry.instrument.id)}
+              />
+            ))
+          ) : (
+            <p className="empty-table-row">검색 조건에 맞는 관심추가 항목이 없습니다.</p>
+          )}
+          <div className="target-section-heading secondary">
+            <h3>후보 유니버스 상위 100개</h3>
+            <span>{candidateEntries.length}개</span>
+          </div>
+          {candidateEntries.length > 0 ? (
+            candidateEntries.map((entry) => (
+              <TargetRow
+                entry={entry}
+                key={`candidate-${entry.instrument.id}`}
+                selected={selectedIds.has(entry.instrument.id)}
+                onToggle={() => toggle(entry.instrument.id)}
+              />
+            ))
+          ) : (
+            <p className="empty-table-row">검색 조건에 맞는 후보 종목이 없습니다.</p>
+          )}
         </div>
       </section>
       <section className="panel side-panel">
@@ -553,6 +618,60 @@ function Targets({ snapshot }: { snapshot: OperationsSnapshot }) {
   );
 }
 
+function TargetSortButton({
+  active,
+  direction,
+  label,
+  onClick
+}: {
+  active: boolean;
+  direction: SortDirection;
+  label: string;
+  onClick: () => void;
+}) {
+  const sortValue = active ? (direction === "asc" ? "ascending" : "descending") : "none";
+  return (
+    <button
+      aria-label={`${label} 정렬`}
+      aria-sort={sortValue}
+      className={`table-sort-button ${active ? "active" : ""}`}
+      type="button"
+      onClick={onClick}
+    >
+      <span>{label}</span>
+      <ArrowUpDown size={13} />
+    </button>
+  );
+}
+
+function TargetRow({
+  entry,
+  selected,
+  onToggle
+}: {
+  entry: CandidateUniverseEntry;
+  selected: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <label className="target-row">
+      <span>
+        <input
+          aria-label="관심추가"
+          type="checkbox"
+          checked={selected}
+          onChange={onToggle}
+        />
+        관심
+      </span>
+      <InstrumentName instrument={entry.instrument} />
+      <strong>{entry.accTradePrice24hDisplay}</strong>
+      <em className={`quality ${entry.qualityStatus}`}>{statusText(entry.qualityStatus)}</em>
+      <span>{entry.collectionRangeDisplay}</span>
+    </label>
+  );
+}
+
 function Markets({
   snapshot,
   selectedInstrumentId,
@@ -562,6 +681,7 @@ function Markets({
   selectedInstrumentId: number | null;
   onSelectInstrument: (instrumentId: number) => void;
 }) {
+  const changeRateBasis = latestMarketTickerBasis(snapshot.marketRows);
   return (
     <section className="panel full">
       <div className="panel-heading">
@@ -573,7 +693,10 @@ function Markets({
           <span>거래 상품</span>
           <span>현재가</span>
           <span>24시간 거래대금</span>
-          <span>등락률</span>
+          <span className="stacked-header">
+            등락률
+            <em>{changeRateBasis} 기준</em>
+          </span>
           <span>최신성</span>
           <span>커버리지</span>
           <span>저장량</span>
@@ -859,6 +982,67 @@ function MiniMetric({ label, value, detail }: { label: string; value: string; de
       <em>{detail}</em>
     </article>
   );
+}
+
+function compareTargetEntries(
+  first: CandidateUniverseEntry,
+  second: CandidateUniverseEntry,
+  sortKey: TargetSortKey,
+  direction: SortDirection
+) {
+  const multiplier = direction === "asc" ? 1 : -1;
+  if (sortKey === "name") {
+    return (
+      first.instrument.baseAsset.localeCompare(second.instrument.baseAsset, "ko-KR") * multiplier
+    );
+  }
+  if (sortKey === "quality") {
+    const qualityRank: Record<Status, number> = { normal: 0, warning: 1, incident: 2 };
+    return (qualityRank[first.qualityStatus] - qualityRank[second.qualityStatus]) * multiplier;
+  }
+  if (sortKey === "range") {
+    return first.collectionRangeDisplay.localeCompare(second.collectionRangeDisplay, "ko-KR") * multiplier;
+  }
+  return (Number(first.accTradePrice24h) - Number(second.accTradePrice24h)) * multiplier;
+}
+
+function normalizeSearch(value: string) {
+  return value.trim().toLocaleLowerCase("ko-KR");
+}
+
+function targetMatchesSearch(entry: CandidateUniverseEntry, normalizedSearch: string) {
+  if (!normalizedSearch) return true;
+  const haystack = [
+    entry.instrument.marketCode,
+    entry.instrument.baseAsset,
+    entry.instrument.displayName,
+    `${entry.instrument.baseAsset} / ${entry.instrument.quoteCurrency}`
+  ]
+    .join(" ")
+    .toLocaleLowerCase("ko-KR");
+  return haystack.includes(normalizedSearch);
+}
+
+function latestMarketTickerBasis(rows: MarketListRow[]) {
+  const latest = rows
+    .map((row) => Date.parse(row.tickerCollectedAt))
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => b - a)[0];
+  return Number.isFinite(latest) ? formatKstShort(new Date(latest).toISOString()) : "기준 없음";
+}
+
+function formatKstShort(value: string) {
+  const parts = new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(new Date(value));
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  return `${get("month")}.${get("day")} ${get("hour")}:${get("minute")} KST`;
 }
 
 function statusText(status: string) {

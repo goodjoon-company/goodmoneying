@@ -47,17 +47,35 @@ describe("데이터 수집관리 화면", () => {
     expect(document.querySelector(".coverage-segment.missing")).toBeInTheDocument();
   });
 
-  it("수집 대상 설정은 최대 50개 후보 선택을 저장한다", async () => {
+  it("관심종목 설정은 선택 항목 분리, 실시간 검색, 헤더 정렬을 지원한다", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await screen.findByRole("heading", { name: "업비트 수집 운영 상태" });
     await user.click(screen.getByRole("button", { name: "수집 대상 설정" }));
+    expect(await screen.findByText("관심추가 항목")).toBeInTheDocument();
     expect(await screen.findByText("후보 유니버스 상위 100개")).toBeInTheDocument();
     expect(screen.getByText("선택 50/50")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "24시간 거래대금 정렬" })).toHaveAttribute(
+      "aria-sort",
+      "descending"
+    );
 
     await screen.findByText("BTC / KRW");
-    await user.click(screen.getAllByRole("checkbox")[0]);
+    await user.type(screen.getByPlaceholderText("코인명 또는 심볼 검색"), "이더");
+
+    expect(screen.getByText("ETH / KRW")).toBeInTheDocument();
+    expect(screen.queryByText("BTC / KRW")).not.toBeInTheDocument();
+
+    await user.clear(screen.getByPlaceholderText("코인명 또는 심볼 검색"));
+    await user.click(screen.getByRole("button", { name: "종목 정렬" }));
+
+    expect(screen.getByRole("button", { name: "종목 정렬" })).toHaveAttribute(
+      "aria-sort",
+      "ascending"
+    );
+
+    await user.click(screen.getAllByRole("checkbox", { name: "관심추가" })[0]);
 
     expect(screen.getByText("선택 49/50")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "저장" })).toBeEnabled();
@@ -71,6 +89,7 @@ describe("데이터 수집관리 화면", () => {
     await user.click(screen.getByRole("button", { name: "시장 리스트" }));
     expect(await screen.findByText("거래 상품")).toBeInTheDocument();
     expect(screen.getByText("등락률")).toBeInTheDocument();
+    expect(screen.getByText("06.18 09:00 KST 기준")).toBeInTheDocument();
     expect(screen.getByText("24시간 거래대금")).toBeInTheDocument();
     expect(screen.getByText("BTC / KRW")).toBeInTheDocument();
     expect(screen.getByText("GM050 / KRW")).toBeInTheDocument();

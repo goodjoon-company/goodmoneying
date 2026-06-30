@@ -292,6 +292,7 @@ h3 {
 
 .dashboard-page,
 .split-page,
+.targets-page,
 .detail-page {
   display: grid;
   gap: 14px;
@@ -305,6 +306,10 @@ h3 {
 .split-page,
 .detail-page {
   grid-template-columns: minmax(0, 1.3fr) minmax(340px, 0.8fr);
+}
+
+.targets-page {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.32fr);
 }
 
 .detail-title {
@@ -760,6 +765,7 @@ h3 {
 
 .target-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
@@ -793,6 +799,51 @@ h3 {
   padding: 0 14px;
 }
 
+.target-section-heading {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 14px;
+  background: #10241c;
+  border-top: 1px solid #243a31;
+}
+
+.target-section-heading:first-child {
+  border-top: 0;
+}
+
+.target-section-heading.secondary {
+  background: #151f1b;
+}
+
+.target-section-heading span,
+.empty-table-row {
+  color: #9eaaa2;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.table-sort-button {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 5px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 900;
+  text-align: left;
+}
+
+.table-sort-button.active {
+  color: #dbf9e5;
+}
+
 .target-row {
   border-top: 1px solid #243a31;
 }
@@ -802,6 +853,11 @@ h3 {
   align-items: center;
   gap: 8px;
   font-weight: 800;
+}
+
+.empty-table-row {
+  border-top: 1px solid #243a31;
+  padding: 14px;
 }
 
 .side-panel {
@@ -818,6 +874,18 @@ h3 {
   align-items: center;
   min-height: 44px;
   padding: 0 12px;
+}
+
+.stacked-header {
+  display: grid;
+  gap: 2px;
+}
+
+.stacked-header em {
+  color: #75c59c;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
 }
 
 .table-row {
@@ -977,6 +1045,7 @@ h3 {
   .app-layout,
   .dashboard-page,
   .split-page,
+  .targets-page,
   .detail-page {
     grid-template-columns: 1fr;
   }

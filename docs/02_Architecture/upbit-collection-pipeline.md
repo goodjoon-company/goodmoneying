@@ -1,7 +1,7 @@
 # 업비트 수집 파이프라인 설계
 
 Status: Draft
-Last Updated: 2026-06-30
+Last Updated: 2026-07-10
 Related Product: `docs/01_Product.md`
 Related Task: `docs/Task/M1.md`
 Related DB Contract: `docs/contracts/db/schema.sql`
@@ -9,7 +9,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 
 ## 책임
 
-업비트 수집 파이프라인(Upbit Collection Pipeline)은 M1의 핵심 경계다. 업비트(Upbit) KRW 마켓 데이터를 수집, 저장, 품질 확인, 운영 상태 노출까지 책임진다.
+업비트 수집 파이프라인(Upbit Collection Pipeline)은 완료된 M1~M3 데이터 기반의 핵심 경계다. 업비트(Upbit) KRW 마켓 데이터를 수집·저장하고 품질과 내부 운영 상태를 제공한다. 현재 Post-MVP 제품화에서는 관심종목과 코인 상세의 투자 후보 탐색을 지지하되, 운영 화면 자체를 최종 제품 가치로 확장하지 않는다.
 
 - 후보 유니버스(Candidate Universe) 갱신
 - 활성 수집 대상(Active Collection Target) 최대 50개 유지
@@ -81,7 +81,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 3. live 프로필에서는 1분 원천 캔들을 업비트 웹소켓(WebSocket) `candle.1m` 스트림으로 수신한다. 캔들 스트림은 체결이 발생해 캔들 값이 바뀔 때 전송되므로, 1분마다 모든 코인의 이벤트가 반드시 발생한다고 가정하지 않는다.
 4. 체결 이벤트는 `trade_events`에 저장하고, 운영 대시보드의 실시간 히트맵은 시간당 체결 수를 분당 평균으로 환산해 빨강/주황/노랑/파랑/초록 단계로 표시한다.
 5. 일봉은 10~30분 주기 또는 하루 마감 후 보정한다.
-6. 모든 API 호출은 워커 내부 rate limiter를 통과한다. M1은 두 수집 워커 프로세스가 있으므로 백필 수집 워커 동시성은 1로 제한한다.
+6. 모든 API 호출은 워커 내부 rate limiter를 통과한다. 현재 두 수집 워커 프로세스가 업비트 API 한도를 공유하므로 백필 수집 워커 동시성은 1로 제한한다.
 7. 각 수집은 수집 실행과 대상별 수집 결과를 남긴다.
 8. 실시간 수집 워커는 실행 시작과 성공/오류 상태를 `collection_worker_heartbeats`에 남긴다.
 9. 수집 또는 배치 시점에 코인별 수집 계획의 기간, 데이터별 최신성, 결측 구간, 구간형 진행 상태를 계산해 저장된 View Model을 갱신한다.
@@ -102,7 +102,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 11. `rows_written_count`와 `last_completed_at`은 DB batch upsert가 성공한 뒤에만 갱신한다.
 12. 기간이 조정된 경우 수집 범위 시작일부터 재검사하되, 시작일 데이터가 이미 있으면 그 이후 첫 빈 구간부터 요청한다.
 13. 백필은 일시정지, 중지, 이어서하기, 안전 재시작을 지원한다. 실패 상태에서 이어서하기를 수행하면 기존 저장 데이터를 삭제하지 않고 결측 구간을 다시 계산해 없는 구간만 요청한다.
-14. 삭제 후 재수집은 M1 이후 기능이다.
+14. 삭제 후 재수집은 현재 제품화 범위 밖이며 감사·복구 필요성이 승인될 때 별도 결정한다.
 
 ### 데이터 완전성 검사
 
@@ -113,7 +113,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 
 ## 데이터 기준
 
-- 저장 시각(Storage Time)은 KST(Korea Standard Time) 기준 `timestamptz`다.
+- 저장 시각(Storage Time)은 절대 시각을 보존하는 `timestamptz`를 사용하고, PostgreSQL 세션·애플리케이션 계산·API 표시는 KST(Korea Standard Time, `Asia/Seoul`)로 통일한다.
 - 업비트 KRW 마켓 표시 시각(Display Time)은 KST(Korea Standard Time)를 기본으로 한다.
 - 금액, 수량, 거래대금, 등락률은 DB에서 `numeric`, Python에서 `Decimal`로 다룬다.
 - API 응답의 Decimal 값은 문자열로 보낸다.
@@ -129,7 +129,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 
 | 화면 | API 성격 | 자동 갱신 |
 |---|---|---|
-| 데이터 수집관리 내비게이션 | 제품 전체 메뉴와 MVP 활성 영역 | 정적 또는 설정 변경 후 갱신 |
+| 데이터 수집관리 내비게이션 | 완료된 수집 기반과 내부 운영 도구 진입점 | 정적 또는 설정 변경 후 갱신 |
 | 운영 상태 대시보드 | worker 현황판, 코인별 수집 계획, 파이프라인 건강도, 최신성, 실패, 결측, 저장량, 구간형 진행 상태 | 10~15초 |
 | Backfill 관리 | 후보 유니버스, 활성 수집 대상 최대 50개, 24시간 거래대금, 수집 시작일/최종일, 실시간 수집 라벨, 백필 계획 생성 레이어, 백필 작업 패널 | 수동 또는 변경 후 갱신 |
 | 백필 작업 | 저장된 백필 작업 상태와 제어 | 실행 중 5~10초 |
@@ -150,10 +150,10 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 
 ## 보안과 감사
 
-- M1은 로컬 신뢰 네트워크를 전제로 한다.
+- 현재 운영은 로컬 신뢰 네트워크를 전제로 한다.
 - 쓰기 API는 단순 운영 토큰(Authentication)을 요구한다.
 - 활성 수집 대상 저장, 수집 범위 설정 변경, 백필 시작/제어는 감사 로그를 남긴다.
-- 다중 사용자 권한(Authorization)은 M1 범위가 아니다.
+- 다중 사용자 권한(Authorization)은 현재 제품 범위가 아니다.
 
 ## 의존성
 
@@ -168,9 +168,11 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 - DB: `docs/contracts/db/schema.sql`
 - API: `docs/contracts/api/openapi.yaml`
 
-## 리스크와 후속 작업
+## 리스크와 결정 게이트
 
-- M1은 단일 워커 구조이므로 다중 워커 장애 복구와 작업 분배는 M4에서 고도화한다.
-- M1은 삭제 없음 정책을 사용하므로 저장량 증가를 M3/M4에서 반드시 재검토한다.
-- 메시지 큐(Message Queue), 분산 rate limiter, PostgreSQL 복제/장애 조치(Failover)는 M4 필수 결정 항목이다.
-- 기술적 분석 지표와 외부 알림 발송은 MVP 이후 별도 결정 질문을 거쳐 설계한다. 대시보드 요약 갱신은 SSE(Server-Sent Events), 업비트 시세 수집은 서버 측 WebSocket을 사용한다.
+- 현재 단일 인스턴스 구조는 자동 장애 조치(Failover)가 없다. 처리량·복구 목표를 충족하지 못한다는 증거가 생기면 다중 워커, 메시지 큐(Message Queue), 분산 rate limiter, PostgreSQL 복제·장애 조치를 함께 비교한다.
+- 삭제 없음 정책은 저장량을 계속 늘린다. 저장량, 조회 시간, 백업·복구 시간이 운영 임계값을 넘으면 보존 기간, 파티셔닝(Partitioning), 압축, 다운샘플링(Downsampling), 삭제 정책을 결정한다.
+- 호가 원천 스냅샷(Snapshot)은 호가 요약만으로 답할 수 없는 전략 실험이 승인될 때까지 저장하지 않는다.
+- 기술적 분석 지표와 외부 알림 발송은 사용자 시나리오가 승인된 뒤 계산 위치, 캐싱, 채널, 빈도 제한을 설계한다.
+- 현재 브라우저 갱신은 SSE(Server-Sent Events), 업비트 시세 수집은 서버 측 WebSocket을 유지한다.
+- 미래 결정 게이트는 `docs/ADR/ADR-0007-Post-MVP-아키텍처-결정-게이트.md`를 따른다.

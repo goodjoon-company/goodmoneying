@@ -2,6 +2,7 @@
 
 Status: Accepted
 Date: 2026-06-17
+미래 결정 게이트 정제(Future Gate Refined By): `docs/ADR/ADR-0007-Post-MVP-아키텍처-결정-게이트.md`
 
 ## 맥락
 
@@ -21,12 +22,12 @@ M1 저장소는 PostgreSQL 단일 저장소로 시작한다. DB는 원천 사실
 
 ## 결과
 
-- 모든 저장 시각(Storage Time)은 UTC 기준 `timestamptz`로 둔다.
+- 모든 저장 시각(Storage Time)은 절대 시각을 보존하는 `timestamptz`로 둔다. 현재 DB 계약과 런타임은 PostgreSQL 세션·애플리케이션 계산·API 표시를 KST(Korea Standard Time, `Asia/Seoul`)로 통일한다.
 - 가격, 수량, 거래대금, 스프레드(Spread), 잔량, 등락률, 호가 불균형(Imbalance)은 DB에서 `numeric`, Python에서 `Decimal`로 다룬다.
 - API 응답의 Decimal 값은 문자열로 보낸다.
 - M1 데이터 보존 정책은 삭제 없음이다.
 
 ## 후속 작업
 
-- M3 또는 M3.5에서 보존 기간, 파티셔닝, 압축, 다운샘플링, 삭제 정책을 반드시 결정한다.
+- 과거 계획은 M3 또는 M3.5에서 보존 기간과 저장 구조를 결정하도록 두었다. 현재는 저장량, 조회 시간, 백업·복구 시간이 운영 임계값을 넘거나 승인된 전략 실험이 필요로 할 때 `ADR-0007`의 결정 게이트를 적용한다.
 - 삭제 후 재수집(Destructive Rebuild)은 감사(Audit)와 복구 정책을 갖춘 뒤 후속 구현한다.

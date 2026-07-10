@@ -4,6 +4,7 @@ Status: Accepted
 Date: 2026-06-21
 Related Product: `docs/01_Product.md#요구사항`
 Related Architecture: `docs/02_Architecture/upbit-collection-pipeline.md`
+미래 결정 게이트 정제(Future Gate Refined By): `docs/ADR/ADR-0007-Post-MVP-아키텍처-결정-게이트.md`
 
 ## 맥락
 
@@ -24,7 +25,7 @@ Related Architecture: `docs/02_Architecture/upbit-collection-pipeline.md`
 - 실패(failed)한 백필 작업은 재개(Resume)를 허용한다. 재개 시 기존 저장 데이터를 삭제하지 않고 결측 구간을 다시 계산해 없는 구간만 업비트에 요청한다.
 - 워커 로그 레벨은 `GOODMONEYING_LOG_LEVEL`로 설정한다. 기본값은 `INFO`이며, `DEBUG`에서는 백필 job claim, target 시작, 결측 범위 계산, fetch 성공, DB batch upsert 경계를 남긴다.
 - 백필 작업과 대상 상태의 단일 기준(Source Of Truth)은 계속 `backfill_jobs`와 `backfill_job_targets`다.
-- 백필 동시성(Concurrency)은 1로 유지한다. 코인별 병렬 백필, 분산 rate limiter, 메시지 큐(Message Queue)는 M4 결정 범위다.
+- 백필 동시성(Concurrency)은 1로 유지한다. 코인별 병렬 백필, 분산 rate limiter, 메시지 큐(Message Queue)는 처리량 또는 rate limit 문제가 측정될 때 `ADR-0007`의 결정 게이트를 적용한다.
 
 ## 대안
 

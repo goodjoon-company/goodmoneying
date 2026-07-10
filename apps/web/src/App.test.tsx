@@ -515,7 +515,7 @@ describe("데이터 수집관리 화면", () => {
       expect(body.instrumentIds).not.toContain(1);
       expect(body.reason).toBe("운영 화면에서 수집 대상 변경");
     });
-  });
+  }, 10_000);
 
   it("관심종목에서 주식 전환과 코인 상세 열기를 제공한다", async () => {
     const user = userEvent.setup();

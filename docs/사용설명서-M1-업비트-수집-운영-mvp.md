@@ -43,7 +43,7 @@ npm run dev:web
 ## 운영 화면
 
 - 운영 상태: 활성 수집 대상, 실패 실행, 지연 대상, 결측 상태, 알림 이벤트를 확인한다.
-- 수집 대상: 후보 유니버스(Candidate Universe) 상위 100개 중 정확히 50개를 선택하고 저장한다.
+- 수집 대상: 수집 후보군(Collection Candidate Pool) 상위 100개 중 최대 50개를 선택하고 저장한다.
 - 백필: 활성 수집 대상에 대한 백필 작업(Backfill Job)을 `pending` 상태로 시작하고 멈춤(Pause), 중지(Stop), 이어서하기(Resume), 안전 재시작(Safe Restart) 제어를 실행한다.
 - 시장 리스트: 활성 수집 대상의 현재가 스냅샷(Ticker Snapshot), 24시간 거래대금, 품질 상태를 확인한다.
 - 코인 상세: 단일 거래 상품(Instrument)의 현재가, 호가 요약(Orderbook Summary), 캔들(Candle) 흐름을 확인한다.

@@ -1,10 +1,11 @@
 # goodmoneying
 
-goodmoneying은 개인용 투자 데이터 플랫폼이다. 현재 구현된 M1은 업비트(Upbit) KRW 마켓 수집 운영 MVP(Minimum Viable Product)로, 실시간 수집 워커(Realtime Collection Worker), 백필 수집 워커(Backfill Collection Worker), 운영 서버(Operations Server), React 운영 화면, DB 계약(Contract), 자동화 테스트를 포함한다.
+goodmoneying은 개인용 투자 데이터 플랫폼이다. 업비트(Upbit) KRW 마켓 수집 최소 기능 제품(MVP, Minimum Viable Product)은 이미 구현됐으며, 현재는 이 데이터 기반으로 관심 코인을 비교하고 투자 후보를 좁히는 초기 구현 이후 제품화(Post-MVP Productization) 단계다.
 
 ## 문서
 
 - 문서 지도: `docs/README.md`
+- 도메인 용어집: `UBIQUITOUS_LANGUAGE.md`
 - 제품 기준: `docs/01_Product.md`
 - 아키텍처 기준: `docs/02_Architecture.md`
 - M1 사용 설명서: `docs/사용설명서-M1-업비트-수집-운영-mvp.md`

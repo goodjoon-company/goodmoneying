@@ -12,7 +12,7 @@ tags:
   - name: 대시보드(Dashboard)
     description: 운영 콘솔 첫 화면과 전체 수집 파이프라인 상태 요약을 제공하는 API 그룹.
   - name: 수집(Collection)
-    description: 후보 유니버스(Candidate Universe), 활성 수집 대상, 커버리지, 수집 실행 이력을 관리하는 API 그룹.
+    description: 수집 후보군(Collection Candidate Pool), 활성 수집 대상, 커버리지, 수집 실행 이력을 관리하는 API 그룹.
   - name: 시장(Market)
     description: 업비트 시장 목록과 시장 단위 품질/거래 정보를 조회하는 API 그룹.
   - name: 상품(Instrument)
@@ -211,11 +211,11 @@ paths:
     get:
       tags:
         - 수집(Collection)
-      summary: 후보 유니버스 조회
+      summary: 수집 후보군 조회
       operationId: getCandidateUniverse
       responses:
         "200":
-          description: 상위 100개 후보와 활성 수집 대상 상태
+          description: 수집 후보군 상위 100개와 활성 수집 대상 상태
           content:
             application/json:
               schema:
@@ -1469,7 +1469,7 @@ components:
           items:
             $ref: "#/components/schemas/CoverageSegment"
     CandidateUniverseResponse:
-      description: 후보 유니버스 산정 시각과 후보 거래 상품 목록 응답.
+      description: 수집 후보군 산정 시각과 후보 거래 상품 목록 응답. 스키마 이름은 하위 호환을 위해 CandidateUniverseResponse를 유지한다.
       type: object
       required: [rankedAt, entries]
       properties:
@@ -1481,7 +1481,7 @@ components:
           items:
             $ref: "#/components/schemas/CandidateUniverseEntry"
     CandidateUniverseEntry:
-      description: 후보 유니버스의 단일 거래 상품 순위, 선정 여부, 수집된 범위 항목.
+      description: 수집 후보군의 단일 거래 상품 순위, 선정 여부, 수집된 범위 항목. 스키마 이름은 하위 호환을 위해 CandidateUniverseEntry를 유지한다.
       type: object
       required:
         - instrument

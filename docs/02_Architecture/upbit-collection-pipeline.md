@@ -11,7 +11,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 
 업비트 수집 파이프라인(Upbit Collection Pipeline)은 완료된 M1~M3 데이터 기반의 핵심 경계다. 업비트(Upbit) KRW 마켓 데이터를 수집·저장하고 품질과 내부 운영 상태를 제공한다. 현재 Post-MVP 제품화에서는 관심종목과 코인 상세의 투자 후보 탐색을 지지하되, 운영 화면 자체를 최종 제품 가치로 확장하지 않는다.
 
-- 후보 유니버스(Candidate Universe) 갱신
+- 수집 후보군(Collection Candidate Pool) 갱신
 - 활성 수집 대상(Active Collection Target) 최대 50개 유지
 - 코인별 수집 계획(Collection Plan)과 저장된 화면용 수집 상태 View Model 유지
 - 원천 캔들(Source Candle), 현재가 스냅샷(Ticker Snapshot), 체결 이벤트(Trade Event), 호가 요약(Orderbook Summary) 수집
@@ -35,7 +35,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 
 | 구성요소 | 책임 | 구현 기준 |
 |---|---|---|
-| 실시간 수집 워커(Realtime Collection Worker) | 업비트 웹소켓(WebSocket) 시세 스트림 수신, 후보 유니버스와 증분 수집 저장. 런타임은 `GOODMONEYING_LIVE_UPBIT=1` live 프로필만 허용 | Python 단일 프로세스 |
+| 실시간 수집 워커(Realtime Collection Worker) | 업비트 웹소켓(WebSocket) 시세 스트림 수신, 수집 후보군과 증분 수집 저장. 런타임은 `GOODMONEYING_LIVE_UPBIT=1` live 프로필만 허용 | Python 단일 프로세스 |
 | 백필 수집 워커(Backfill Collection Worker) | DB 상태 폴링으로 pending 백필 작업 확인, 원천 캔들 결측 구간 백필 실행, fetch 성공 heartbeat와 DB batch upsert 완료 기준 진행 상태 기록 | Python 단일 프로세스, 기본 10초 폴링, 기본 최대 3000개 저장 배치(batch) |
 | 운영 서버(Operations Server) | 화면 단위 View Model API, 원천 리소스 API, 쓰기 API, 저장된 worker 상태 조회 | FastAPI |
 | 운영 화면 | 데이터 수집관리 내비게이션, worker 현황판, 대시보드, Backfill 관리, 백필 제어, 관심종목, 코인 상세 레이어 | React, SSE(Server-Sent Events) 대시보드/관심종목 가격 갱신, React Query HTTP 폴링(Polling) 보조 |
@@ -66,13 +66,13 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 
 ## 주요 흐름
 
-### 후보 유니버스 갱신
+### 수집 후보군 갱신
 
 1. 수집 워커가 업비트 KRW 마켓 전체 현재가 스냅샷을 조회한다.
 2. 24시간 누적 거래대금 기준으로 내림차순 정렬한다.
-3. 상위 100개를 후보 유니버스 스냅샷으로 저장한다.
+3. 상위 100개를 후보군 스냅샷(Candidate Pool Snapshot)으로 저장한다.
 4. 최초 실행 시 상위 50개를 활성 수집 대상으로 자동 체크할 수 있다.
-5. 기존 활성 수집 대상이 상위 100 밖으로 이탈해도 자동 제거하지 않고 후보 유니버스 이탈 상태로 표시한다.
+5. 기존 활성 수집 대상이 상위 100 밖으로 이탈해도 자동 제거하지 않고 후보군 이탈 대상(Out-of-Pool Target)으로 표시한다.
 
 ### 증분 수집
 
@@ -131,7 +131,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 |---|---|---|
 | 데이터 수집관리 내비게이션 | 완료된 수집 기반과 내부 운영 도구 진입점 | 정적 또는 설정 변경 후 갱신 |
 | 운영 상태 대시보드 | worker 현황판, 코인별 수집 계획, 파이프라인 건강도, 최신성, 실패, 결측, 저장량, 구간형 진행 상태 | 10~15초 |
-| Backfill 관리 | 후보 유니버스, 활성 수집 대상 최대 50개, 24시간 거래대금, 수집 시작일/최종일, 실시간 수집 라벨, 백필 계획 생성 레이어, 백필 작업 패널 | 수동 또는 변경 후 갱신 |
+| Backfill 관리 | 수집 후보군, 활성 수집 대상 최대 50개, 24시간 거래대금, 수집 시작일/최종일, 실시간 수집 라벨, 백필 계획 생성 레이어, 백필 작업 패널 | 수동 또는 변경 후 갱신 |
 | 백필 작업 | 저장된 백필 작업 상태와 제어 | 실행 중 5~10초 |
 | 관심종목 | 코인/주식 전환, 관심 추가 토글, 현재가, 24시간 거래대금, 전일 종가 대비 등락률, 기준일시, 캔들 커버리지, 1분 캔들 수 | SSE push, HTTP fallback |
 | 코인 상세 레이어 | 캔들 차트, 호가 요약, 품질 이력 | 30초 또는 사용자가 켜는 실시간 모드 |

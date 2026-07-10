@@ -1,7 +1,7 @@
 # goodmoneying 도메인 용어집
 
-Status: Draft
-Last Updated: 2026-07-10
+Status: Accepted
+Last Updated: 2026-07-11
 Related Product: `docs/01_Product.md`
 Related Architecture: `docs/02_Architecture.md`
 Related Issue: [#9](https://github.com/goodjoon-company/goodmoneying/issues/9)

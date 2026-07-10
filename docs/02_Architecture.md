@@ -1,7 +1,7 @@
 # 아키텍처 기준
 
-Status: Draft
-Last Updated: 2026-07-10
+Status: Accepted
+Last Updated: 2026-07-11
 
 ## 목적
 

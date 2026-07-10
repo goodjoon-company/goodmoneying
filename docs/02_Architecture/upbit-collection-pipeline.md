@@ -1,7 +1,7 @@
 # 업비트 수집 파이프라인 설계
 
-Status: Draft
-Last Updated: 2026-07-10
+Status: Accepted
+Last Updated: 2026-07-11
 Related Product: `docs/01_Product.md`
 Related Task: `docs/Task/M1.md`
 Related DB Contract: `docs/contracts/db/schema.sql`

@@ -17,6 +17,10 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   const universeResponse = await request.get(`${apiBaseUrl}/v1/candidate-universe`);
   expect(universeResponse.ok()).toBeTruthy();
   const universe = await universeResponse.json();
+  expect(universe.entries).toHaveLength(100);
+  expect(
+    universe.entries.filter((entry: { selected: boolean }) => entry.selected)
+  ).toHaveLength(50);
   const baselineEntries = universe.entries.slice(0, 50);
   const baselineTargetIds = baselineEntries.map(
     (entry: { instrument: { id: number } }) => entry.instrument.id

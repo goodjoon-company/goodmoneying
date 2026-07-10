@@ -76,4 +76,6 @@ npm run build
 npm run e2e
 ```
 
-실제 업비트 API 호출은 기본 테스트에 포함하지 않는다. 기본 수집 검증은 테스트 코드가 fixture 클라이언트를 직접 주입하는 방식으로 격리하며, 런타임 수집은 `GOODMONEYING_LIVE_UPBIT=1` 프로필(profile)만 허용한다.
+`npm run e2e`는 루트 `.env`와 외부 데이터베이스(DB, Database)를 사용하지 않는다. Playwright가 `tests/e2e/seeded_api.py`를 통해 시험용 고정 데이터(fixture) 클라이언트(client)를 SQLite 테스트 저장소에 직접 주입한 API와 전용 웹 서버를 각각 `18000`, `15173` 포트에 시작하고 종료 시 함께 정리한다. 이미 실행 중인 환경을 검증할 때만 `E2E_SKIP_WEBSERVER=1`과 `E2E_API_BASE_URL`, `E2E_WEB_BASE_URL`, `E2E_OPERATOR_TOKEN`을 명시한다.
+
+실제 업비트 API 호출은 기본 테스트에 포함하지 않는다. 기본 수집 검증은 테스트 코드가 시험용 고정 데이터(fixture) 클라이언트(client)를 직접 주입하는 방식으로 격리하며, 런타임 수집은 `GOODMONEYING_LIVE_UPBIT=1` 프로필(profile)만 허용한다.

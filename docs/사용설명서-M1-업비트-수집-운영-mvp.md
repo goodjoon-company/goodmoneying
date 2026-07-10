@@ -1,11 +1,11 @@
-# M1 업비트 수집 운영 MVP 사용 설명서
+# M1 업비트 수집 운영 기준선 사용 설명서
 
-Status: Done
-Last Updated: 2026-06-18
+Status: Maintained
+Last Updated: 2026-07-11
 
 ## 대상
 
-이 문서는 M1 업비트 수집 운영 MVP(Minimum Viable Product)를 로컬에서 실행하고 검증하는 방법을 설명한다.
+이 문서는 완료된 M1 업비트 수집 운영 기준선을 로컬에서 실행하고 검증하는 방법을 설명한다. 현재 제품 개발 범위는 초기 구현 이후 제품화(Post-MVP Productization) 단계다.
 
 ## 구성
 
@@ -59,13 +59,7 @@ curl http://127.0.0.1:8000/v1/dashboard/summary
 
 ## 수집 워커
 
-fixture 기반 단발 수집:
-
-```bash
-PYTHONPATH=apps/api:apps/worker:packages/shared uv run python -m goodmoneying_worker.main --once
-```
-
-실제 업비트 API 호출은 기본 자동화 테스트에 포함하지 않는다. 실제 API 호출을 실험할 때는 별도 환경에서 아래처럼 실행한다.
+운영 수집 런타임은 실제 업비트 API를 사용하는 `GOODMONEYING_LIVE_UPBIT=1` 프로필(profile)만 허용한다. 시험용 고정 데이터(fixture)는 자동화 테스트에서 클라이언트(client)를 직접 주입할 때만 사용한다. 실제 API 호출을 실험할 때는 별도 환경에서 아래처럼 실행한다.
 
 ```bash
 GOODMONEYING_LIVE_UPBIT=1 PYTHONPATH=apps/api:apps/worker:packages/shared uv run python -m goodmoneying_worker.main --once
@@ -106,5 +100,7 @@ npm run build
 npm run e2e
 git diff --check
 ```
+
+로컬 `npm run e2e`는 외부 PostgreSQL이나 루트 `.env`에 의존하지 않는다. Playwright가 후보 100개와 활성 수집 대상 50개를 준비한 SQLite 테스트 API와 전용 웹 서버를 실행하고 시험 종료 뒤 두 프로세스를 정리한다. 배포된 환경을 검증할 때만 `E2E_SKIP_WEBSERVER=1`과 대상 URL·운영 토큰을 별도로 지정한다.
 
 검증 증적은 `docs/Test/2026-06-18-M1-업비트-수집-운영-mvp-검증.md`를 기준으로 한다.

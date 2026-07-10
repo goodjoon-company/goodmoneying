@@ -61,6 +61,14 @@ def test_ci_workflow_has_required_quality_commands() -> None:
     assert "docker build -f apps/web/Dockerfile -t goodmoneying-web:ci ." in runs
 
 
+def test_ci_workflow_runs_isolated_e2e() -> None:
+    workflow = load_workflow("ci.yml")
+    runs = workflow_step_runs(workflow, "verify")
+
+    assert "npx playwright install --with-deps chromium" in runs
+    assert "npm run e2e" in runs
+
+
 def test_deploy_workflow_runs_on_release_and_dispatch() -> None:
     workflow = load_workflow("deploy.yml")
     triggers = workflow_on(workflow)

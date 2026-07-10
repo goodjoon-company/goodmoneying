@@ -9,7 +9,7 @@
     "dev:web": "npm --workspace apps/web run dev -- --host 127.0.0.1 --port 5173",
     "test": "npm --workspace apps/web run test",
     "build": "npm --workspace apps/web run build",
-    "e2e": "playwright test"
+    "e2e": "playwright test && node tests/e2e/assert_servers_stopped.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0"

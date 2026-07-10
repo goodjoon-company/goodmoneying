@@ -6,6 +6,9 @@ const operatorToken = process.env.E2E_OPERATOR_TOKEN ?? "local-dev-token";
 const skipWebServer = process.env.E2E_SKIP_WEBSERVER === "1";
 const apiURL = new URL(apiBaseURL);
 const webURL = new URL(webBaseURL);
+const inheritedEnv = Object.fromEntries(
+  Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
+);
 
 export default defineConfig({
   testDir: "tests/e2e",
@@ -29,13 +32,30 @@ export default defineConfig({
     : [
         {
           command:
-            `bash -lc 'set -a; [ -f .env ] && source .env; set +a; GOODMONEYING_DEMO_DATA=0 GOODMONEYING_OPERATOR_TOKEN=${operatorToken} PYTHONPATH=apps/api:apps/worker:packages/shared uv run uvicorn goodmoneying_api.main:app --host ${apiURL.hostname} --port ${apiURL.port}'`,
+            'uv run python tests/e2e/seeded_api.py --host "$E2E_API_HOST" --port "$E2E_API_PORT"',
+          env: {
+            ...inheritedEnv,
+            E2E_API_HOST: apiURL.hostname,
+            E2E_API_PORT: apiURL.port,
+            GOODMONEYING_DATABASE_URL: "",
+            GOODMONEYING_DEMO_DATA: "0",
+            GOODMONEYING_OPERATOR_TOKEN: operatorToken,
+            PYTHONPATH: "apps/api:apps/worker:packages/shared"
+          },
           url: `${apiBaseURL}/health`,
           reuseExistingServer: false,
           timeout: 30_000
         },
         {
-          command: `VITE_API_BASE_URL=${apiBaseURL} VITE_OPERATOR_TOKEN=local-dev-token npm --workspace apps/web run dev -- --host ${webURL.hostname} --port ${webURL.port}`,
+          command:
+            'npm --workspace apps/web run dev -- --host "$E2E_WEB_HOST" --port "$E2E_WEB_PORT"',
+          env: {
+            ...inheritedEnv,
+            E2E_WEB_HOST: webURL.hostname,
+            E2E_WEB_PORT: webURL.port,
+            VITE_API_BASE_URL: apiBaseURL,
+            VITE_OPERATOR_TOKEN: operatorToken
+          },
           url: webBaseURL,
           reuseExistingServer: false,
           timeout: 30_000

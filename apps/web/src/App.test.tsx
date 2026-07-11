@@ -162,7 +162,7 @@ describe("데이터 수집관리 화면", () => {
 
     await screen.findByRole("heading", { name: "업비트 수집 운영 상태" });
     await user.click(screen.getByRole("button", { name: "Backfill 관리" }));
-    expect(await screen.findByText("후보 유니버스 상위 100개")).toBeInTheDocument();
+    expect(await screen.findByText("수집 후보군 상위 100개")).toBeInTheDocument();
     expect(screen.getByText("선택 50/50")).toBeInTheDocument();
 
     await screen.findByText("BTC / KRW");

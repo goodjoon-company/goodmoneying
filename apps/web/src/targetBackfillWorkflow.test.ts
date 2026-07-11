@@ -42,7 +42,7 @@ function entry(
 }
 
 describe("수집 대상과 백필 workflow", () => {
-  it("후보 유니버스에서 초기 활성 수집 대상 Set을 만든다", () => {
+  it("수집 후보군에서 초기 활성 수집 대상 Set을 만든다", () => {
     const ids = initialSelectedInstrumentIds([
       entry(1, "BTC", true, "100"),
       entry(2, "ETH", false, "90"),
@@ -63,7 +63,7 @@ describe("수집 대상과 백필 workflow", () => {
     expect(orderedSelectedInstrumentIds(entries, selectedIds)).toEqual([3, 1, 2]);
   });
 
-  it("Backfill 저장 요청은 최신 관심종목 화면 순서를 후보 유니버스보다 우선한다", () => {
+  it("Backfill 저장 요청은 최신 관심종목 화면 순서를 수집 후보군보다 우선한다", () => {
     const entries = [
       entry(1, "BTC", true, "100", "normal", 1),
       entry(2, "ETH", true, "90", "normal", 2),

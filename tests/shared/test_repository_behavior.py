@@ -89,7 +89,7 @@ def test_repository_rejects_new_active_target_outside_candidate_universe() -> No
     )
     outside_candidate = repository.upsert_instrument("KRW-OUT", "후보밖코인")
 
-    with pytest.raises(ValueError, match="후보 유니버스"):
+    with pytest.raises(ValueError, match="수집 후보군"):
         repository.update_active_targets([outside_candidate.id], "후보 밖 신규 대상 차단")
 
 

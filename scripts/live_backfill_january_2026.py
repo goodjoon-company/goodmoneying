@@ -36,7 +36,7 @@ def main() -> int:
     client = LiveUpbitClient(min_request_interval_seconds=args.request_interval_seconds)
     worker = UpbitCollectionWorker(repository, client)
 
-    print("실제 업비트 후보 유니버스를 갱신합니다.", flush=True)
+    print("실제 업비트 수집 후보군을 갱신합니다.", flush=True)
     worker.refresh_candidate_universe()
     _, entries = repository.list_candidate_universe()
     top50_entries = entries[:50]

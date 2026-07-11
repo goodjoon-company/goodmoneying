@@ -48,7 +48,7 @@ class UpbitCollectionWorker:
         elif any(target.id not in candidate_ids for target in active_targets):
             self._repository.update_active_targets(
                 [entry.instrument.id for entry in candidate_entries[:50]],
-                "후보 유니버스 갱신으로 현재 상위 50개 재동기화",
+                "수집 후보군 갱신으로 현재 상위 50개 재동기화",
             )
         return len(entries)
 

@@ -143,7 +143,7 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.locator(".coverage-bar").first()).toBeVisible();
 
   await page.getByRole("button", { name: "Backfill 관리" }).click();
-  await expect(page.getByRole("heading", { name: "후보 유니버스 상위 100개" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "수집 후보군 상위 100개" })).toBeVisible();
   await expect(page.getByText("선택 50/50")).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText("24시간 거래대금")).toBeVisible();
   await expect(page.getByText("수집 시작일")).toBeVisible();

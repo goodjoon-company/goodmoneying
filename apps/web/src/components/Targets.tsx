@@ -135,7 +135,7 @@ export function Targets({
     <section className="split-page">
       <section className="panel">
         <div className="panel-heading">
-          <h2>후보 유니버스 상위 100개</h2>
+          <h2>수집 후보군 상위 100개</h2>
           <span>선택 {selected}/50</span>
         </div>
         <div className="target-toolbar">
@@ -180,7 +180,7 @@ export function Targets({
             <span>수집 시작일</span>
             <span>수집 최종일</span>
           </div>
-          {entries.length === 0 ? <p className="helper-text">후보 유니버스를 불러오는 중입니다.</p> : null}
+          {entries.length === 0 ? <p className="helper-text">수집 후보군을 불러오는 중입니다.</p> : null}
           {entries.length > 0 && visibleEntries.length === 0 ? (
             <p className="helper-text">검색 조건에 맞는 후보가 없습니다.</p>
           ) : null}

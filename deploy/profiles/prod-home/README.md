@@ -52,6 +52,7 @@
 | APP SERVER 01 | `GOODMONEYING_APP_API_DATA_DIR` | `/home/goodjoon/project/goodmoneying/app/api-data` | `/var/lib/goodmoneying/api` |
 | APP SERVER 01 | `GOODMONEYING_APP_REALTIME_COLLECTION_WORKER_DATA_DIR` | `/home/goodjoon/project/goodmoneying/app/realtime-collection-worker-data` | `/var/lib/goodmoneying/realtime-collection-worker` |
 | APP SERVER 01 | `GOODMONEYING_APP_BACKFILL_COLLECTION_WORKER_DATA_DIR` | `/home/goodjoon/project/goodmoneying/app/backfill-collection-worker-data` | `/var/lib/goodmoneying/backfill-collection-worker` |
+| APP SERVER 01 | `GOODMONEYING_APP_CANDLE_AGGREGATION_WORKER_DATA_DIR` | `/home/goodjoon/project/goodmoneying/app/candle-aggregation-worker-data` | `/var/lib/goodmoneying/candle-aggregation-worker` |
 | APP SERVER 01 | `GOODMONEYING_APP_CONFIG_DIR` | `/home/goodjoon/project/goodmoneying/app/config` | `/etc/goodmoneying` |
 | bmax-ubuntu | `GOODMONEYING_WEB_BASE_DIR` | `/home/goodjoon/applications/goodmoneying` | compose/env 파일 위치 |
 | bmax-ubuntu | `GOODMONEYING_WEB_NGINX_CACHE_DIR` | `/home/goodjoon/applications/goodmoneying/web/nginx-cache` | `/var/cache/nginx` |

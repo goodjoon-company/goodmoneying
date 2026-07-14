@@ -122,6 +122,13 @@ def test_web_dockerfile_accepts_api_base_build_arg() -> None:
     assert "envsubst" in dockerfile
 
 
+def test_web_nginx_proxy_preserves_websocket_upgrade_headers() -> None:
+    nginx_template = (ROOT / "apps/web/nginx.conf.template").read_text()
+
+    assert "proxy_set_header Upgrade $http_upgrade;" in nginx_template
+    assert 'proxy_set_header Connection "upgrade";' in nginx_template
+
+
 def test_prod_home_compose_files_assign_expected_services() -> None:
     infra = load_compose("infra")
     app = load_compose("app")
@@ -133,6 +140,7 @@ def test_prod_home_compose_files_assign_expected_services() -> None:
         "api",
         "realtime-collection-worker",
         "backfill-collection-worker",
+        "candle-aggregation-worker",
     }
     assert set(services(web)) == {"web"}
 
@@ -142,53 +150,54 @@ def test_prod_home_compose_uses_external_env_files() -> None:
     app = services(load_compose("app"))
     web = services(load_compose("web"))
 
-    assert "${GOODMONEYING_INFRA_BASE_DIR}/env/infra.env" in infra["postgres"][
-        "env_file"
-    ]
+    assert "${GOODMONEYING_INFRA_BASE_DIR}/env/infra.env" in infra["postgres"]["env_file"]
     assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["api"]["env_file"]
-    assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app[
-        "realtime-collection-worker"
-    ]["env_file"]
-    assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app[
-        "backfill-collection-worker"
-    ]["env_file"]
+    assert (
+        "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["realtime-collection-worker"]["env_file"]
+    )
+    assert (
+        "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["backfill-collection-worker"]["env_file"]
+    )
+    assert (
+        "${GOODMONEYING_APP_BASE_DIR}/env/app.env"
+        in app["candle-aggregation-worker"]["env_file"]
+    )
     assert "${GOODMONEYING_WEB_BASE_DIR}/env/web.env" in web["web"]["env_file"]
 
 
 def test_prod_home_app_workers_do_not_override_runtime_env_file_values() -> None:
     app = services(load_compose("app"))
 
-    for service_name in ("realtime-collection-worker", "backfill-collection-worker"):
+    for service_name in (
+        "realtime-collection-worker",
+        "backfill-collection-worker",
+        "candle-aggregation-worker",
+    ):
         environment = app[service_name].get("environment", {})
 
         assert "GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS" not in environment
         assert "GOODMONEYING_BACKFILL_POLL_SECONDS" not in environment
         assert "GOODMONEYING_BACKFILL_BATCH_SIZE" not in environment
+        assert "GOODMONEYING_AGGREGATION_POLL_SECONDS" not in environment
         assert "GOODMONEYING_LOG_LEVEL" not in environment
 
 
 def test_prod_home_hosts_env_defines_server_specific_data_and_config_paths() -> None:
     hosts_env = (ROOT / "deploy/profiles/prod-home/runner/hosts.env").read_text()
 
-    assert (
-        "GOODMONEYING_INFRA_BASE_DIR=/Users/goodjoon/DATA/applications/goodmoneying"
-        in hosts_env
-    )
+    assert "GOODMONEYING_INFRA_BASE_DIR=/Users/goodjoon/DATA/applications/goodmoneying" in hosts_env
     assert "GOODMONEYING_APP_BASE_DIR=/home/goodjoon/project/goodmoneying" in hosts_env
-    assert (
-        "GOODMONEYING_WEB_BASE_DIR=/home/goodjoon/applications/goodmoneying"
-        in hosts_env
-    )
+    assert "GOODMONEYING_WEB_BASE_DIR=/home/goodjoon/applications/goodmoneying" in hosts_env
     assert "GOODMONEYING_REMOTE_BASE_DIR=" not in hosts_env
     assert "GOODMONEYING_INFRA_POSTGRES_DATA_DIR=" in hosts_env
     assert "GOODMONEYING_INFRA_CONFIG_DIR=" in hosts_env
     assert (
-        "GOODMONEYING_INFRA_DOCKER_CONFIG="
-        "/Users/goodjoon/DATA/applications/goodmoneying/.docker"
+        "GOODMONEYING_INFRA_DOCKER_CONFIG=/Users/goodjoon/DATA/applications/goodmoneying/.docker"
     ) in hosts_env
     assert "GOODMONEYING_APP_API_DATA_DIR=" in hosts_env
     assert "GOODMONEYING_APP_REALTIME_COLLECTION_WORKER_DATA_DIR=" in hosts_env
     assert "GOODMONEYING_APP_BACKFILL_COLLECTION_WORKER_DATA_DIR=" in hosts_env
+    assert "GOODMONEYING_APP_CANDLE_AGGREGATION_WORKER_DATA_DIR=" in hosts_env
     assert "GOODMONEYING_APP_CONFIG_DIR=" in hosts_env
     assert "GOODMONEYING_APP_DOCKER_CONFIG=/home/goodjoon/.docker" in hosts_env
     assert "GOODMONEYING_WEB_NGINX_CACHE_DIR=" in hosts_env
@@ -202,35 +211,34 @@ def test_prod_home_compose_mounts_data_cache_and_config_dirs_from_host_variables
     app = services(load_compose("app"))
     web = services(load_compose("web"))
 
-    assert "${GOODMONEYING_INFRA_POSTGRES_DATA_DIR}:/var/lib/postgresql/data" in infra[
-        "postgres"
-    ]["volumes"]
-    assert "${GOODMONEYING_APP_API_DATA_DIR}:/var/lib/goodmoneying/api" in app["api"][
-        "volumes"
-    ]
-    assert "${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro" in app["api"][
-        "volumes"
-    ]
+    assert (
+        "${GOODMONEYING_INFRA_POSTGRES_DATA_DIR}:/var/lib/postgresql/data"
+        in infra["postgres"]["volumes"]
+    )
+    assert "${GOODMONEYING_APP_API_DATA_DIR}:/var/lib/goodmoneying/api" in app["api"]["volumes"]
+    assert "${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro" in app["api"]["volumes"]
     assert (
         "${GOODMONEYING_APP_REALTIME_COLLECTION_WORKER_DATA_DIR}"
         ":/var/lib/goodmoneying/realtime-collection-worker"
     ) in app["realtime-collection-worker"]["volumes"]
-    assert "${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro" in app[
-        "realtime-collection-worker"
-    ]["volumes"]
+    assert (
+        "${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro"
+        in app["realtime-collection-worker"]["volumes"]
+    )
     assert (
         "${GOODMONEYING_APP_BACKFILL_COLLECTION_WORKER_DATA_DIR}"
         ":/var/lib/goodmoneying/backfill-collection-worker"
     ) in app["backfill-collection-worker"]["volumes"]
-    assert "${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro" in app[
-        "backfill-collection-worker"
-    ]["volumes"]
-    assert "${GOODMONEYING_WEB_NGINX_CACHE_DIR}:/var/cache/nginx" in web["web"][
-        "volumes"
-    ]
-    assert "${GOODMONEYING_WEB_CONFIG_DIR}:/etc/goodmoneying:ro" in web["web"][
-        "volumes"
-    ]
+    assert (
+        "${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro"
+        in app["backfill-collection-worker"]["volumes"]
+    )
+    assert (
+        "${GOODMONEYING_APP_CANDLE_AGGREGATION_WORKER_DATA_DIR}"
+        ":/var/lib/goodmoneying/candle-aggregation-worker"
+    ) in app["candle-aggregation-worker"]["volumes"]
+    assert "${GOODMONEYING_WEB_NGINX_CACHE_DIR}:/var/cache/nginx" in web["web"]["volumes"]
+    assert "${GOODMONEYING_WEB_CONFIG_DIR}:/etc/goodmoneying:ro" in web["web"]["volumes"]
     for compose_services in (infra, app, web):
         for service in compose_services.values():
             for volume in service.get("volumes", []):
@@ -252,8 +260,7 @@ def test_prod_home_compose_uses_fixed_ghcr_image_names() -> None:
     web = services(load_compose("web"))
 
     assert (
-        app["api"]["image"]
-        == "ghcr.io/goodjoon-company/goodmoneying-api:${GOODMONEYING_IMAGE_TAG}"
+        app["api"]["image"] == "ghcr.io/goodjoon-company/goodmoneying-api:${GOODMONEYING_IMAGE_TAG}"
     )
     assert (
         app["realtime-collection-worker"]["image"]
@@ -264,8 +271,7 @@ def test_prod_home_compose_uses_fixed_ghcr_image_names() -> None:
         == "ghcr.io/goodjoon-company/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}"
     )
     assert (
-        web["web"]["image"]
-        == "ghcr.io/goodjoon-company/goodmoneying-web:${GOODMONEYING_IMAGE_TAG}"
+        web["web"]["image"] == "ghcr.io/goodjoon-company/goodmoneying-web:${GOODMONEYING_IMAGE_TAG}"
     )
 
 
@@ -297,23 +303,27 @@ def test_prod_home_target_local_scripts_use_local_compose_env() -> None:
             assert "GOODMONEYING_DOCKER_CONFIG" in text
             assert "export DOCKER_CONFIG=" in text
             assert "docker compose --env-file" in text
-            assert "-f \"$COMPOSE_FILE\"" in text
+            assert '-f "$COMPOSE_FILE"' in text
 
     assert '"$@"' in (target_dir / "app/start-api.sh").read_text()
     assert "up -d api" in (target_dir / "app/start-api.sh").read_text()
     assert "stop api" in (target_dir / "app/stop-api.sh").read_text()
-    assert "up -d realtime-collection-worker" in (
-        target_dir / "app/start-realtime-collection-worker.sh"
-    ).read_text()
-    assert "stop realtime-collection-worker" in (
-        target_dir / "app/stop-realtime-collection-worker.sh"
-    ).read_text()
-    assert "up -d backfill-collection-worker" in (
-        target_dir / "app/start-backfill-collection-worker.sh"
-    ).read_text()
-    assert "stop backfill-collection-worker" in (
-        target_dir / "app/stop-backfill-collection-worker.sh"
-    ).read_text()
+    assert (
+        "up -d realtime-collection-worker"
+        in (target_dir / "app/start-realtime-collection-worker.sh").read_text()
+    )
+    assert (
+        "stop realtime-collection-worker"
+        in (target_dir / "app/stop-realtime-collection-worker.sh").read_text()
+    )
+    assert (
+        "up -d backfill-collection-worker"
+        in (target_dir / "app/start-backfill-collection-worker.sh").read_text()
+    )
+    assert (
+        "stop backfill-collection-worker"
+        in (target_dir / "app/stop-backfill-collection-worker.sh").read_text()
+    )
 
 
 def test_deploy_script_rejects_unknown_profile() -> None:
@@ -348,8 +358,7 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
     assert "ssh Mac-Mini-M4.local" in result.stdout
     assert "deploy.compose.env" in result.stdout
     assert (
-        "PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:$PATH "
-        "docker compose"
+        "PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:$PATH docker compose"
     ) in result.stdout
     assert (
         "docker compose --env-file "
@@ -361,8 +370,7 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
         "docker compose"
     ) in result.stdout
     assert (
-        "docker compose --env-file "
-        "'/home/goodjoon/project/goodmoneying/deploy.compose.env'"
+        "docker compose --env-file '/home/goodjoon/project/goodmoneying/deploy.compose.env'"
     ) in result.stdout
     assert (
         "DOCKER_CONFIG='/home/goodjoon/.docker' "
@@ -370,46 +378,30 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
         "docker compose"
     ) in result.stdout
     assert (
-        "docker compose --env-file "
-        "'/home/goodjoon/applications/goodmoneying/deploy.compose.env'"
+        "docker compose --env-file '/home/goodjoon/applications/goodmoneying/deploy.compose.env'"
     ) in result.stdout
     assert "ssh app-server01" in result.stdout
     assert "ssh bmax-ubuntu" in result.stdout
     assert (
-        "ssh Mac-Mini-M4.local \"mkdir -p "
-        "'/Users/goodjoon/DATA/applications/goodmoneying'\""
+        "ssh Mac-Mini-M4.local \"mkdir -p '/Users/goodjoon/DATA/applications/goodmoneying'\""
     ) in result.stdout
-    assert (
-        "mkdir -p '/Users/goodjoon/DATA/applications/goodmoneying/env'"
-        in result.stdout
-    )
+    assert "mkdir -p '/Users/goodjoon/DATA/applications/goodmoneying/env'" in result.stdout
     assert (
         "mkdir -p '/Users/goodjoon/DATA/applications/goodmoneying/infra/postgres-data'"
         in result.stdout
     )
-    assert (
-        "mkdir -p '/Users/goodjoon/DATA/applications/goodmoneying/infra/config'"
-        in result.stdout
-    )
+    assert "mkdir -p '/Users/goodjoon/DATA/applications/goodmoneying/infra/config'" in result.stdout
     assert "mkdir -p '/home/goodjoon/project/goodmoneying/app/api-data'" in result.stdout
     assert (
-        "mkdir -p '/home/goodjoon/project/goodmoneying/app/"
-        "realtime-collection-worker-data'"
+        "mkdir -p '/home/goodjoon/project/goodmoneying/app/realtime-collection-worker-data'"
     ) in result.stdout
     assert (
-        "mkdir -p '/home/goodjoon/project/goodmoneying/app/"
-        "backfill-collection-worker-data'"
+        "mkdir -p '/home/goodjoon/project/goodmoneying/app/backfill-collection-worker-data'"
     ) in result.stdout
     assert "mkdir -p '/home/goodjoon/project/goodmoneying/app/config'" in result.stdout
     assert "mkdir -p '/home/goodjoon/project/goodmoneying/env'" in result.stdout
-    assert (
-        "mkdir -p '/home/goodjoon/applications/goodmoneying/web/nginx-cache'"
-        in result.stdout
-    )
-    assert (
-        "mkdir -p '/home/goodjoon/applications/goodmoneying/web/config'"
-        in result.stdout
-    )
+    assert "mkdir -p '/home/goodjoon/applications/goodmoneying/web/nginx-cache'" in result.stdout
+    assert "mkdir -p '/home/goodjoon/applications/goodmoneying/web/config'" in result.stdout
     assert "mkdir -p '/home/goodjoon/applications/goodmoneying/env'" in result.stdout
     assert "logs" not in result.stdout
     assert (
@@ -431,7 +423,7 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
         "bmax-ubuntu:/home/goodjoon/applications/goodmoneying/env/web.env.sample"
     ) in result.stdout
     assert (
-        "ssh Mac-Mini-M4.local \"printf "
+        'ssh Mac-Mini-M4.local "printf '
         "'GOODMONEYING_IMAGE_TAG=%s\\n' 'release-def5678' >> "
         "'/Users/goodjoon/DATA/applications/goodmoneying/deploy.compose.env'\""
     ) in result.stdout
@@ -444,7 +436,7 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
         "cli-plugins/docker-compose'"
     ) in result.stdout
     assert (
-        "ssh Mac-Mini-M4.local \"printf "
+        'ssh Mac-Mini-M4.local "printf '
         "'GOODMONEYING_DOCKER_CONFIG=%s\\n' "
         "'/Users/goodjoon/DATA/applications/goodmoneying/.docker' >> "
         "'/Users/goodjoon/DATA/applications/goodmoneying/deploy.compose.env'\""
@@ -471,12 +463,8 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
     assert "compose.infra.yml' up -d" in result.stdout
     assert "compose.app.yml" in result.stdout
     assert "compose.web.yml" in result.stdout
-    assert result.stdout.index("ssh Mac-Mini-M4.local") < result.stdout.index(
-        "ssh app-server01"
-    )
-    assert result.stdout.index("ssh app-server01") < result.stdout.index(
-        "ssh bmax-ubuntu"
-    )
+    assert result.stdout.index("ssh Mac-Mini-M4.local") < result.stdout.index("ssh app-server01")
+    assert result.stdout.index("ssh app-server01") < result.stdout.index("ssh bmax-ubuntu")
 
 
 def test_healthcheck_script_dry_run_prints_checks() -> None:
@@ -484,8 +472,7 @@ def test_healthcheck_script_dry_run_prints_checks() -> None:
 
     assert result.returncode == 0
     assert (
-        "retry 30 2s curl -fsS --connect-timeout 5 --max-time 10 "
-        "http://100.115.38.59:8000/health"
+        "retry 30 2s curl -fsS --connect-timeout 5 --max-time 10 http://100.115.38.59:8000/health"
     ) in result.stdout
     assert (
         "retry 30 2s curl -fsS --connect-timeout 5 --max-time 10 http://100.68.208.102:8080/"
@@ -498,12 +485,10 @@ def test_healthcheck_script_dry_run_prints_checks() -> None:
         '\'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"\''
     ) in result.stdout.splitlines()
     assert (
-        "docker inspect -f '{{.State.Running}}' "
-        "goodmoneying-realtime-collection-worker"
+        "docker inspect -f '{{.State.Running}}' goodmoneying-realtime-collection-worker"
     ) in result.stdout
     assert (
-        "docker inspect -f '{{.State.Running}}' "
-        "goodmoneying-backfill-collection-worker"
+        "docker inspect -f '{{.State.Running}}' goodmoneying-backfill-collection-worker"
     ) in result.stdout
 
 
@@ -541,9 +526,7 @@ def test_start_script_dry_run_uses_target_compose_env_in_start_order() -> None:
     assert "compose.infra.yml' up -d" in result.stdout
     assert "compose.app.yml' up -d" in result.stdout
     assert "compose.web.yml' up -d" in result.stdout
-    assert result.stdout.index("Mac-Mini-M4.local") < result.stdout.index(
-        "app-server01"
-    )
+    assert result.stdout.index("Mac-Mini-M4.local") < result.stdout.index("app-server01")
     assert result.stdout.index("app-server01") < result.stdout.index("bmax-ubuntu")
 
 
@@ -562,6 +545,4 @@ def test_stop_script_dry_run_uses_target_compose_env_in_stop_order() -> None:
     assert "compose.app.yml' stop" in result.stdout
     assert "compose.infra.yml' stop" in result.stdout
     assert result.stdout.index("bmax-ubuntu") < result.stdout.index("app-server01")
-    assert result.stdout.index("app-server01") < result.stdout.index(
-        "Mac-Mini-M4.local"
-    )
+    assert result.stdout.index("app-server01") < result.stdout.index("Mac-Mini-M4.local")

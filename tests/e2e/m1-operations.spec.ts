@@ -3,6 +3,95 @@ import { expect, test } from "@playwright/test";
 const apiBaseUrl = process.env.E2E_API_BASE_URL ?? "http://127.0.0.1:18000";
 const operatorToken = process.env.E2E_OPERATOR_TOKEN ?? "local-dev-token";
 
+test("업비트 API 테스트 화면에서 공개 캔들 차트와 보조지표를 조회한다", async ({ page }) => {
+  await page.route("https://api.upbit.com/v1/candles/**", async (route) => {
+    const candles = Array.from({ length: 20 }, (_, index) => ({
+      market: "KRW-BTC",
+      candle_date_time_utc: `2026-07-14T00:${String(19 - index).padStart(2, "0")}:00`,
+      opening_price: 100 + index,
+      high_price: 110 + index,
+      low_price: 90 + index,
+      trade_price: 105 + index,
+      candle_acc_trade_volume: 10 + index,
+      candle_acc_trade_price: 1000 + index
+    }));
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(candles) });
+  });
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "업비트 API 테스트" }).click();
+  await expect(page.getByLabel("업비트 API 테스트 화면")).toBeVisible({ timeout: 60_000 });
+  await page.getByLabel("캔들 주기").selectOption("5m");
+  await page.getByRole("button", { name: "캔들 조회" }).click();
+
+  await expect(page.getByRole("heading", { name: "KRW-BTC 5분 캔들" })).toBeVisible();
+  await expect(page.getByLabel("업비트 API 캔들 차트")).toBeVisible();
+  await expect(page.getByLabel("최신 OHLCV와 보조지표")).toContainText("RSI 14");
+  await expect(page.getByText("업비트 응답 20개 · 시간 오름차순")).toBeVisible();
+  await page.getByLabel("캔들 주기").selectOption("1w");
+  await expect(page.getByRole("heading", { name: "KRW-BTC 5분 캔들" })).toBeVisible();
+  await expect(page.getByText("최근 10개 OHLCV 표 보기")).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByLabel("업비트 캔들 조회 조건")).toBeVisible();
+  await expect(page.getByLabel("업비트 API 캔들 차트")).toBeVisible();
+  expect(await page.locator(".app-shell").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBeTruthy();
+});
+
+test("관심 코인 분석 화면이 WebSocket 메시지로 실시간 정보를 표시한다", async ({ page }) => {
+  const runtimeIssues: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") runtimeIssues.push(message.text());
+  });
+  page.on("pageerror", (error) => runtimeIssues.push(error.message));
+
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "코인 분석" })).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: "코인 분석" }).click();
+
+  await expect(page.getByRole("heading", { name: "관심 코인 선택" })).toBeVisible();
+  await expect(page.getByLabel("코인 분석 화면")).toBeVisible();
+  await expect(page.getByLabel("코인 분석 화면").getByText("WebSocket 실시간")).toBeVisible();
+  await expect(page.getByRole("button", { name: "일봉" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "1년" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel("코인 분석 캔들 차트")).toBeVisible();
+  await expect(page.getByLabel("현재가 호가 체결")).toContainText("현재가");
+  await expect(page.getByLabel("현재가 호가 체결")).toContainText("호가 요약");
+  await expect(page.getByLabel("현재가 호가 체결")).toContainText("체결 흐름");
+
+  await page.getByRole("button", { name: "월봉" }).click();
+  await page.getByRole("button", { name: "3년" }).click();
+  await expect(page.getByRole("button", { name: "월봉" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "3년" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("주식 분석")).toHaveCount(0);
+  expect(runtimeIssues).toEqual([]);
+});
+
+test("모바일에서도 코인 분석 메뉴와 분석 화면에 접근할 수 있다", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "코인 분석" }).click();
+  await expect(page.getByLabel("코인 분석 화면")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("heading", { name: "관심 코인 선택" })).toBeVisible();
+  await expect(page.getByLabel("코인 분석 캔들 차트")).toBeVisible();
+});
+
+test("시스템 관리 화면은 WebSocket으로 수집 대상과 집계 진행률을 표시한다", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "시스템 관리" }).click();
+
+  await expect(page.getByRole("heading", { name: "시스템 관리" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "실시간 수집" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Backfill 수집" })).toBeVisible();
+  await expect(page.getByText("자동 집계 테이블", { exact: true })).toBeVisible();
+  await expect(page.getByText(/WebSocket (연결됨|재연결 중)/)).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator(".system-items").first()).toContainText("KRW-");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.locator(".app-shell").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBeTruthy();
+});
+
 test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page, request }) => {
   const runtimeIssues: string[] = [];
   page.on("console", (message) => {
@@ -192,14 +281,8 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.getByRole("button", { name: "시장 리스트" })).toHaveCount(0);
   await page.getByRole("button", { name: "관심종목" }).click();
   await expect(page.getByRole("heading", { name: "관심종목" }).first()).toBeVisible();
-  await expect(page.getByRole("button", { name: "코인", exact: true })).toHaveAttribute(
-    "aria-pressed",
-    "true"
-  );
-  await expect(page.getByRole("button", { name: "주식", exact: true })).toHaveAttribute(
-    "aria-pressed",
-    "false"
-  );
+  await expect(page.getByRole("button", { name: "코인", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "주식", exact: true })).toHaveCount(0);
   await expect(page.getByPlaceholder("종목명 또는 심볼 검색")).toBeVisible();
   await expect(page.getByText("관심추가 항목", { exact: true })).toBeVisible();
   await expect(page.getByText("후보 종목", { exact: true })).toBeVisible();
@@ -242,9 +325,6 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await page.getByRole("button", { name: "관심종목" }).click();
   await page.getByRole("button", { name: /관심 추가 정렬/ }).click();
   await expect(page.locator(".market-row-button").first()).toContainText(secondInstrumentName);
-  await page.getByRole("button", { name: "주식", exact: true }).click();
-  await expect(page.getByText("표시할 주식 관심종목이 없습니다.")).toBeVisible();
-  await page.getByRole("button", { name: "코인", exact: true }).click();
   await page.locator(".market-row-button").first().click();
 
   await expect(page.getByRole("dialog", { name: "코인 상세" })).toBeVisible();

@@ -20,6 +20,85 @@ afterEach(() => {
 });
 
 describe("데이터 수집관리 화면", () => {
+  it("관심 코인만 선택하는 코인 분석 메뉴를 제공한다", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "코인 분석" });
+    await user.click(screen.getByRole("button", { name: "코인 분석" }));
+
+    expect(await screen.findByRole("heading", { name: "코인 분석" })).toBeInTheDocument();
+    expect(screen.getByText("관심 코인 선택")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /BTC.*분석/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "일봉" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "1년" })).toBeInTheDocument();
+    expect(screen.getByLabelText("현재가 호가 체결")).toBeInTheDocument();
+    expect(screen.queryByText("주식 분석")).not.toBeInTheDocument();
+    expect(screen.queryByText("국내 주식 리스트")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^주식$/ })).not.toBeInTheDocument();
+  });
+
+  it("업비트 공개 API 테스트 화면에서 캔들·보조지표 조회를 제공한다", async () => {
+    const operationsFetch = createTestOperationsFetch();
+    const upbitFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("https://api.upbit.com/v1/candles/")) {
+        return Response.json(
+          Array.from({ length: 20 }, (_, index) => ({
+            candle_date_time_utc: `2026-07-14T00:${String(19 - index).padStart(2, "0")}:00`,
+            opening_price: 100 + index,
+            high_price: 110 + index,
+            low_price: 90 + index,
+            trade_price: 105 + index,
+            candle_acc_trade_volume: 10 + index,
+            candle_acc_trade_price: 1000 + index
+          }))
+        );
+      }
+      return operationsFetch(input, init);
+    });
+    vi.stubGlobal("fetch", upbitFetch);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "업비트 API 테스트" }));
+    expect(await screen.findByLabelText("업비트 API 테스트 화면")).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("캔들 주기"), "5m");
+    await user.click(screen.getByRole("button", { name: "캔들 조회" }));
+
+    await waitFor(() =>
+      expect(upbitFetch).toHaveBeenCalledWith(
+        "https://api.upbit.com/v1/candles/minutes/5?market=KRW-BTC&count=100",
+        expect.anything()
+      )
+    );
+    expect(await screen.findByLabelText("업비트 API 캔들 차트")).toBeInTheDocument();
+    expect(screen.getByLabelText("최신 OHLCV와 보조지표")).toHaveTextContent("RSI 14");
+    expect(screen.getByText("업비트 응답 20개 · 시간 오름차순")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "KRW-BTC 5분 캔들" })).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("캔들 주기"), "1w");
+    expect(screen.getByRole("heading", { name: "KRW-BTC 5분 캔들" })).toBeInTheDocument();
+    expect(screen.getByText("최근 10개 OHLCV 표 보기")).toBeInTheDocument();
+  });
+
+  it("업비트가 빈 캔들 배열을 반환하면 조회 전 안내와 구분해 표시한다", async () => {
+    const operationsFetch = createTestOperationsFetch();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).startsWith("https://api.upbit.com/v1/candles/")) return Response.json([]);
+        return operationsFetch(input, init);
+      })
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "업비트 API 테스트" }));
+    await user.click(screen.getByRole("button", { name: "캔들 조회" }));
+
+    expect(await screen.findByText("해당 조건에는 업비트 캔들 데이터가 없습니다.")).toBeInTheDocument();
+  });
+
   it("좌측 내비게이션과 운영 상태 대시보드를 첫 화면으로 표시한다", async () => {
     const { container } = render(<App />);
 
@@ -402,14 +481,8 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.queryByRole("button", { name: "시장 리스트" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "관심종목" }));
     expect((await screen.findAllByRole("heading", { name: "관심종목" }))[0]).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^코인$/ })).toHaveAttribute(
-      "aria-pressed",
-      "true"
-    );
-    expect(screen.getByRole("button", { name: /^주식$/ })).toHaveAttribute(
-      "aria-pressed",
-      "false"
-    );
+    expect(screen.queryByRole("button", { name: /^코인$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^주식$/ })).not.toBeInTheDocument();
     expect(await screen.findByText("거래 상품")).toBeInTheDocument();
     expect(screen.getByText("관심 추가")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /등락률 .* KST 기준 정렬/ })).toBeInTheDocument();
@@ -517,7 +590,7 @@ describe("데이터 수집관리 화면", () => {
     });
   }, 10_000);
 
-  it("관심종목에서 주식 전환과 코인 상세 열기를 제공한다", async () => {
+  it("관심종목에서 코인 상세 열기를 제공한다", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -525,14 +598,7 @@ describe("데이터 수집관리 화면", () => {
     await user.click(screen.getByRole("button", { name: "관심종목" }));
     expect((await screen.findAllByRole("heading", { name: "관심종목" }))[0]).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /^주식$/ }));
-    expect(screen.getByRole("button", { name: /^주식$/ })).toHaveAttribute(
-      "aria-pressed",
-      "true"
-    );
-    expect(screen.getByText("표시할 주식 관심종목이 없습니다.")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /^코인$/ }));
+    expect(screen.queryByRole("button", { name: /^주식$/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /GM003 \/ KRW/ }));
 
     expect(await screen.findByRole("dialog", { name: "코인 상세" })).toBeInTheDocument();

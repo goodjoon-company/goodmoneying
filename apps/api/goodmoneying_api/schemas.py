@@ -352,7 +352,7 @@ class CollectionTargetsResponse(BaseModel):
 
 class MarketListRowResponse(BaseModel):
     instrument: InstrumentResponse
-    assetType: Literal["coin", "stock"]
+    assetType: Literal["coin"]
     isFavorite: bool
     favoriteOrder: int | None
     tradePrice: str | None

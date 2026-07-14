@@ -66,6 +66,21 @@ services:
       postgres:
         condition: service_healthy
 
+  candle-aggregation-worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    container_name: goodmoneying-candle-aggregation-worker
+    command: ["uv", "run", "--no-sync", "python", "-m", "goodmoneying_worker.aggregation_collection_worker"]
+    environment:
+      TZ: Asia/Seoul
+      GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
+      GOODMONEYING_AGGREGATION_POLL_SECONDS: "5"
+      GOODMONEYING_LOG_LEVEL: "INFO"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   web:
     build:
       context: .

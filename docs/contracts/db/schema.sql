@@ -183,9 +183,16 @@ CREATE TABLE IF NOT EXISTS collection_worker_heartbeats (
   last_error_at TIMESTAMPTZ,
   last_error_message TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT collection_worker_heartbeats_worker_type_ck CHECK (worker_type IN ('realtime_collection', 'backfill_collection')),
+  CONSTRAINT collection_worker_heartbeats_worker_type_ck CHECK (worker_type IN ('realtime_collection', 'backfill_collection', 'candle_aggregation')),
   CONSTRAINT collection_worker_heartbeats_status_ck CHECK (status IN ('running', 'failed'))
 );
+
+-- 기존 런타임 DB에도 새 집계 워커 유형을 허용한다.
+ALTER TABLE collection_worker_heartbeats
+  DROP CONSTRAINT IF EXISTS collection_worker_heartbeats_worker_type_ck;
+ALTER TABLE collection_worker_heartbeats
+  ADD CONSTRAINT collection_worker_heartbeats_worker_type_ck
+  CHECK (worker_type IN ('realtime_collection', 'backfill_collection', 'candle_aggregation'));
 
 CREATE TABLE IF NOT EXISTS target_collection_results (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -260,6 +267,45 @@ CREATE TABLE IF NOT EXISTS source_candles (
   CONSTRAINT source_candles_uk UNIQUE (instrument_id, source, candle_unit, candle_start_at),
   CONSTRAINT source_candles_source_ck CHECK (source IN ('UPBIT')),
   CONSTRAINT source_candles_candle_unit_ck CHECK (candle_unit IN ('1m', '1d'))
+);
+
+CREATE TABLE IF NOT EXISTS candle_rollups (
+  instrument_id BIGINT NOT NULL REFERENCES instruments(id),
+  candle_unit TEXT NOT NULL,
+  candle_start_at TIMESTAMPTZ NOT NULL,
+  open_price NUMERIC NOT NULL,
+  high_price NUMERIC NOT NULL,
+  low_price NUMERIC NOT NULL,
+  close_price NUMERIC NOT NULL,
+  trade_volume NUMERIC NOT NULL,
+  trade_amount NUMERIC NOT NULL,
+  completeness TEXT NOT NULL,
+  materialized_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (instrument_id, candle_unit, candle_start_at),
+  CONSTRAINT candle_rollups_unit_ck CHECK (candle_unit IN ('5m', '10m', '30m', '60m', '1d', '1w', '1M')),
+  CONSTRAINT candle_rollups_completeness_ck CHECK (completeness IN ('complete', 'partial', 'empty'))
+);
+
+CREATE TABLE IF NOT EXISTS candle_aggregation_jobs (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  status TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  started_at TIMESTAMPTZ,
+  finished_at TIMESTAMPTZ,
+  CONSTRAINT candle_aggregation_jobs_status_ck CHECK (status IN ('pending', 'running', 'succeeded', 'failed'))
+);
+
+CREATE TABLE IF NOT EXISTS candle_aggregation_job_targets (
+  job_id BIGINT NOT NULL REFERENCES candle_aggregation_jobs(id) ON DELETE CASCADE,
+  instrument_id BIGINT NOT NULL REFERENCES instruments(id),
+  candle_unit TEXT NOT NULL,
+  status TEXT NOT NULL,
+  rows_written INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (job_id, instrument_id, candle_unit),
+  CONSTRAINT candle_aggregation_job_targets_unit_ck CHECK (candle_unit IN ('5m', '10m', '30m', '60m', '1d', '1w', '1M')),
+  CONSTRAINT candle_aggregation_job_targets_status_ck CHECK (status IN ('pending', 'running', 'succeeded', 'failed'))
 );
 
 CREATE TABLE IF NOT EXISTS ticker_snapshots (

@@ -6,42 +6,31 @@ import { formatCurrencyAmount, formatFreshness } from "../operationsDisplay";
 import { useOperationsConsole, type SectionId } from "../useOperationsConsole";
 import { InstrumentName } from "./common";
 import { Dashboard } from "./Dashboard";
+import { CoinAnalysis } from "./CoinAnalysis";
 import { DetailModal } from "./Detail";
 import { Markets } from "./Markets";
 import { Targets } from "./Targets";
+import { SystemManagement } from "./SystemManagement";
+import { UpbitApiTest } from "./UpbitApiTest";
 
 const menuGroups: {
   title: string;
-  items: { id?: SectionId; label: string; badge: string; enabled: boolean }[];
+  items: { id: SectionId; label: string; badge: string }[];
 }[] = [
   {
     title: "데이터 수집관리",
     items: [
-      { id: "dashboard", label: "운영 상태", badge: "MVP", enabled: true },
-      { id: "targets", label: "Backfill 관리", badge: "MVP", enabled: true }
-    ]
-  },
-  {
-    title: "종목 발굴",
-    items: [
-      { label: "국내 주식 리스트", badge: "후속", enabled: false },
-      { label: "미국 주식 리스트", badge: "후속", enabled: false },
-      { label: "통합 시장 스캐닝", badge: "후속", enabled: false },
-      { label: "신호/이벤트 타임라인", badge: "후속", enabled: false }
-    ]
-  },
-  {
-    title: "매매 전략 · 봇 관리",
-    items: [
-      { label: "전략 작업대", badge: "후속", enabled: false },
-      { label: "봇 설계 / 시뮬레이션", badge: "후속", enabled: false },
-      { label: "모의매매 준비", badge: "후속", enabled: false }
+      { id: "dashboard", label: "운영 상태", badge: "MVP" },
+      { id: "targets", label: "Backfill 관리", badge: "MVP" },
+      { id: "system", label: "시스템 관리", badge: "NEW" }
     ]
   }
 ];
 
 const primaryMenuItems: { id: SectionId; label: string; badge: string }[] = [
-  { id: "markets", label: "관심종목", badge: "MVP" }
+  { id: "markets", label: "관심종목", badge: "MVP" },
+  { id: "analysis", label: "코인 분석", badge: "NEW" },
+  { id: "upbit-api-test", label: "업비트 API 테스트", badge: "DEV" }
 ];
 
 const sectionMeta: Record<SectionId, { crumb: string; milestone: string; title: string; desc: string }> = {
@@ -61,7 +50,25 @@ const sectionMeta: Record<SectionId, { crumb: string; milestone: string; title: 
     crumb: "goodmoneying / 관심종목 / M2",
     milestone: "M2 · 운영 관제형",
     title: "관심종목",
-    desc: "코인과 주식 관심목록의 현재가, 거래대금, 기준일시와 캔들 커버리지를 비교합니다."
+    desc: "수집 후보군에서 코인을 관심목록에 추가하고 현재가, 거래대금, 기준일시와 캔들 커버리지를 비교합니다."
+  },
+  analysis: {
+    crumb: "goodmoneying / 코인 분석 / P2",
+    milestone: "P2 · 코인 전용",
+    title: "코인 분석",
+    desc: "관심 코인의 차트, 거래량, 기술 지표와 현재가·호가·체결 흐름을 실시간으로 분석합니다."
+  },
+  system: {
+    crumb: "goodmoneying / 시스템 관리 / P2.1",
+    milestone: "P2.1 · 운영 자동화",
+    title: "시스템 관리",
+    desc: "실시간·Backfill 수집과 자동 캔들 집계 작업의 코인별 대상, 데이터 유형, 진행률을 실시간으로 확인합니다."
+  },
+  "upbit-api-test": {
+    crumb: "goodmoneying / 개발 도구 / 업비트 API 테스트",
+    milestone: "P2 · 개발·검증 도구",
+    title: "업비트 API 테스트",
+    desc: "업비트 공개 캔들 API의 OHLCV와 보조지표를 저장소 데이터와 분리해 확인합니다."
   }
 };
 
@@ -140,8 +147,7 @@ export function OperationsConsole() {
                   className={item.id === activeSection ? "active" : ""}
                   type="button"
                   aria-label={item.label.replace("/", " ")}
-                  disabled={!item.enabled}
-                  onClick={() => item.id && setActiveSection(item.id)}
+                  onClick={() => setActiveSection(item.id)}
                 >
                   <span>{item.label}</span>
                   <em>{item.badge}</em>
@@ -182,7 +188,7 @@ export function OperationsConsole() {
           <div className="runtime-pills" aria-label="화면 갱신 기준">
             <span>표시 KST</span>
             <span>저장 KST</span>
-            <span>SSE 실시간</span>
+            <span>{activeSection === "analysis" || activeSection === "system" ? "WebSocket 실시간" : activeSection === "upbit-api-test" ? "업비트 REST 직접 조회" : "SSE 실시간"}</span>
             <span>마지막 갱신 {formatFreshness(snapshot.dashboard.refreshedAt)}</span>
           </div>
         </section>
@@ -200,6 +206,11 @@ export function OperationsConsole() {
             onSelectInstrument={openInstrumentDetail}
           />
         ) : null}
+        {activeSection === "analysis" ? (
+          <CoinAnalysis rows={favoriteCoinRows} onOpenWatchlist={() => setActiveSection("targets")} />
+        ) : null}
+        {activeSection === "system" ? <SystemManagement /> : null}
+        {activeSection === "upbit-api-test" ? <UpbitApiTest /> : null}
       </section>
 
       {isDetailOpen ? <DetailModal snapshot={snapshot} onClose={() => setDetailOpen(false)} /> : null}

@@ -1,0 +1,98 @@
+.analysis-page { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 16px; padding: 0 32px 64px; }
+.analysis-watchlist { align-self: start; position: sticky; top: 74px; overflow: hidden; }
+.analysis-coin-list { display: grid; max-height: calc(100vh - 190px); overflow-y: auto; }
+.analysis-coin-list button { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; border: 0; border-top: 1px solid rgb(255 255 255 / 0.06); padding: 12px 14px; background: transparent; color: #dce7df; text-align: left; }
+.analysis-coin-list button:first-child { border-top: 0; }
+.analysis-coin-list button:hover, .analysis-coin-list button.active { background: #193426; }
+.analysis-coin-list button:focus-visible, .analysis-controls button:focus-visible { outline: 2px solid #8de6b7; outline-offset: -2px; }
+.analysis-coin-list strong { color: #edf6ef; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; }
+.analysis-coin-list em { grid-column: 2; color: #69cba1; font-size: 11px; font-style: normal; }
+.analysis-workspace { display: grid; min-width: 0; gap: 14px; }
+.analysis-header { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
+.analysis-header h2 { font-size: 25px; }
+.analysis-connection { border: 1px solid #335144; border-radius: 999px; padding: 6px 10px; color: #95ab9d; font-size: 12px; font-weight: 800; }
+.analysis-connection.live { border-color: #2e8060; background: #133425; color: #72e2ad; }
+.analysis-controls { display: flex; flex-wrap: wrap; gap: 10px; }
+.analysis-controls .segmented-control { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; border: 1px solid rgb(255 255 255 / .08); border-radius: 9px; background: #101713; }
+.analysis-controls button { min-height: 32px; border: 0; border-radius: 6px; padding: 6px 9px; background: transparent; color: #93a197; font-size: 12px; font-weight: 800; }
+.analysis-controls button.active { background: #e8f3eb; color: #102016; }
+.analysis-chart-panel { min-width: 0; padding: 16px; }
+.analysis-chart-panel .panel-heading { align-items: flex-start; }
+.analysis-chart-panel .panel-heading strong { color: #edf6ef; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 18px; }
+.analysis-chart-canvas { min-height: 450px; margin-top: 8px; }
+.analysis-chart-canvas > span { display: grid; min-height: 450px; place-items: center; color: #819086; }
+.analysis-legend { display: flex; flex-wrap: wrap; gap: 12px; border-top: 1px solid rgb(255 255 255 / .06); padding-top: 10px; color: #87958b; font-size: 12px; }
+.analysis-market-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.analysis-market-card { display: grid; gap: 8px; min-height: 116px; padding: 15px; }
+.analysis-market-card > span, .analysis-market-card small { color: #849188; font-size: 12px; }
+.analysis-market-card strong { color: #edf6ef; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 15px; line-height: 1.35; }
+.analysis-error { border: 1px solid #864a48; border-radius: 8px; padding: 10px 12px; background: #2b1717; color: #f1aaa4; }
+.empty-analysis { margin: 0 32px 64px; padding: 32px; }
+.system-management { padding: 0 32px 64px; }
+.system-live-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; color: #8ea096; font-size: 13px; }
+.system-live-bar strong { color: #72e2ad; }
+.system-card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.system-worker-card { min-height: 300px; padding: 16px; }
+.system-worker-card .panel-heading strong { color: #72e2ad; font: 800 14px "JetBrains Mono", ui-monospace, monospace; }
+.system-worker-card > p { min-height: 38px; color: #94a198; font-size: 13px; }
+.system-progress { height: 7px; overflow: hidden; border-radius: 99px; background: #243028; }
+.system-progress span { display: block; height: 100%; border-radius: inherit; background: #57bd86; transition: width .25s ease; }
+.system-items { display: grid; gap: 7px; max-height: 220px; margin: 14px 0 0; padding: 0; overflow: auto; list-style: none; }
+.system-items li { display: flex; justify-content: space-between; gap: 10px; border-top: 1px solid rgb(255 255 255 / .07); padding-top: 8px; font-size: 12px; }
+.system-items strong { color: #e1eee4; font-family: "JetBrains Mono", ui-monospace, monospace; }
+.system-items span { color: #8a9a8f; text-align: right; }
+.upbit-api-test-page { display: grid; gap: 14px; padding: 0 32px 64px; }
+.upbit-api-test-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px; }
+.upbit-api-test-intro h2 { margin: 2px 0 6px; }
+.upbit-api-test-intro p { max-width: 760px; color: #98a69d; }
+.upbit-api-test-intro a { flex: 0 0 auto; color: #8de6b7; font-size: 13px; font-weight: 800; }
+.upbit-api-test-form { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(130px, .7fr) minmax(110px, .45fr) auto; align-items: end; gap: 12px; padding: 16px; }
+.upbit-api-test-form label { display: grid; gap: 6px; color: #98a69d; font-size: 12px; font-weight: 800; }
+.upbit-api-test-form input, .upbit-api-test-form select { min-height: 38px; border: 1px solid rgb(255 255 255 / .12); border-radius: 7px; padding: 0 10px; background: #101713; color: #edf6ef; font: inherit; }
+.upbit-api-test-form button { min-height: 38px; border: 0; border-radius: 7px; padding: 0 16px; background: #e8f3eb; color: #102016; font-weight: 900; }
+.upbit-api-test-form button:disabled { opacity: .65; }
+.upbit-api-test-empty { padding: 28px; color: #98a69d; text-align: center; }
+.upbit-api-test-chart-panel { min-width: 0; padding: 16px; }
+.upbit-api-test-chart-panel .panel-heading { align-items: flex-start; }
+.upbit-api-test-chart-panel .panel-heading strong { color: #edf6ef; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 18px; }
+.upbit-api-test-chart { min-height: 440px; margin-top: 8px; }
+.upbit-api-test-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.upbit-api-test-grid article { display: grid; gap: 7px; min-height: 82px; padding: 13px; }
+.upbit-api-test-grid span { color: #849188; font-size: 12px; }
+.upbit-api-test-grid strong { color: #edf6ef; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 14px; }
+.upbit-api-test-table { overflow-x: auto; padding: 14px 16px; }
+.upbit-api-test-table summary { cursor: pointer; color: #dce7df; font-size: 14px; font-weight: 800; }
+.upbit-api-test-table table { width: 100%; min-width: 680px; margin-top: 12px; border-collapse: collapse; color: #dce7df; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; }
+.upbit-api-test-table th, .upbit-api-test-table td { border-top: 1px solid rgb(255 255 255 / .08); padding: 9px 8px; text-align: right; white-space: nowrap; }
+.upbit-api-test-table th:first-child, .upbit-api-test-table td:first-child { text-align: left; }
+
+@media (max-width: 1080px) {
+  .analysis-page { grid-template-columns: 210px minmax(0, 1fr); padding-inline: 24px; }
+  .analysis-market-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .system-card-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 760px) {
+  .analysis-page { grid-template-columns: 1fr; gap: 12px; padding: 0 16px 40px; }
+  .analysis-watchlist { position: static; }
+  .analysis-coin-list { grid-auto-columns: minmax(150px, 1fr); grid-auto-flow: column; grid-template-rows: repeat(2, minmax(0, 1fr)); max-height: 142px; overflow-x: auto; overflow-y: hidden; }
+  .analysis-coin-list button { min-width: 150px; min-height: 56px; }
+  .analysis-header { align-items: flex-start; }
+  .analysis-header h2 { font-size: 21px; }
+  .analysis-connection { white-space: nowrap; }
+  .analysis-controls { gap: 8px; }
+  .analysis-controls .segmented-control { width: 100%; }
+  .analysis-controls button { flex: 1 0 auto; min-height: 44px; padding-inline: 8px; }
+  .analysis-chart-panel { padding: 12px; }
+  .analysis-chart-canvas, .analysis-chart-canvas > span { min-height: 340px; }
+  .analysis-market-grid { grid-template-columns: 1fr; gap: 8px; }
+  .analysis-market-card { min-height: 92px; }
+  .empty-analysis { margin: 0 16px 40px; }
+  .system-management { padding: 0 16px 40px; }
+  .upbit-api-test-page { padding-inline: 16px; }
+  .upbit-api-test-form { grid-template-columns: 1fr 1fr; }
+  .upbit-api-test-form input, .upbit-api-test-form select, .upbit-api-test-form button { min-height: 44px; }
+  .upbit-api-test-form button { grid-column: 1 / -1; }
+  .upbit-api-test-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .upbit-api-test-chart { min-height: 340px; }
+}

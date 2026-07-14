@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 
+from goodmoneying_api.analysis import indicator_points
 from goodmoneying_api.dashboard_refresh import DEFAULT_DASHBOARD_REFRESH_SECONDS
 from goodmoneying_api.schemas import (
     AuditLogSummaryResponse,
@@ -81,7 +82,29 @@ from goodmoneying_shared.models import (
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.time import now_kst
 
-CANDLE_UNITS = {"1m", "3m", "5m", "10m", "15m", "30m", "60m", "240m", "1d"}
+CANDLE_UNITS = {"1m", "3m", "5m", "10m", "15m", "30m", "60m", "1h", "240m", "1d", "1w", "1M"}
+ANALYSIS_UNITS = {
+    "1m": "1m",
+    "5m": "5m",
+    "10m": "10m",
+    "30m": "30m",
+    "1h": "60m",
+    "1d": "1d",
+    "1w": "1w",
+    "1M": "1M",
+}
+ANALYSIS_RANGE_DAYS = {1, 7, 30, 90, 365, 1095}
+
+
+class AnalysisSubscriptionError(ValueError):
+    def __init__(
+        self,
+        code: Literal["INVALID_MESSAGE", "NOT_WATCHLISTED", "NOT_FOUND"],
+        message: str,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+
 
 METRIC_PRINCIPLES = [
     MetricPrincipleResponse(
@@ -97,8 +120,7 @@ METRIC_PRINCIPLES = [
         displayStatus="excluded",
         evidenceStatus="missing_measurement",
         reason=(
-            "업서트 충돌 또는 중복 저장 시도 측정값이 없어 "
-            "운영 콘솔에서 행 수로 표시하지 않는다."
+            "업서트 충돌 또는 중복 저장 시도 측정값이 없어 운영 콘솔에서 행 수로 표시하지 않는다."
         ),
     ),
 ]
@@ -212,9 +234,7 @@ class OperationsService:
             refreshedAt=now_kst(),
         )
 
-    def dashboard_missing_ranges(
-        self, limit: int, offset: int
-    ) -> DashboardMissingRangesResponse:
+    def dashboard_missing_ranges(self, limit: int, offset: int) -> DashboardMissingRangesResponse:
         missing_ranges = [
             missing_range_to_response(item) for item in self._repository.dashboard_missing_ranges()
         ]
@@ -365,9 +385,7 @@ class OperationsService:
         current_volume = sum(
             (
                 Decimal(str(item.volume))
-                for item in self._repository.candles(
-                    instrument_id, "1m", current_start_at, end_at
-                )
+                for item in self._repository.candles(instrument_id, "1m", current_start_at, end_at)
             ),
             Decimal("0"),
         )
@@ -395,9 +413,54 @@ class OperationsService:
             unit=unit,
             candles=[
                 candle_to_response(item)
-                for item in self._repository.candles(instrument_id, unit, start_at, end_at)
+                for item in self._repository.candles(
+                    instrument_id, "60m" if unit == "1h" else unit, start_at, end_at
+                )
             ],
         )
+
+    def analysis_snapshot(
+        self, instrument_id: int, unit: str, range_days: int
+    ) -> dict[str, object]:
+        repository_unit = ANALYSIS_UNITS.get(unit)
+        if repository_unit is None or range_days not in ANALYSIS_RANGE_DAYS:
+            raise AnalysisSubscriptionError(
+                "INVALID_MESSAGE", "지원하지 않는 차트 시간 단위 또는 기간입니다."
+            )
+        active_ids = {instrument.id for instrument in self._repository.list_active_targets()}
+        if instrument_id not in active_ids:
+            raise AnalysisSubscriptionError(
+                "NOT_WATCHLISTED", "관심목록에 있는 코인만 분석할 수 있습니다."
+            )
+        instrument = self._repository.get_instrument(instrument_id)
+        ticker = self._repository.latest_ticker(instrument_id)
+        orderbook = self._repository.latest_orderbook(instrument_id)
+        if instrument is None or ticker is None or orderbook is None:
+            raise AnalysisSubscriptionError("NOT_FOUND", "분석할 시장 데이터가 없습니다.")
+        end_at = now_kst()
+        candles = self._repository.candles(
+            instrument_id, repository_unit, end_at - timedelta(days=range_days), end_at
+        )
+        if repository_unit in {"1m", "5m", "10m", "30m", "60m"}:
+            candles = candles[-1000:]
+        responses = [candle_to_response(item) for item in candles]
+        trade = self._repository.trade_summary(instrument_id, end_at - timedelta(minutes=1), end_at)
+        return {
+            "instrument": instrument_to_response(instrument).model_dump(mode="json"),
+            "unit": unit,
+            "candles": [item.model_dump(mode="json") for item in responses],
+            "indicatorPoints": indicator_points(responses),
+            "market": {
+                "ticker": ticker_to_response(ticker).model_dump(mode="json"),
+                "orderbook": orderbook_to_response(orderbook).model_dump(mode="json"),
+                "tradeSummary": {
+                    "tradeCount": trade.trade_count,
+                    "buyVolume": decimal_string(trade.buy_volume) or "0",
+                    "sellVolume": decimal_string(trade.sell_volume) or "0",
+                    "lastTradeAt": trade.last_trade_at.isoformat() if trade.last_trade_at else None,
+                },
+            },
+        }
 
     def ticker_snapshots(
         self, instrument_id: int, start_at: datetime, end_at: datetime
@@ -476,6 +539,75 @@ class OperationsService:
 
     def backfill_jobs(self) -> list[BackfillJobResponse]:
         return [backfill_job_to_response(item) for item in self._repository.backfill_jobs()]
+
+    def system_management_snapshot(self) -> dict[str, object]:
+        """시스템 관리 화면에 필요한 작은 상태 조각을 조합한다."""
+        dashboard = self.dashboard_summary()
+        active_targets = self._repository.list_active_targets()
+        active_by_id = {item.id: item for item in active_targets}
+        backfill_items: list[dict[str, object]] = []
+        for job in self._repository.backfill_jobs():
+            if job.status not in {"pending", "running", "paused"}:
+                continue
+            items = [job.current_target] if job.current_target else job.targets
+            for item in items:
+                if item is not None:
+                    backfill_items.append(
+                        {
+                            "instrument": instrument_to_response(item).model_dump(mode="json"),
+                            "dataTypes": [job.data_type],
+                            "status": job.status,
+                        }
+                    )
+        aggregation_job = self._repository.latest_candle_aggregation_job()
+        aggregation_items: list[dict[str, object]] = []
+        aggregation: dict[str, object] | None = None
+        if aggregation_job is not None:
+            for target in self._repository.candle_aggregation_job_targets(aggregation_job.id):
+                instrument = active_by_id.get(target.instrument_id)
+                if instrument is not None:
+                    aggregation_items.append(
+                        {
+                            "instrument": instrument_to_response(instrument).model_dump(
+                                mode="json"
+                            ),
+                            "unit": target.candle_unit,
+                            "status": target.status,
+                            "rowsWritten": target.rows_written,
+                        }
+                    )
+            aggregation = {
+                "id": aggregation_job.id,
+                "status": aggregation_job.status,
+                "progressPercent": str(aggregation_job.progress_percent),
+                "totalTargetCount": aggregation_job.total_target_count,
+                "completedTargetCount": aggregation_job.completed_target_count,
+                "runningTargetCount": aggregation_job.running_target_count,
+                "failedTargetCount": aggregation_job.failed_target_count,
+                "items": aggregation_items,
+            }
+        return {
+            "refreshedAt": now_kst().isoformat(),
+            "realtime": {
+                "status": dashboard.workerStatus.realtime.status,
+                "statusLabel": dashboard.workerStatus.realtime.statusLabel,
+                "items": [
+                    {
+                        "instrument": instrument_to_response(item).model_dump(mode="json"),
+                        "dataTypes": ["source_candle", "ticker_snapshot", "orderbook_summary"],
+                    }
+                    for item in active_targets
+                ]
+                if dashboard.workerStatus.realtime.status == "running"
+                else [],
+            },
+            "backfill": {
+                "status": dashboard.workerStatus.backfill.status,
+                "statusLabel": dashboard.workerStatus.backfill.statusLabel,
+                "items": backfill_items,
+            },
+            "aggregation": aggregation,
+        }
 
     def notifications(self) -> NotificationEventsResponse:
         return NotificationEventsResponse(

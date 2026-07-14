@@ -72,6 +72,82 @@ def test_dev_script_shell_environment_overrides_env_file(tmp_path: Path) -> None
     assert "endpoint=http://127.0.0.1:19100" in result.stdout
 
 
+def test_dev_script_checks_local_database_url_port(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "GOODMONEYING_DATABASE_URL=postgresql://user:password@127.0.0.1:15432/goodmoneying",
+                "GOODMONEYING_POSTGRES_PORT=5432",
+                "GOODMONEYING_PYTHON_BIN=/usr/bin/false",
+                f"GOODMONEYING_DEV_DIR={tmp_path / '.dev'}",
+            ]
+        )
+        + "\n"
+    )
+    lsof_log = tmp_path / "lsof.log"
+    fake_lsof = tmp_path / "lsof"
+    fake_lsof.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$DEV_LSOF_LOG\"\n"
+        "[[ \" $* \" == *\" -iTCP:15432 \"* ]]\n"
+    )
+    fake_lsof.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "GOODMONEYING_ENV_FILE": str(env_file),
+            "DEV_LSOF_LOG": str(lsof_log),
+            "PATH": f"{tmp_path}:{env['PATH']}",
+        }
+    )
+
+    result = run_dev_script("app", "start", "api", env=env)
+
+    assert result.returncode != 0
+    assert "-iTCP:15432" in lsof_log.read_text()
+    assert "PostgreSQL 포트 5432" not in result.stderr
+
+
+def test_dev_script_does_not_require_local_port_for_remote_database_url(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "GOODMONEYING_DATABASE_URL=postgresql://user:password@db.example.test:5432/goodmoneying",
+                "GOODMONEYING_POSTGRES_PORT=5432",
+                "GOODMONEYING_PYTHON_BIN=/usr/bin/false",
+                f"GOODMONEYING_DEV_DIR={tmp_path / '.dev'}",
+            ]
+        )
+        + "\n"
+    )
+    lsof_log = tmp_path / "lsof.log"
+    fake_lsof = tmp_path / "lsof"
+    fake_lsof.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$DEV_LSOF_LOG\"\n"
+        "exit 1\n"
+    )
+    fake_lsof.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "GOODMONEYING_ENV_FILE": str(env_file),
+            "DEV_LSOF_LOG": str(lsof_log),
+            "PATH": f"{tmp_path}:{env['PATH']}",
+        }
+    )
+
+    result = run_dev_script("app", "start", "api", env=env)
+
+    assert result.returncode != 0
+    assert "PostgreSQL 포트 5432" not in result.stderr
+    assert "-iTCP:5432" not in lsof_log.read_text()
+
+
 def test_dev_script_uses_python_binary_for_long_running_python_processes() -> None:
     script = Path("dev.sh").read_text()
 

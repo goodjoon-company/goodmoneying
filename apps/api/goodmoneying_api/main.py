@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+import builtins
 import os
 import time
+from asyncio import wait_for
 from collections.abc import Iterator
 from datetime import datetime
 from typing import Annotated, cast
+from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -42,7 +55,7 @@ from goodmoneying_api.schemas import (
     TickerSnapshotsResponse,
     UpdateCollectionTargetsRequest,
 )
-from goodmoneying_api.service import OperationsService
+from goodmoneying_api.service import AnalysisSubscriptionError, OperationsService
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
@@ -84,9 +97,7 @@ def create_app(repository: OperationsRepository | None = None) -> FastAPI:
         return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
 
     @app.exception_handler(RequestValidationError)
-    def handle_validation_exception(
-        _request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
+    def handle_validation_exception(_request: Request, exc: RequestValidationError) -> JSONResponse:
         return JSONResponse(
             status_code=422,
             content={"code": "VALIDATION_ERROR", "message": str(exc)},
@@ -211,6 +222,123 @@ def create_app(repository: OperationsRepository | None = None) -> FastAPI:
                 time.sleep(service.market_list_stream_interval_seconds())
 
         return StreamingResponse(events(), media_type="text/event-stream")
+
+    @app.websocket("/v1/realtime/analysis")
+    async def stream_coin_analysis(websocket: WebSocket) -> None:
+        await websocket.accept()
+        latest_subscription: dict[str, object] | None = None
+        latest_candle: dict[str, object] | None = None
+
+        async def send_message(message_type: str, **payload: object) -> None:
+            await websocket.send_json(
+                {"version": "1", "type": message_type, "sentAt": now_kst().isoformat(), **payload}
+            )
+
+        async def send_snapshot(subscription: dict[str, object]) -> None:
+            nonlocal latest_candle
+            try:
+                snapshot = service.analysis_snapshot(
+                    int(cast(int | str, subscription["instrumentId"])),
+                    str(subscription["unit"]),
+                    int(cast(int | str, subscription["rangeDays"])),
+                )
+            except AnalysisSubscriptionError as exc:
+                await send_message("analysis.error", code=exc.code, message=str(exc))
+                return
+            candles = cast(list[object], snapshot["candles"])
+            chunk_count = max(1, (len(candles) + 499) // 500)
+            await send_message("analysis.session", subscriptionId=str(uuid4()))
+            await send_message("analysis.instrument", instrument=snapshot["instrument"])
+            for chunk_index in range(chunk_count):
+                await send_message(
+                    "analysis.chart",
+                    unit=snapshot["unit"],
+                    chunkIndex=chunk_index,
+                    chunkCount=chunk_count,
+                    candles=candles[chunk_index * 500 : (chunk_index + 1) * 500],
+                )
+            indicator_points = cast(list[object], snapshot["indicatorPoints"])
+            indicator_chunk_count = max(1, (len(indicator_points) + 499) // 500)
+            for chunk_index in range(indicator_chunk_count):
+                await send_message(
+                    "analysis.indicators",
+                    chunkIndex=chunk_index,
+                    chunkCount=indicator_chunk_count,
+                    points=indicator_points[chunk_index * 500 : (chunk_index + 1) * 500],
+                )
+            await send_message("analysis.market", **cast(dict[str, object], snapshot["market"]))
+            latest_candle = cast(dict[str, object], candles[-1]) if candles else None
+
+        try:
+            while True:
+                try:
+                    message = await wait_for(websocket.receive_json(), timeout=1)
+                except builtins.TimeoutError:
+                    if latest_subscription is not None:
+                        try:
+                            snapshot = service.analysis_snapshot(
+                                int(cast(int | str, latest_subscription["instrumentId"])),
+                                str(latest_subscription["unit"]),
+                                int(cast(int | str, latest_subscription["rangeDays"])),
+                            )
+                        except AnalysisSubscriptionError:
+                            continue
+                        candles = cast(list[dict[str, object]], snapshot["candles"])
+                        if candles and candles[-1] != latest_candle:
+                            await send_message("analysis.candle.upsert", candle=candles[-1])
+                            indicator_points = cast(list[object], snapshot["indicatorPoints"])
+                            if indicator_points:
+                                await send_message(
+                                    "analysis.indicator.upsert",
+                                    point=indicator_points[-1],
+                                )
+                            latest_candle = candles[-1]
+                        market = cast(dict[str, object], snapshot["market"])
+                        await send_message("analysis.market", **market)
+                    continue
+                if not isinstance(message, dict) or message.get("type") != "analysis.subscribe":
+                    await send_message(
+                        "analysis.error",
+                        code="INVALID_MESSAGE",
+                        message="analysis.subscribe 메시지가 필요합니다.",
+                    )
+                    continue
+                try:
+                    latest_subscription = {
+                        "instrumentId": int(cast(int | str, message["instrumentId"])),
+                        "unit": str(message["unit"]),
+                        "rangeDays": int(cast(int | str, message["rangeDays"])),
+                    }
+                except KeyError, TypeError, ValueError:
+                    await send_message(
+                        "analysis.error",
+                        code="INVALID_MESSAGE",
+                        message="instrumentId, unit, rangeDays를 올바르게 입력해야 합니다.",
+                    )
+                    continue
+                await send_snapshot(latest_subscription)
+        except WebSocketDisconnect:
+            return
+
+    @app.websocket("/v1/realtime/system-management")
+    async def stream_system_management(websocket: WebSocket) -> None:
+        await websocket.accept()
+        try:
+            while True:
+                await websocket.send_json(
+                    {
+                        "version": "1",
+                        "type": "system.snapshot",
+                        "sentAt": now_kst().isoformat(),
+                        "payload": service.system_management_snapshot(),
+                    }
+                )
+                try:
+                    await wait_for(websocket.receive_text(), timeout=1)
+                except builtins.TimeoutError:
+                    continue
+        except WebSocketDisconnect:
+            return
 
     @app.get(
         "/v1/collection-targets/{instrumentId}/coverage-segments",

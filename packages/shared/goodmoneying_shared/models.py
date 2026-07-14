@@ -16,7 +16,9 @@ BackfillStatus = Literal[
 CollectionRunStatus = Literal["running", "succeeded", "partial", "failed", "cancelled"]
 CollectionDataType = Literal["source_candle", "ticker_snapshot", "orderbook_summary"]
 CollectionRowsByType = dict[CollectionDataType, int]
-CollectionWorkerType = Literal["realtime_collection", "backfill_collection"]
+CollectionWorkerType = Literal[
+    "realtime_collection", "backfill_collection", "candle_aggregation"
+]
 CollectionWorkerHeartbeatStatus = Literal["running", "failed"]
 CollectionWorkerStatus = Literal["running", "stale", "failed"]
 TradeDirection = Literal["ASK", "BID"]
@@ -101,6 +103,14 @@ class TradeEvent:
 
 
 @dataclass(frozen=True)
+class TradeSummary:
+    trade_count: int
+    buy_volume: Decimal
+    sell_volume: Decimal
+    last_trade_at: datetime | None
+
+
+@dataclass(frozen=True)
 class CandleView:
     started_at: datetime
     open: Decimal
@@ -110,6 +120,27 @@ class CandleView:
     volume: Decimal
     trade_amount: Decimal
     completeness: Literal["complete", "partial", "empty"]
+
+
+@dataclass(frozen=True)
+class CandleAggregationJob:
+    id: int
+    status: Literal["pending", "running", "succeeded", "failed"]
+    progress_percent: Decimal
+    total_target_count: int
+    completed_target_count: int
+    running_target_count: int
+    failed_target_count: int
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class CandleAggregationJobTarget:
+    job_id: int
+    instrument_id: int
+    candle_unit: str
+    status: Literal["pending", "running", "succeeded", "failed"]
+    rows_written: int
 
 
 @dataclass(frozen=True)
@@ -179,7 +210,7 @@ class CollectionDashboardTarget:
 @dataclass(frozen=True)
 class MarketListRow:
     instrument: Instrument
-    asset_type: Literal["coin", "stock"]
+    asset_type: Literal["coin"]
     is_favorite: bool
     favorite_order: int | None
     trade_price: Decimal | None

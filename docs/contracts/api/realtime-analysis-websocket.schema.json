@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goodmoneying.local/contracts/realtime-analysis-websocket.schema.json",
+  "title": "코인 분석 WebSocket 메시지",
+  "description": "분석 화면은 전체 화면 상태를 반복 전송하지 않고 type별 증분 메시지를 수신한다.",
+  "oneOf": [
+    { "$ref": "#/$defs/subscribe" }, { "$ref": "#/$defs/session" }, { "$ref": "#/$defs/instrument" }, { "$ref": "#/$defs/chart" },
+    { "$ref": "#/$defs/indicators" }, { "$ref": "#/$defs/market" }, { "$ref": "#/$defs/candleUpsert" }, { "$ref": "#/$defs/indicatorUpsert" }, { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "envelope": { "type": "object", "required": ["version", "type", "sentAt"], "properties": { "version": { "const": "1" }, "type": { "type": "string" }, "sentAt": { "type": "string", "format": "date-time" } } },
+    "candle": { "type": "object", "required": ["startedAt", "open", "high", "low", "close", "volume", "tradeAmount", "completeness"], "properties": { "startedAt": { "type": "string", "format": "date-time" }, "open": { "type": "string" }, "high": { "type": "string" }, "low": { "type": "string" }, "close": { "type": "string" }, "volume": { "type": "string" }, "tradeAmount": { "type": "string" }, "completeness": { "enum": ["complete", "partial", "empty"] } } },
+    "subscribe": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "type": { "const": "analysis.subscribe" }, "instrumentId": { "type": "integer", "minimum": 1 }, "unit": { "enum": ["1m", "5m", "10m", "30m", "1h", "1d", "1w", "1M"] }, "rangeDays": { "enum": [1, 7, 30, 90, 365, 1095] } }, "required": ["instrumentId", "unit", "rangeDays"] }] },
+    "session": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "type": { "const": "analysis.session" }, "subscriptionId": { "type": "string" } }, "required": ["subscriptionId"] }] },
+    "instrument": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "type": { "const": "analysis.instrument" }, "instrument": { "type": "object", "required": ["id", "marketCode", "baseAsset", "quoteCurrency", "displayName"] } }, "required": ["instrument"] }] },
+    "chart": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "type": { "const": "analysis.chart" }, "unit": { "enum": ["1m", "5m", "10m", "30m", "1h", "1d", "1w", "1M"] }, "chunkIndex": { "type": "integer", "minimum": 0 }, "chunkCount": { "type": "integer", "minimum": 1 }, "candles": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/candle" } } }, "required": ["unit", "chunkIndex", "chunkCount", "candles"] }] },
+    "indicators": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "type": { "const": "analysis.indicators" }, "chunkIndex": { "type": "integer", "minimum": 0 }, "chunkCount": { "type": "integer", "minimum": 1 }, "points": { "type": "array", "maxItems": 500, "items": { "type": "object", "required": ["startedAt", "sma20", "sma60", "ema20", "bollingerUpper", "bollingerMiddle", "bollingerLower", "rsi14"] } } }, "required": ["chunkIndex", "chunkCount", "points"] }] },
+    "market": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "type": { "const": "analysis.market" }, "ticker": { "type": "object" }, "orderbook": { "type": "object" }, "tradeSummary": { "type": "object", "required": ["tradeCount", "buyVolume", "sellVolume", "lastTradeAt"] } }, "required": ["ticker", "orderbook", "tradeSummary"] }] },
+    "candleUpsert": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "type": { "const": "analysis.candle.upsert" }, "candle": { "$ref": "#/$defs/candle" } }, "required": ["candle"] }] },
+    "indicatorUpsert": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "type": { "const": "analysis.indicator.upsert" }, "point": { "type": "object", "required": ["startedAt", "sma20", "sma60", "ema20", "bollingerUpper", "bollingerMiddle", "bollingerLower", "rsi14"] } }, "required": ["point"] }] },
+    "error": { "allOf": [{ "$ref": "#/$defs/envelope" }, { "properties": { "type": { "const": "analysis.error" }, "code": { "enum": ["INVALID_MESSAGE", "NOT_WATCHLISTED", "NOT_FOUND"] }, "message": { "type": "string" } }, "required": ["code", "message"] }] }
+  }
+}

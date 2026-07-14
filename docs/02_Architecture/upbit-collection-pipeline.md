@@ -1,11 +1,39 @@
-# 업비트 수집 파이프라인 설계
+# 업비트 수집 파이프라인 개발 사양
 
 Status: Accepted
-Last Updated: 2026-07-11
+Last Updated: 2026-07-14
 Related Product: `docs/01_Product.md`
 Related Task: `docs/Task/M1.md`
 Related DB Contract: `docs/contracts/db/schema.sql`
-Related API Contract: `docs/contracts/api/openapi.yaml`
+Related API Contract: `docs/contracts/api/openapi.yaml`, `docs/contracts/api/realtime-analysis-websocket.schema.json`, `docs/contracts/api/realtime-system-management-websocket.md`
+
+## 문서 역할
+
+이 문서는 업비트 수집 파이프라인의 **모듈 경계, 책임, 입력·출력, 실행·복구 규칙**을 정의한다. 전체 시스템의 구성과 코드 레이어는 [아키텍처 개발 사양](../02_Architecture.md), 제품 결과와 요구사항 ID는 [제품 개발 사양](../01_Product.md), 테이블·API·실시간 메시지의 정확한 형식은 `docs/contracts/`를 따른다.
+
+## 모듈 한눈에 보기
+
+```mermaid
+flowchart TB
+    upbit["업비트 REST·WebSocket"]
+    ui["운영 화면"]
+    api["운영 서버"]
+    realtime["실시간 수집 워커"]
+    backfill["백필 수집 워커"]
+    aggregation["캔들 집계 워커"]
+    db[("PostgreSQL")]
+
+    upbit --> realtime
+    upbit --> backfill
+    ui --> api
+    api <--> db
+    realtime <--> db
+    backfill <--> db
+    aggregation <--> db
+    db --> api
+```
+
+원천 수집·집계·조회는 모두 PostgreSQL을 통해 느슨하게 결합한다. 워커가 브라우저에 직접 데이터를 보내거나, 운영 서버가 외부 업비트 API를 대신 수집하는 구조는 현재 범위가 아니다.
 
 ## 책임
 
@@ -18,6 +46,7 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 - 백필(Backfill), 증분 수집(Incremental Collection), 데이터 완전성 검사(Data Completeness Check)
 - 수집 실행(Collection Run), 대상별 수집 결과(Target Collection Result), 결측 구간(Missing Range), 수집 진행률(Collection Coverage) 기록
 - 수집 워커 heartbeat와 worker 현황판용 상태 View Model 제공
+- 분석용 캔들 집계 테이블(Candle Rollup)과 자동 집계 작업(Candle Aggregation Job) 유지
 - 운영 서버(Operations Server)를 통한 화면 API와 원천 리소스 API 제공
 - 감사 로그(Audit Log), 알림 이벤트(Notification Event) 저장
 
@@ -37,8 +66,9 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 |---|---|---|
 | 실시간 수집 워커(Realtime Collection Worker) | 업비트 웹소켓(WebSocket) 시세 스트림 수신, 수집 후보군과 증분 수집 저장. 런타임은 `GOODMONEYING_LIVE_UPBIT=1` live 프로필만 허용 | Python 단일 프로세스 |
 | 백필 수집 워커(Backfill Collection Worker) | DB 상태 폴링으로 pending 백필 작업 확인, 원천 캔들 결측 구간 백필 실행, fetch 성공 heartbeat와 DB batch upsert 완료 기준 진행 상태 기록 | Python 단일 프로세스, 기본 10초 폴링, 기본 최대 3000개 저장 배치(batch) |
+| 캔들 집계 워커(Candle Aggregation Worker) | 원천봉보다 오래된 집계 단위를 감지하고 작업 대상별 OHLCV rollup을 upsert, 진행률과 heartbeat 기록 | Python 단일 프로세스, 기본 5초 폴링 |
 | 운영 서버(Operations Server) | 화면 단위 View Model API, 원천 리소스 API, 쓰기 API, 저장된 worker 상태 조회 | FastAPI |
-| 운영 화면 | 데이터 수집관리 내비게이션, worker 현황판, 대시보드, Backfill 관리, 백필 제어, 관심종목, 코인 상세 레이어 | React, SSE(Server-Sent Events) 대시보드/관심종목 가격 갱신, React Query HTTP 폴링(Polling) 보조 |
+| 운영 화면 | 데이터 수집관리 내비게이션, worker 현황판, 대시보드, Backfill 관리, 백필 제어, 관심종목, 코인 상세 레이어, 코인 분석 | React, 기존 대시보드/관심종목은 SSE(Server-Sent Events), 코인 분석은 WebSocket 증분 메시지, React Query HTTP 폴링(Polling) 보조 |
 | PostgreSQL | 원천 사실, 설정, 품질, 감사, 알림 이벤트 저장 | `docs/contracts/db/schema.sql` |
 
 ## 입력과 출력
@@ -65,6 +95,15 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 - 알림 이벤트(Notification Event)
 
 ## 주요 흐름
+
+### 흐름 선택표
+
+| 사용자가 본 상태 | 시작 구성요소 | 저장 결과 | 복구 경로 |
+|---|---|---|---|
+| 현재 시장 데이터 갱신 | 실시간 수집 워커 | 현재가·호가·체결·1분 원천봉, heartbeat | 워커 재시작과 최신성·오류 확인 |
+| 과거 캔들 부족 | 운영 서버 → 백필 수집 워커 | 원천 캔들, 백필 작업·대상 진행 상태 | 결측 구간만 재계산해 재개 |
+| 분석 단위가 오래됨 | 캔들 집계 워커 | 집계 봉, 집계 작업·대상 진행 상태 | 멱등 upsert 재실행, 원천봉 보조 조회 |
+| 품질 경고·결측 | 완전성 검사와 운영 서버 | 결측 구간·커버리지·화면용 상태 | Backfill 계획 생성과 실행 |
 
 ### 수집 후보군 갱신
 
@@ -133,8 +172,9 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 | 운영 상태 대시보드 | worker 현황판, 코인별 수집 계획, 파이프라인 건강도, 최신성, 실패, 결측, 저장량, 구간형 진행 상태 | 10~15초 |
 | Backfill 관리 | 수집 후보군, 활성 수집 대상 최대 50개, 24시간 거래대금, 수집 시작일/최종일, 실시간 수집 라벨, 백필 계획 생성 레이어, 백필 작업 패널 | 수동 또는 변경 후 갱신 |
 | 백필 작업 | 저장된 백필 작업 상태와 제어 | 실행 중 5~10초 |
-| 관심종목 | 코인/주식 전환, 관심 추가 토글, 현재가, 24시간 거래대금, 전일 종가 대비 등락률, 기준일시, 캔들 커버리지, 1분 캔들 수 | SSE push, HTTP fallback |
+| 관심종목 | 코인 관심목록 선택, 관심 추가 토글, 현재가, 24시간 거래대금, 전일 종가 대비 등락률, 기준일시, 캔들 커버리지, 1분 캔들 수 | SSE push, HTTP fallback |
 | 코인 상세 레이어 | 캔들 차트, 호가 요약, 품질 이력 | 30초 또는 사용자가 켜는 실시간 모드 |
+| 코인 분석 | 관심 코인 선택, 최대 3년 월·주·일·시·30분·10분·5분·1분 차트, 거래량, 고정 기술 지표, 현재가·호가·체결 요약 | WebSocket 구독, 차트·지표·시장 상태 증분 메시지 |
 
 운영 상태 대시보드는 관심목록 코인을 행(row) 단위로 표시한다. 각 행은 코인 전체 상태와 캔들(Candle), 현재가(Ticker), 호가 요약(Orderbook Summary)의 미니 상태를 함께 보여주고, 펼치면 데이터별 그래프, 결측 구간, 수집 계획 수정 버튼, 백필 제어를 표시한다.
 
@@ -175,4 +215,5 @@ Related API Contract: `docs/contracts/api/openapi.yaml`
 - 호가 원천 스냅샷(Snapshot)은 호가 요약만으로 답할 수 없는 전략 실험이 승인될 때까지 저장하지 않는다.
 - 기술적 분석 지표와 외부 알림 발송은 사용자 시나리오가 승인된 뒤 계산 위치, 캐싱, 채널, 빈도 제한을 설계한다.
 - 현재 브라우저 갱신은 SSE(Server-Sent Events), 업비트 시세 수집은 서버 측 WebSocket을 유지한다.
+- 코인 분석 화면은 `docs/contracts/api/realtime-analysis-websocket.schema.json`의 WebSocket 계약을 사용한다. 기존 SSE 경로는 제거하지 않는다.
 - 미래 결정 게이트는 `docs/ADR/ADR-0007-Post-MVP-아키텍처-결정-게이트.md`를 따른다.

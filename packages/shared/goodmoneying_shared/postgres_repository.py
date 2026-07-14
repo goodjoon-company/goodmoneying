@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from calendar import monthrange
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -10,6 +11,11 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from goodmoneying_shared.aggregation import (
+    AGGREGATION_UNITS,
+    aggregate_candles,
+    rollup_bucket_start,
+)
 from goodmoneying_shared.models import (
     AuditLogSummary,
     BackfillJob,
@@ -18,6 +24,8 @@ from goodmoneying_shared.models import (
     BackfillPlan,
     BackfillWorkerStatus,
     CandidateUniverseEntry,
+    CandleAggregationJob,
+    CandleAggregationJobTarget,
     CandleView,
     CollectionActivityBucket,
     CollectionDashboardTarget,
@@ -48,6 +56,7 @@ from goodmoneying_shared.models import (
     TickerSnapshot,
     TradeEvent,
     TradeFrequencyStatus,
+    TradeSummary,
 )
 from goodmoneying_shared.time import KST, isoformat_kst, minute_bucket, now_kst
 
@@ -56,8 +65,7 @@ Row = dict[str, Any]
 
 def _is_fixture_candidate_entry(market_code: str, display_name: str) -> bool:
     return (
-        market_code.startswith("KRW-GM")
-        and market_code.removeprefix("KRW-GM").isdigit()
+        market_code.startswith("KRW-GM") and market_code.removeprefix("KRW-GM").isdigit()
     ) or display_name.startswith("굿머니코인")
 
 
@@ -70,8 +78,7 @@ def _reject_fixture_candidate_entries(entries: list[tuple[str, str, str]]) -> No
     if fixture_codes:
         sample = ", ".join(fixture_codes[:5])
         raise ValueError(
-            "PostgreSQL 수집 후보군에는 fixture 데이터를 저장할 수 없다. "
-            f"fixture 후보={sample}"
+            f"PostgreSQL 수집 후보군에는 fixture 데이터를 저장할 수 없다. fixture 후보={sample}"
         )
 
 
@@ -107,9 +114,7 @@ class PostgresOperationsRepository:
             try:
                 conn.execute(self._schema_path.read_text())
             finally:
-                conn.execute(
-                    "SELECT pg_advisory_unlock(hashtext('goodmoneying_schema_contract'))"
-                )
+                conn.execute("SELECT pg_advisory_unlock(hashtext('goodmoneying_schema_contract'))")
 
     def upsert_instrument(self, market_code: str, display_name: str) -> Instrument:
         quote_currency, base_asset = market_code.split("-", maxsplit=1)
@@ -454,9 +459,7 @@ class PostgresOperationsRepository:
         failed_runs_24h = self._failed_runs_24h()
         recent_runs = self._recent_run_count()
         failure_rate_24h = (
-            Decimal(failed_runs_24h) / Decimal(recent_runs)
-            if recent_runs > 0
-            else Decimal("0")
+            Decimal(failed_runs_24h) / Decimal(recent_runs) if recent_runs > 0 else Decimal("0")
         )
         storage_bytes_today = self._storage_bytes_today_estimate()
         storage_rows_today = self._storage_rows_today()
@@ -593,8 +596,7 @@ class PostgresOperationsRepository:
                 }[item.data_type],
             )
             data_statuses = [
-                self._collection_data_status(item, source_candle_counts)
-                for item in coverage
+                self._collection_data_status(item, source_candle_counts) for item in coverage
             ]
             candle_status = next(
                 item for item in data_statuses if item.data_type == "source_candle"
@@ -779,9 +781,7 @@ class PostgresOperationsRepository:
             ).fetchone()
         return _orderbook(row) if row else None
 
-    def _latest_tickers_by_instrument(
-        self, instrument_ids: list[int]
-    ) -> dict[int, TickerSnapshot]:
+    def _latest_tickers_by_instrument(self, instrument_ids: list[int]) -> dict[int, TickerSnapshot]:
         if not instrument_ids:
             return {}
         with self._connect() as conn:
@@ -886,9 +886,228 @@ class PostgresOperationsRepository:
                 (instrument_id, start_at, end_at),
             ).fetchall()
         source = [_candle(row) for row in rows]
-        if unit in {"1m", "1d"}:
+        if unit == "1m":
             return [_candle_view(item) for item in source if item.candle_unit == unit]
+        if unit in AGGREGATION_UNITS:
+            rollups = self.candle_rollups(instrument_id, unit, start_at, end_at)
+            if rollups:
+                return rollups
         return _derive_candles(unit, source)
+
+    def materialize_candle_rollups(self, instrument_id: int, unit: str) -> int:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM source_candles WHERE instrument_id = %s
+                ORDER BY candle_start_at
+                """,
+                (instrument_id,),
+            ).fetchall()
+            rollups = aggregate_candles(unit, [_candle(row) for row in rows])
+            for item in rollups:
+                conn.execute(
+                    """
+                    INSERT INTO candle_rollups (
+                      instrument_id, candle_unit, candle_start_at, open_price, high_price,
+                      low_price,
+                      close_price, trade_volume, trade_amount, completeness, materialized_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                    ON CONFLICT (instrument_id, candle_unit, candle_start_at) DO UPDATE SET
+                      open_price = excluded.open_price, high_price = excluded.high_price,
+                      low_price = excluded.low_price, close_price = excluded.close_price,
+                      trade_volume = excluded.trade_volume, trade_amount = excluded.trade_amount,
+                      completeness = excluded.completeness, materialized_at = now()
+                    """,
+                    (
+                        instrument_id,
+                        unit,
+                        item.started_at,
+                        item.open,
+                        item.high,
+                        item.low,
+                        item.close,
+                        item.volume,
+                        item.trade_amount,
+                        item.completeness,
+                    ),
+                )
+        return len(rollups)
+
+    def candle_rollups(
+        self, instrument_id: int, unit: str, start_at: datetime, end_at: datetime
+    ) -> list[CandleView]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM candle_rollups
+                WHERE instrument_id = %s AND candle_unit = %s
+                  AND candle_start_at >= %s AND candle_start_at < %s
+                ORDER BY candle_start_at
+                """,
+                (instrument_id, unit, start_at, end_at),
+            ).fetchall()
+        return [_rollup_candle(row) for row in rows]
+
+    def schedule_candle_aggregation(self) -> CandleAggregationJob | None:
+        with self._connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT id FROM candle_aggregation_jobs
+                WHERE status IN ('pending', 'running') ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
+            if existing is not None:
+                return self._candle_aggregation_job(int(existing["id"]))
+            targets: list[tuple[int, str]] = []
+            for instrument in self.list_active_targets():
+                source_row = _expect_row(conn.execute(
+                    "SELECT MAX(candle_start_at) AS candle_start_at "
+                    "FROM source_candles WHERE instrument_id = %s",
+                    (instrument.id,),
+                ).fetchone())
+                source_latest = source_row["candle_start_at"]
+                if source_latest is None:
+                    continue
+                for unit in AGGREGATION_UNITS:
+                    rollup_row = _expect_row(conn.execute(
+                        """
+                        SELECT MAX(candle_start_at) AS candle_start_at FROM candle_rollups
+                        WHERE instrument_id = %s AND candle_unit = %s
+                        """,
+                        (instrument.id, unit),
+                    ).fetchone())
+                    rollup_latest = rollup_row["candle_start_at"]
+                    if rollup_latest is None or rollup_latest < rollup_bucket_start(
+                        unit, source_latest
+                    ):
+                        targets.append((instrument.id, unit))
+            if not targets:
+                return None
+            job_id = int(
+                _expect_row(
+                    conn.execute(
+                        "INSERT INTO candle_aggregation_jobs (status) "
+                        "VALUES ('pending') RETURNING id"
+                    ).fetchone()
+                )["id"]
+            )
+            for instrument_id, unit in targets:
+                conn.execute(
+                    """
+                    INSERT INTO candle_aggregation_job_targets (
+                      job_id, instrument_id, candle_unit, status
+                    )
+                    VALUES (%s, %s, %s, 'pending')
+                    """,
+                    (job_id, instrument_id, unit),
+                )
+        return self._candle_aggregation_job(job_id)
+
+    def claim_next_candle_aggregation_job(self) -> CandleAggregationJob | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id FROM candle_aggregation_jobs WHERE status = 'pending'
+                ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                return None
+            job_id = int(row["id"])
+            conn.execute(
+                "UPDATE candle_aggregation_jobs SET status = 'running', "
+                "started_at = now() WHERE id = %s",
+                (job_id,),
+            )
+        return self._candle_aggregation_job(job_id)
+
+    def candle_aggregation_job_targets(self, job_id: int) -> list[CandleAggregationJobTarget]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM candle_aggregation_job_targets
+                WHERE job_id = %s ORDER BY instrument_id, candle_unit
+                """,
+                (job_id,),
+            ).fetchall()
+        return [_candle_aggregation_target(row) for row in rows]
+
+    def mark_candle_aggregation_target(
+        self, job_id: int, instrument_id: int, unit: str, status: str, rows_written: int
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE candle_aggregation_job_targets
+                SET status = %s, rows_written = %s, updated_at = now()
+                WHERE job_id = %s AND instrument_id = %s AND candle_unit = %s
+                """,
+                (status, rows_written, job_id, instrument_id, unit),
+            )
+            remaining_row = _expect_row(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) AS count FROM candle_aggregation_job_targets
+                    WHERE job_id = %s AND status NOT IN ('succeeded', 'failed')
+                    """,
+                    (job_id,),
+                ).fetchone()
+            )
+            remaining = int(remaining_row["count"])
+            if remaining == 0:
+                failed_row = _expect_row(
+                    conn.execute(
+                        """
+                        SELECT COUNT(*) AS count FROM candle_aggregation_job_targets
+                        WHERE job_id = %s AND status = 'failed'
+                        """,
+                        (job_id,),
+                    ).fetchone()
+                )
+                failed = int(failed_row["count"])
+                conn.execute(
+                    """
+                    UPDATE candle_aggregation_jobs SET status = %s, finished_at = now()
+                    WHERE id = %s
+                    """,
+                    ("failed" if failed else "succeeded", job_id),
+                )
+
+    def latest_candle_aggregation_job(self) -> CandleAggregationJob | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM candle_aggregation_jobs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return self._candle_aggregation_job(int(row["id"])) if row else None
+
+    def _candle_aggregation_job(self, job_id: int) -> CandleAggregationJob:
+        with self._connect() as conn:
+            row = _expect_row(
+                conn.execute(
+                    """
+                    SELECT j.id, j.status, j.created_at, COUNT(t.candle_unit) AS total,
+                      COUNT(*) FILTER (WHERE t.status = 'succeeded') AS completed,
+                      COUNT(*) FILTER (WHERE t.status = 'running') AS running,
+                      COUNT(*) FILTER (WHERE t.status = 'failed') AS failed
+                    FROM candle_aggregation_jobs j
+                    LEFT JOIN candle_aggregation_job_targets t ON t.job_id = j.id
+                    WHERE j.id = %s GROUP BY j.id
+                    """,
+                    (job_id,),
+                ).fetchone()
+            )
+        total = int(row["total"])
+        completed = int(row["completed"])
+        return CandleAggregationJob(
+            id=int(row["id"]),
+            status=cast(Literal["pending", "running", "succeeded", "failed"], row["status"]),
+            progress_percent=Decimal(completed * 100) / Decimal(total) if total else Decimal("0"),
+            total_target_count=total,
+            completed_target_count=completed,
+            running_target_count=int(row["running"]),
+            failed_target_count=int(row["failed"]),
+            created_at=cast(datetime, row["created_at"]),
+        )
 
     def ticker_snapshots(
         self, instrument_id: int, start_at: datetime, end_at: datetime
@@ -918,6 +1137,35 @@ class PostgresOperationsRepository:
             ).fetchall()
         return [_orderbook(row) for row in rows]
 
+    def trade_summary(
+        self, instrument_id: int, start_at: datetime, end_at: datetime
+    ) -> TradeSummary:
+        with self._connect() as conn:
+            row = cast(
+                Row,
+                conn.execute(
+                    """
+                    SELECT COUNT(*) AS trade_count,
+                           COALESCE(SUM(CASE WHEN ask_bid = 'BID' THEN trade_volume ELSE 0 END), 0)
+                             AS buy_volume,
+                           COALESCE(SUM(CASE WHEN ask_bid = 'ASK' THEN trade_volume ELSE 0 END), 0)
+                             AS sell_volume,
+                           MAX(trade_timestamp_at) AS last_trade_at
+                    FROM trade_events
+                    WHERE instrument_id = %s
+                      AND trade_timestamp_at >= %s
+                      AND trade_timestamp_at <= %s
+                    """,
+                    (instrument_id, start_at, end_at),
+                ).fetchone(),
+            )
+        return TradeSummary(
+            trade_count=int(row["trade_count"]),
+            buy_volume=Decimal(str(row["buy_volume"])),
+            sell_volume=Decimal(str(row["sell_volume"])),
+            last_trade_at=cast(datetime | None, row["last_trade_at"]),
+        )
+
     def collection_runs(self, limit: int) -> list[CollectionRun]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -932,7 +1180,11 @@ class PostgresOperationsRepository:
         status: CollectionWorkerHeartbeatStatus,
         error_message: str | None = None,
     ) -> None:
-        if worker_type not in {"realtime_collection", "backfill_collection"}:
+        if worker_type not in {
+            "realtime_collection",
+            "backfill_collection",
+            "candle_aggregation",
+        }:
             raise ValueError("지원하지 않는 수집 워커 유형이다.")
         if status not in {"running", "failed"}:
             raise ValueError("지원하지 않는 수집 워커 상태다.")
@@ -1077,8 +1329,7 @@ class PostgresOperationsRepository:
             if planned is None:
                 raise ValueError("존재하지 않는 백필 계획이다.")
             targets = [
-                int(item)
-                for item in cast(dict[str, Any], planned["plan"]).get("targets", [])
+                int(item) for item in cast(dict[str, Any], planned["plan"]).get("targets", [])
             ]
             row = _expect_row(
                 conn.execute(
@@ -1603,9 +1854,7 @@ class PostgresOperationsRepository:
                         trade_strength=trade_strength,
                         trade_volume=cast(Decimal, aggregate["trade_volume"]),
                         trade_amount=cast(Decimal, aggregate["trade_amount"]),
-                        status=self._realtime_collection_heatmap_status(
-                            average_trades_per_minute
-                        ),
+                        status=self._realtime_collection_heatmap_status(average_trades_per_minute),
                     )
                 )
             heatmap.append(
@@ -1642,9 +1891,7 @@ class PostgresOperationsRepository:
                 (first_hour,),
             ).fetchall()
         run_counts = {
-            row["bucket_start_at"].replace(minute=0, second=0, microsecond=0): int(
-                row["run_count"]
-            )
+            row["bucket_start_at"].replace(minute=0, second=0, microsecond=0): int(row["run_count"])
             for row in run_rows
         }
         result_counts = {
@@ -1663,9 +1910,7 @@ class PostgresOperationsRepository:
                     result_counts.get(bucket_start, 0),
                 ),
             )
-            for bucket_start in (
-                first_hour + timedelta(hours=offset) for offset in range(7 * 24)
-            )
+            for bucket_start in (first_hour + timedelta(hours=offset) for offset in range(7 * 24))
         ]
 
     def _storage_breakdown_today(self, total_bytes: int) -> list[StorageBreakdownItem]:
@@ -1723,9 +1968,7 @@ class PostgresOperationsRepository:
                     bucket_date=day,
                     coverage_percent=coverage_percent if offset == 0 else Decimal("0"),
                     storage_bytes=(
-                        storage_bytes_today
-                        if offset == 0
-                        else storage_bytes_by_day.get(day, 0)
+                        storage_bytes_today if offset == 0 else storage_bytes_by_day.get(day, 0)
                     ),
                     warning_targets=warning_targets if offset == 0 else 0,
                     incident_targets=incident_targets if offset == 0 else 0,
@@ -2175,8 +2418,7 @@ class PostgresOperationsRepository:
     def _storage_bytes_for_range(self, start_at: datetime, end_at: datetime) -> int:
         return (
             self._table_count_between("source_candles", "collected_at", start_at, end_at) * 256
-            + self._table_count_between("ticker_snapshots", "collected_at", start_at, end_at)
-            * 160
+            + self._table_count_between("ticker_snapshots", "collected_at", start_at, end_at) * 160
             + self._table_count_between("orderbook_summaries", "collected_at", start_at, end_at)
             * 224
         )
@@ -2261,9 +2503,9 @@ class PostgresOperationsRepository:
     def _storage_share_percent(bytes_value: int, total_bytes: int) -> Decimal:
         if total_bytes <= 0:
             return Decimal("0")
-        return (
-            Decimal(bytes_value) / Decimal(total_bytes) * Decimal("100")
-        ).quantize(Decimal("0.01"))
+        return (Decimal(bytes_value) / Decimal(total_bytes) * Decimal("100")).quantize(
+            Decimal("0.01")
+        )
 
     def _instrument_storage_bytes(self, instrument_id: int) -> int:
         return (
@@ -2279,9 +2521,7 @@ class PostgresOperationsRepository:
             + self._table_count("orderbook_summaries", instrument_id)
         )
 
-    def _instrument_storage_bytes_by_instrument(
-        self, instrument_ids: list[int]
-    ) -> dict[int, int]:
+    def _instrument_storage_bytes_by_instrument(self, instrument_ids: list[int]) -> dict[int, int]:
         return self._instrument_storage_totals_by_instrument(instrument_ids)[0]
 
     def _instrument_storage_row_counts_by_instrument(
@@ -2672,9 +2912,9 @@ class PostgresOperationsRepository:
         stored_count, missing_segments, latest_at = self._source_candle_coverage_summary(
             instrument_id, plan.range_start_at, range_end
         )
-        progress = (
-            Decimal(stored_count) * Decimal("100") / Decimal(expected_minutes)
-        ).quantize(Decimal("0.01"))
+        progress = (Decimal(stored_count) * Decimal("100") / Decimal(expected_minutes)).quantize(
+            Decimal("0.01")
+        )
         if latest_at is None:
             status: Literal["normal", "warning", "incident"] = "incident"
             last_successful_at = now_kst() - timedelta(days=365)
@@ -2703,9 +2943,9 @@ class PostgresOperationsRepository:
         range_end = self._coverage_range_end(plan)
         expected_minutes = self._expected_minutes(plan.range_start_at, range_end)
         first_start_at, latest_start_at = source_candle_range
-        progress = (
-            Decimal(stored_count) * Decimal("100") / Decimal(expected_minutes)
-        ).quantize(Decimal("0.01"))
+        progress = (Decimal(stored_count) * Decimal("100") / Decimal(expected_minutes)).quantize(
+            Decimal("0.01")
+        )
         if latest_start_at is None:
             return CoverageStatus(
                 instrument_id=instrument_id,
@@ -3081,9 +3321,7 @@ class PostgresOperationsRepository:
             ).fetchone()
         return int(_expect_row(row)["count"])
 
-    def _refresh_backfill_job_progress(
-        self, conn: psycopg.Connection[Any], job_id: int
-    ) -> None:
+    def _refresh_backfill_job_progress(self, conn: psycopg.Connection[Any], job_id: int) -> None:
         current = _expect_row(
             conn.execute("SELECT status FROM backfill_jobs WHERE id = %s", (job_id,)).fetchone()
         )["status"]
@@ -3214,16 +3452,47 @@ def _candle_view(item: SourceCandle) -> CandleView:
 def _derive_candles(unit: str, source: list[SourceCandle]) -> list[CandleView]:
     minute_units = {"3m": 3, "5m": 5, "10m": 10, "15m": 15, "30m": 30, "60m": 60, "240m": 240}
     bucket_size = minute_units.get(unit)
+    source_1m = [item for item in source if item.candle_unit == "1m"]
+    if unit == "1d":
+        direct_daily = [item for item in source if item.candle_unit == "1d"]
+        if direct_daily:
+            return [_candle_view(item) for item in direct_daily]
+        grouped_daily: dict[datetime, list[SourceCandle]] = {}
+        for item in source_1m:
+            bucket = item.candle_start_at.replace(hour=0, minute=0, second=0, microsecond=0)
+            grouped_daily.setdefault(bucket, []).append(item)
+        return _aggregate_candle_groups(grouped_daily, 24 * 60)
+    if unit in {"1w", "1M"}:
+        daily_groups: dict[datetime, list[SourceCandle]] = {}
+        for item in [item for item in source if item.candle_unit == "1d"]:
+            if unit == "1w":
+                week_start = item.candle_start_at - timedelta(days=item.candle_start_at.weekday())
+                bucket = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+            else:
+                bucket = item.candle_start_at.replace(
+                    day=1, hour=0, minute=0, second=0, microsecond=0
+                )
+            daily_groups.setdefault(bucket, []).append(item)
+        return _aggregate_candle_groups(daily_groups, 7 if unit == "1w" else 0)
     if bucket_size is None:
         return [_candle_view(item) for item in source]
     grouped: dict[datetime, list[SourceCandle]] = {}
-    for item in [item for item in source if item.candle_unit == "1m"]:
+    for item in source_1m:
         minute = item.candle_start_at.minute - (item.candle_start_at.minute % bucket_size)
         bucket = item.candle_start_at.replace(minute=minute, second=0, microsecond=0)
         grouped.setdefault(bucket, []).append(item)
+    return _aggregate_candle_groups(grouped, bucket_size)
+
+
+def _aggregate_candle_groups(
+    grouped: dict[datetime, list[SourceCandle]], expected_size: int
+) -> list[CandleView]:
     result: list[CandleView] = []
     for bucket, items in sorted(grouped.items()):
         ordered = sorted(items, key=lambda item: item.candle_start_at)
+        required_size = (
+            monthrange(bucket.year, bucket.month)[1] if expected_size == 0 else expected_size
+        )
         result.append(
             CandleView(
                 started_at=bucket,
@@ -3233,10 +3502,33 @@ def _derive_candles(unit: str, source: list[SourceCandle]) -> list[CandleView]:
                 close=ordered[-1].close_price,
                 volume=sum((item.trade_volume for item in ordered), Decimal("0")),
                 trade_amount=sum((item.trade_amount for item in ordered), Decimal("0")),
-                completeness="complete" if len(ordered) == bucket_size else "partial",
+                completeness="complete" if len(ordered) == required_size else "partial",
             )
         )
     return result
+
+
+def _rollup_candle(row: Row) -> CandleView:
+    return CandleView(
+        started_at=cast(datetime, row["candle_start_at"]),
+        open=Decimal(row["open_price"]),
+        high=Decimal(row["high_price"]),
+        low=Decimal(row["low_price"]),
+        close=Decimal(row["close_price"]),
+        volume=Decimal(row["trade_volume"]),
+        trade_amount=Decimal(row["trade_amount"]),
+        completeness=cast(Literal["complete", "partial", "empty"], row["completeness"]),
+    )
+
+
+def _candle_aggregation_target(row: Row) -> CandleAggregationJobTarget:
+    return CandleAggregationJobTarget(
+        job_id=int(row["job_id"]),
+        instrument_id=int(row["instrument_id"]),
+        candle_unit=str(row["candle_unit"]),
+        status=cast(Literal["pending", "running", "succeeded", "failed"], row["status"]),
+        rows_written=int(row["rows_written"]),
+    )
 
 
 def _collection_run(row: dict[str, Any]) -> CollectionRun:
@@ -3287,9 +3579,7 @@ def _backfill_job(
             else None
         ),
         current_target=current_target,
-        current_target_backfill_row_count=int(
-            row.get("current_target_backfill_row_count") or 0
-        ),
+        current_target_backfill_row_count=int(row.get("current_target_backfill_row_count") or 0),
         processed_missing_range_count=int(row.get("processed_missing_range_count") or 0),
         estimated_missing_range_count=int(row.get("estimated_missing_range_count") or 0),
         target_start_at=cast(datetime, row["target_start_at"]),

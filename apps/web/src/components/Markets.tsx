@@ -19,7 +19,6 @@ export function Markets({
   onSelectInstrument: (instrumentId: number) => void;
 }) {
   const queryClient = useQueryClient();
-  const [assetType, setAssetType] = useState<"coin" | "stock">("coin");
   const [searchText, setSearchText] = useState("");
   const [sortKey, setSortKey] = useState<MarketSortKey>("trade");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
@@ -60,10 +59,9 @@ export function Markets({
     }
   });
   const visibleRows = useMemo(() => {
-    if (assetType !== "coin") return [];
     const filteredRows = coinRows.filter((row) => marketRowMatchesSearch(row, searchText));
     return sortMarketRows(filteredRows, sortKey, sortDirection);
-  }, [assetType, coinRows, searchText, sortDirection, sortKey]);
+  }, [coinRows, searchText, sortDirection, sortKey]);
   const favoriteRows = visibleRows.filter((row) => row.isFavorite);
   const candidateRows = visibleRows.filter((row) => !row.isFavorite);
   const favoriteCount = coinRows.filter((row) => row.isFavorite).length;
@@ -106,22 +104,6 @@ export function Markets({
       <div className="panel-heading">
         <h2>관심종목</h2>
         <span>{favoriteCount}개</span>
-      </div>
-      <div className="segmented-control" aria-label="자산 구분">
-        <button
-          type="button"
-          aria-pressed={assetType === "coin"}
-          onClick={() => setAssetType("coin")}
-        >
-          코인
-        </button>
-        <button
-          type="button"
-          aria-pressed={assetType === "stock"}
-          onClick={() => setAssetType("stock")}
-        >
-          주식
-        </button>
       </div>
       <div className="target-toolbar market-toolbar">
         <label>
@@ -184,10 +166,7 @@ export function Markets({
             onClick={() => setSort("candles")}
           />
         </div>
-        {assetType === "stock" ? (
-          <p className="helper-text">표시할 주식 관심종목이 없습니다.</p>
-        ) : null}
-        {assetType === "coin" && visibleRows.length === 0 ? (
+        {visibleRows.length === 0 ? (
           <p className="helper-text">
             {searchText ? "검색 조건에 맞는 관심종목이 없습니다." : "관심종목을 불러오는 중입니다."}
           </p>

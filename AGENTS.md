@@ -18,6 +18,7 @@
 
 ## 규칙
 
+- Upbit Open API와 관련된 설계, 구현, 테스트, 운영 판단은 반드시 [Upbit 개발자 센터 공식 문서](https://docs.upbit.com/kr/reference/api-overview)의 **최신 버전**을 기준으로 한다. 로컬 코드, 캐시된 사양(specification), 과거 문서, 제3자 라이브러리 문서, 블로그의 내용이 공식 문서와 다르면 공식 문서를 우선하며, 작업 시점에 엔드포인트(endpoint), 인증(authentication), 요청 수 제한(Rate Limit), 응답 스키마(schema), 지원 여부를 다시 확인한다.
 - 개념 영역마다 권위 있는 문서는 하나만 둔다. 이 파일을 먼저 갱신하지 않고 병렬 PRD(Product Requirements Document), 로드맵(roadmap), 아키텍처 문서를 만들지 않는다.
 - `docs/contracts/`를 DB/API/message 정의의 단일 기준(source of truth)으로 둔다. 아키텍처 문서는 스키마(schema) 상세를 복제하지 않고 계약 문서로 연결한다.
 - 새 실행 단위는 GitHub Issue로 관리한다. `docs/Task/`에는 Milestone별 요약 문서만 둔다.

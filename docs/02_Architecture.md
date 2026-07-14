@@ -1,105 +1,177 @@
-# 아키텍처 기준
+# 아키텍처 개발 사양
 
 Status: Accepted
-Last Updated: 2026-07-11
+Last Updated: 2026-07-14
 
-## 목적
+## 문서 역할과 읽는 순서
 
-이 문서는 goodmoneying 프로젝트의 현재 시스템 구조와 설계 기준 source of truth다.
+이 문서는 goodmoneying의 **현재 시스템 경계, 런타임 구성, 모듈 책임, 데이터 흐름**의 단일 기준(source of truth)이다. 제품의 이유와 우선순위는 [제품 개발 사양](01_Product.md), 정확한 DB·HTTP·WebSocket 형식은 [계약 기준](contracts/README.md), 개별 수집 동작은 [업비트 수집 파이프라인 설계](02_Architecture/upbit-collection-pipeline.md)에서 확인한다.
 
-## 시스템 개요
+이 문서는 현재 구현을 설명한다. 주식·뉴스·대규모 언어 모델(LLM, Large Language Model)·메시지 큐(Message Queue)·다중 인스턴스는 후보이며 현재 다이어그램의 구성요소가 아니다.
 
-goodmoneying은 개인용 투자 데이터 플랫폼이다. M1~M3에서 업비트(Upbit) KRW 마켓 데이터 수집, 저장, 품질 확인, 운영 화면, 관심종목, 코인 상세 기반을 구현했다. 현재는 완료된 데이터 기반을 사용해 투자 후보 탐색과 분석 경험을 만드는 초기 구현 이후 제품화(Post-MVP Productization) 단계다.
+## 설계 목표와 제약
 
-현재 런타임은 실시간 수집 워커(Realtime Collection Worker), 백필 수집 워커(Backfill Collection Worker), 운영 서버(Operations Server), 운영 화면, PostgreSQL 저장소로 구성한다. 두 수집 워커는 업비트 API에서 데이터를 가져와 PostgreSQL에 원천 사실을 저장하고, 운영 서버는 API와 저장된 화면용 상태를 제공한다. 운영 화면은 React 기반으로 관심종목과 코인 상세를 사용자 가치 화면으로, 운영 상태와 백필(Backfill) 관리를 데이터 신뢰성을 위한 내부 운영 표면으로 제공한다.
+| 목표 | 현재 설계 기준 |
+|---|---|
+| 분석 가능한 신뢰 데이터 | 업비트 KRW 데이터를 원천 사실과 화면용 상태로 분리해 PostgreSQL에 보존한다. |
+| 운영 가능한 단순성 | API와 세 워커는 단일 프로세스·DB 상태 기반 제어를 사용한다. |
+| 화면별 전송 효율 | 기존 운영 화면은 SSE(Server-Sent Events)와 HTTP 폴링(Polling) 보조, 분석·시스템 관리는 WebSocket 증분 메시지를 사용한다. |
+| 재처리 가능성 | 1분·일봉 원천 캔들을 보존하고, 분석용 시간 단위는 멱등 집계 또는 원천 파생으로 제공한다. |
+| 계약 우선 | 외부·브라우저·DB 형식은 코드보다 `docs/contracts/`에서 먼저 정의하고 자동 테스트로 검증한다. |
 
-운영 화면은 프론트엔드(Frontend) 계산을 최소화한다. 코인별 수집 계획(Collection Plan), 구간형 진행 상태(Coverage Segment), 결측 구간, 표시용 24시간 거래대금 같은 화면용 뷰 모델(View Model)은 수집 또는 배치 시점에 계산해 저장하고, 운영 서버가 조회 API로 제공한다. 관심목록 순서는 `collection_targets.target_order`에 저장하며 `/v1/collection-targets`, `/v1/market-list`, `/v1/dashboard/summary`가 같은 순서를 사용한다. 관심종목 API는 저장 캔들이 없는 후보에도 캔들 커버리지 산정 기준 시작일을 수집 계획에서 내려준다. 관심종목 가격 정보는 실시간 수집 워커가 업비트 웹소켓(WebSocket)으로 저장한 현재가 스냅샷(Ticker Snapshot)을 운영 서버가 `/v1/market-list/stream` SSE(Server-Sent Events)로 브라우저에 push한다. 운영 화면 상단은 같은 관심종목 뷰 모델을 사용해 관심 코인 개수와 관심 코인 목록 레이어 팝업(layer popup)을 모든 화면에서 제공한다.
+현재는 개인 단일 사용자와 로컬 신뢰 네트워크를 전제로 한다. 쓰기 API는 운영 토큰(Authentication)을 요구하며, 다중 사용자 권한(Authorization)과 고가용성(High Availability)은 범위 밖이다.
 
-## 런타임 구조
+## 시스템 문맥(System Context)
 
-| 런타임 | 책임 | 현재 구현 | 결정 게이트 |
-|---|---|---|---|
-| 실시간 수집 워커(Realtime Collection Worker) | 수집 후보군(Collection Candidate Pool), 현재가 스냅샷(Ticker Snapshot), 체결 이벤트(Trade Event), 호가 요약(Orderbook Summary), 1분 원천 캔들(Source Candle) 실시간 스트림 수집, 수집 품질과 워커 생존 신호(Worker Heartbeat) 기록 | Python 단일 프로세스, 런타임은 `GOODMONEYING_LIVE_UPBIT=1` live 프로필의 업비트 웹소켓(WebSocket) 스트림만 허용 | 처리량·rate limit·복구 목표를 충족하지 못할 때 다중 워커와 메시지 큐(Message Queue) 검토 |
-| 백필 수집 워커(Backfill Collection Worker) | pending 백필 작업(Backfill Job)을 DB 상태 폴링(Polling)으로 확인하고 원천 캔들 백필 수행, fetch 성공 heartbeat와 DB batch upsert 완료 기준 진행 상태 기록 | Python 단일 프로세스, 기본 10초 폴링, 기본 최대 3000개 저장 배치(batch), 동시성(Concurrency) 1 | 백필 처리량이 목표를 충족하지 못할 때 코인별 병렬 백필과 분산 rate limiter 검토 |
-| 운영 서버(Operations Server) | 화면 단위 API, 원천 리소스 API, 저장된 뷰 모델 조회, 설정 변경, 백필 제어, 감사 로그(Audit Log) 기록 | FastAPI 단일 인스턴스 | 용량 또는 복구 목표를 충족하지 못할 때 무상태(Stateless) 다중 인스턴스와 고가용성 검토 |
-| 운영 화면 | 관심종목, 공통 관심 코인 요약, 코인 상세 레이어, 데이터 수집관리 내비게이션, 운영 상태 대시보드, Backfill 관리 | React, 운영 상태와 관심종목 가격은 SSE 기반 갱신 + React Query HTTP 폴링(Polling) 보조 | 승인된 사용자 시나리오에 패널별 증분 이벤트나 누락 이벤트 복구가 필요할 때 확장 |
-| PostgreSQL | 원천 사실, 설정, 품질, 백필, 감사, 알림 이벤트(Notification Event) 저장 | 단일 인스턴스 | 저장량·조회·백업·복구 임계값을 넘을 때 파티셔닝(Partitioning), 복제(Replication), 장애 조치(Failover) 검토 |
+```mermaid
+flowchart LR
+    operator["개인 사용자·운영자"]
+    upbitRest["업비트 공개 REST API"]
+    upbitWs["업비트 시장 WebSocket"]
 
-## 목표 모듈 지도
+    subgraph gm["goodmoneying 단일 개발·운영 환경"]
+        web["운영 화면<br/>React + Vite"]
+        api["운영 서버<br/>FastAPI"]
+        realtime["실시간 수집 워커<br/>Python"]
+        backfill["백필 수집 워커<br/>Python"]
+        aggregation["캔들 집계 워커<br/>Python"]
+        db[("PostgreSQL")]
+    end
 
-현재 상세 구현 모듈은 업비트 수집 파이프라인(Upbit Collection Pipeline)이다. 후속 모듈은 확정된 일정이 아니라 제품 결정 게이트를 통과해야 하는 후보이며, 승인된 시점에 모듈 경계와 계약을 정의한다.
+    operator -->|"브라우저"| web
+    web -->|"HTTP REST · SSE · WebSocket"| api
+    web -.->|"공개 조회 전용<br/>업비트 API 테스트"| upbitRest
+    api <--> db
+    realtime -->|"ticker · trade · orderbook · candle.1m"| upbitWs
+    realtime <--> db
+    backfill -->|"캔들 REST 조회"| upbitRest
+    backfill <--> db
+    aggregation <--> db
+```
 
-## 모듈 색인
+브라우저의 업비트 API 테스트 페이지는 공개 조회 기능을 검증하는 예외 경로다. 수집·저장·분석의 제품 데이터 경로는 반드시 서버 측 워커와 PostgreSQL을 통과한다.
 
-| 모듈 | 설계 문서 | 책임 | 주요 의존성 |
-|---|---|---|---|
-| 업비트 수집 파이프라인(Upbit Collection Pipeline) | `docs/02_Architecture/upbit-collection-pipeline.md` | 업비트 KRW 마켓 수집, 저장, 품질 확인, 운영 API/화면 제공 | PostgreSQL, 업비트 API, `docs/contracts/db/schema.sql`, `docs/contracts/api/openapi.yaml` |
-| 국내 주식 수집 | 후속 작성 | 국내 주식 가격/거래량, 시가총액, 수급, 공매도(Short Selling), 재무지표 수집 | 업비트 수집 파이프라인의 수집 진행률(Collection Coverage), 품질 모델 재사용 |
-| 미국 주식 수집 | 후속 작성 | 미국 주식 가격/거래량, 시가총액, 재무지표 수집 | 시장별 거래 시간 정책, 공통 거래 상품(Instrument) 모델 |
-| 문서/이벤트 수집 | 후속 작성 | 뉴스, 공시, 증권사 리포트 원천 수집 | 거래 상품, 외부 문서 공급원, 저장소 |
-| LLM 신호 | 후속 작성 | 뉴스/공시/리포트 요약과 구조화 신호(Signal) 생성 | 문서/이벤트 수집, 시계열(Time Series) 정렬 |
-| 전략과 백테스트(Backtest) | 후속 작성 | 데이터와 신호를 조합한 전략 설계와 과거 검증 | 시장 데이터, LLM 신호, 파생 캔들(Derived Candle) |
-| 봇과 시뮬레이션 | 후속 작성 | 전략 파이프라인(Pipeline), 봇 설정, 실제 주문 없는 판단/손익 시뮬레이션 | 전략, 백테스트, 시장 데이터 |
+## 소프트웨어 아키텍처(Software Architecture)
 
-## 계약 위치
+```mermaid
+flowchart TB
+    subgraph frontend["apps/web — 프론트엔드(Frontend)"]
+        console["OperationsConsole<br/>화면·메뉴"]
+        client["api.ts · 스트림 훅(Hook)<br/>HTTP / SSE / WebSocket 클라이언트"]
+        analysisUi["CoinAnalysis · SystemManagement<br/>UpbitApiTest"]
+        console --> analysisUi
+        analysisUi --> client
+    end
 
-| 계약 | 위치 | 기준 |
+    subgraph apiApp["apps/api — 운영 서버(Operations Server)"]
+        routes["main.py<br/>REST · SSE · WebSocket 경로"]
+        service["service.py · analysis.py<br/>화면용 조회와 분석 조합"]
+        schemas["schemas.py<br/>경계 DTO"]
+        routes --> schemas
+        routes --> service
+    end
+
+    subgraph workers["apps/worker — 수집·집계 워커(Worker)"]
+        rt["realtime_collection_worker"]
+        bf["backfill_collection_worker"]
+        ag["aggregation_collection_worker"]
+    end
+
+    subgraph shared["packages/shared — 도메인·저장소"]
+        model["models.py · aggregation.py"]
+        repo["Repository Port"]
+        sqlite["SQLite 구현"]
+        postgres["PostgreSQL 구현"]
+        model --> repo
+        repo --> sqlite
+        repo --> postgres
+    end
+
+    client --> routes
+    service --> repo
+    rt --> repo
+    bf --> repo
+    ag --> repo
+```
+
+`packages/shared`의 저장소 포트(Repository Port)는 API와 세 워커의 공통 경계다. SQLite는 격리 테스트용이며, 실제 개발·운영은 PostgreSQL 구현을 사용한다.
+
+## 런타임 구성요소
+
+| 런타임 | 책임 | 상태·복구 기준 |
 |---|---|---|
-| DB schema | `docs/contracts/db/schema.sql` | PostgreSQL 기준 schema |
-| HTTP API | `docs/contracts/api/openapi.yaml` | FastAPI 운영 서버가 제공해야 하는 OpenAPI 계약 |
-| 내부 메시지(Internal Message) | `docs/contracts/protobuf/` | 현재 메시지 계약 없음. 확장성 결정 게이트에서 메시지 큐를 승인하면 코드보다 먼저 스키마(schema)를 기록 |
+| 실시간 수집 워커(Realtime Collection Worker) | 후보군, 현재가, 체결, 호가 요약, 1분 원천봉을 업비트 WebSocket에서 수집한다. | `GOODMONEYING_LIVE_UPBIT=1` live 프로필에서만 실제 수집하며 heartbeat와 수집 결과를 기록한다. |
+| 백필 수집 워커(Backfill Collection Worker) | DB의 `pending` 백필 작업을 읽어 결측 원천 캔들을 REST로 보충한다. | 기본 10초 폴링, 동시성 1, DB batch upsert 성공 뒤 진행 상태를 기록한다. |
+| 캔들 집계 워커(Candle Aggregation Worker) | 원천 워터마크와 집계 워터마크를 비교해 `5m/10m/30m/60m/1d/1w/1M` OHLCV를 생성한다. | 기본 5초 폴링, 대상별 멱등 upsert와 heartbeat를 기록한다. |
+| 운영 서버(Operations Server) | REST, SSE, WebSocket, 설정 변경, 백필 제어, 분석 조회를 제공한다. | 조회 중 무거운 수집·집계를 수행하지 않고 저장된 뷰 모델을 우선 읽는다. |
+| 운영 화면 | 관심종목, 코인 분석, 시스템 관리, 수집·Backfill 운영 기능을 렌더링한다. | 스트림 단절 시 각 화면 계약에 정의된 재연결 또는 HTTP 보조 경로를 사용한다. |
+| PostgreSQL | 원천 사실, 수집 설정·계획, 화면용 상태, 작업, 감사 기록을 보존한다. | `schema.sql`은 반복 적용 가능한 DDL(Data Definition Language)이다. |
 
-## 데이터 흐름
+## 핵심 데이터 흐름
 
-### 현재 실시간 수집 흐름
+### 수집·집계·분석 흐름
 
-1. 실시간 수집 워커가 DB 설정 테이블에서 수집 후보군(Collection Candidate Pool), 현재 구현에서 관심목록(Watchlist)과 같은 저장값을 공유하는 활성 수집 대상(Active Collection Target), 수집 범위 설정을 읽는다.
-2. 실시간 수집 워커는 `GOODMONEYING_LIVE_UPBIT=1` live 프로필에서 업비트 웹소켓(WebSocket)으로 현재가 스냅샷(Ticker Snapshot), 체결 이벤트(Trade Event), 원천 캔들(Source Candle), 호가 요약(Orderbook Summary)을 구독한다. 시험용 고정 데이터(fixture)는 테스트에서 클라이언트를 직접 주입할 때만 사용하며 런타임 수집 후보군에 저장하지 않는다.
-3. 실시간 수집 워커는 수집 실행(Collection Run)과 대상별 수집 결과(Target Collection Result)를 기록한다.
-4. 원천 캔들은 `(instrument_id, source, candle_unit, candle_start_at)` 유니크 키로 upsert한다.
-5. 현재가 스냅샷과 호가 요약은 `(instrument_id, source, bucket_at)` 유니크 키로 upsert한다. 같은 버킷은 더 늦은 `collected_at`을 가진 성공 수집 결과가 대표 행을 갱신한다.
-6. 체결 이벤트는 `(instrument_id, source, sequential_id)` 유니크 키로 중복 저장을 막고, 최근 24시간 시간 버킷별 분당 평균 체결 빈도, 체결강도, 체결량, 체결금액을 운영 대시보드 히트맵으로 노출한다.
-7. 데이터 완전성 검사 작업은 목표 범위와 저장 데이터를 비교해 결측 구간(Missing Range)을 생성하거나 해결한다.
-8. 실시간 수집 워커 또는 배치 작업은 코인별 수집 계획, 데이터별 최신성, 결측 구간, 구간형 진행 상태를 계산해 저장된 View Model을 갱신한다.
-9. 운영 서버는 저장된 View Model을 읽어 운영 대시보드의 정상/주의/장애 상태, 수집 진행률, 화면용 응답을 제공한다. 운영 서버는 조회 요청 중 장시간 계산을 수행하지 않는다.
+```mermaid
+flowchart LR
+    settings["활성 수집 대상·수집 계획"] --> rt["실시간 수집"]
+    settings --> bf["백필 수집"]
+    rt --> source["원천 데이터<br/>1분·일봉 캔들<br/>시세·호가·체결"]
+    bf --> source
+    source --> quality["커버리지·결측·최신성<br/>화면용 뷰 모델"]
+    source --> ag["집계 워커"]
+    ag --> rollup["집계 캔들<br/>5m·10m·30m·60m·1d·1w·1M"]
+    quality --> api["운영 서버"]
+    rollup --> api
+    source -.->|"집계 지연·누락 시<br/>정확성 보조 경로"| api
+    api --> ui["관심종목·코인 분석·시스템 관리"]
+```
 
-### 현재 백필 흐름
+- 원천 캔들은 `(instrument_id, source, candle_unit, candle_start_at)` 자연키로 upsert한다.
+- 분석 조회는 최신 집계 캔들을 우선 사용하고, 집계가 뒤처졌을 때만 원천봉을 즉시 파생한다. 이는 정확성 보조 경로이지 장기 성능 경로가 아니다.
+- 수집 품질의 정의와 임계값은 [제품 개발 사양의 수집 품질 정의](01_Product.md#수집-품질-정의)를 따른다.
 
-1. 사용자는 Backfill 관리 화면에서 백필 후보 코인을 체크한다.
-2. 운영 화면은 선택된 코인 세트로 백필 계획 생성 레이어 팝업(layer popup)을 열고, 수집 범위와 안전 재시작(Safe Restart) 옵션을 입력받는다.
-3. 사용자가 백필 시작 버튼을 누르면 운영 서버는 선택 코인, 데이터 유형, 목표 기간을 기준으로 백필 작업(Backfill Job)을 `pending` 상태로 저장한다.
-4. 운영 화면은 저장된 백필 작업을 백필 작업 패널에 목록으로 표시하고 진행 상태, 대상 코인, 기간, 제어 버튼을 제공한다.
-5. 백필 수집 워커는 DB 상태 폴링(Polling)으로 `pending` 백필 작업 상태를 10초 주기로 읽고 저장 순서대로 실행한다.
-6. 백필 수집 워커는 작업을 실행할 때 상태를 `running`으로 전환하고, 일시정지(Pause) 또는 중지(Stop)된 작업은 점유하지 않는다.
-7. 백필 수집 워커는 목표 범위와 저장된 캔들 시작 시각을 비교해 이미 저장된 분(minute)을 업비트에 다시 요청하지 않고 없는 결측 구간만 요청한다.
-8. 업비트 fetch page는 200개 단위를 유지하고, DB 저장은 기본 최대 3000개 batch 단위로 upsert한다. batch 크기는 `GOODMONEYING_BACKFILL_BATCH_SIZE` 외부 설정으로 바꿀 수 있다.
-9. fetch가 성공하면 `backfill_collection` heartbeat를 갱신한다. `rows_written`과 `last_completed_at`은 DB batch upsert가 성공한 뒤에만 갱신한다.
-10. 사용자는 실행 중인 백필 작업을 일시정지(Pause), 중지(Stop), 이어서하기(Resume), 안전 재시작할 수 있다. 실패(failed)한 백필 작업도 재개할 수 있으며, 재개 시 저장 상태를 다시 계산해 없는 결측 구간만 요청한다.
-11. 안전 재시작은 기존 데이터를 삭제하지 않고 목표 범위 전체를 재검사한다.
-12. 삭제 후 재수집(Destructive Rebuild)은 현재 제품화 범위 밖이며 감사·복구 필요성이 승인될 때 별도 결정한다.
+### 브라우저 실시간 전송 흐름
 
-## 아키텍처 결정 게이트
+```mermaid
+sequenceDiagram
+    participant B as 브라우저
+    participant A as 운영 서버
+    participant D as PostgreSQL
+    participant W as 수집·집계 워커
 
-| 제품 단계 또는 조건 | 현재 기준 | 반드시 다시 물어볼 질문 |
+    B->>A: 분석 구독 또는 시스템 관리 연결
+    A->>D: 관심목록·차트·지표·워커 상태 조회
+    A-->>B: 초기 메시지 묶음
+    W->>D: 원천 데이터·집계·heartbeat 반영
+    A->>D: 변경 가능한 화면 상태 재조회
+    A-->>B: 증분 차트·지표·시장·상태 메시지
+    Note over B,A: 기존 대시보드·관심종목은 SSE와 HTTP 폴링 보조를 유지
+```
+
+분석 WebSocket은 `/v1/realtime/analysis`, 시스템 관리 WebSocket은 `/v1/realtime/system-management`를 사용한다. 메시지 종류·필드·오류 처리는 [실시간 API 계약](contracts/api/README.md#실시간-계약)에서만 정의한다.
+
+## 모듈과 계약 지도
+
+| 모듈 | 코드 위치 | 책임 | 기준 문서 |
+|---|---|---|---|
+| 운영 화면 | `apps/web/` | 화면 상태, HTTP·SSE·WebSocket 소비 | [사용 안내](사용설명서-M1-업비트-수집-운영-mvp.md) |
+| 운영 서버 | `apps/api/goodmoneying_api/` | API 경계, 화면용 조회, 분석 조합 | [HTTP·실시간 계약](contracts/api/README.md) |
+| 수집·집계 워커 | `apps/worker/goodmoneying_worker/` | 실시간 수집, Backfill, 집계 작업 | [업비트 수집 파이프라인](02_Architecture/upbit-collection-pipeline.md) |
+| 공유 도메인·저장소 | `packages/shared/goodmoneying_shared/` | 모델, 집계 계산, 저장소 포트와 구현 | [DB 계약](contracts/db/README.md) |
+| 데이터 계약 | `docs/contracts/` | DB·HTTP·WebSocket의 기계 검증 기준 | [계약 기준](contracts/README.md) |
+
+## 아키텍처 결정과 변경 규칙
+
+- 되돌리기 어렵거나 여러 모듈의 책임을 바꾸는 선택은 [ADR](ADR/)로 기록한다. 분석 전송은 [ADR-0008](ADR/ADR-0008-분석-화면-WebSocket-증분-메시지.md), 집계 워커는 [ADR-0009](ADR/ADR-0009-캔들-집계-테이블과-자동-워커.md)를 따른다.
+- DB·HTTP·WebSocket 형식을 바꾸면 계약 파일을 먼저 수정하고, 이 문서에는 경계와 영향만 갱신한다.
+- 모듈 책임, 워커 수, 데이터 흐름, 배포 경계가 바뀌면 이 문서와 관련 모듈 설계를 함께 갱신한다.
+- 검증 명령과 결과는 `docs/Test/`, 인계 맥락·리스크·후속 작업은 `docs/History/`, 실행 단위는 GitHub Issue에 기록한다.
+
+## 확장 결정 게이트
+
+| 조건 | 현재 유지 | 재검토할 선택 |
 |---|---|---|
-| 완료 기준선 | PostgreSQL 단일 저장소, 실시간·Backfill 워커 역할 분리, 서버 수집 WebSocket, 브라우저 갱신 SSE + HTTP 폴링 보조 | 현재 계약과 운영 지표에 드리프트가 있는가 |
-| P1·P2 제품화 | 관심종목과 코인 상세의 데이터 신뢰·비교 흐름을 우선 | 사용자가 데이터 범위와 최신성을 이해하고 후보를 좁히는 데 부족한 뷰 모델이 무엇인가 |
-| P3 전략 실험 준비 | 호가 원천 저장과 기술적 분석 지표는 보류 | 호가 요약만으로 답할 수 없는 전략 시나리오가 있는가, 필요한 지표 계산·캐싱·재현 계약은 무엇인가 |
-| 시장 확장 승인 | 국내·미국 주식과 문서·LLM 모듈은 후보 | 새 시장의 거래 시간, 데이터 공급원, 공통 거래 상품 모델, 비용을 어떻게 분리할 것인가 |
-| 확장성 임계값 초과 | 현재 단일 인스턴스와 DB 상태 기반 작업 제어를 유지 | 어떤 처리량·복구·저장 임계값을 넘었는가, 메시지 큐·분산 제어·복제 중 무엇이 실제 원인을 해결하는가 |
-| 사용자 시나리오 승인 | 외부 알림과 실시간 전송 확장은 후보 | 채널·등급·빈도 제한·재연결·누락 이벤트 복구가 실제 사용자 흐름에 필요한가 |
-
-## 운영과 검증 기준
-
-- 검증 증적은 `docs/Test/`에 실제 명령과 결과로 남긴다.
-- 인계가 필요한 변경은 `docs/History/`에 변경 요약, 리스크, 후속 작업을 남긴다.
-- 완료된 M1~M3 기준선은 제품 세로 절편과 DB 계약 테스트, 수집 통합 테스트, API 테스트, 브라우저 종단 간 테스트(E2E Test) 증적을 유지한다.
-- 기본 자동화 테스트는 모의 객체(mock) 또는 명시적으로 주입한 시험용 고정 데이터(fixture) 기반으로 실행한다. 운영 런타임은 시험용 고정 데이터를 수집 후보군에 저장하지 않는다. 로컬 격리 종단 간 테스트(E2E Test)는 테스트 전용 SQLite 저장소에 시험용 고정 데이터를 명시적으로 주입하고, 배포 환경 종단 간 테스트는 `E2E_SKIP_WEBSERVER=1`로 실제 배포 서버와 운영 데이터 경로를 검증한다. 실제 업비트 API 부분 호출 검증은 별도 `live` 테스트 프로필(profile)로 분리한다.
-
-현재 미래 결정 게이트는 `docs/ADR/ADR-0007-Post-MVP-아키텍처-결정-게이트.md`를 따른다.
-
-## 변경 규칙
-
-- 모듈 경계, 데이터 흐름, 인프라 구조가 바뀌면 이 문서를 갱신한다.
-- DB/API/message의 정확한 schema는 이 문서에 복사하지 않고 `docs/contracts/`에 둔다.
-- 되돌리기 어렵거나 여러 영역에 영향이 있는 선택은 `docs/ADR/`에 별도 기록한다.
+| 처리량·복구 목표 충족 | 단일 API, 세 단일 워커, DB 폴링 | 코인 단위 작업 분할, 메시지 큐, 분산 rate limiter |
+| 저장·조회·백업 임계값 초과 | 단일 PostgreSQL, 원천 데이터 보존 | 파티셔닝(Partitioning), 압축, 보존 정책, 복제(Replication) |
+| P3 전략 실험 승인 | 고정 기술 지표와 호가 요약 | 지표 계산·캐시·재현 계약, 호가 원천 저장 |
+| 시장 확장 승인 | 업비트 KRW 전용 | 시장 시간 정책, 공급원, 공통 거래 상품(Instrument) 모델 |

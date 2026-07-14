@@ -6,6 +6,7 @@ from collections.abc import Callable
 import pytest
 
 from goodmoneying_worker import (
+    aggregation_collection_worker,
     backfill_collection_worker,
     realtime_collection_worker,
     runtime,
@@ -224,6 +225,37 @@ def test_backfill_collection_worker_rejects_negative_poll_interval(
 
     with pytest.raises(ValueError, match="0 이상의 값"):
         backfill_collection_worker.poll_seconds_from_environment()
+
+
+def test_집계_워커는_하트비트를_기록하고_기본_5초_주기로_실행한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class FakeAggregationWorker:
+        def __init__(self, repository: object) -> None:
+            self._repository = repository
+
+        def run_once(self) -> int:
+            calls.append("aggregate")
+            raise KeyboardInterrupt
+
+    monkeypatch.delenv("GOODMONEYING_AGGREGATION_POLL_SECONDS", raising=False)
+    monkeypatch.setattr(
+        aggregation_collection_worker,
+        "CandleAggregationWorker",
+        FakeAggregationWorker,
+    )
+    monkeypatch.setattr(
+        aggregation_collection_worker,
+        "create_repository_from_environment",
+        lambda: FakeRepository(calls),
+    )
+
+    aggregation_collection_worker.main()
+
+    assert calls == ["heartbeat:candle_aggregation:running", "aggregate"]
+    assert aggregation_collection_worker.poll_seconds_from_environment() == 5.0
 
 
 def test_worker_logging_uses_info_level_by_default(monkeypatch: pytest.MonkeyPatch) -> None:

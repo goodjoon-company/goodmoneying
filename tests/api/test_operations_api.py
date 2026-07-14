@@ -8,6 +8,7 @@ from time import perf_counter
 
 import pytest
 from fastapi.testclient import TestClient
+from jsonschema import Draft202012Validator, FormatChecker  # type: ignore[import-untyped]
 
 from goodmoneying_api.main import create_app, create_repository_from_environment
 from goodmoneying_shared.models import SourceCandle
@@ -15,6 +16,8 @@ from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_shared.time import now_kst
 from goodmoneying_worker.collector import seed_repository
 from goodmoneying_worker.upbit_client import FixtureUpbitClient
+
+REALTIME_ANALYSIS_CONTRACT = Path("docs/contracts/api/realtime-analysis-websocket.schema.json")
 
 
 def seeded_repository_and_client() -> tuple[SQLiteOperationsRepository, TestClient]:
@@ -95,6 +98,8 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
     assert totals["activeTargetLimit"] == 50
     assert totals["normalTargets"] + totals["warningTargets"] + totals["incidentTargets"] == 50
     assert totals["storageBytesToday"] > 0
+
+
     assert totals["storageBytesTodayDisplay"].endswith(("MB", "GB"))
     assert totals["storageRowsToday"] > 0
     assert totals["realtimeRowsLastMinute"] >= 0
@@ -103,24 +108,22 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
     assert "rateLimitRemainingPercent" not in totals
     assert "duplicateRows24h" not in totals
     assert {
-        (principle["metricKey"], principle["displayStatus"])
-        for principle in metric_principles
+        (principle["metricKey"], principle["displayStatus"]) for principle in metric_principles
     } >= {
         ("rateLimitRemainingPercent", "excluded"),
         ("duplicateRows24h", "excluded"),
     }
     assert all(principle["reason"] for principle in metric_principles)
     assert len(dashboard.json()["collectionActivity"]) == 168
-    assert {
-        item["dataType"] for item in dashboard.json()["storageBreakdown"]
-    } == {
+    assert {item["dataType"] for item in dashboard.json()["storageBreakdown"]} == {
         "source_candle",
         "ticker_snapshot",
         "orderbook_summary",
     }
-    assert sum(item["rowCount"] for item in dashboard.json()["storageBreakdown"]) == totals[
-        "storageRowsToday"
-    ]
+    assert (
+        sum(item["rowCount"] for item in dashboard.json()["storageBreakdown"])
+        == totals["storageRowsToday"]
+    )
     assert len(dashboard.json()["realtimeCollectionHeatmap"]) == 50
     assert dashboard.json()["workerStatus"]["realtime"]["status"] in {
         "running",
@@ -131,9 +134,9 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
     first_realtime_row = dashboard.json()["realtimeCollectionHeatmap"][0]
     assert first_realtime_row["instrument"]["id"] > 0
     assert len(first_realtime_row["hourlyBuckets"]) == 24
-    assert {
-        bucket["status"] for bucket in first_realtime_row["hourlyBuckets"]
-    }.issubset({"red", "orange", "yellow", "blue", "green"})
+    assert {bucket["status"] for bucket in first_realtime_row["hourlyBuckets"]}.issubset(
+        {"red", "orange", "yellow", "blue", "green"}
+    )
     assert {
         "tradeCount",
         "averageTradesPerMinute",
@@ -194,6 +197,32 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
     assert detail.json()["orderbookFreshnessLabel"].endswith("전")
     assert detail.json()["qualityHistory"][0]["status"] in {"normal", "warning", "incident"}
     assert detail.json()["qualityHistory"][0]["title"]
+
+
+def test_시스템_관리_웹소켓은_수집대상과_집계_진행률_상태를_작은_메시지로_전송한다() -> None:
+    repository, client = seeded_repository_and_client()
+    target = repository.list_active_targets()[0]
+    repository.record_collection_worker_heartbeat("realtime_collection", "running")
+    repository.record_collection_worker_heartbeat("backfill_collection", "running")
+    repository.record_incremental_collection(
+        [], [],
+        [SourceCandle(
+            instrument_id=target.id, candle_unit="1m", candle_start_at=now_kst(),
+            open_price=Decimal("1"), high_price=Decimal("1"), low_price=Decimal("1"),
+            close_price=Decimal("1"), trade_volume=Decimal("1"), trade_amount=Decimal("1"),
+            collected_at=now_kst(),
+        )],
+    )
+    repository.schedule_candle_aggregation()
+
+    with client.websocket_connect("/v1/realtime/system-management") as websocket:
+        message = websocket.receive_json()
+
+    assert message["type"] == "system.snapshot"
+    assert message["payload"]["realtime"]["items"][0]["dataTypes"] == [
+        "source_candle", "ticker_snapshot", "orderbook_summary"
+    ]
+    assert message["payload"]["aggregation"]["totalTargetCount"] >= 7
 
 
 def test_collection_target_order_is_reflected_in_market_list_and_dashboard() -> None:
@@ -266,6 +295,200 @@ def test_market_list_stream_emits_market_list_sse_event() -> None:
     assert len(payload["rows"]) == 100
     assert payload["rows"][0]["tradePrice"]
     assert payload["rows"][0]["tickerCollectedAt"]
+
+
+def test_coin_analysis_websocket_sends_small_messages_for_a_watchlist_coin() -> None:
+    repository, client = seeded_repository_and_client()
+    instrument_id = repository.list_active_targets()[0].id
+
+    with client.websocket_connect("/v1/realtime/analysis") as websocket:
+        websocket.send_json(
+            {
+                "version": "1",
+                "type": "analysis.subscribe",
+                "sentAt": now_kst().isoformat(),
+                "instrumentId": instrument_id,
+                "unit": "1d",
+                "rangeDays": 365,
+            }
+        )
+        messages = [websocket.receive_json() for _ in range(5)]
+
+    messages_by_type = {message["type"]: message for message in messages}
+    validator = Draft202012Validator(
+        json.loads(REALTIME_ANALYSIS_CONTRACT.read_text()),
+        format_checker=FormatChecker(),
+    )
+    assert set(messages_by_type) == {
+        "analysis.session",
+        "analysis.instrument",
+        "analysis.chart",
+        "analysis.indicators",
+        "analysis.market",
+    }
+    assert len(messages_by_type["analysis.chart"]["candles"]) <= 500
+    assert "candles" not in messages_by_type["analysis.market"]
+    assert set(messages_by_type["analysis.market"]["tradeSummary"]) == {
+        "tradeCount",
+        "buyVolume",
+        "sellVolume",
+        "lastTradeAt",
+    }
+    for message in messages:
+        assert list(validator.iter_errors(message)) == []
+
+
+def test_coin_analysis_websocket_rejects_a_coin_outside_the_watchlist() -> None:
+    repository, client = seeded_repository_and_client()
+    outside_watchlist_id = repository.list_candidate_universe()[1][75].instrument.id
+
+    with client.websocket_connect("/v1/realtime/analysis") as websocket:
+        websocket.send_json(
+            {
+                "version": "1",
+                "type": "analysis.subscribe",
+                "sentAt": now_kst().isoformat(),
+                "instrumentId": outside_watchlist_id,
+                "unit": "1d",
+                "rangeDays": 365,
+            }
+        )
+        message = websocket.receive_json()
+
+    assert message["type"] == "analysis.error"
+    assert message["code"] == "NOT_WATCHLISTED"
+
+
+def test_coin_analysis_websocket_rejects_an_incomplete_subscription_without_disconnect() -> None:
+    client = seeded_client()
+
+    with client.websocket_connect("/v1/realtime/analysis") as websocket:
+        websocket.send_json(
+            {
+                "version": "1",
+                "type": "analysis.subscribe",
+                "sentAt": now_kst().isoformat(),
+                "instrumentId": "not-an-integer",
+            }
+        )
+        message = websocket.receive_json()
+
+    assert message["type"] == "analysis.error"
+    assert message["code"] == "INVALID_MESSAGE"
+
+
+def test_candle_api_derives_daily_candle_from_collected_one_minute_candles() -> None:
+    repository, client = seeded_repository_and_client()
+    instrument_id = repository.list_active_targets()[0].id
+    day_start = now_kst().replace(hour=0, minute=0, second=0, microsecond=0)
+    minute_candles = [
+        SourceCandle(
+            instrument_id=instrument_id,
+            candle_unit="1m",
+            candle_start_at=day_start + timedelta(minutes=index),
+            open_price=Decimal("100") + index,
+            high_price=Decimal("102") + index,
+            low_price=Decimal("99") + index,
+            close_price=Decimal("101") + index,
+            trade_volume=Decimal("10"),
+            trade_amount=Decimal("1000"),
+            collected_at=now_kst(),
+        )
+        for index in range(3)
+    ]
+    repository.record_incremental_collection([], [], minute_candles)
+
+    response = client.get(
+        f"/v1/instruments/{instrument_id}/candles",
+        params={"unit": "1d", "from": day_start.isoformat(), "to": now_kst().isoformat()},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["candles"][-1]["open"] == "100"
+    assert response.json()["candles"][-1]["completeness"] == "partial"
+
+
+def test_candle_api_derives_week_and_month_candles_from_daily_source() -> None:
+    repository, client = seeded_repository_and_client()
+    instrument_id = repository.list_active_targets()[0].id
+    start_at = now_kst().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=40)
+    daily_candles = [
+        SourceCandle(
+            instrument_id=instrument_id,
+            candle_unit="1d",
+            candle_start_at=start_at + timedelta(days=index),
+            open_price=Decimal("100") + index,
+            high_price=Decimal("101") + index,
+            low_price=Decimal("99") + index,
+            close_price=Decimal("100") + index,
+            trade_volume=Decimal("10"),
+            trade_amount=Decimal("1000"),
+            collected_at=now_kst(),
+        )
+        for index in range(40)
+    ]
+    repository.record_incremental_collection([], [], daily_candles)
+
+    week = client.get(
+        f"/v1/instruments/{instrument_id}/candles",
+        params={"unit": "1w", "from": start_at.isoformat(), "to": now_kst().isoformat()},
+    )
+    month = client.get(
+        f"/v1/instruments/{instrument_id}/candles",
+        params={"unit": "1M", "from": start_at.isoformat(), "to": now_kst().isoformat()},
+    )
+
+    assert week.status_code == 200
+    assert month.status_code == 200
+    assert week.json()["unit"] == "1w"
+    assert month.json()["unit"] == "1M"
+    assert len(week.json()["candles"]) >= 5
+    assert len(month.json()["candles"]) >= 2
+
+
+def test_coin_analysis_websocket_splits_three_year_indicators_into_small_chunks() -> None:
+    repository, client = seeded_repository_and_client()
+    instrument_id = repository.list_active_targets()[0].id
+    start_at = now_kst().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1094)
+    repository.record_incremental_collection(
+        [],
+        [],
+        [
+            SourceCandle(
+                instrument_id=instrument_id,
+                candle_unit="1d",
+                candle_start_at=start_at + timedelta(days=index),
+                open_price=Decimal("100") + index,
+                high_price=Decimal("102") + index,
+                low_price=Decimal("99") + index,
+                close_price=Decimal("101") + index,
+                trade_volume=Decimal("10"),
+                trade_amount=Decimal("1000"),
+                collected_at=now_kst(),
+            )
+            for index in range(1095)
+        ],
+    )
+
+    with client.websocket_connect("/v1/realtime/analysis") as websocket:
+        websocket.send_json(
+            {
+                "version": "1",
+                "type": "analysis.subscribe",
+                "sentAt": now_kst().isoformat(),
+                "instrumentId": instrument_id,
+                "unit": "1d",
+                "rangeDays": 1095,
+            }
+        )
+        messages = [websocket.receive_json() for _ in range(9)]
+
+    indicator_messages = [
+        message for message in messages if message["type"] == "analysis.indicators"
+    ]
+    assert len(indicator_messages) == 3
+    assert all(len(message["points"]) <= 500 for message in indicator_messages)
+    assert [message["chunkIndex"] for message in indicator_messages] == [0, 1, 2]
 
 
 def test_dashboard_summary_exposes_collection_worker_status() -> None:
@@ -516,15 +739,18 @@ def test_dashboard_panel_endpoints_return_summary_slices() -> None:
     assert missing_ranges.json()["recommendedRefreshSeconds"] == 60
 
     assert audit_log_summary.status_code == 200
-    assert audit_log_summary.json()["targetChangeCount24h"] == summary["auditLogSummary"][
-        "targetChangeCount24h"
-    ]
-    assert audit_log_summary.json()["backfillChangeCount24h"] == summary["auditLogSummary"][
-        "backfillChangeCount24h"
-    ]
-    assert audit_log_summary.json()["latestChangeLabel"] == summary["auditLogSummary"][
-        "latestChangeLabel"
-    ]
+    assert (
+        audit_log_summary.json()["targetChangeCount24h"]
+        == summary["auditLogSummary"]["targetChangeCount24h"]
+    )
+    assert (
+        audit_log_summary.json()["backfillChangeCount24h"]
+        == summary["auditLogSummary"]["backfillChangeCount24h"]
+    )
+    assert (
+        audit_log_summary.json()["latestChangeLabel"]
+        == summary["auditLogSummary"]["latestChangeLabel"]
+    )
     assert audit_log_summary.json()["recommendedRefreshSeconds"] == 60
 
 
@@ -583,10 +809,7 @@ def test_dashboard_refresh_config_override_and_fallback(
 
     assert client.get("/v1/dashboard/overview").json()["recommendedRefreshSeconds"] == 3
     assert client.get("/v1/dashboard/coverage").json()["recommendedRefreshSeconds"] == 31
-    assert (
-        client.get("/v1/dashboard/audit-log-summary").json()["recommendedRefreshSeconds"]
-        == 61
-    )
+    assert client.get("/v1/dashboard/audit-log-summary").json()["recommendedRefreshSeconds"] == 61
     assert client.get("/v1/dashboard/targets").json()["recommendedRefreshSeconds"] == 15
 
 
@@ -761,8 +984,7 @@ def test_backfill_job_start_and_control() -> None:
     )
     assert deleted.status_code == 204
     assert all(
-        item["id"] != job.json()["id"]
-        for item in client.get("/v1/backfill/jobs").json()["items"]
+        item["id"] != job.json()["id"] for item in client.get("/v1/backfill/jobs").json()["items"]
     )
 
 

@@ -1599,7 +1599,7 @@ components:
           $ref: "#/components/schemas/Instrument"
         assetType:
           type: string
-          enum: [coin, stock]
+          const: coin
           description: 관심종목 자산 구분.
         isFavorite:
           type: boolean

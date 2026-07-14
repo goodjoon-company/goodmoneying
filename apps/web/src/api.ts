@@ -240,7 +240,7 @@ export type CandidateUniverseEntry = {
 
 export type MarketListRow = {
   instrument: Instrument;
-  assetType: "coin" | "stock";
+  assetType: "coin";
   isFavorite: boolean;
   favoriteOrder: number | null;
   tradePrice: string | null;
@@ -355,6 +355,20 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const OPERATOR_TOKEN = import.meta.env.VITE_OPERATOR_TOKEN ?? "";
 export const JANUARY_2026_BACKFILL_START = "2026-01-01T00:00:00+09:00";
 export const JANUARY_2026_BACKFILL_END = "2026-02-01T00:00:00+09:00";
+
+export function analysisWebSocketUrl(): string {
+  const apiUrl = new URL(API_BASE_URL, window.location.origin);
+  apiUrl.protocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";
+  apiUrl.pathname = `${apiUrl.pathname.replace(/\/$/, "")}/v1/realtime/analysis`;
+  return apiUrl.toString();
+}
+
+export function systemManagementWebSocketUrl(): string {
+  const apiUrl = new URL(API_BASE_URL, window.location.origin);
+  apiUrl.protocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";
+  apiUrl.pathname = `${apiUrl.pathname.replace(/\/$/, "")}/v1/realtime/system-management`;
+  return apiUrl.toString();
+}
 
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`);

@@ -36,3 +36,14 @@ services:
     volumes:
       - ${GOODMONEYING_APP_BACKFILL_COLLECTION_WORKER_DATA_DIR}:/var/lib/goodmoneying/backfill-collection-worker
       - ${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro
+
+  candle-aggregation-worker:
+    image: ghcr.io/goodjoon-company/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}
+    container_name: goodmoneying-candle-aggregation-worker
+    restart: unless-stopped
+    command: ["uv", "run", "--no-sync", "python", "-m", "goodmoneying_worker.aggregation_collection_worker"]
+    env_file:
+      - ${GOODMONEYING_APP_BASE_DIR}/env/app.env
+    volumes:
+      - ${GOODMONEYING_APP_CANDLE_AGGREGATION_WORKER_DATA_DIR}:/var/lib/goodmoneying/candle-aggregation-worker
+      - ${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro

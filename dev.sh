@@ -55,6 +55,7 @@ APP_TIMEZONE="${GOODMONEYING_TIMEZONE:-Asia/Seoul}"
 REALTIME_COLLECTION_INTERVAL_SECONDS="${GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS:-60}"
 BACKFILL_POLL_SECONDS="${GOODMONEYING_BACKFILL_POLL_SECONDS:-10}"
 BACKFILL_BATCH_SIZE="${GOODMONEYING_BACKFILL_BATCH_SIZE:-3000}"
+AGGREGATION_POLL_SECONDS="${GOODMONEYING_AGGREGATION_POLL_SECONDS:-5}"
 LOG_LEVEL="${GOODMONEYING_LOG_LEVEL:-INFO}"
 PYTHON_BIN="${GOODMONEYING_PYTHON_BIN:-"$ROOT_DIR/.venv/bin/python"}"
 export TZ="$APP_TIMEZONE"
@@ -71,12 +72,12 @@ usage() {
   ./dev.sh infra restart [postgres|all]
   ./dev.sh infra status [postgres|all]
 
-  ./dev.sh app start [api|web|realtime-collection-worker|backfill-collection-worker|all]
-  ./dev.sh app stop [api|web|realtime-collection-worker|backfill-collection-worker|all]
-  ./dev.sh app restart [api|web|realtime-collection-worker|backfill-collection-worker|all]
-  ./dev.sh app status [api|web|realtime-collection-worker|backfill-collection-worker|all]
+  ./dev.sh app start [api|web|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
+  ./dev.sh app stop [api|web|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
+  ./dev.sh app restart [api|web|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
+  ./dev.sh app status [api|web|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
 
-  ./dev.sh logs [api|web|realtime-collection-worker|backfill-collection-worker]
+  ./dev.sh logs [api|web|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker]
 
 설명:
   infra 는 Podman Compose 로 PostgreSQL 을 관리한다.
@@ -97,6 +98,7 @@ usage() {
   GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS
   GOODMONEYING_BACKFILL_POLL_SECONDS
   GOODMONEYING_BACKFILL_BATCH_SIZE
+  GOODMONEYING_AGGREGATION_POLL_SECONDS
   GOODMONEYING_LOG_LEVEL
   GOODMONEYING_PYTHON_BIN
 USAGE
@@ -127,9 +129,56 @@ podman_compose() {
   return 1
 }
 
-require_infra_port() {
-  if ! lsof -nP -iTCP:"$POSTGRES_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-    print_error "PostgreSQL 포트 ${POSTGRES_PORT} 이 열려 있지 않습니다. 먼저 './dev.sh infra start' 를 실행하세요."
+database_host_and_port() {
+  local url="${DATABASE_URL%%\?*}"
+  local authority host port
+
+  case "$url" in
+    postgresql://* | postgres://*) ;;
+    *)
+      printf '127.0.0.1\t%s\n' "$POSTGRES_PORT"
+      return 0
+      ;;
+  esac
+
+  authority="${url#*://}"
+  authority="${authority%%/*}"
+  authority="${authority##*@}"
+
+  if [[ "$authority" == \[* ]]; then
+    host="${authority%%]*}"
+    host="${host#\[}"
+    port="${authority#*]}"
+    port="${port#:}"
+  elif [[ "$authority" == *:* ]]; then
+    host="${authority%%:*}"
+    port="${authority##*:}"
+  else
+    host="$authority"
+    port="5432"
+  fi
+
+  if [[ -z "$host" || ! "$port" =~ ^[0-9]+$ ]]; then
+    print_error "GOODMONEYING_DATABASE_URL에서 PostgreSQL 호스트와 포트를 해석할 수 없습니다."
+    return 1
+  fi
+
+  printf '%s\t%s\n' "$host" "$port"
+}
+
+require_local_database_port() {
+  local database_target host port
+  database_target="$(database_host_and_port)" || return 1
+  host="${database_target%%$'\t'*}"
+  port="${database_target#*$'\t'}"
+
+  case "$host" in
+    127.0.0.1 | localhost | ::1) ;;
+    *) return 0 ;;
+  esac
+
+  if ! lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    print_error "로컬 PostgreSQL 포트 ${port} 이 열려 있지 않습니다. .env의 GOODMONEYING_DATABASE_URL을 확인하거나 './dev.sh infra start' 를 실행하세요."
     return 1
   fi
 }
@@ -137,8 +186,8 @@ require_infra_port() {
 service_list() {
   local target="${1:-all}"
   case "$target" in
-    all) printf '%s\n' api web realtime-collection-worker backfill-collection-worker ;;
-    api | web | realtime-collection-worker | backfill-collection-worker) printf '%s\n' "$target" ;;
+    all) printf '%s\n' api web realtime-collection-worker backfill-collection-worker candle-aggregation-worker ;;
+    api | web | realtime-collection-worker | backfill-collection-worker | candle-aggregation-worker) printf '%s\n' "$target" ;;
     *) print_error "알 수 없는 app 대상: $target"; return 2 ;;
   esac
 }
@@ -211,6 +260,7 @@ pid_from_process_table() {
   case "$unit" in
     realtime-collection-worker) pattern="goodmoneying_worker.realtime_collection_worker" ;;
     backfill-collection-worker) pattern="goodmoneying_worker.backfill_collection_worker" ;;
+    candle-aggregation-worker) pattern="goodmoneying_worker.aggregation_collection_worker" ;;
     *) return 1 ;;
   esac
 
@@ -277,7 +327,7 @@ start_background() {
 }
 
 start_api() {
-  require_infra_port
+  require_local_database_port
   start_background api \
     env PYTHONPATH=apps/api:apps/worker:packages/shared \
       GOODMONEYING_DATABASE_URL="$DATABASE_URL" \
@@ -298,7 +348,7 @@ start_web() {
 }
 
 start_realtime_collection_worker() {
-  require_infra_port
+  require_local_database_port
   start_background realtime-collection-worker \
     env PYTHONPATH=apps/api:apps/worker:packages/shared \
       GOODMONEYING_DATABASE_URL="$DATABASE_URL" \
@@ -313,7 +363,7 @@ start_realtime_collection_worker() {
 }
 
 start_backfill_collection_worker() {
-  require_infra_port
+  require_local_database_port
   start_background backfill-collection-worker \
     env PYTHONPATH=apps/api:apps/worker:packages/shared \
       GOODMONEYING_DATABASE_URL="$DATABASE_URL" \
@@ -328,12 +378,25 @@ start_backfill_collection_worker() {
       bash -c '"$GOODMONEYING_PYTHON_BIN" -m goodmoneying_worker.backfill_collection_worker'
 }
 
+start_candle_aggregation_worker() {
+  require_local_database_port
+  start_background candle-aggregation-worker \
+    env PYTHONPATH=apps/api:apps/worker:packages/shared \
+      GOODMONEYING_DATABASE_URL="$DATABASE_URL" \
+      GOODMONEYING_AGGREGATION_POLL_SECONDS="$AGGREGATION_POLL_SECONDS" \
+      GOODMONEYING_LOG_LEVEL="$LOG_LEVEL" \
+      TZ="$APP_TIMEZONE" \
+      PGTZ="$APP_TIMEZONE" \
+      "$PYTHON_BIN" -m goodmoneying_worker.aggregation_collection_worker
+}
+
 start_app_unit() {
   case "$1" in
     api) start_api ;;
     web) start_web ;;
     realtime-collection-worker) start_realtime_collection_worker ;;
     backfill-collection-worker) start_backfill_collection_worker ;;
+    candle-aggregation-worker) start_candle_aggregation_worker ;;
     *) print_error "알 수 없는 app 대상: $1"; return 2 ;;
   esac
 }
@@ -442,12 +505,12 @@ app_stop() {
 show_logs() {
   local unit="${1:-}"
   if [[ -z "$unit" ]]; then
-    print_error "logs 대상이 필요합니다: api, web, realtime-collection-worker, backfill-collection-worker"
+    print_error "logs 대상이 필요합니다: api, web, realtime-collection-worker, backfill-collection-worker, candle-aggregation-worker"
     usage
     return 2
   fi
   case "$unit" in
-    api | web | realtime-collection-worker | backfill-collection-worker) ;;
+    api | web | realtime-collection-worker | backfill-collection-worker | candle-aggregation-worker) ;;
     *) print_error "알 수 없는 logs 대상: $unit"; return 2 ;;
   esac
   tail -n 120 -f "$(log_file_for "$unit")"

@@ -10,6 +10,8 @@ from goodmoneying_shared.models import (
     BackfillJobTarget,
     BackfillPlan,
     CandidateUniverseEntry,
+    CandleAggregationJob,
+    CandleAggregationJobTarget,
     CandleView,
     CollectionActivityBucket,
     CollectionDashboardTarget,
@@ -31,6 +33,7 @@ from goodmoneying_shared.models import (
     StorageBreakdownItem,
     TickerSnapshot,
     TradeEvent,
+    TradeSummary,
 )
 
 
@@ -98,6 +101,24 @@ class OperationsRepository(Protocol):
         self, instrument_id: int, unit: str, start_at: datetime, end_at: datetime
     ) -> list[CandleView]: ...
 
+    def materialize_candle_rollups(self, instrument_id: int, unit: str) -> int: ...
+
+    def candle_rollups(
+        self, instrument_id: int, unit: str, start_at: datetime, end_at: datetime
+    ) -> list[CandleView]: ...
+
+    def schedule_candle_aggregation(self) -> CandleAggregationJob | None: ...
+
+    def claim_next_candle_aggregation_job(self) -> CandleAggregationJob | None: ...
+
+    def candle_aggregation_job_targets(self, job_id: int) -> list[CandleAggregationJobTarget]: ...
+
+    def mark_candle_aggregation_target(
+        self, job_id: int, instrument_id: int, unit: str, status: str, rows_written: int
+    ) -> None: ...
+
+    def latest_candle_aggregation_job(self) -> CandleAggregationJob | None: ...
+
     def ticker_snapshots(
         self, instrument_id: int, start_at: datetime, end_at: datetime
     ) -> list[TickerSnapshot]: ...
@@ -105,6 +126,10 @@ class OperationsRepository(Protocol):
     def orderbook_summaries(
         self, instrument_id: int, start_at: datetime, end_at: datetime
     ) -> list[OrderbookSummary]: ...
+
+    def trade_summary(
+        self, instrument_id: int, start_at: datetime, end_at: datetime
+    ) -> TradeSummary: ...
 
     def collection_runs(self, limit: int) -> list[CollectionRun]: ...
 

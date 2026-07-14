@@ -135,6 +135,7 @@ def test_openapi_contract_exposes_m2_collection_dashboard_view_model() -> None:
 
     market_row = schemas["MarketListRow"]
     assert "accTradePrice24hDisplay" in market_row["required"]
+    assert market_row["properties"]["assetType"]["const"] == "coin"
     for field in [
         "assetType",
         "isFavorite",

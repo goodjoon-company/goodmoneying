@@ -3,11 +3,17 @@ from __future__ import annotations
 import sqlite3
 import threading
 import uuid
+from calendar import monthrange
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from goodmoneying_shared.aggregation import (
+    AGGREGATION_UNITS,
+    aggregate_candles,
+    rollup_bucket_start,
+)
 from goodmoneying_shared.models import (
     AuditLogSummary,
     BackfillJob,
@@ -16,6 +22,8 @@ from goodmoneying_shared.models import (
     BackfillPlan,
     BackfillWorkerStatus,
     CandidateUniverseEntry,
+    CandleAggregationJob,
+    CandleAggregationJobTarget,
     CandleView,
     CollectionActivityBucket,
     CollectionDashboardTarget,
@@ -46,6 +54,7 @@ from goodmoneying_shared.models import (
     TickerSnapshot,
     TradeEvent,
     TradeFrequencyStatus,
+    TradeSummary,
 )
 from goodmoneying_shared.time import KST, isoformat_kst, minute_bucket, now_kst
 
@@ -264,6 +273,40 @@ class SQLiteOperationsRepository:
                   trade_amount TEXT NOT NULL,
                   collected_at TEXT NOT NULL,
                   PRIMARY KEY (instrument_id, candle_unit, candle_start_at)
+                );
+
+                CREATE TABLE IF NOT EXISTS candle_rollups (
+                  instrument_id INTEGER NOT NULL,
+                  candle_unit TEXT NOT NULL,
+                  candle_start_at TEXT NOT NULL,
+                  open_price TEXT NOT NULL,
+                  high_price TEXT NOT NULL,
+                  low_price TEXT NOT NULL,
+                  close_price TEXT NOT NULL,
+                  trade_volume TEXT NOT NULL,
+                  trade_amount TEXT NOT NULL,
+                  completeness TEXT NOT NULL,
+                  materialized_at TEXT NOT NULL,
+                  PRIMARY KEY (instrument_id, candle_unit, candle_start_at)
+                );
+
+                CREATE TABLE IF NOT EXISTS candle_aggregation_jobs (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  status TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  started_at TEXT,
+                  finished_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS candle_aggregation_job_targets (
+                  job_id INTEGER NOT NULL,
+                  instrument_id INTEGER NOT NULL,
+                  candle_unit TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  rows_written INTEGER NOT NULL DEFAULT 0,
+                  error_message TEXT,
+                  updated_at TEXT NOT NULL,
+                  PRIMARY KEY (job_id, instrument_id, candle_unit)
                 );
 
                 CREATE TABLE IF NOT EXISTS trade_events (
@@ -636,9 +679,7 @@ class SQLiteOperationsRepository:
         failed_runs_24h = self._failed_runs_24h()
         recent_runs = self._recent_run_count()
         failure_rate_24h = (
-            Decimal(failed_runs_24h) / Decimal(recent_runs)
-            if recent_runs > 0
-            else Decimal("0")
+            Decimal(failed_runs_24h) / Decimal(recent_runs) if recent_runs > 0 else Decimal("0")
         )
         storage_bytes_today = self._storage_bytes_today_estimate()
         storage_rows_today = self._storage_rows_today()
@@ -775,8 +816,7 @@ class SQLiteOperationsRepository:
                     }[item.data_type],
                 )
                 data_statuses = [
-                    self._collection_data_status(item, source_candle_counts)
-                    for item in coverage
+                    self._collection_data_status(item, source_candle_counts) for item in coverage
                 ]
                 candle_status = next(
                     item for item in data_statuses if item.data_type == "source_candle"
@@ -818,12 +858,8 @@ class SQLiteOperationsRepository:
                         storage_bytes_display=_format_storage_bytes(
                             storage_bytes_by_instrument.get(instrument.id, 0)
                         ),
-                        collected_start_at=source_candle_ranges.get(
-                            instrument.id, (None, None)
-                        )[0],
-                        collected_end_at=source_candle_ranges.get(
-                            instrument.id, (None, None)
-                        )[1],
+                        collected_start_at=source_candle_ranges.get(instrument.id, (None, None))[0],
+                        collected_end_at=source_candle_ranges.get(instrument.id, (None, None))[1],
                     )
                 )
             return targets
@@ -848,9 +884,7 @@ class SQLiteOperationsRepository:
         ).fetchall()
         return {
             row["instrument_id"]: (
-                _from_db_time(row["collected_start_at"])
-                if row["collected_start_at"]
-                else None,
+                _from_db_time(row["collected_start_at"]) if row["collected_start_at"] else None,
                 _from_db_time(row["collected_end_at"]) if row["collected_end_at"] else None,
             )
             for row in rows
@@ -872,9 +906,7 @@ class SQLiteOperationsRepository:
             instrument_ids,
         )
         source_candle_ranges = self._source_candle_ranges_by_instrument(instrument_ids)
-        storage_bytes_by_instrument = self._instrument_storage_bytes_by_instrument(
-            instrument_ids
-        )
+        storage_bytes_by_instrument = self._instrument_storage_bytes_by_instrument(instrument_ids)
         collection_plans = self._collection_plans_by_instrument(instrument_ids)
         current_at = now_kst()
         for entry in candidate_entries:
@@ -1017,7 +1049,7 @@ class SQLiteOperationsRepository:
             (instrument_id, _to_db_time(start_at), _to_db_time(end_at)),
         ).fetchall()
         source = [self._candle_from_row(row) for row in rows]
-        if unit in {"1m", "1d"}:
+        if unit == "1m":
             return [
                 CandleView(
                     started_at=item.candle_start_at,
@@ -1032,7 +1064,251 @@ class SQLiteOperationsRepository:
                 for item in source
                 if item.candle_unit == unit
             ]
+        if unit in AGGREGATION_UNITS:
+            rollups = self.candle_rollups(instrument_id, unit, start_at, end_at)
+            if rollups:
+                return rollups
         return self._derive_candles(unit, source)
+
+    def materialize_candle_rollups(self, instrument_id: int, unit: str) -> int:
+        rows = self._execute(
+            """
+            SELECT * FROM source_candles
+            WHERE instrument_id = ?
+            ORDER BY candle_start_at
+            """,
+            (instrument_id,),
+        ).fetchall()
+        rollups = aggregate_candles(unit, [self._candle_from_row(row) for row in rows])
+        materialized_at = _to_db_time(now_kst())
+        for item in rollups:
+            self._execute(
+                """
+                INSERT INTO candle_rollups (
+                  instrument_id, candle_unit, candle_start_at, open_price, high_price, low_price,
+                  close_price, trade_volume, trade_amount, completeness, materialized_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(instrument_id, candle_unit, candle_start_at) DO UPDATE SET
+                  open_price = excluded.open_price,
+                  high_price = excluded.high_price,
+                  low_price = excluded.low_price,
+                  close_price = excluded.close_price,
+                  trade_volume = excluded.trade_volume,
+                  trade_amount = excluded.trade_amount,
+                  completeness = excluded.completeness,
+                  materialized_at = excluded.materialized_at
+                """,
+                (
+                    instrument_id,
+                    unit,
+                    _to_db_time(item.started_at),
+                    str(item.open),
+                    str(item.high),
+                    str(item.low),
+                    str(item.close),
+                    str(item.volume),
+                    str(item.trade_amount),
+                    item.completeness,
+                    materialized_at,
+                ),
+            )
+        self._conn.commit()
+        return len(rollups)
+
+    def candle_rollups(
+        self, instrument_id: int, unit: str, start_at: datetime, end_at: datetime
+    ) -> list[CandleView]:
+        rows = self._execute(
+            """
+            SELECT * FROM candle_rollups
+            WHERE instrument_id = ? AND candle_unit = ?
+              AND candle_start_at >= ? AND candle_start_at < ?
+            ORDER BY candle_start_at
+            """,
+            (instrument_id, unit, _to_db_time(start_at), _to_db_time(end_at)),
+        ).fetchall()
+        return [
+            CandleView(
+                started_at=_from_db_time(row["candle_start_at"]),
+                open=_decimal(row["open_price"]),
+                high=_decimal(row["high_price"]),
+                low=_decimal(row["low_price"]),
+                close=_decimal(row["close_price"]),
+                volume=_decimal(row["trade_volume"]),
+                trade_amount=_decimal(row["trade_amount"]),
+                completeness=cast(Literal["complete", "partial", "empty"], row["completeness"]),
+            )
+            for row in rows
+        ]
+
+    def schedule_candle_aggregation(self) -> CandleAggregationJob | None:
+        existing = self._execute(
+            """
+            SELECT id FROM candle_aggregation_jobs
+            WHERE status IN ('pending', 'running')
+            ORDER BY id DESC LIMIT 1
+            """
+        ).fetchone()
+        if existing:
+            return self._candle_aggregation_job(int(existing["id"]))
+        stale_targets: list[tuple[int, str]] = []
+        for instrument in self.list_active_targets():
+            source_latest = self._execute(
+                """
+                SELECT MAX(candle_start_at) AS candle_start_at
+                FROM source_candles WHERE instrument_id = ?
+                """,
+                (instrument.id,),
+            ).fetchone()["candle_start_at"]
+            if source_latest is None:
+                continue
+            latest = _from_db_time(source_latest)
+            for unit in AGGREGATION_UNITS:
+                rollup_latest = self._execute(
+                    """
+                    SELECT MAX(candle_start_at) AS candle_start_at
+                    FROM candle_rollups WHERE instrument_id = ? AND candle_unit = ?
+                    """,
+                    (instrument.id, unit),
+                ).fetchone()["candle_start_at"]
+                if (
+                    rollup_latest is None
+                    or _from_db_time(rollup_latest) < rollup_bucket_start(unit, latest)
+                ):
+                    stale_targets.append((instrument.id, unit))
+        if not stale_targets:
+            return None
+        created_at = _to_db_time(now_kst())
+        cursor = self._execute(
+            "INSERT INTO candle_aggregation_jobs (status, created_at) VALUES ('pending', ?)",
+            (created_at,),
+        )
+        job_id = _required_lastrowid(cursor)
+        for instrument_id, unit in stale_targets:
+            self._execute(
+                """
+                INSERT INTO candle_aggregation_job_targets (
+                  job_id, instrument_id, candle_unit, status, updated_at
+                ) VALUES (?, ?, ?, 'pending', ?)
+                """,
+                (job_id, instrument_id, unit, created_at),
+            )
+        self._conn.commit()
+        return self._candle_aggregation_job(job_id)
+
+    def claim_next_candle_aggregation_job(self) -> CandleAggregationJob | None:
+        row = self._execute(
+            """
+            SELECT id FROM candle_aggregation_jobs WHERE status = 'pending'
+            ORDER BY id LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        job_id = int(row["id"])
+        self._execute(
+            """
+            UPDATE candle_aggregation_jobs
+            SET status = 'running', started_at = ?, finished_at = NULL
+            WHERE id = ?
+            """,
+            (_to_db_time(now_kst()), job_id),
+        )
+        self._conn.commit()
+        return self._candle_aggregation_job(job_id)
+
+    def candle_aggregation_job_targets(self, job_id: int) -> list[CandleAggregationJobTarget]:
+        rows = self._execute(
+            """
+            SELECT * FROM candle_aggregation_job_targets
+            WHERE job_id = ? ORDER BY instrument_id, candle_unit
+            """,
+            (job_id,),
+        ).fetchall()
+        return [
+            CandleAggregationJobTarget(
+                job_id=job_id,
+                instrument_id=int(row["instrument_id"]),
+                candle_unit=str(row["candle_unit"]),
+                status=cast(Literal["pending", "running", "succeeded", "failed"], row["status"]),
+                rows_written=int(row["rows_written"]),
+            )
+            for row in rows
+        ]
+
+    def mark_candle_aggregation_target(
+        self, job_id: int, instrument_id: int, unit: str, status: str, rows_written: int
+    ) -> None:
+        self._execute(
+            """
+            UPDATE candle_aggregation_job_targets
+            SET status = ?, rows_written = ?, updated_at = ?
+            WHERE job_id = ? AND instrument_id = ? AND candle_unit = ?
+            """,
+            (status, rows_written, _to_db_time(now_kst()), job_id, instrument_id, unit),
+        )
+        remaining = self._execute(
+            """
+            SELECT COUNT(*) AS count FROM candle_aggregation_job_targets
+            WHERE job_id = ? AND status NOT IN ('succeeded', 'failed')
+            """,
+            (job_id,),
+        ).fetchone()["count"]
+        if int(remaining) == 0:
+            failed = self._execute(
+                """
+                SELECT COUNT(*) AS count FROM candle_aggregation_job_targets
+                WHERE job_id = ? AND status = 'failed'
+                """,
+                (job_id,),
+            ).fetchone()["count"]
+            self._execute(
+                """
+                UPDATE candle_aggregation_jobs
+                SET status = ?, finished_at = ? WHERE id = ?
+                """,
+                ("failed" if int(failed) else "succeeded", _to_db_time(now_kst()), job_id),
+            )
+        self._conn.commit()
+
+    def latest_candle_aggregation_job(self) -> CandleAggregationJob | None:
+        row = self._execute(
+            "SELECT id FROM candle_aggregation_jobs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return self._candle_aggregation_job(int(row["id"])) if row else None
+
+    def _candle_aggregation_job(self, job_id: int) -> CandleAggregationJob:
+        row = self._execute(
+            """
+            SELECT j.id, j.status, j.created_at,
+                   COUNT(t.candle_unit) AS total_target_count,
+                   SUM(CASE WHEN t.status = 'succeeded' THEN 1 ELSE 0 END)
+                     AS completed_target_count,
+                   SUM(CASE WHEN t.status = 'running' THEN 1 ELSE 0 END) AS running_target_count,
+                   SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) AS failed_target_count
+            FROM candle_aggregation_jobs j
+            LEFT JOIN candle_aggregation_job_targets t ON t.job_id = j.id
+            WHERE j.id = ? GROUP BY j.id
+            """,
+            (job_id,),
+        ).fetchone()
+        total = int(row["total_target_count"])
+        completed = int(row["completed_target_count"] or 0)
+        return CandleAggregationJob(
+            id=int(row["id"]),
+            status=cast(Literal["pending", "running", "succeeded", "failed"], row["status"]),
+            progress_percent=(
+                Decimal(completed) * Decimal("100") / Decimal(total)
+                if total
+                else Decimal("0")
+            ),
+            total_target_count=total,
+            completed_target_count=completed,
+            running_target_count=int(row["running_target_count"] or 0),
+            failed_target_count=int(row["failed_target_count"] or 0),
+            created_at=_from_db_time(row["created_at"]),
+        )
 
     def ticker_snapshots(
         self, instrument_id: int, start_at: datetime, end_at: datetime
@@ -1060,6 +1336,29 @@ class SQLiteOperationsRepository:
         ).fetchall()
         return [self._orderbook_from_row(row) for row in rows]
 
+    def trade_summary(
+        self, instrument_id: int, start_at: datetime, end_at: datetime
+    ) -> TradeSummary:
+        row = self._execute(
+            """
+            SELECT COUNT(*) AS trade_count,
+                   COALESCE(SUM(CASE WHEN ask_bid = 'BID' THEN trade_volume ELSE 0 END), 0)
+                     AS buy_volume,
+                   COALESCE(SUM(CASE WHEN ask_bid = 'ASK' THEN trade_volume ELSE 0 END), 0)
+                     AS sell_volume,
+                   MAX(trade_timestamp_at) AS last_trade_at
+            FROM trade_events
+            WHERE instrument_id = ? AND trade_timestamp_at >= ? AND trade_timestamp_at <= ?
+            """,
+            (instrument_id, _to_db_time(start_at), _to_db_time(end_at)),
+        ).fetchone()
+        return TradeSummary(
+            trade_count=int(row["trade_count"]),
+            buy_volume=Decimal(str(row["buy_volume"])),
+            sell_volume=Decimal(str(row["sell_volume"])),
+            last_trade_at=_from_db_time(row["last_trade_at"]) if row["last_trade_at"] else None,
+        )
+
     def collection_runs(self, limit: int) -> list[CollectionRun]:
         rows = self._execute(
             """
@@ -1077,7 +1376,11 @@ class SQLiteOperationsRepository:
         status: CollectionWorkerHeartbeatStatus,
         error_message: str | None = None,
     ) -> None:
-        if worker_type not in {"realtime_collection", "backfill_collection"}:
+        if worker_type not in {
+            "realtime_collection",
+            "backfill_collection",
+            "candle_aggregation",
+        }:
             raise ValueError("지원하지 않는 수집 워커 유형이다.")
         if status not in {"running", "failed"}:
             raise ValueError("지원하지 않는 수집 워커 상태다.")
@@ -1619,9 +1922,7 @@ class SQLiteOperationsRepository:
                         trade_strength=trade_strength,
                         trade_volume=cast(Decimal, aggregate["trade_volume"]),
                         trade_amount=cast(Decimal, aggregate["trade_amount"]),
-                        status=self._realtime_collection_heatmap_status(
-                            average_trades_per_minute
-                        ),
+                        status=self._realtime_collection_heatmap_status(average_trades_per_minute),
                     )
                 )
             heatmap.append(
@@ -1637,9 +1938,9 @@ class SQLiteOperationsRepository:
         current_hour = now_kst().replace(minute=0, second=0, microsecond=0)
         first_hour = current_hour - timedelta(hours=(7 * 24) - 1)
         run_counts = {
-            _from_db_time(row["bucket_start_at"]).replace(
-                minute=0, second=0, microsecond=0
-            ): int(row["run_count"])
+            _from_db_time(row["bucket_start_at"]).replace(minute=0, second=0, microsecond=0): int(
+                row["run_count"]
+            )
             for row in self._execute(
                 """
                 SELECT substr(started_at, 1, 13) || ':00:00+09:00' AS bucket_start_at,
@@ -1652,9 +1953,9 @@ class SQLiteOperationsRepository:
             ).fetchall()
         }
         result_counts = {
-            _from_db_time(row["bucket_start_at"]).replace(
-                minute=0, second=0, microsecond=0
-            ): int(row["result_count"])
+            _from_db_time(row["bucket_start_at"]).replace(minute=0, second=0, microsecond=0): int(
+                row["result_count"]
+            )
             for row in self._execute(
                 """
                 SELECT substr(created_at, 1, 13) || ':00:00+09:00' AS bucket_start_at,
@@ -1732,9 +2033,7 @@ class SQLiteOperationsRepository:
             day = today - timedelta(days=offset)
             next_day = day + timedelta(days=1)
             storage_bytes = (
-                storage_bytes_today
-                if offset == 0
-                else self._storage_bytes_for_range(day, next_day)
+                storage_bytes_today if offset == 0 else self._storage_bytes_for_range(day, next_day)
             )
             points.append(
                 OperationsTrendPoint(
@@ -2157,8 +2456,7 @@ class SQLiteOperationsRepository:
     def _storage_bytes_for_range(self, start_at: datetime, end_at: datetime) -> int:
         return (
             self._table_count_between("source_candles", "collected_at", start_at, end_at) * 256
-            + self._table_count_between("ticker_snapshots", "collected_at", start_at, end_at)
-            * 160
+            + self._table_count_between("ticker_snapshots", "collected_at", start_at, end_at) * 160
             + self._table_count_between("orderbook_summaries", "collected_at", start_at, end_at)
             * 224
         )
@@ -2199,7 +2497,6 @@ class SQLiteOperationsRepository:
             return "blue"
         return "green"
 
-
     @staticmethod
     def _average_coverage_percent(coverage: list[CoverageStatus]) -> Decimal:
         source = [item.progress_percent for item in coverage if item.data_type == "source_candle"]
@@ -2211,9 +2508,9 @@ class SQLiteOperationsRepository:
     def _storage_share_percent(bytes_value: int, total_bytes: int) -> Decimal:
         if total_bytes <= 0:
             return Decimal("0")
-        return (
-            Decimal(bytes_value) / Decimal(total_bytes) * Decimal("100")
-        ).quantize(Decimal("0.01"))
+        return (Decimal(bytes_value) / Decimal(total_bytes) * Decimal("100")).quantize(
+            Decimal("0.01")
+        )
 
     def _storage_bytes_estimate(self) -> int:
         return sum(
@@ -2240,9 +2537,7 @@ class SQLiteOperationsRepository:
             + self._table_count("orderbook_summaries", instrument_id)
         )
 
-    def _instrument_storage_bytes_by_instrument(
-        self, instrument_ids: list[int]
-    ) -> dict[int, int]:
+    def _instrument_storage_bytes_by_instrument(self, instrument_ids: list[int]) -> dict[int, int]:
         source_counts = self._table_counts_by_instrument("source_candles", instrument_ids)
         ticker_counts = self._table_counts_by_instrument("ticker_snapshots", instrument_ids)
         orderbook_counts = self._table_counts_by_instrument("orderbook_summaries", instrument_ids)
@@ -2526,17 +2821,13 @@ class SQLiteOperationsRepository:
             ).fetchall()
             plans.update(
                 {
-                    row["instrument_id"]: self._collection_plan_from_row(
-                        row["instrument_id"], row
-                    )
+                    row["instrument_id"]: self._collection_plan_from_row(row["instrument_id"], row)
                     for row in rows
                 }
             )
         return plans
 
-    def _collection_plan_from_row(
-        self, instrument_id: int, row: sqlite3.Row
-    ) -> CollectionPlan:
+    def _collection_plan_from_row(self, instrument_id: int, row: sqlite3.Row) -> CollectionPlan:
         return CollectionPlan(
             instrument_id=instrument_id,
             preset=str(row["preset"]),
@@ -2670,9 +2961,9 @@ class SQLiteOperationsRepository:
         range_end = self._coverage_range_end(plan)
         expected_minutes = self._expected_minutes(plan.range_start_at, range_end)
         first_start_at, latest_start_at = source_candle_range
-        progress = (
-            Decimal(stored_count) * Decimal("100") / Decimal(expected_minutes)
-        ).quantize(Decimal("0.01"))
+        progress = (Decimal(stored_count) * Decimal("100") / Decimal(expected_minutes)).quantize(
+            Decimal("0.01")
+        )
         if latest_start_at is None:
             return CoverageStatus(
                 instrument_id=instrument_id,
@@ -2996,6 +3287,41 @@ class SQLiteOperationsRepository:
         }
         bucket_size = minute_units.get(unit)
         source_1m = [item for item in source if item.candle_unit == "1m"]
+        if unit == "1d":
+            direct_daily = [item for item in source if item.candle_unit == "1d"]
+            if direct_daily:
+                return [
+                    CandleView(
+                        started_at=item.candle_start_at,
+                        open=item.open_price,
+                        high=item.high_price,
+                        low=item.low_price,
+                        close=item.close_price,
+                        volume=item.trade_volume,
+                        trade_amount=item.trade_amount,
+                        completeness="complete",
+                    )
+                    for item in direct_daily
+                ]
+            grouped_daily: dict[datetime, list[SourceCandle]] = {}
+            for item in source_1m:
+                bucket = item.candle_start_at.replace(hour=0, minute=0, second=0, microsecond=0)
+                grouped_daily.setdefault(bucket, []).append(item)
+            return self._aggregate_candle_groups(grouped_daily, 24 * 60)
+        if unit in {"1w", "1M"}:
+            daily_groups: dict[datetime, list[SourceCandle]] = {}
+            for item in [item for item in source if item.candle_unit == "1d"]:
+                if unit == "1w":
+                    week_start = item.candle_start_at - timedelta(
+                        days=item.candle_start_at.weekday()
+                    )
+                    bucket = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+                else:
+                    bucket = item.candle_start_at.replace(
+                        day=1, hour=0, minute=0, second=0, microsecond=0
+                    )
+                daily_groups.setdefault(bucket, []).append(item)
+            return self._aggregate_candle_groups(daily_groups, 7 if unit == "1w" else 0)
         if bucket_size is None:
             return [
                 CandleView(
@@ -3015,9 +3341,17 @@ class SQLiteOperationsRepository:
             minute = item.candle_start_at.minute - (item.candle_start_at.minute % bucket_size)
             bucket = item.candle_start_at.replace(minute=minute, second=0, microsecond=0)
             grouped.setdefault(bucket, []).append(item)
+        return self._aggregate_candle_groups(grouped, bucket_size)
+
+    def _aggregate_candle_groups(
+        self, grouped: dict[datetime, list[SourceCandle]], expected_size: int
+    ) -> list[CandleView]:
         result: list[CandleView] = []
         for bucket, items in sorted(grouped.items()):
             ordered = sorted(items, key=lambda item: item.candle_start_at)
+            required_size = (
+                monthrange(bucket.year, bucket.month)[1] if expected_size == 0 else expected_size
+            )
             result.append(
                 CandleView(
                     started_at=bucket,
@@ -3027,7 +3361,7 @@ class SQLiteOperationsRepository:
                     close=ordered[-1].close_price,
                     volume=sum((item.trade_volume for item in ordered), Decimal("0")),
                     trade_amount=sum((item.trade_amount for item in ordered), Decimal("0")),
-                    completeness="complete" if len(ordered) == bucket_size else "partial",
+                    completeness="complete" if len(ordered) == required_size else "partial",
                 )
             )
         return result
@@ -3226,9 +3560,7 @@ class SQLiteOperationsRepository:
                 else None
             ),
             current_target=current_target,
-            current_target_backfill_row_count=int(
-                row["current_target_backfill_row_count"] or 0
-            ),
+            current_target_backfill_row_count=int(row["current_target_backfill_row_count"] or 0),
             processed_missing_range_count=int(row["processed_missing_range_count"] or 0),
             estimated_missing_range_count=int(row["estimated_missing_range_count"] or 0),
             target_start_at=_from_db_time(row["target_start_at"]),

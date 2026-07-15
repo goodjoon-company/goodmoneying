@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+import threading
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -10,10 +15,12 @@ from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_worker import (
     aggregation_collection_worker,
+    aggregation_worker,
     backfill_collection_worker,
     realtime_collection_worker,
     runtime,
 )
+from goodmoneying_worker.aggregation_worker import HEARTBEAT_THREAD_NAME
 
 
 class FakeRepository:
@@ -251,6 +258,11 @@ def test_집계_워커는_하트비트를_기록하고_기본_5초_주기로_실
                 "candle_aggregation", status, error_message
             )
 
+        @contextmanager
+        def heartbeat_lifecycle(self) -> Iterator[None]:
+            self.record_heartbeat("running")
+            yield
+
         def run_once(self) -> int:
             calls.append("aggregate")
             raise KeyboardInterrupt
@@ -284,7 +296,7 @@ def test_집계_워커는_하트비트를_기록하고_기본_5초_주기로_실
     assert aggregation_collection_worker.poll_seconds_from_environment() == 5.0
 
 
-def test_집계_heartbeat_저장소는_2초_io_제한을_사용한다(
+def test_집계_heartbeat_저장소는_postgres와_sqlite별_2초_제한을_사용한다(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -295,7 +307,7 @@ def test_집계_heartbeat_저장소는_2초_io_제한을_사용한다(
     postgres_repository = runtime.create_heartbeat_repository_from_environment()
 
     assert isinstance(postgres_repository, PostgresOperationsRepository)
-    assert postgres_repository._io_timeout_seconds == 2.0
+    assert postgres_repository._connect_and_statement_timeout_seconds == 2.0
 
     monkeypatch.delenv("GOODMONEYING_DATABASE_URL")
     source_repository = SQLiteOperationsRepository.from_path(
@@ -316,6 +328,113 @@ def test_집계_heartbeat_저장소는_2초_io_제한을_사용한다(
     assert (
         runtime.create_heartbeat_repository_from_environment(in_memory_repository)
         is in_memory_repository
+    )
+
+
+def test_집계_폴링을_3회_반복해도_차단된_heartbeat_스레드는_하나만_유지한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+
+    class RepeatedJobRepository:
+        def __init__(self) -> None:
+            self.claim_count = 0
+
+        def schedule_candle_aggregation(self) -> None:
+            return None
+
+        def claim_next_candle_aggregation_job(self) -> SimpleNamespace:
+            self.claim_count += 1
+            if self.claim_count > 3:
+                raise KeyboardInterrupt
+            return SimpleNamespace(id=self.claim_count)
+
+        def candle_aggregation_job_targets(self, job_id: int) -> list[object]:
+            return []
+
+        def record_collection_worker_heartbeat(
+            self,
+            worker_type: str,
+            status: str,
+            error_message: str | None = None,
+        ) -> None:
+            if threading.current_thread().name == HEARTBEAT_THREAD_NAME:
+                callback_started.set()
+                release_callback.wait()
+
+    real_runner = aggregation_worker.PeriodicHeartbeatRunner
+
+    def fast_shutdown_runner(
+        heartbeat: Callable[[], None], interval_seconds: float
+    ) -> aggregation_worker.PeriodicHeartbeatRunner:
+        return real_runner(
+            heartbeat,
+            interval_seconds,
+            shutdown_grace_seconds=0.01,
+        )
+
+    monkeypatch.setattr(
+        aggregation_worker,
+        "PeriodicHeartbeatRunner",
+        fast_shutdown_runner,
+    )
+    repository: Any = RepeatedJobRepository()
+    worker = aggregation_worker.CandleAggregationWorker(repository, repository)
+
+    started = time.monotonic()
+    aggregation_collection_worker.run_aggregation_poll_loop(worker, poll_seconds=0)
+    elapsed = time.monotonic() - started
+
+    try:
+        assert elapsed < 0.2
+        assert callback_started.wait(timeout=0.1)
+        blocked_threads = [
+            thread
+            for thread in threading.enumerate()
+            if thread.name == HEARTBEAT_THREAD_NAME
+        ]
+        assert len(blocked_threads) == 1
+        assert blocked_threads[0].daemon is True
+    finally:
+        release_callback.set()
+        for thread in threading.enumerate():
+            if thread.name == HEARTBEAT_THREAD_NAME:
+                thread.join(timeout=1)
+
+
+def test_정상_집계_폴링이_끝나면_heartbeat_스레드가_남지_않는다() -> None:
+    class SingleJobRepository:
+        def __init__(self) -> None:
+            self.claim_count = 0
+
+        def schedule_candle_aggregation(self) -> None:
+            return None
+
+        def claim_next_candle_aggregation_job(self) -> SimpleNamespace:
+            self.claim_count += 1
+            if self.claim_count > 1:
+                raise KeyboardInterrupt
+            return SimpleNamespace(id=self.claim_count)
+
+        def candle_aggregation_job_targets(self, job_id: int) -> list[object]:
+            return []
+
+        def record_collection_worker_heartbeat(
+            self,
+            worker_type: str,
+            status: str,
+            error_message: str | None = None,
+        ) -> None:
+            return None
+
+    repository: Any = SingleJobRepository()
+    worker = aggregation_worker.CandleAggregationWorker(repository, repository)
+
+    aggregation_collection_worker.run_aggregation_poll_loop(worker, poll_seconds=0)
+
+    assert all(
+        thread.name != HEARTBEAT_THREAD_NAME for thread in threading.enumerate()
     )
 
 

@@ -9,7 +9,8 @@ from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_worker.upbit_client import LiveUpbitClient, UpbitClient
 
 DEFAULT_LOG_LEVEL = "INFO"
-HEARTBEAT_IO_TIMEOUT_SECONDS = 2.0
+HEARTBEAT_POSTGRES_CONNECT_AND_STATEMENT_TIMEOUT_SECONDS = 2.0
+HEARTBEAT_SQLITE_BUSY_TIMEOUT_SECONDS = 2.0
 
 
 def log_level_from_environment() -> int:
@@ -44,7 +45,9 @@ def create_heartbeat_repository_from_environment(
     if database_url and database_url.startswith(("postgres://", "postgresql://")):
         return PostgresOperationsRepository(
             database_url,
-            io_timeout_seconds=HEARTBEAT_IO_TIMEOUT_SECONDS,
+            connect_and_statement_timeout_seconds=(
+                HEARTBEAT_POSTGRES_CONNECT_AND_STATEMENT_TIMEOUT_SECONDS
+            ),
         )
     database = ":memory:"
     if isinstance(source_repository, SQLiteOperationsRepository):
@@ -53,7 +56,7 @@ def create_heartbeat_repository_from_environment(
             return source_repository
     return SQLiteOperationsRepository(
         database,
-        busy_timeout_seconds=HEARTBEAT_IO_TIMEOUT_SECONDS,
+        busy_timeout_seconds=HEARTBEAT_SQLITE_BUSY_TIMEOUT_SECONDS,
     )
 
 

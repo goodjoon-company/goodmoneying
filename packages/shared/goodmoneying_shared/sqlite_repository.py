@@ -1082,53 +1082,60 @@ class SQLiteOperationsRepository:
         return self._derive_candles(unit, source)
 
     def materialize_candle_rollups(self, instrument_id: int, unit: str) -> int:
-        with self._lock, self._conn:
-            cursor = self._execute(
-                """
-                SELECT * FROM source_candles
-                WHERE instrument_id = ?
-                ORDER BY candle_start_at
-                """,
-                (instrument_id,),
-            )
-            source: list[SourceCandle] = []
-            while rows := cursor.fetchmany(SOURCE_FETCH_BATCH_SIZE):
-                source.extend(self._candle_from_row(row) for row in rows)
-            rollups = aggregate_candles(unit, source)
-            materialized_at = _to_db_time(now_kst())
-            for item in rollups:
-                self._execute(
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = self._execute(
                     """
-                    INSERT INTO candle_rollups (
-                      instrument_id, candle_unit, candle_start_at, open_price, high_price,
-                      low_price, close_price, trade_volume, trade_amount, completeness,
-                      materialized_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(instrument_id, candle_unit, candle_start_at) DO UPDATE SET
-                      open_price = excluded.open_price,
-                      high_price = excluded.high_price,
-                      low_price = excluded.low_price,
-                      close_price = excluded.close_price,
-                      trade_volume = excluded.trade_volume,
-                      trade_amount = excluded.trade_amount,
-                      completeness = excluded.completeness,
-                      materialized_at = excluded.materialized_at
+                    SELECT * FROM source_candles
+                    WHERE instrument_id = ?
+                    ORDER BY candle_start_at
                     """,
-                    (
-                        instrument_id,
-                        unit,
-                        _to_db_time(item.started_at),
-                        str(item.open),
-                        str(item.high),
-                        str(item.low),
-                        str(item.close),
-                        str(item.volume),
-                        str(item.trade_amount),
-                        item.completeness,
-                        materialized_at,
-                    ),
+                    (instrument_id,),
                 )
+                source: list[SourceCandle] = []
+                while rows := cursor.fetchmany(SOURCE_FETCH_BATCH_SIZE):
+                    source.extend(self._candle_from_row(row) for row in rows)
+                rollups = aggregate_candles(unit, source)
+                materialized_at = _to_db_time(now_kst())
+                for item in rollups:
+                    self._execute(
+                        """
+                        INSERT INTO candle_rollups (
+                          instrument_id, candle_unit, candle_start_at, open_price, high_price,
+                          low_price, close_price, trade_volume, trade_amount, completeness,
+                          materialized_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(instrument_id, candle_unit, candle_start_at) DO UPDATE SET
+                          open_price = excluded.open_price,
+                          high_price = excluded.high_price,
+                          low_price = excluded.low_price,
+                          close_price = excluded.close_price,
+                          trade_volume = excluded.trade_volume,
+                          trade_amount = excluded.trade_amount,
+                          completeness = excluded.completeness,
+                          materialized_at = excluded.materialized_at
+                        """,
+                        (
+                            instrument_id,
+                            unit,
+                            _to_db_time(item.started_at),
+                            str(item.open),
+                            str(item.high),
+                            str(item.low),
+                            str(item.close),
+                            str(item.volume),
+                            str(item.trade_amount),
+                            item.completeness,
+                            materialized_at,
+                        ),
+                    )
+            except BaseException:
+                self._conn.rollback()
+                raise
+            else:
+                self._conn.commit()
         return len(rollups)
 
     def candle_rollups(

@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 from decimal import Decimal
 
+import psycopg
 import pytest
 
 from goodmoneying_shared.models import SourceCandle
@@ -13,12 +14,16 @@ from goodmoneying_shared.time import KST
 pytestmark = pytest.mark.live
 
 
-def test_live_postgres_집계_작업_혼합_상태의_건수와_진행률이_sqlite와_동일하다() -> None:
+def live_database_url() -> str:
     if os.getenv("GOODMONEYING_LIVE_POSTGRES_TEST") != "1":
         pytest.skip("GOODMONEYING_LIVE_POSTGRES_TEST=1에서만 실제 PostgreSQL을 검증한다")
-
     database_url = os.getenv("GOODMONEYING_DATABASE_URL")
     assert database_url, "실제 PostgreSQL 검증에는 GOODMONEYING_DATABASE_URL이 필요하다"
+    return database_url
+
+
+def test_live_postgres_집계_작업_혼합_상태의_건수와_진행률이_sqlite와_동일하다() -> None:
+    database_url = live_database_url()
     repository = PostgresOperationsRepository(database_url)
     instrument = repository.refresh_candidate_universe(
         [("KRW-LIVEAGG", "실제 DB 집계 검증", "100")]
@@ -73,3 +78,13 @@ def test_live_postgres_집계_작업_혼합_상태의_건수와_진행률이_sql
         + latest.failed_target_count
     )
     assert latest.progress_percent == Decimal("100") / Decimal("7")
+
+
+def test_live_postgres_heartbeat_저장소의_statement_timeout이_pg_sleep를_중단한다() -> None:
+    repository = PostgresOperationsRepository(
+        live_database_url(),
+        connect_and_statement_timeout_seconds=0.1,
+    )
+
+    with pytest.raises(psycopg.errors.QueryCanceled), repository._connect() as connection:
+        connection.execute("SELECT pg_sleep(1)")

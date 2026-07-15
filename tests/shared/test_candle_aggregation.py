@@ -1,3 +1,4 @@
+import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta
@@ -258,10 +259,15 @@ def test_집계_워커는_첫_처리_구간이_32초_걸려도_31초_시점에_�
     monkeypatch.setattr(repository, "materialize_candle_rollups", delayed_materialize)
     results: list[int] = []
     errors: list[BaseException] = []
+    worker = CandleAggregationWorker(
+        repository,
+        SQLiteOperationsRepository.from_path(database_path),
+    )
 
     def run_worker() -> None:
         try:
-            results.append(CandleAggregationWorker(repository).run_once())
+            with worker.heartbeat_lifecycle():
+                results.append(worker.run_once())
         except BaseException as exc:
             errors.append(exc)
 
@@ -319,7 +325,9 @@ def test_대량_집계의_heartbeat_쓰기는_처리량이_아닌_시간에_비�
     monkeypatch.setattr(repository, "record_collection_worker_heartbeat", record_heartbeat)
     started = time.monotonic()
 
-    completed = CandleAggregationWorker(repository).run_once()
+    worker = CandleAggregationWorker(repository)
+    with worker.heartbeat_lifecycle():
+        completed = worker.run_once()
     elapsed = time.monotonic() - started
 
     assert completed == 7
@@ -363,8 +371,9 @@ def test_집계_실패_후에는_heartbeat_ticker_스레드가_남지_않는다(
 
     monkeypatch.setattr(repository, "materialize_candle_rollups", fail_materialize)
 
-    with pytest.raises(RuntimeError, match="집계 실패"):
-        CandleAggregationWorker(repository).run_once()
+    worker = CandleAggregationWorker(repository)
+    with worker.heartbeat_lifecycle(), pytest.raises(RuntimeError, match="집계 실패"):
+        worker.run_once()
 
     assert ticker_seen == [True]
     assert all(thread.name != HEARTBEAT_THREAD_NAME for thread in threading.enumerate())
@@ -446,6 +455,96 @@ def test_sqlite_집계는_heartbeat가_교차된_뒤_실패해도_부분_커밋�
     )
 
     assert rollups == []
+
+
+def test_sqlite_집계는_원천_조회_전에_쓰기_트랜잭션을_확보한다(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "aggregation-source-snapshot.sqlite3"
+    repository = SQLiteOperationsRepository.from_path(database_path)
+    writer = SQLiteOperationsRepository(
+        str(database_path),
+        busy_timeout_seconds=0.02,
+    )
+    observer = SQLiteOperationsRepository.from_path(database_path)
+    instrument = repository.refresh_candidate_universe(
+        [("KRW-BTC", "비트코인", "100")]
+    )[0].instrument
+    repository.ensure_default_active_targets(limit=1)
+    started_at = datetime(2026, 7, 14, 9, 0, tzinfo=KST)
+
+    def source_candle(offset: int) -> SourceCandle:
+        return SourceCandle(
+            instrument_id=instrument.id,
+            candle_unit="1m",
+            candle_start_at=started_at + timedelta(minutes=offset),
+            open_price=Decimal("100"),
+            high_price=Decimal("100"),
+            low_price=Decimal("100"),
+            close_price=Decimal("100"),
+            trade_volume=Decimal("1"),
+            trade_amount=Decimal("100"),
+            collected_at=started_at + timedelta(minutes=offset),
+        )
+
+    repository.record_incremental_collection(
+        [],
+        [],
+        [source_candle(offset) for offset in range(4)],
+    )
+    original_execute = repository._execute
+    writer_start = threading.Event()
+    writer_attempted = threading.Event()
+    writer_finished = threading.Event()
+    writer_errors: list[BaseException] = []
+    writer_thread: threading.Thread | None = None
+
+    def write_fifth_source() -> None:
+        writer_attempted.set()
+        try:
+            writer.record_incremental_collection([], [], [source_candle(4)])
+        except BaseException as exc:
+            writer_errors.append(exc)
+        finally:
+            writer_finished.set()
+
+    def interleave_writer_before_first_rollup(
+        sql: str, params: tuple[Any, ...] = ()
+    ) -> Any:
+        nonlocal writer_thread
+        if "INSERT INTO candle_rollups" in sql and not writer_start.is_set():
+            writer_start.set()
+            writer_thread = threading.Thread(target=write_fifth_source)
+            writer_thread.start()
+            assert writer_attempted.wait(timeout=1)
+            assert writer_finished.wait(timeout=1)
+        return original_execute(sql, params)
+
+    monkeypatch.setattr(repository, "_execute", interleave_writer_before_first_rollup)
+
+    assert repository.materialize_candle_rollups(instrument.id, "5m") == 1
+    assert writer_thread is not None
+    writer_thread.join(timeout=1)
+    source = observer.candles(
+        instrument.id,
+        "1m",
+        started_at,
+        started_at + timedelta(minutes=5),
+    )
+    rollups = observer.candle_rollups(
+        instrument.id,
+        "5m",
+        started_at,
+        started_at + timedelta(minutes=5),
+    )
+
+    assert writer_start.is_set()
+    assert len(writer_errors) == 1
+    assert isinstance(writer_errors[0], sqlite3.OperationalError)
+    assert "locked" in str(writer_errors[0])
+    assert len(rollups) == 1
+    assert rollups[0].volume == sum((item.volume for item in source), Decimal("0"))
 
 
 def test_heartbeat_콜백이_막혀도_종료_유예_시간_안에_반환하고_오류를_남긴다(

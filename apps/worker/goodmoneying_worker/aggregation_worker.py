@@ -69,41 +69,44 @@ class CandleAggregationWorker:
         job = self._repository.claim_next_candle_aggregation_job()
         if job is None:
             return 0
-        with PeriodicHeartbeatRunner(
-            self._record_running_heartbeat, HEARTBEAT_INTERVAL_SECONDS
-        ):
-            completed = 0
-            for target in self._repository.candle_aggregation_job_targets(job.id):
+        completed = 0
+        for target in self._repository.candle_aggregation_job_targets(job.id):
+            self._repository.mark_candle_aggregation_target(
+                job.id,
+                target.instrument_id,
+                target.candle_unit,
+                "running",
+                target.rows_written,
+            )
+            try:
+                rows_written = self._repository.materialize_candle_rollups(
+                    target.instrument_id,
+                    target.candle_unit,
+                )
+            except Exception:
                 self._repository.mark_candle_aggregation_target(
                     job.id,
                     target.instrument_id,
                     target.candle_unit,
-                    "running",
+                    "failed",
                     target.rows_written,
                 )
-                try:
-                    rows_written = self._repository.materialize_candle_rollups(
-                        target.instrument_id,
-                        target.candle_unit,
-                    )
-                except Exception:
-                    self._repository.mark_candle_aggregation_target(
-                        job.id,
-                        target.instrument_id,
-                        target.candle_unit,
-                        "failed",
-                        target.rows_written,
-                    )
-                    raise
-                self._repository.mark_candle_aggregation_target(
-                    job.id,
-                    target.instrument_id,
-                    target.candle_unit,
-                    "succeeded",
-                    rows_written,
-                )
-                completed += 1
-            return completed
+                raise
+            self._repository.mark_candle_aggregation_target(
+                job.id,
+                target.instrument_id,
+                target.candle_unit,
+                "succeeded",
+                rows_written,
+            )
+            completed += 1
+        return completed
+
+    def heartbeat_lifecycle(self) -> PeriodicHeartbeatRunner:
+        return PeriodicHeartbeatRunner(
+            self._record_running_heartbeat,
+            HEARTBEAT_INTERVAL_SECONDS,
+        )
 
     def _record_running_heartbeat(self) -> None:
         self.record_heartbeat("running")

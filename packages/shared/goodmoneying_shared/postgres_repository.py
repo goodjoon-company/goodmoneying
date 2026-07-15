@@ -99,18 +99,26 @@ class PostgresOperationsRepository:
         self,
         database_url: str,
         *,
-        io_timeout_seconds: float | None = None,
+        connect_and_statement_timeout_seconds: float | None = None,
     ) -> None:
         self._database_url = database_url
-        self._io_timeout_seconds = io_timeout_seconds
+        self._connect_and_statement_timeout_seconds = (
+            connect_and_statement_timeout_seconds
+        )
 
     def _connect(self) -> psycopg.Connection[Any]:
         options = "-c timezone=Asia/Seoul"
         connect_timeout: int | None = None
-        if self._io_timeout_seconds is not None:
-            statement_timeout_ms = max(1, round(self._io_timeout_seconds * 1_000))
+        if self._connect_and_statement_timeout_seconds is not None:
+            statement_timeout_ms = max(
+                1,
+                round(self._connect_and_statement_timeout_seconds * 1_000),
+            )
             options += f" -c statement_timeout={statement_timeout_ms}"
-            connect_timeout = max(1, ceil(self._io_timeout_seconds))
+            connect_timeout = max(
+                1,
+                ceil(self._connect_and_statement_timeout_seconds),
+            )
         if connect_timeout is not None:
             return psycopg.connect(
                 self._database_url,

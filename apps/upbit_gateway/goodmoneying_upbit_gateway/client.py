@@ -12,6 +12,7 @@ from goodmoneying_upbit_gateway.auth import (
     Credentials,
     ParameterValue,
     build_query_string,
+    build_query_strings,
     create_jwt,
 )
 
@@ -129,8 +130,10 @@ def build_upstream_request(
             body[name] = value
 
     headers: dict[str, str] = {"Accept": "application/json"}
-    canonical_query = build_query_string(query)
-    auth_query_string = canonical_query or build_auth_query_string(endpoint, parameters)
+    query_strings = build_query_strings(query)
+    auth_query_string = query_strings.hash_query or build_auth_query_string(
+        endpoint, parameters
+    )
     if endpoint["category"] == "exchange":
         if credentials is None:
             raise InvalidParameters("거래소 조회·테스트 호출에는 API 인증 정보가 필요합니다.")
@@ -142,8 +145,8 @@ def build_upstream_request(
         headers["Authorization"] = f"Bearer {token}"
 
     url = f"{validate_base_url(base_url, allow_loopback_test=allow_loopback_test)}{path}"
-    if canonical_query:
-        url = f"{url}?{canonical_query}"
+    if query_strings.wire_query:
+        url = f"{url}?{query_strings.wire_query}"
     return httpx.Request(
         method=cast(str, endpoint["method"]),
         url=url,

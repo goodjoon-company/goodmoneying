@@ -69,10 +69,13 @@ paths:
                   - {$ref: "#/components/schemas/TraceEnvelope"}
                   - {$ref: "#/components/schemas/ErrorResponse"}
         "422":
-          description: 요청 검증 오류
+          description: 로컬 요청 검증 오류 또는 업비트 상향 422
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/ErrorResponse"}
+              schema:
+                anyOf:
+                  - {$ref: "#/components/schemas/TraceEnvelope"}
+                  - {$ref: "#/components/schemas/ErrorResponse"}
         "418":
           description: 업비트 상향 일시 차단 응답
           content:
@@ -109,6 +112,11 @@ paths:
                   - {$ref: "#/components/schemas/ErrorResponse"}
         "500":
           description: 업비트 상향 서버 내부 오류
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
+        default:
+          description: 명시되지 않은 업비트 상향 상태의 마스킹된 추적
           content:
             application/json:
               schema: {$ref: "#/components/schemas/TraceEnvelope"}

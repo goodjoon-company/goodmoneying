@@ -129,13 +129,27 @@ def test_actual_gateway_process_uses_canonical_authenticated_query() -> None:
         response = _execute(
             gateway_url,
             "rest.get-pocket-api-keys",
-            {"uuids[]": ["fake-1", "fake-2"], "include_expired": True},
+            {
+                "uuids[]": [
+                    "2026-07-16T03:00:00+09:00",
+                    "id&uuid=extra",
+                    "#fragment",
+                ],
+                "include_expired": True,
+            },
         )
 
     assert response.status_code == 200
-    assert response.json()["response"]["body"]["canonical_query"] == (
-        "uuids[]=fake-1&uuids[]=fake-2&include_expired=true"
+    assert response.json()["response"]["body"]["raw_query"] == (
+        "uuids[]=2026-07-16T03%3A00%3A00%2B09%3A00"
+        "&uuids[]=id%26uuid%3Dextra&uuids[]=%23fragment&include_expired=true"
     )
+    assert response.json()["response"]["body"]["decoded_query"] == [
+        ["uuids[]", "2026-07-16T03:00:00+09:00"],
+        ["uuids[]", "id&uuid=extra"],
+        ["uuids[]", "#fragment"],
+        ["include_expired", "true"],
+    ]
 
 
 def test_actual_gateway_process_against_fake_upstream_end_to_end() -> None:
@@ -180,6 +194,11 @@ def test_actual_gateway_process_against_fake_upstream_end_to_end() -> None:
     assert blocked.status_code == 403
     assert all(call["origin"] is None for call in upstream_calls)
     assert not any(call["path"] == "/v1/orders" for call in upstream_calls)
+    authorizations = [
+        call["authorization"] for call in upstream_calls if call["authorization"] is not None
+    ]
+    assert authorizations
+    tokens = [authorization.removeprefix("Bearer ") for authorization in authorizations]
     combined = "".join(
         response.text
         for response in (
@@ -192,7 +211,7 @@ def test_actual_gateway_process_against_fake_upstream_end_to_end() -> None:
             blocked,
         )
     )
-    assert "fake-e2e-access" not in combined
-    assert FAKE_SECRET_KEY not in combined
-    assert "fake-e2e-access" not in process_output
-    assert FAKE_SECRET_KEY not in process_output
+    for sensitive in ("fake-e2e-access", FAKE_SECRET_KEY, *authorizations, *tokens):
+        assert sensitive not in combined
+        assert sensitive not in process_output
+    assert "Bearer " not in process_output

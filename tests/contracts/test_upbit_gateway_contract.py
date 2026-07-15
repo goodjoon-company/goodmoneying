@@ -260,7 +260,7 @@ def test_checked_openapi_and_fastapi_runtime_have_status_response_parity() -> No
 
     statuses = {
         "200", "201", "400", "401", "403", "404", "418", "422", "429",
-        "500", "502", "503", "504",
+        "500", "502", "503", "504", "default",
     }
     assert set(checked["paths"]["/v1/requests"]["post"]["responses"]) == statuses
     for status in statuses:
@@ -271,6 +271,19 @@ def test_checked_openapi_and_fastapi_runtime_have_status_response_parity() -> No
             "content"
         ]["application/json"]["schema"]
         assert _semantic_schema(checked_schema) == _semantic_schema(runtime_schema)
+
+    mixed_422 = checked["paths"]["/v1/requests"]["post"]["responses"]["422"][
+        "content"
+    ]["application/json"]["schema"]
+    assert mixed_422 == {
+        "anyOf": [
+            {"$ref": "#/components/schemas/TraceEnvelope"},
+            {"$ref": "#/components/schemas/ErrorResponse"},
+        ]
+    }
+    assert checked["paths"]["/v1/requests"]["post"]["responses"]["default"][
+        "content"
+    ]["application/json"]["schema"] == {"$ref": "#/components/schemas/TraceEnvelope"}
 
 
 def test_checked_openapi_and_fastapi_runtime_have_catalog_schema_semantic_parity() -> None:

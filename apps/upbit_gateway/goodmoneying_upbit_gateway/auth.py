@@ -5,7 +5,7 @@ import stat
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import unquote, urlencode
+from urllib.parse import quote_plus, unquote, urlencode
 from uuid import uuid4
 
 import jwt
@@ -17,6 +17,12 @@ type ParameterValue = str | int | float | bool | Sequence[str | int | float | bo
 class Credentials:
     access_key: str
     secret_key: str
+
+
+@dataclass(frozen=True)
+class QueryStrings:
+    hash_query: str
+    wire_query: str
 
 
 class CredentialConfigurationError(ValueError):
@@ -52,17 +58,27 @@ def load_credentials(environ: Mapping[str, str]) -> Credentials:
 
 def build_query_string(parameters: Sequence[tuple[str, ParameterValue]]) -> str:
     """입력 순서와 배열 키 반복을 보존한 비인코딩 쿼리 문자열을 만든다."""
-    normalized: list[tuple[str, str | int | float]] = []
+    return build_query_strings(parameters).hash_query
+
+
+def build_query_strings(parameters: Sequence[tuple[str, ParameterValue]]) -> QueryStrings:
+    """동일한 정규 토큰에서 해시용·전송용 쿼리 문자열을 파생한다."""
+    tokens: list[tuple[str, str]] = []
     for key, value in parameters:
         values = value if isinstance(value, Sequence) and not isinstance(value, str) else [value]
-        normalized.extend((key, _query_scalar(item)) for item in values)
-    return unquote(urlencode(normalized))
+        tokens.extend((key, _query_scalar(item)) for item in values)
+    return QueryStrings(
+        hash_query=unquote(urlencode(tokens)),
+        wire_query="&".join(
+            f"{quote_plus(key, safe='[]')}={quote_plus(value)}" for key, value in tokens
+        ),
+    )
 
 
-def _query_scalar(value: str | int | float | bool) -> str | int | float:
+def _query_scalar(value: str | int | float | bool) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
-    return value
+    return str(value)
 
 
 def query_hash(query_string: str) -> str:

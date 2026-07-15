@@ -18,7 +18,7 @@ from goodmoneying_upbit_gateway.executor import (
     UpstreamProtocolError,
     UpstreamTimeout,
 )
-from goodmoneying_upbit_gateway.rate_limit import GroupRateLimiter
+from goodmoneying_upbit_gateway.rate_limit import GroupRateLimiter, rate_limits_from_catalog
 from goodmoneying_upbit_gateway.safety import PolicyBlocked
 
 
@@ -135,18 +135,25 @@ MIXED_RESPONSES: dict[int | str, dict[str, Any]] = {
         "model": TraceEnvelope | ErrorResponse,
         "description": "로컬 게이트웨이 오류 또는 상태를 보존한 업비트 상향 응답",
     }
-    for status in (403, 404, 502, 503, 504)
+    for status in (403, 404, 422, 502, 503, 504)
+}
+
+DEFAULT_TRACE_RESPONSE: dict[int | str, dict[str, Any]] = {
+    "default": {
+        "model": TraceEnvelope,
+        "description": "명시되지 않은 업비트 상향 상태의 마스킹된 추적",
+    }
 }
 
 
-def _default_executor() -> UpbitExecutor:
+def _default_executor(catalog: dict[str, Any]) -> UpbitExecutor:
     allow_loopback = os.environ.get("UPBIT_GATEWAY_ALLOW_LOOPBACK_TEST") == "true"
     return UpbitExecutor(
         http_client=httpx.Client(
             timeout=float(os.environ.get("UPBIT_GATEWAY_TIMEOUT_SECONDS", "10"))
         ),
         credentials_provider=lambda: load_credentials(os.environ),
-        limiter=GroupRateLimiter(),
+        limiter=GroupRateLimiter(limits=rate_limits_from_catalog(catalog)),
         base_url=os.environ.get("UPBIT_GATEWAY_BASE_URL", "https://api.upbit.com"),
         allow_loopback_test=allow_loopback,
     )
@@ -154,7 +161,7 @@ def _default_executor() -> UpbitExecutor:
 
 def create_app(*, executor: UpbitExecutor | None = None) -> FastAPI:
     catalog = load_catalog()
-    request_executor = executor or _default_executor()
+    request_executor = executor or _default_executor(catalog)
     app = FastAPI(title="goodmoneying 업비트 API 게이트웨이", version="0.1.0")
 
     @app.exception_handler(RequestValidationError)
@@ -189,7 +196,9 @@ def create_app(*, executor: UpbitExecutor | None = None) -> FastAPI:
     @app.post(
         "/v1/requests",
         response_model=TraceEnvelope,
-        responses=ERROR_RESPONSES | TRACE_RESPONSES | MIXED_RESPONSES,
+        responses=(
+            ERROR_RESPONSES | TRACE_RESPONSES | MIXED_RESPONSES | DEFAULT_TRACE_RESPONSE
+        ),
     )
     def execute_request(payload: GatewayRequest, request: Request) -> JSONResponse:
         endpoint = rest_endpoint_by_id(catalog, payload.endpoint_id)

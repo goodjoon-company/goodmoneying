@@ -79,10 +79,20 @@ def test_exchange_test_request_hashes_body_in_original_input_order() -> None:
     assert list(json.loads(request.read()).keys()) == list(parameters)
 
 
-def test_exchange_query_uses_one_canonical_string_for_url_and_jwt() -> None:
+def test_exchange_query_derives_safe_wire_and_unencoded_hash_from_same_tokens() -> None:
     credentials = Credentials("fake-access", "s" * 64)
     parameters = OrderedDict(
-        [("uuids[]", ["fake-1", "fake-2"]), ("include_expired", True)]
+        [
+            (
+                "uuids[]",
+                [
+                    "2026-07-16T03:00:00+09:00",
+                    "id&uuid=extra",
+                    "#fragment",
+                ],
+            ),
+            ("include_expired", True),
+        ]
     )
     request = build_upstream_request(
         _endpoint("rest.get-pocket-api-keys"),
@@ -93,12 +103,19 @@ def test_exchange_query_uses_one_canonical_string_for_url_and_jwt() -> None:
         nonce_factory=lambda: "fixed-nonce",
     )
 
-    canonical = "uuids[]=fake-1&uuids[]=fake-2&include_expired=true"
+    hash_query = (
+        "uuids[]=2026-07-16T03:00:00+09:00&uuids[]=id&uuid=extra"
+        "&uuids[]=#fragment&include_expired=true"
+    )
+    wire_query = (
+        "uuids[]=2026-07-16T03%3A00%3A00%2B09%3A00"
+        "&uuids[]=id%26uuid%3Dextra&uuids[]=%23fragment&include_expired=true"
+    )
     token = request.headers["Authorization"].removeprefix("Bearer ")
     payload = jwt.decode(token, credentials.secret_key, algorithms=["HS512"])
 
-    assert request.url.query.decode() == canonical
-    assert payload["query_hash"] == query_hash(canonical)
+    assert request.url.query.decode() == wire_query
+    assert payload["query_hash"] == query_hash(hash_query)
 
 
 def test_catalog_parameter_validation_rejects_missing_and_unknown_values() -> None:

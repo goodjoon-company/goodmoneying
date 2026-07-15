@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import parse_qsl
 
 import jwt
 from fastapi import FastAPI, Request
@@ -20,6 +21,7 @@ def _record(request: Request) -> None:
             "method": request.method,
             "path": request.url.path,
             "origin": request.headers.get("Origin"),
+            "authorization": request.headers.get("Authorization"),
         }
     )
 
@@ -60,9 +62,13 @@ def pockets(request: Request) -> JSONResponse:
 @app.get("/v1/pockets/api_keys")
 def pocket_api_keys(request: Request) -> JSONResponse:
     _record(request)
-    canonical_query = request.scope["query_string"].decode()
-    _decode(request, canonical_query)
-    return JSONResponse(status_code=200, content={"canonical_query": canonical_query})
+    raw_query = request.scope["query_string"].decode()
+    decoded_query = parse_qsl(raw_query, keep_blank_values=True)
+    _decode(request, build_query_string(decoded_query))
+    return JSONResponse(
+        status_code=200,
+        content={"raw_query": raw_query, "decoded_query": decoded_query},
+    )
 
 
 @app.get("/v1/accounts")

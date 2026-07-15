@@ -114,7 +114,7 @@ def test_execution_route_rejects_websocket_ids_as_rest_contract_errors() -> None
         assert response.json()["detail"]["code"] == "INVALID_REQUEST"
 
 
-@pytest.mark.parametrize("status_code", [403, 404, 500, 502, 503, 504])
+@pytest.mark.parametrize("status_code", [403, 404, 422, 500, 501, 502, 503, 504, 505])
 def test_execution_route_distinguishes_upstream_status_envelope_from_local_error(
     status_code: int,
 ) -> None:

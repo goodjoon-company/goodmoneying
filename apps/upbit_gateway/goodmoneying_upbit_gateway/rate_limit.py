@@ -6,21 +6,25 @@ from collections import defaultdict, deque
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from email.utils import parsedate_to_datetime
-from math import ceil
+from math import ceil, isfinite
 from threading import Lock
-from typing import Any
+from typing import Any, cast
 
-RATE_LIMITS: dict[str, tuple[int, float]] = {
-    "market": (10, 1.0),
-    "candle": (10, 1.0),
-    "trade": (10, 1.0),
-    "ticker": (10, 1.0),
-    "orderbook": (10, 1.0),
-    "default": (30, 1.0),
-    "order": (8, 1.0),
-    "order-test": (8, 1.0),
-    "order-cancel-all": (1, 2.0),
-}
+from goodmoneying_upbit_gateway.catalog import load_catalog
+
+
+def rate_limits_from_catalog(catalog: Mapping[str, Any]) -> dict[str, tuple[int, float]]:
+    """REST endpoint가 참조하는 요청 제한을 카탈로그 단일 기준에서 만든다."""
+    endpoints = cast(list[dict[str, Any]], catalog["rest_endpoints"])
+    specifications = cast(dict[str, dict[str, Any]], catalog["rate_limits"])
+    groups = {cast(str, endpoint["rate_limit_group"]) for endpoint in endpoints}
+    return {
+        group: (
+            cast(int, specifications[group]["requests"]),
+            float(specifications[group]["seconds"]),
+        )
+        for group in groups
+    }
 
 def parse_remaining_req(value: str | None) -> tuple[str, int] | None:
     if value is None:
@@ -53,7 +57,8 @@ def parse_penalty_seconds(
         if candidate is not None:
             candidates.append(candidate)
     _collect_penalty_candidates(body, current, candidates)
-    return float(ceil(max(candidates))) if candidates else fallback_seconds
+    finite_candidates = [candidate for candidate in candidates if _positive_finite(candidate)]
+    return float(ceil(max(finite_candidates))) if finite_candidates else fallback_seconds
 
 
 _DURATION_KEYS = {
@@ -100,19 +105,22 @@ def _collect_penalty_candidates(value: Any, current: float, candidates: list[flo
                 "mins",
                 "분",
             } else 1.0
-            candidates.append(amount * multiplier)
+            candidate = amount * multiplier
+            if _positive_finite(candidate):
+                candidates.append(candidate)
 
 
 def _duration_or_deadline(value: Any, current: float) -> float | None:
     if isinstance(value, int | float) and not isinstance(value, bool):
-        return float(value) if value > 0 else None
+        numeric_value = float(value)
+        return numeric_value if _positive_finite(numeric_value) else None
     if not isinstance(value, str):
         return None
     try:
         seconds = float(value)
     except ValueError:
         return _deadline_seconds(value, current)
-    return seconds if seconds > 0 else None
+    return seconds if _positive_finite(seconds) else None
 
 
 def _deadline_seconds(value: Any, current: float) -> float | None:
@@ -121,7 +129,7 @@ def _deadline_seconds(value: Any, current: float) -> float | None:
         if current > 0 and deadline_value > current * 100:
             deadline_value /= 1_000
         seconds = deadline_value - current
-        return seconds if seconds > 0 else None
+        return seconds if _positive_finite(seconds) else None
     if not isinstance(value, str):
         return None
     try:
@@ -136,16 +144,24 @@ def _deadline_seconds(value: Any, current: float) -> float | None:
         except ValueError:
             return None
     seconds = deadline.timestamp() - current
-    return seconds if seconds > 0 else None
+    return seconds if _positive_finite(seconds) else None
+
+
+def _positive_finite(value: float) -> bool:
+    return isfinite(value) and value > 0
 
 
 class GroupRateLimiter:
     def __init__(
         self,
         *,
+        limits: Mapping[str, tuple[int, float]] | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        self._limits = dict(
+            rate_limits_from_catalog(load_catalog()) if limits is None else limits
+        )
         self._clock = clock
         self._sleep = sleep
         self._calls: dict[str, deque[float]] = defaultdict(deque)
@@ -153,7 +169,7 @@ class GroupRateLimiter:
         self._lock = Lock()
 
     def acquire(self, group: str) -> None:
-        limit, window = RATE_LIMITS[group]
+        limit, window = self._limits[group]
         calls = self._calls[group]
         while True:
             with self._lock:
@@ -176,8 +192,10 @@ class GroupRateLimiter:
             if remaining is None:
                 return
             group, second_quota = remaining
-            if second_quota == 0 and group in RATE_LIMITS:
-                self._blocked_until[group] = self._clock() + 1.0
+            if second_quota == 0 and group in self._limits:
+                self._blocked_until[group] = max(
+                    self._blocked_until.get(group, 0.0), self._clock() + 1.0
+                )
 
     def defer(self, group: str, seconds: float) -> None:
         with self._lock:

@@ -25,33 +25,101 @@ paths:
   /v1/requests:
     post:
       operationId: executeCatalogRequest
-      description: endpoint_id 허용 목록과 비파괴 정책을 판정하며 Issue #19에서는 상향 호출을 수행하지 않는다.
+      description: endpoint_id 허용 목록과 비파괴 정책을 먼저 판정하고 read·test 기능만 업비트 상향 호출한다.
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: "#/components/schemas/GatewayRequest"}
       responses:
-        "501":
-          description: 알려진 endpoint_id의 상향 호출 미구현
+        "200":
+          description: 업비트 상향 성공 응답
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/ErrorResponse"}
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
+        "201":
+          description: 공식 주문 생성 테스트 성공 응답
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
+        "400":
+          description: 업비트 상향 요청 오류
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
+        "401":
+          description: 업비트 상향 인증 오류
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
         "403":
-          description: 비파괴 정책에 따라 차단된 endpoint_id
+          description: 로컬 정책 차단 또는 업비트 상향 403
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/ErrorResponse"}
+              schema:
+                anyOf:
+                  - {$ref: "#/components/schemas/TraceEnvelope"}
+                  - {$ref: "#/components/schemas/ErrorResponse"}
         "404":
-          description: 카탈로그에 없는 endpoint_id
+          description: 로컬 미등록 endpoint_id 또는 업비트 상향 404
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/ErrorResponse"}
+              schema:
+                anyOf:
+                  - {$ref: "#/components/schemas/TraceEnvelope"}
+                  - {$ref: "#/components/schemas/ErrorResponse"}
         "422":
-          description: 요청 검증 오류
+          description: 로컬 요청 검증 오류 또는 업비트 상향 422
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/HTTPValidationError"}
+              schema:
+                anyOf:
+                  - {$ref: "#/components/schemas/TraceEnvelope"}
+                  - {$ref: "#/components/schemas/ErrorResponse"}
+        "418":
+          description: 업비트 상향 일시 차단 응답
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
+        "429":
+          description: 업비트 상향 요청 제한 초과 응답
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
+        "502":
+          description: 로컬 상향 프로토콜 오류 또는 업비트 상향 502
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - {$ref: "#/components/schemas/TraceEnvelope"}
+                  - {$ref: "#/components/schemas/ErrorResponse"}
+        "503":
+          description: 로컬 인증 설정 오류 또는 업비트 상향 503
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - {$ref: "#/components/schemas/TraceEnvelope"}
+                  - {$ref: "#/components/schemas/ErrorResponse"}
+        "504":
+          description: 로컬 상향 호출 시간 초과 또는 업비트 상향 504
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - {$ref: "#/components/schemas/TraceEnvelope"}
+                  - {$ref: "#/components/schemas/ErrorResponse"}
+        "500":
+          description: 업비트 상향 서버 내부 오류
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
+        default:
+          description: 명시되지 않은 업비트 상향 상태의 마스킹된 추적
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
 components:
   schemas:
     Health:
@@ -122,34 +190,61 @@ components:
       properties:
         endpoint_id:
           type: string
-          pattern: "^(rest|websocket)\\."
+          pattern: "^rest\\."
         parameters:
           type: object
           additionalProperties: true
+    TraceRequest:
+      type: object
+      additionalProperties: false
+      required: [method, path, parameters]
+      properties:
+        method: {type: string}
+        path: {type: string}
+        parameters: {type: object, additionalProperties: true}
+    TraceResponse:
+      type: object
+      additionalProperties: false
+      required: [status_code, body]
+      properties:
+        status_code: {type: integer}
+        body: {}
+    TraceRateLimit:
+      type: object
+      additionalProperties: false
+      required: [group, remaining_sec, retry_after]
+      properties:
+        group: {type: string}
+        remaining_sec:
+          anyOf:
+            - {type: integer}
+            - {type: "null"}
+        retry_after:
+          anyOf:
+            - {type: string}
+            - {type: "null"}
+    TraceEnvelope:
+      type: object
+      additionalProperties: false
+      required: [trace_id, endpoint_id, request, response, rate_limit, duration_ms, received_at]
+      properties:
+        trace_id: {type: string, format: uuid}
+        endpoint_id: {type: string}
+        request: {$ref: "#/components/schemas/TraceRequest"}
+        response: {$ref: "#/components/schemas/TraceResponse"}
+        rate_limit: {$ref: "#/components/schemas/TraceRateLimit"}
+        duration_ms: {type: number, minimum: 0}
+        received_at: {type: string, format: date-time}
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: {type: string}
+        message: {type: string}
     ErrorResponse:
       type: object
       additionalProperties: false
       required: [detail]
       properties:
-        detail:
-          type: object
-          additionalProperties: false
-          required: [code, message]
-          properties:
-            code: {type: string}
-            message: {type: string}
-    ValidationError:
-      type: object
-      required: [loc, msg, type]
-      properties:
-        loc:
-          type: array
-          items: {anyOf: [{type: string}, {type: integer}]}
-        msg: {type: string}
-        type: {type: string}
-    HTTPValidationError:
-      type: object
-      properties:
-        detail:
-          type: array
-          items: {$ref: "#/components/schemas/ValidationError"}
+        detail: {$ref: "#/components/schemas/ErrorDetail"}

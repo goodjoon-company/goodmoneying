@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
+import sys
 from pathlib import Path
+
+import httpx
 
 
 def run_dev_script(
@@ -59,6 +63,8 @@ def test_dev_script_without_arguments_prints_usage() -> None:
     assert "infra start" in result.stdout
     assert "app start" in result.stdout
     assert "db migrate" in result.stdout
+    assert "upbit-gateway 단독" in result.stdout
+    assert "DB 마이그레이션을 생략" in result.stdout
 
 
 def test_dev_script_status_lists_infra_and_app_units() -> None:
@@ -70,6 +76,7 @@ def test_dev_script_status_lists_infra_and_app_units() -> None:
     assert "app" in result.stdout
     assert "api" in result.stdout
     assert "web" in result.stdout
+    assert "upbit-gateway" in result.stdout
     assert "realtime-collection-worker" in result.stdout
     assert "backfill-collection-worker" in result.stdout
 
@@ -92,6 +99,47 @@ def test_dev_script_loads_env_file(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "endpoint=http://127.0.0.1:19000" in result.stdout
     assert "endpoint=http://127.0.0.1:19001/" in result.stdout
+
+
+def test_dev_script_reports_upbit_gateway_configured_port(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("GOODMONEYING_UPBIT_GATEWAY_PORT=19002\n")
+    env = os.environ.copy()
+    env["GOODMONEYING_ENV_FILE"] = str(env_file)
+
+    result = run_dev_script("app", "status", "upbit-gateway", env=env)
+
+    assert result.returncode == 0
+    assert "endpoint=http://127.0.0.1:19002" in result.stdout
+
+
+def test_dev_script_starts_ready_gateway_without_database_migration(tmp_path: Path) -> None:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    fake_dbmate, dbmate_log = install_fake_dbmate(tmp_path)
+    env = os.environ.copy()
+    env.update(
+        {
+            "GOODMONEYING_ENV_FILE": str(tmp_path / "missing.env"),
+            "GOODMONEYING_DEV_DIR": str(tmp_path / ".dev"),
+            "GOODMONEYING_UPBIT_GATEWAY_PORT": str(port),
+            "GOODMONEYING_PYTHON_BIN": sys.executable,
+            "GOODMONEYING_DBMATE_BIN": str(fake_dbmate),
+            "DEV_DBMATE_LOG": str(dbmate_log),
+        }
+    )
+    try:
+        started = run_dev_script("app", "start", "upbit-gateway", env=env)
+        response = httpx.get(f"http://127.0.0.1:{port}/health", timeout=2)
+    finally:
+        stopped = run_dev_script("app", "stop", "upbit-gateway", env=env)
+
+    assert started.returncode == 0, started.stderr
+    assert "준비 완료" in started.stdout
+    assert response.status_code == 200
+    assert stopped.returncode == 0
+    assert not dbmate_log.exists()
 
 
 def test_dev_script_shell_environment_overrides_env_file(tmp_path: Path) -> None:

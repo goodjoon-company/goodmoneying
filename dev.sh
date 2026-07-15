@@ -48,6 +48,8 @@ API_HOST="${GOODMONEYING_API_HOST:-127.0.0.1}"
 API_PORT="${GOODMONEYING_API_PORT:-8000}"
 WEB_HOST="${GOODMONEYING_WEB_HOST:-127.0.0.1}"
 WEB_PORT="${GOODMONEYING_WEB_PORT:-5173}"
+UPBIT_GATEWAY_HOST="${GOODMONEYING_UPBIT_GATEWAY_HOST:-127.0.0.1}"
+UPBIT_GATEWAY_PORT="${GOODMONEYING_UPBIT_GATEWAY_PORT:-8001}"
 POSTGRES_PORT="${GOODMONEYING_POSTGRES_PORT:-5432}"
 OPERATOR_TOKEN="${GOODMONEYING_OPERATOR_TOKEN:-local-dev-token}"
 DATABASE_URL="${GOODMONEYING_DATABASE_URL:-postgresql://goodmoneying:goodmoneying@127.0.0.1:${POSTGRES_PORT}/goodmoneying?sslmode=disable}"
@@ -84,23 +86,26 @@ usage() {
   ./dev.sh db dump
   ./dev.sh db rollback
 
-  ./dev.sh app start [api|web|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
-  ./dev.sh app stop [api|web|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
-  ./dev.sh app restart [api|web|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
-  ./dev.sh app status [api|web|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
+  ./dev.sh app start [api|web|upbit-gateway|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
+  ./dev.sh app stop [api|web|upbit-gateway|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
+  ./dev.sh app restart [api|web|upbit-gateway|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
+  ./dev.sh app status [api|web|upbit-gateway|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
 
-  ./dev.sh logs [api|web|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker]
+  ./dev.sh logs [api|web|upbit-gateway|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker]
 
 설명:
   infra 는 Podman Compose 로 PostgreSQL 을 관리한다.
   db 는 dbmate 로 버전 DB 마이그레이션을 관리한다.
   app 은 로컬 개발 프로세스로 실행한다. API 는 기본적으로 PostgreSQL 을 바라본다.
   app start 와 app restart 는 DB 마이그레이션 성공 후 앱을 시작한다.
+  upbit-gateway 단독 start/restart 는 DB에 의존하지 않아 DB 마이그레이션을 생략한다.
+  all 대상은 기존 앱을 함께 시작하므로 DB 마이그레이션을 수행한다.
   루트 .env 파일이 있으면 자동으로 읽는다. 셸 환경변수는 .env 값보다 우선한다.
 
 기본 endpoint:
   Web: http://127.0.0.1:5173/
   API: http://127.0.0.1:8000
+  Upbit Gateway: http://127.0.0.1:8001
   Health: http://127.0.0.1:8000/health
 
 주요 환경변수:
@@ -109,6 +114,7 @@ usage() {
   GOODMONEYING_OPERATOR_TOKEN
   GOODMONEYING_API_PORT
   GOODMONEYING_WEB_PORT
+  GOODMONEYING_UPBIT_GATEWAY_PORT
   GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS
   GOODMONEYING_BACKFILL_POLL_SECONDS
   GOODMONEYING_BACKFILL_BATCH_SIZE
@@ -351,8 +357,8 @@ require_local_database_port() {
 service_list() {
   local target="${1:-all}"
   case "$target" in
-    all) printf '%s\n' api web realtime-collection-worker backfill-collection-worker candle-aggregation-worker ;;
-    api | web | realtime-collection-worker | backfill-collection-worker | candle-aggregation-worker) printf '%s\n' "$target" ;;
+    all) printf '%s\n' api web upbit-gateway realtime-collection-worker backfill-collection-worker candle-aggregation-worker ;;
+    api | web | upbit-gateway | realtime-collection-worker | backfill-collection-worker | candle-aggregation-worker) printf '%s\n' "$target" ;;
     *) print_error "알 수 없는 app 대상: $target"; return 2 ;;
   esac
 }
@@ -377,6 +383,7 @@ port_for() {
   case "$1" in
     api) printf '%s\n' "$API_PORT" ;;
     web) printf '%s\n' "$WEB_PORT" ;;
+    upbit-gateway) printf '%s\n' "$UPBIT_GATEWAY_PORT" ;;
     *) return 1 ;;
   esac
 }
@@ -411,6 +418,9 @@ pid_from_port() {
         ;;
       web)
         [[ "$command" == *"vite"* || "$command" == *"apps/web"* ]] || continue
+        ;;
+      upbit-gateway)
+        [[ "$command" == *"goodmoneying_upbit_gateway.main:app"* || "$command" == *"uvicorn"* ]] || continue
         ;;
     esac
     printf '%s\n' "$pid"
@@ -512,6 +522,30 @@ start_web() {
       node scripts/dev-vite-server.mjs
 }
 
+wait_http_ready() {
+  local unit="$1"
+  local endpoint="$2"
+  for _ in {1..20}; do
+    if "$PYTHON_BIN" -c 'import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=1).read()' "$endpoint" >/dev/null 2>&1; then
+      printf 'app %s 준비 완료. health=%s\n' "$unit" "$endpoint"
+      return 0
+    fi
+    sleep 0.25
+  done
+  print_error "app ${unit} 준비 확인에 실패했습니다. endpoint=${endpoint}"
+  stop_app_unit "$unit"
+  return 1
+}
+
+start_upbit_gateway() {
+  start_background upbit-gateway \
+    env PYTHONPATH=apps/upbit_gateway \
+      TZ="$APP_TIMEZONE" \
+      "$PYTHON_BIN" -m uvicorn goodmoneying_upbit_gateway.main:app \
+      --host "$UPBIT_GATEWAY_HOST" --port "$UPBIT_GATEWAY_PORT"
+  wait_http_ready upbit-gateway "http://${UPBIT_GATEWAY_HOST}:${UPBIT_GATEWAY_PORT}/health"
+}
+
 start_realtime_collection_worker() {
   require_local_database_port
   start_background realtime-collection-worker \
@@ -559,6 +593,7 @@ start_app_unit() {
   case "$1" in
     api) start_api ;;
     web) start_web ;;
+    upbit-gateway) start_upbit_gateway ;;
     realtime-collection-worker) start_realtime_collection_worker ;;
     backfill-collection-worker) start_backfill_collection_worker ;;
     candle-aggregation-worker) start_candle_aggregation_worker ;;
@@ -597,6 +632,7 @@ status_app_unit() {
   case "$unit" in
     api) endpoint=" endpoint=http://${API_HOST}:${API_PORT}" ;;
     web) endpoint=" endpoint=http://${WEB_HOST}:${WEB_PORT}/" ;;
+    upbit-gateway) endpoint=" endpoint=http://${UPBIT_GATEWAY_HOST}:${UPBIT_GATEWAY_PORT}" ;;
   esac
   pid="$(pid_for_unit "$unit" 2>/dev/null || true)"
   if [[ -n "$pid" ]]; then
@@ -655,7 +691,9 @@ app_start() {
   local target="${1:-all}"
   local unit
   service_list "$target" >/dev/null
-  run_dbmate --no-dump-schema migrate
+  if [[ "$target" != "upbit-gateway" ]]; then
+    run_dbmate --no-dump-schema migrate
+  fi
   for unit in $(service_list "$target"); do
     start_app_unit "$unit"
   done
@@ -672,12 +710,12 @@ app_stop() {
 show_logs() {
   local unit="${1:-}"
   if [[ -z "$unit" ]]; then
-    print_error "logs 대상이 필요합니다: api, web, realtime-collection-worker, backfill-collection-worker, candle-aggregation-worker"
+    print_error "logs 대상이 필요합니다: api, web, upbit-gateway, realtime-collection-worker, backfill-collection-worker, candle-aggregation-worker"
     usage
     return 2
   fi
   case "$unit" in
-    api | web | realtime-collection-worker | backfill-collection-worker | candle-aggregation-worker) ;;
+    api | web | upbit-gateway | realtime-collection-worker | backfill-collection-worker | candle-aggregation-worker) ;;
     *) print_error "알 수 없는 logs 대상: $unit"; return 2 ;;
   esac
   tail -n 120 -f "$(log_file_for "$unit")"

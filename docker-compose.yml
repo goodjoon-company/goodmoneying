@@ -32,6 +32,24 @@ services:
       postgres:
         condition: service_healthy
 
+  upbit-gateway:
+    build:
+      context: .
+      dockerfile: apps/upbit_gateway/Dockerfile
+    environment:
+      TZ: Asia/Seoul
+      UPBIT_GATEWAY_BASE_URL: https://api.upbit.com
+      UPBIT_GATEWAY_TIMEOUT_SECONDS: ${UPBIT_GATEWAY_TIMEOUT_SECONDS:-10}
+      UPBIT_ACCESS_KEY: ${UPBIT_ACCESS_KEY:-}
+      UPBIT_SECRET_KEY: ${UPBIT_SECRET_KEY:-}
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   realtime-collection-worker:
     build:
       context: .

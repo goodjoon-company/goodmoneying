@@ -52,13 +52,17 @@ def test_ci_workflow_has_required_quality_commands() -> None:
     runs = workflow_step_runs(workflow, "verify")
 
     assert "uv run ruff check ." in runs
-    assert "uv run mypy apps/api apps/worker packages/shared tests" in runs
+    assert "uv run mypy apps/api apps/worker apps/upbit_gateway packages/shared tests" in runs
     assert "uv run pytest" in runs
     assert "npm test" in runs
     assert "npm run build" in runs
     assert "tests/e2e/run_dbmate_migration_e2e.sh" in runs
     assert "docker build -f apps/api/Dockerfile -t goodmoneying-api:ci ." in runs
     assert "docker build -f apps/worker/Dockerfile -t goodmoneying-worker:ci ." in runs
+    assert (
+        "docker build -f apps/upbit_gateway/Dockerfile -t goodmoneying-upbit-gateway:ci ."
+        in runs
+    )
     assert "docker build -f apps/web/Dockerfile -t goodmoneying-web:ci ." in runs
     assert (
         "docker build -f apps/migrations/Dockerfile -t goodmoneying-migrations:ci ."

@@ -20,7 +20,7 @@ const names = [
 ] as const;
 
 const endpoints: CatalogEndpoint[] = names.map(([group, title], index) => ({
-  endpoint_id: `rest.test-${index}`,
+  endpoint_id: index === 1 ? "rest.list-candles-seconds" : `rest.test-${index}`,
   title,
   category: "quotation",
   functional_group: group,
@@ -32,7 +32,13 @@ const endpoints: CatalogEndpoint[] = names.map(([group, title], index) => ({
       { name: "is_details", location: "query", type: "boolean", required: false },
       { name: "states", location: "query", type: "array", required: false }
     ]
-    : [{ name: "market", location: "query", type: "string", required: true }],
+    : index === 1
+      ? [
+        { name: "market", location: "query", type: "string", required: true },
+        { name: "to", location: "query", type: "string", required: false, format: "date-time" },
+        { name: "count", location: "query", type: "integer", required: false, maximum: 2 }
+      ]
+      : [{ name: "market", location: "query", type: "string", required: true }],
   rate_limit_group: group,
   safety: "read",
   source_url: `https://docs.upbit.com/kr/reference/test-${index}`
@@ -83,12 +89,20 @@ describe("업비트 API 공통 작업대", () => {
 
     await user.click(screen.getByRole("button", { name: "원본 응답과 API 출처 보기" }));
     const dialog = screen.getByRole("dialog", { name: "API 요청 추적" });
+    const traceButton = screen.getByRole("button", { name: "원본 응답과 API 출처 보기" });
     expect(dialog).toHaveTextContent("3cb59f4b");
     expect(dialog).toHaveTextContent("remaining_sec");
-    expect(within(dialog).getByRole("link", { name: "Upbit 공식 문서" }))
-      .toHaveAttribute("href", endpoints[0].source_url);
+    const sourceLink = within(dialog).getByRole("link", { name: "Upbit 공식 문서" });
+    const closeButton = within(dialog).getByRole("button", { name: "닫기" });
+    expect(sourceLink).toHaveAttribute("href", endpoints[0].source_url);
+    expect(closeButton).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(sourceLink).toHaveFocus();
+    await user.tab();
+    expect(closeButton).toHaveFocus();
     fireEvent.keyDown(dialog, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "API 요청 추적" })).not.toBeInTheDocument();
+    await waitFor(() => expect(traceButton).toHaveFocus());
   });
 
   it("endpoint 변경은 진행 중 요청을 취소하고 늦은 응답을 새 출처로 표시하지 않는다", async () => {
@@ -134,5 +148,90 @@ describe("업비트 API 공통 작업대", () => {
     expect(await screen.findByDisplayValue("KRW-ETH")).toBeInTheDocument();
     fireEvent.change(screen.getByRole("combobox", { name: "거래쌍" }), { target: { value: "BTC-XRP" } });
     expect(onMarketChange).toHaveBeenLastCalledWith("BTC-XRP");
+  });
+
+  it("공통 거래쌍을 유일한 입력으로 사용하고 최신 값을 요청에 전파한다", async () => {
+    const client = {
+      loadCatalog: vi.fn(async () => catalog),
+      execute: vi.fn(async () => ({ ...trace, endpoint_id: endpoints[1].endpoint_id }))
+    };
+    const user = userEvent.setup();
+    render(<UpbitApiWorkbench moduleId="quotation" client={client} />);
+    await screen.findByLabelText("Quotation API 작업대");
+    await user.click(screen.getByRole("tab", { name: "캔들" }));
+
+    expect(screen.queryByLabelText("market")).not.toBeInTheDocument();
+    const market = screen.getByRole("combobox", { name: "거래쌍" });
+    await user.clear(market);
+    await user.type(market, "BTC-ETH");
+    await user.click(screen.getByRole("button", { name: "요청 실행" }));
+
+    await waitFor(() => expect(client.execute).toHaveBeenCalledWith(
+      endpoints[1].endpoint_id,
+      expect.objectContaining({ market: "BTC-ETH" }),
+      expect.any(AbortSignal)
+    ));
+  });
+
+  it("빈 과거 페이지와 전부 중복인 미래 페이지를 방향별 종단으로 고정한다", async () => {
+    const candleBody = (minutes: number[]) => minutes.map((minute) => ({
+      candle_date_time_utc: `2026-07-15T00:0${minute}:00`,
+      opening_price: 1, high_price: 2, low_price: 0, trade_price: 1,
+      candle_acc_trade_volume: 3, candle_acc_trade_price: 3
+    }));
+    const responses = [candleBody([1, 2]), [], candleBody([1, 2])];
+    const client = {
+      loadCatalog: vi.fn(async () => catalog),
+      execute: vi.fn(async () => ({
+        ...trace,
+        endpoint_id: endpoints[1].endpoint_id,
+        response: { status_code: 200, body: responses.shift() ?? [] }
+      }))
+    };
+    const user = userEvent.setup();
+    render(<UpbitApiWorkbench moduleId="quotation" client={client} />);
+    await screen.findByLabelText("Quotation API 작업대");
+    await user.click(screen.getByRole("tab", { name: "캔들" }));
+    fireEvent.change(screen.getByLabelText("to"), { target: { value: "2026-07-15T09:03" } });
+    await user.click(screen.getByRole("button", { name: "요청 실행" }));
+    await screen.findByText("2개 캔들 · 가장자리 이동 시 연속 조회");
+
+    await user.click(screen.getByRole("button", { name: "과거 데이터 조회" }));
+    expect(await screen.findByText("과거 데이터 끝")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "미래 데이터 조회" }));
+    expect(await screen.findByText("최신 데이터 끝")).toBeInTheDocument();
+    expect(client.execute).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole("button", { name: "과거 데이터 조회" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "미래 데이터 조회" })).toBeDisabled();
+  });
+
+  it("429 추적 응답은 친화적인 오류와 냉각 상태를 표시하고 원본 추적을 보존한다", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T00:00:00Z"));
+    try {
+      const limitedTrace: TraceEnvelope = {
+        ...trace,
+        response: { status_code: 429, body: { error: { name: "too_many_requests" } } },
+        rate_limit: { group: "market", remaining_sec: 0, retry_after: "2" }
+      };
+      const client = {
+        loadCatalog: vi.fn(async () => catalog),
+        execute: vi.fn(async () => limitedTrace)
+      };
+      render(<UpbitApiWorkbench moduleId="quotation" client={client} />);
+      await act(async () => { await Promise.resolve(); });
+      fireEvent.click(screen.getByRole("button", { name: "요청 실행" }));
+      await act(async () => { await Promise.resolve(); });
+
+      expect(screen.getByRole("alert")).toHaveTextContent("요청 제한");
+      expect(screen.getByRole("alert")).toHaveTextContent("2초");
+      expect(screen.getByRole("button", { name: "요청 실행" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "원본 응답과 API 출처 보기" })).toBeInTheDocument();
+
+      act(() => { vi.advanceTimersByTime(2_000); });
+      expect(screen.getByRole("button", { name: "요청 실행" })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

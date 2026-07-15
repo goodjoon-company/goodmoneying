@@ -4,8 +4,10 @@ import {
   buildInitialParameters,
   coerceParameterValue,
   formatParameterValue,
+  isCommonParameter,
   quotationGroups,
-  selectQuotationEndpoints
+  selectQuotationEndpoints,
+  serializeParameters
 } from "./workbench";
 import type { CatalogEndpoint } from "./types";
 
@@ -80,5 +82,17 @@ describe("카탈로그 기반 작업대", () => {
     expect(formatParameterValue({
       name: "to", location: "query", type: "string", required: false, format: "date-time"
     }, "2026-07-16T00:00:00.000Z")).toBe("2026-07-16T09:00");
+  });
+
+  it("공통 파라미터는 동적 값 대신 최신 공통 조회 기준만 직렬화한다", () => {
+    const context = { market: "BTC-ETH", quote: "BTC", base: "ETH" };
+
+    expect(endpoints[1].parameters.filter((parameter) => isCommonParameter(parameter.name)))
+      .toHaveLength(1);
+    expect(serializeParameters(
+      endpoints[1],
+      { unit: 5, market: "KRW-BTC", count: 50 },
+      context
+    )).toEqual({ unit: 5, market: "BTC-ETH", count: 50 });
   });
 });

@@ -45,6 +45,10 @@
 .upbit-orderbook-ladder span:last-child { border-radius: 5px; padding: 7px; background: rgb(71 142 230 / .13); color: #9cc5f4; }
 .upbit-orderbook-ladder strong { color: #65736b; text-align: center; }
 .upbit-candle-result > p { color: #849188; font-size: 12px; }
+.upbit-candle-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; }
+.upbit-candle-pagination button { min-height: 38px; border: 1px solid #365845; border-radius: 7px; padding: 0 12px; background: #16251d; color: #dce9df; font-weight: 800; }
+.upbit-candle-pagination button:disabled { opacity: .5; }
+.upbit-candle-pagination span { color: #7f8d84; font-size: 12px; }
 .upbit-json-fallback { color: #9eb0a4; }
 .upbit-trace-dialog { position: relative; width: min(840px, calc(100vw - 28px)); max-height: 86vh; overflow: auto; border: 1px solid #355445; border-radius: 10px; padding: 22px; background: #101713; color: #e8f1ea; box-shadow: 0 24px 80px rgb(0 0 0 / .58); }
 .upbit-trace-dialog a { color: #7bdbaa; }

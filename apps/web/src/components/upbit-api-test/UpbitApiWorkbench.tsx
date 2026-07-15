@@ -4,6 +4,7 @@ import { FileJson, X } from "lucide-react";
 import { UpbitCandleChart } from "../UpbitCandleChart";
 import { createUpbitGatewayClient, type UpbitGatewayClient } from "./client";
 import { mergeCandleRows, nextCandleParameters, parseCandleRows, type CandleGranularity } from "./pagination";
+import { describeTraceResponse } from "./trace";
 import type {
   CandleRow,
   CatalogEndpoint,
@@ -19,6 +20,7 @@ import {
   buildInitialParameters,
   coerceParameterValue,
   formatParameterValue,
+  isCommonParameter,
   quotationGroups,
   selectQuotationEndpoints,
   serializeParameters,
@@ -82,8 +84,10 @@ function QuotationWorkbench({ client, context, onContextChange }: {
   const [isTraceOpen, setTraceOpen] = useState(false);
   const [cooldownUntil, setCooldownUntil] = useState(0);
   const [edgeVersion, setEdgeVersion] = useState(0);
+  const [candleHasMore, setCandleHasMore] = useState({ past: false, future: false });
   const initialParametersRef = useRef<RequestParameters | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
+  const traceTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -111,6 +115,7 @@ function QuotationWorkbench({ client, context, onContextChange }: {
     setValues(buildInitialParameters(endpoint, context));
     setTrace(null);
     setCandles([]);
+    setCandleHasMore({ past: false, future: false });
     setEdgeVersion(0);
     initialParametersRef.current = null;
     controllerRef.current?.abort();
@@ -125,7 +130,7 @@ function QuotationWorkbench({ client, context, onContextChange }: {
 
   const execute = async (parameters?: RequestParameters, appendDirection?: "past" | "future") => {
     if (!endpoint || isLoading || Date.now() < cooldownUntil) return;
-    const requestParameters = parameters ?? serializeParameters(endpoint, values);
+    const requestParameters = serializeParameters(endpoint, parameters ?? values, context);
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -135,11 +140,25 @@ function QuotationWorkbench({ client, context, onContextChange }: {
       const nextTrace = await client.execute(endpoint.endpoint_id, requestParameters, controller.signal);
       if (controller.signal.aborted) return;
       setTrace(nextTrace);
-      applyRateLimit(nextTrace, setCooldownUntil);
+      const feedback = describeTraceResponse(nextTrace);
+      if (feedback.cooldownMs > 0) setCooldownUntil(Date.now() + feedback.cooldownMs);
+      if (feedback.error) return;
       if (endpoint.functional_group === "candle") {
         const page = parseCandleRows(nextTrace.response.body);
-        setCandles((current) => appendDirection ? mergeCandleRows(current, page) : page);
-        if (!appendDirection) initialParametersRef.current = requestParameters;
+        if (appendDirection) {
+          const merged = mergeCandleRows(candles, page);
+          setCandles(merged);
+          if (page.length === 0 || merged.length === candles.length) {
+            setCandleHasMore((current) => ({ ...current, [appendDirection]: false }));
+          }
+        } else {
+          setCandles(page);
+          setCandleHasMore({
+            past: page.length > 0,
+            future: page.length > 0 && requestParameters.to !== undefined
+          });
+          initialParametersRef.current = requestParameters;
+        }
       } else if (endpoint.functional_group === "pair") {
         const markets = readStringFields(nextTrace.response.body, "market");
         if (markets.length) {
@@ -159,10 +178,20 @@ function QuotationWorkbench({ client, context, onContextChange }: {
 
   const requestCandleEdge = (direction: "past" | "future") => {
     const initial = initialParametersRef.current;
-    if (!initial || !endpoint || (direction === "future" && initial.to === undefined)) return;
+    if (!candleHasMore[direction] || !initial || !endpoint) return;
+    if (direction === "future" && initial.to === undefined) {
+      setCandleHasMore((current) => ({ ...current, future: false }));
+      return;
+    }
     const { granularity, unit } = candleInterval(endpoint, initial);
     const next = nextCandleParameters(direction, initial, candles, granularity, unit);
     if (next) void execute(next, direction);
+    else setCandleHasMore((current) => ({ ...current, [direction]: false }));
+  };
+
+  const closeTrace = () => {
+    setTraceOpen(false);
+    window.setTimeout(() => traceTriggerRef.current?.focus(), 0);
   };
 
   if (error && !catalog) return <section className="upbit-workbench-error" role="alert">{error}</section>;
@@ -170,6 +199,7 @@ function QuotationWorkbench({ client, context, onContextChange }: {
 
   const activeCount = endpoints.filter((item) => !item.deprecated).length;
   const deprecatedCount = endpoints.length - activeCount;
+  const traceFeedback = trace ? describeTraceResponse(trace) : null;
   return (
     <section className="upbit-workbench" aria-label="Quotation API 작업대">
       <header className="upbit-workbench-intro panel">
@@ -210,7 +240,7 @@ function QuotationWorkbench({ client, context, onContextChange }: {
           {endpoint.deprecated ? <p className="upbit-deprecated-badge">사용 중단(deprecated) API · 호환성 확인용</p> : null}
           <WorkbenchCommonSelection context={context} marketOptions={marketOptions} onChange={onContextChange} />
           <div className="upbit-dynamic-fields">
-            {endpoint.parameters.map((parameter) => (
+            {endpoint.parameters.filter((parameter) => !isCommonParameter(parameter.name)).map((parameter) => (
               <ParameterField key={parameter.name} parameter={parameter} value={values[parameter.name]}
                 onChange={(value) => setValues((current) => ({ ...current, [parameter.name]: value }))} />
             ))}
@@ -223,19 +253,24 @@ function QuotationWorkbench({ client, context, onContextChange }: {
         <section className="upbit-result-panel panel" aria-label="API 응답 결과">
           <div className="panel-heading">
             <div><h3>{endpoint.title}</h3><span>{endpoint.method} {endpoint.path}</span></div>
-            {trace ? <button className="icon-button" type="button" aria-label="원본 응답과 API 출처 보기"
+            {trace ? <button ref={traceTriggerRef} className="icon-button" type="button" aria-label="원본 응답과 API 출처 보기"
               onClick={() => setTraceOpen(true)}><FileJson size={18} /></button> : null}
           </div>
           {trace ? (
             <>
               <TraceSummary trace={trace} />
-              <ResultRenderer endpoint={endpoint} body={trace.response.body} candles={candles}
-                edgeVersion={edgeVersion} onRequestEdge={requestCandleEdge} />
+              {traceFeedback?.error ? (
+                <p className="upbit-inline-error" role="alert">{traceFeedback.error}</p>
+              ) : (
+                <ResultRenderer endpoint={endpoint} body={trace.response.body} candles={candles}
+                  edgeVersion={edgeVersion} hasMore={candleHasMore} isLoading={isLoading}
+                  onRequestEdge={requestCandleEdge} />
+              )}
             </>
           ) : <p className="upbit-empty-result">왼쪽 조건을 확인한 뒤 요청을 실행하세요.</p>}
         </section>
       </div>
-      {trace && isTraceOpen ? <TraceDialog trace={trace} endpoint={endpoint} onClose={() => setTraceOpen(false)} /> : null}
+      {trace && isTraceOpen ? <TraceDialog trace={trace} endpoint={endpoint} onClose={closeTrace} /> : null}
     </section>
   );
 }
@@ -279,16 +314,24 @@ function TraceSummary({ trace }: { trace: TraceEnvelope }) {
   </div>;
 }
 
-function ResultRenderer({ endpoint, body, candles, edgeVersion, onRequestEdge }: {
+function ResultRenderer({ endpoint, body, candles, edgeVersion, hasMore, isLoading, onRequestEdge }: {
   endpoint: CatalogEndpoint;
   body: unknown;
   candles: CandleRow[];
   edgeVersion: number;
+  hasMore: { past: boolean; future: boolean };
+  isLoading: boolean;
   onRequestEdge: (direction: "past" | "future") => void;
 }) {
   if (endpoint.functional_group === "candle") return <div className="upbit-candle-result">
     <UpbitCandleChart candles={candles} indicators={[]} edgeRequestVersion={edgeVersion} onRequestEdge={onRequestEdge} />
     <p>{candles.length.toLocaleString("ko-KR")}개 캔들 · 가장자리 이동 시 연속 조회</p>
+    <div className="upbit-candle-pagination" aria-label="캔들 연속 조회">
+      <button type="button" disabled={isLoading || !hasMore.past} onClick={() => onRequestEdge("past")}>과거 데이터 조회</button>
+      {!hasMore.past ? <span>과거 데이터 끝</span> : null}
+      <button type="button" disabled={isLoading || !hasMore.future} onClick={() => onRequestEdge("future")}>미래 데이터 조회</button>
+      {!hasMore.future ? <span>최신 데이터 끝</span> : null}
+    </div>
     <RecordTable rows={candles.slice(-10).map((item) => ({ started_at: item.startedAt, open: item.open, high: item.high, low: item.low, close: item.close, volume: item.volume }))} />
   </div>;
   const rows = records(body);
@@ -304,8 +347,28 @@ function RecordTable({ rows }: { rows: Record<string, unknown>[] }) {
 }
 
 function TraceDialog({ trace, endpoint, onClose }: { trace: TraceEnvelope; endpoint: CatalogEndpoint; onClose: () => void }) {
-  return <div className="modal-backdrop"><section className="upbit-trace-dialog" role="dialog" aria-modal="true" aria-label="API 요청 추적"
-    tabIndex={-1} autoFocus onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
+  const dialogRef = useRef<HTMLElement | null>(null);
+  useEffect(() => { focusableElements(dialogRef.current)[0]?.focus(); }, []);
+  return <div className="modal-backdrop"><section ref={dialogRef} className="upbit-trace-dialog" role="dialog" aria-modal="true" aria-label="API 요청 추적"
+    tabIndex={-1} onKeyDown={(event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const elements = focusableElements(dialogRef.current);
+      const first = elements[0];
+      const last = elements.at(-1);
+      if (!first || !last) return;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }}>
     <button className="icon-button close-button" type="button" aria-label="닫기" onClick={onClose}><X size={18} /></button>
     <h2>API 요청 추적</h2><p>trace {trace.trace_id}</p>
     <a href={endpoint.source_url} target="_blank" rel="noreferrer">Upbit 공식 문서</a>
@@ -336,13 +399,6 @@ function formatValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function applyRateLimit(trace: TraceEnvelope, setCooldownUntil: (value: number) => void) {
-  if (trace.response.status_code === 429 || trace.response.status_code === 418 || trace.rate_limit.remaining_sec === 0) {
-    const retrySeconds = Number.parseFloat(trace.rate_limit.retry_after ?? "1");
-    setCooldownUntil(Date.now() + (Number.isFinite(retrySeconds) ? retrySeconds : 1) * 1_000);
-  }
-}
-
 function candleInterval(endpoint: CatalogEndpoint, parameters: RequestParameters): { granularity: CandleGranularity; unit: number } {
   if (endpoint.endpoint_id.includes("seconds")) return { granularity: "second", unit: 1 };
   if (endpoint.endpoint_id.includes("minutes")) return { granularity: "minute", unit: Number(parameters.unit ?? 1) };
@@ -354,4 +410,11 @@ function candleInterval(endpoint: CatalogEndpoint, parameters: RequestParameters
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function focusableElements(container: HTMLElement | null): HTMLElement[] {
+  if (!container) return [];
+  return Array.from(container.querySelectorAll<HTMLElement>(
+    "button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"
+  ));
 }

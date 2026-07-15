@@ -65,15 +65,21 @@ export function formatParameterValue(
 
 export function serializeParameters(
   endpoint: CatalogEndpoint,
-  values: Record<string, ParameterValue | undefined>
+  values: Record<string, ParameterValue | undefined>,
+  context: WorkbenchContext
 ): RequestParameters {
   const result: RequestParameters = {};
   for (const parameter of endpoint.parameters) {
-    const value = values[parameter.name];
+    const value = commonParameterValue(parameter.name, context) ?? values[parameter.name];
     if (value === undefined || value === "" || (Array.isArray(value) && value.length === 0)) continue;
     result[parameter.name] = value;
   }
   return result;
+}
+
+export function isCommonParameter(name: string): boolean {
+  return name === "market" || name === "markets" ||
+    name === "quote_currencies" || name === "base_currencies";
 }
 
 function commonParameterValue(name: string, context: WorkbenchContext): ParameterValue | undefined {

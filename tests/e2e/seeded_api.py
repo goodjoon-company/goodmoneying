@@ -174,7 +174,7 @@ def _fake_upbit_body(endpoint_id: str, parameters: dict[str, Any]) -> list[dict[
         return [
             {
                 "market": str(parameters.get("market", "KRW-BTC")),
-                "candle_date_time_utc": f"2026-07-16T00:{minute_base - index:02d}:00",
+                "candle_date_time_utc": f"2026-07-15T00:{minute_base - index:02d}:00",
                 "opening_price": 100 + index,
                 "high_price": 110 + index,
                 "low_price": 90 + index,

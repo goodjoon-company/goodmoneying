@@ -16,6 +16,7 @@ from goodmoneying_worker.aggregation_worker import (
     HEARTBEAT_INTERVAL_SECONDS,
     HEARTBEAT_THREAD_NAME,
     CandleAggregationWorker,
+    PeriodicHeartbeatRunner,
 )
 
 
@@ -367,3 +368,122 @@ def test_집계_실패_후에는_heartbeat_ticker_스레드가_남지_않는다(
 
     assert ticker_seen == [True]
     assert all(thread.name != HEARTBEAT_THREAD_NAME for thread in threading.enumerate())
+
+
+def test_sqlite_집계는_heartbeat가_교차된_뒤_실패해도_부분_커밋하지_않는다(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "aggregation-rollback.sqlite3"
+    repository = SQLiteOperationsRepository.from_path(database_path)
+    observer = SQLiteOperationsRepository.from_path(database_path)
+    instrument = repository.refresh_candidate_universe(
+        [("KRW-BTC", "비트코인", "100")]
+    )[0].instrument
+    repository.ensure_default_active_targets(limit=1)
+    started_at = datetime(2026, 7, 14, 9, 0, tzinfo=KST)
+    repository.record_incremental_collection(
+        [],
+        [],
+        [
+            SourceCandle(
+                instrument_id=instrument.id,
+                candle_unit="1m",
+                candle_start_at=started_at + timedelta(minutes=offset),
+                open_price=Decimal("100"),
+                high_price=Decimal("100"),
+                low_price=Decimal("100"),
+                close_price=Decimal("100"),
+                trade_volume=Decimal("1"),
+                trade_amount=Decimal("100"),
+                collected_at=started_at + timedelta(minutes=offset),
+            )
+            for offset in range(10)
+        ],
+    )
+    original_execute = repository._execute
+    first_rollup_written = threading.Event()
+    heartbeat_attempted = threading.Event()
+    rollup_write_count = 0
+
+    def fail_second_rollup_write(
+        sql: str, params: tuple[Any, ...] = ()
+    ) -> Any:
+        nonlocal rollup_write_count
+        cursor = original_execute(sql, params)
+        if "INSERT INTO candle_rollups" not in sql:
+            return cursor
+        rollup_write_count += 1
+        if rollup_write_count == 1:
+            first_rollup_written.set()
+            assert heartbeat_attempted.wait(timeout=1)
+            return cursor
+        raise RuntimeError("두 번째 집계 쓰기 실패")
+
+    def record_heartbeat() -> None:
+        if first_rollup_written.is_set():
+            heartbeat_attempted.set()
+        repository.record_collection_worker_heartbeat(
+            "candle_aggregation", "running"
+        )
+
+    monkeypatch.setattr(repository, "_execute", fail_second_rollup_write)
+
+    with (
+        pytest.raises(RuntimeError, match="두 번째 집계 쓰기 실패"),
+        PeriodicHeartbeatRunner(
+            record_heartbeat,
+            interval_seconds=0.001,
+        ),
+    ):
+        repository.materialize_candle_rollups(instrument.id, "5m")
+
+    rollups = observer.candle_rollups(
+        instrument.id,
+        "5m",
+        started_at,
+        started_at + timedelta(minutes=10),
+    )
+
+    assert rollups == []
+
+
+def test_heartbeat_콜백이_막혀도_종료_유예_시간_안에_반환하고_오류를_남긴다(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+
+    def blocked_heartbeat() -> None:
+        callback_started.set()
+        release_callback.wait(timeout=0.5)
+
+    started = time.monotonic()
+    with (
+        caplog.at_level("ERROR"),
+        PeriodicHeartbeatRunner(
+            blocked_heartbeat,
+            interval_seconds=60,
+            shutdown_grace_seconds=0.05,
+        ),
+    ):
+        assert callback_started.wait(timeout=0.1)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.25
+    assert any(
+        message.startswith("aggregation_heartbeat_shutdown_timeout")
+        for message in caplog.messages
+    )
+    blocked_threads = [
+        thread
+        for thread in threading.enumerate()
+        if thread.name == HEARTBEAT_THREAD_NAME
+    ]
+    assert blocked_threads
+    assert all(thread.daemon for thread in blocked_threads)
+
+    release_callback.set()
+    for thread in blocked_threads:
+        thread.join(timeout=1)
+    assert all(thread.is_alive() is False for thread in blocked_threads)

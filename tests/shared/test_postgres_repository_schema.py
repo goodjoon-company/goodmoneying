@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
@@ -36,3 +38,28 @@ def test_postgres_repository_rejects_fixture_candidate_entries_before_connect(
         repository.refresh_candidate_universe(
             [("KRW-GM006", "굿머니코인 006", "1000000000")]
         )
+
+
+def test_postgres_heartbeat_저장소는_연결과_문장_실행을_2초로_제한한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    connection = object()
+
+    def connect(database_url: str, **kwargs: Any) -> Any:
+        captured["database_url"] = database_url
+        captured.update(kwargs)
+        return connection
+
+    monkeypatch.setattr(
+        "goodmoneying_shared.postgres_repository.psycopg.connect",
+        connect,
+    )
+    repository = PostgresOperationsRepository(
+        "postgresql://example.invalid/goodmoneying",
+        io_timeout_seconds=2.0,
+    )
+
+    assert repository._connect() is connection
+    assert captured["connect_timeout"] == 2
+    assert "statement_timeout=2000" in captured["options"]

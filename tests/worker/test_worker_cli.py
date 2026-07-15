@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
+from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
+from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_worker import (
     aggregation_collection_worker,
     backfill_collection_worker,
@@ -233,8 +236,20 @@ def test_집계_워커는_하트비트를_기록하고_기본_5초_주기로_실
     calls: list[str] = []
 
     class FakeAggregationWorker:
-        def __init__(self, repository: object) -> None:
+        def __init__(
+            self,
+            repository: FakeRepository,
+            heartbeat_repository: FakeRepository,
+        ) -> None:
             self._repository = repository
+            self._heartbeat_repository = heartbeat_repository
+
+        def record_heartbeat(
+            self, status: str, error_message: str | None = None
+        ) -> None:
+            self._heartbeat_repository.record_collection_worker_heartbeat(
+                "candle_aggregation", status, error_message
+            )
 
         def run_once(self) -> int:
             calls.append("aggregate")
@@ -246,16 +261,62 @@ def test_집계_워커는_하트비트를_기록하고_기본_5초_주기로_실
         "CandleAggregationWorker",
         FakeAggregationWorker,
     )
+    repository = FakeRepository(calls)
+    heartbeat_repository = FakeRepository(calls)
     monkeypatch.setattr(
         aggregation_collection_worker,
         "create_repository_from_environment",
-        lambda: FakeRepository(calls),
+        lambda: repository,
+    )
+    monkeypatch.setattr(
+        aggregation_collection_worker,
+        "create_heartbeat_repository_from_environment",
+        lambda source_repository: (
+            heartbeat_repository
+            if source_repository is repository
+            else pytest.fail("주 저장소를 기준으로 하트비트 저장소를 만들어야 한다.")
+        ),
     )
 
     aggregation_collection_worker.main()
 
     assert calls == ["heartbeat:candle_aggregation:running", "aggregate"]
     assert aggregation_collection_worker.poll_seconds_from_environment() == 5.0
+
+
+def test_집계_heartbeat_저장소는_2초_io_제한을_사용한다(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "GOODMONEYING_DATABASE_URL", "postgresql://example.invalid/goodmoneying"
+    )
+
+    postgres_repository = runtime.create_heartbeat_repository_from_environment()
+
+    assert isinstance(postgres_repository, PostgresOperationsRepository)
+    assert postgres_repository._io_timeout_seconds == 2.0
+
+    monkeypatch.delenv("GOODMONEYING_DATABASE_URL")
+    source_repository = SQLiteOperationsRepository.from_path(
+        tmp_path / "heartbeat.sqlite3"
+    )
+    sqlite_repository = runtime.create_heartbeat_repository_from_environment(
+        source_repository
+    )
+
+    assert isinstance(sqlite_repository, SQLiteOperationsRepository)
+    assert sqlite_repository is not source_repository
+    assert sqlite_repository._database_url == source_repository._database_url
+    busy_timeout = sqlite_repository._execute("PRAGMA busy_timeout").fetchone()[0]
+    assert busy_timeout == 2_000
+
+    in_memory_repository = SQLiteOperationsRepository()
+
+    assert (
+        runtime.create_heartbeat_repository_from_environment(in_memory_repository)
+        is in_memory_repository
+    )
 
 
 def test_worker_logging_uses_info_level_by_default(monkeypatch: pytest.MonkeyPatch) -> None:

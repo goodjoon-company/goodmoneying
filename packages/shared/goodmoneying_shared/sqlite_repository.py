@@ -106,10 +106,19 @@ class SQLiteOperationsRepository:
     M1 동작을 빠르게 검증하기 위한 SQLite 기반 구현이다.
     """
 
-    def __init__(self, database_url: str = ":memory:") -> None:
+    def __init__(
+        self,
+        database_url: str = ":memory:",
+        *,
+        busy_timeout_seconds: float = 5.0,
+    ) -> None:
         self._database_url = database_url
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(database_url, check_same_thread=False)
+        self._conn = sqlite3.connect(
+            database_url,
+            check_same_thread=False,
+            timeout=busy_timeout_seconds,
+        )
         self._conn.row_factory = sqlite3.Row
         self._create_schema()
 
@@ -1073,52 +1082,53 @@ class SQLiteOperationsRepository:
         return self._derive_candles(unit, source)
 
     def materialize_candle_rollups(self, instrument_id: int, unit: str) -> int:
-        cursor = self._execute(
-            """
-            SELECT * FROM source_candles
-            WHERE instrument_id = ?
-            ORDER BY candle_start_at
-            """,
-            (instrument_id,),
-        )
-        source: list[SourceCandle] = []
-        while rows := cursor.fetchmany(SOURCE_FETCH_BATCH_SIZE):
-            source.extend(self._candle_from_row(row) for row in rows)
-        rollups = aggregate_candles(unit, source)
-        materialized_at = _to_db_time(now_kst())
-        for item in rollups:
-            self._execute(
+        with self._lock, self._conn:
+            cursor = self._execute(
                 """
-                INSERT INTO candle_rollups (
-                  instrument_id, candle_unit, candle_start_at, open_price, high_price, low_price,
-                  close_price, trade_volume, trade_amount, completeness, materialized_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(instrument_id, candle_unit, candle_start_at) DO UPDATE SET
-                  open_price = excluded.open_price,
-                  high_price = excluded.high_price,
-                  low_price = excluded.low_price,
-                  close_price = excluded.close_price,
-                  trade_volume = excluded.trade_volume,
-                  trade_amount = excluded.trade_amount,
-                  completeness = excluded.completeness,
-                  materialized_at = excluded.materialized_at
+                SELECT * FROM source_candles
+                WHERE instrument_id = ?
+                ORDER BY candle_start_at
                 """,
-                (
-                    instrument_id,
-                    unit,
-                    _to_db_time(item.started_at),
-                    str(item.open),
-                    str(item.high),
-                    str(item.low),
-                    str(item.close),
-                    str(item.volume),
-                    str(item.trade_amount),
-                    item.completeness,
-                    materialized_at,
-                ),
+                (instrument_id,),
             )
-        self._conn.commit()
+            source: list[SourceCandle] = []
+            while rows := cursor.fetchmany(SOURCE_FETCH_BATCH_SIZE):
+                source.extend(self._candle_from_row(row) for row in rows)
+            rollups = aggregate_candles(unit, source)
+            materialized_at = _to_db_time(now_kst())
+            for item in rollups:
+                self._execute(
+                    """
+                    INSERT INTO candle_rollups (
+                      instrument_id, candle_unit, candle_start_at, open_price, high_price,
+                      low_price, close_price, trade_volume, trade_amount, completeness,
+                      materialized_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(instrument_id, candle_unit, candle_start_at) DO UPDATE SET
+                      open_price = excluded.open_price,
+                      high_price = excluded.high_price,
+                      low_price = excluded.low_price,
+                      close_price = excluded.close_price,
+                      trade_volume = excluded.trade_volume,
+                      trade_amount = excluded.trade_amount,
+                      completeness = excluded.completeness,
+                      materialized_at = excluded.materialized_at
+                    """,
+                    (
+                        instrument_id,
+                        unit,
+                        _to_db_time(item.started_at),
+                        str(item.open),
+                        str(item.high),
+                        str(item.low),
+                        str(item.close),
+                        str(item.volume),
+                        str(item.trade_amount),
+                        item.completeness,
+                        materialized_at,
+                    ),
+                )
         return len(rollups)
 
     def candle_rollups(

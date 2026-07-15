@@ -7,6 +7,7 @@ import time
 from goodmoneying_worker.aggregation_worker import CandleAggregationWorker
 from goodmoneying_worker.runtime import (
     configure_logging_from_environment,
+    create_heartbeat_repository_from_environment,
     create_repository_from_environment,
 )
 
@@ -27,15 +28,11 @@ def poll_seconds_from_environment() -> float:
 def run_aggregation_poll_loop(worker: CandleAggregationWorker, poll_seconds: float) -> None:
     try:
         while True:
-            worker._repository.record_collection_worker_heartbeat(
-                "candle_aggregation", "running"
-            )
+            worker.record_heartbeat("running")
             try:
                 completed = worker.run_once()
             except Exception as exc:
-                worker._repository.record_collection_worker_heartbeat(
-                    "candle_aggregation", "failed", str(exc)
-                )
+                worker.record_heartbeat("failed", str(exc))
                 logger.exception("aggregation_poll_failed error=%s", type(exc).__name__)
                 raise
             logger.info(
@@ -50,8 +47,12 @@ def run_aggregation_poll_loop(worker: CandleAggregationWorker, poll_seconds: flo
 
 def main() -> None:
     configure_logging_from_environment()
+    repository = create_repository_from_environment()
     run_aggregation_poll_loop(
-        CandleAggregationWorker(create_repository_from_environment()),
+        CandleAggregationWorker(
+            repository,
+            create_heartbeat_repository_from_environment(repository),
+        ),
         poll_seconds_from_environment(),
     )
 

@@ -4,6 +4,7 @@ import uuid
 from calendar import monthrange
 from datetime import datetime, timedelta
 from decimal import Decimal
+from math import ceil
 from typing import Any, Literal, cast
 
 import psycopg
@@ -94,14 +95,33 @@ def _format_storage_bytes(value: int) -> str:
 class PostgresOperationsRepository:
     """PostgreSQL 계약 기반 런타임 저장소."""
 
-    def __init__(self, database_url: str) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        io_timeout_seconds: float | None = None,
+    ) -> None:
         self._database_url = database_url
+        self._io_timeout_seconds = io_timeout_seconds
 
     def _connect(self) -> psycopg.Connection[Any]:
+        options = "-c timezone=Asia/Seoul"
+        connect_timeout: int | None = None
+        if self._io_timeout_seconds is not None:
+            statement_timeout_ms = max(1, round(self._io_timeout_seconds * 1_000))
+            options += f" -c statement_timeout={statement_timeout_ms}"
+            connect_timeout = max(1, ceil(self._io_timeout_seconds))
+        if connect_timeout is not None:
+            return psycopg.connect(
+                self._database_url,
+                row_factory=dict_row,
+                options=options,
+                connect_timeout=connect_timeout,
+            )
         return psycopg.connect(
             self._database_url,
             row_factory=dict_row,
-            options="-c timezone=Asia/Seoul",
+            options=options,
         )
 
     def upsert_instrument(self, market_code: str, display_name: str) -> Instrument:

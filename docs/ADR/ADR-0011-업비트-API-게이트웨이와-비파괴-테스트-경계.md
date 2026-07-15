@@ -2,7 +2,7 @@
 
 Status: Accepted
 Date: 2026-07-16
-Related Issues: [#19](https://github.com/goodjoon-company/goodmoneying/issues/19), [#20](https://github.com/goodjoon-company/goodmoneying/issues/20)
+Related Issues: [#19](https://github.com/goodjoon-company/goodmoneying/issues/19), [#20](https://github.com/goodjoon-company/goodmoneying/issues/20), [#21](https://github.com/goodjoon-company/goodmoneying/issues/21), [#22](https://github.com/goodjoon-company/goodmoneying/issues/22), [#23](https://github.com/goodjoon-company/goodmoneying/issues/23), [#24](https://github.com/goodjoon-company/goodmoneying/issues/24)
 
 ## 맥락
 
@@ -36,9 +36,9 @@ Related Issues: [#19](https://github.com/goodjoon-company/goodmoneying/issues/19
 - 카탈로그와 계약 테스트가 공식 문서 드리프트(drift) 및 상태 변경 안전 등급 회귀를 차단한다.
 - 운영 서버와 수집 워커는 기존 역할을 유지하고 게이트웨이 장애의 영향을 직접 받지 않는다.
 - REST 인증, 실행 제한기, 개발 런타임과 컨테이너 경계는 Issue #20에서 독립 검증한다.
-- WebSocket 재연결, 운영 배포 모니터링과 프론트엔드 시각화는 후속 구현이 필요하다.
+- REST·WebSocket 게이트웨이와 Quotation·Exchange·WebSocket 작업대가 구현됐고, 운영 배포 프로필은 게이트웨이 이미지·컨테이너·상태 확인을 독립 대상으로 관리한다.
 
 ## 후속 작업
 
 - Issue #20의 가짜 상류 E2E는 실제 게이트웨이 프로세스로 공개 조회, 인증 조회, 공식 주문 테스트와 400·401·429·418을 검증한다.
-- 프론트엔드, WebSocket 중계, 실제 허용된 비파괴 연동은 분리된 후속 Issue에서 구현한다.
+- Issue #21~#24에서 프론트엔드, WebSocket 중계, 실제 허용된 비파괴 연동, 통합 E2E·QA·문서화를 완료했다.

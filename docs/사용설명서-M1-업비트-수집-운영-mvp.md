@@ -1,7 +1,7 @@
 # 개발·운영 사용 안내
 
 Status: Maintained
-Last Updated: 2026-07-14
+Last Updated: 2026-07-16
 
 ## 이 문서가 답하는 질문
 
@@ -25,6 +25,7 @@ cp .env.sample .env
 ```bash
 ./dev.sh infra start
 ./dev.sh app start api
+./dev.sh app start upbit-gateway
 ./dev.sh app start web
 ./dev.sh app start realtime-collection-worker
 ./dev.sh app start backfill-collection-worker
@@ -32,11 +33,12 @@ cp .env.sample .env
 ./dev.sh status
 ```
 
-브라우저는 `http://127.0.0.1:5173`, API 상태는 `http://127.0.0.1:8000/health`에서 확인한다. 일반 개발에서는 PostgreSQL만 Podman Compose로 실행하고 API·웹·워커는 `./dev.sh app`으로 개별 제어한다.
+브라우저는 `http://127.0.0.1:5173`, API 상태는 `http://127.0.0.1:8000/health`, 업비트 API 게이트웨이 상태는 `http://127.0.0.1:8001/health`에서 확인한다. 일반 개발에서는 PostgreSQL만 Podman Compose로 실행하고 API·웹·게이트웨이·워커는 `./dev.sh app`으로 개별 제어한다.
 
 ```bash
 ./dev.sh app restart api
 ./dev.sh app stop web
+./dev.sh logs upbit-gateway
 ./dev.sh logs realtime-collection-worker
 ./dev.sh logs candle-aggregation-worker
 ```
@@ -69,9 +71,29 @@ cp .env.sample .env
 
 상세 화면 순서와 장애 확인 명령은 [코인 분석 접속 안내](../코인-분석-접속-안내.md)를 참고한다.
 
-### 업비트 공개 API 테스트
+### 업비트 전체 API 테스트
 
-`업비트 API 테스트` 메뉴에서는 공개 REST API로 분·시·일·주·월 캔들, 체결·시세·호가 데이터를 조회하고 OHLCV·거래량·보조지표 표시를 시험할 수 있다. 공개 조회는 인증 키가 필요하지 않지만, 주문·계정 API는 별도 인증이 필요하며 이 프로젝트 범위에 포함하지 않는다.
+`업비트 API 테스트` 메뉴는 다음 2레벨 메뉴를 제공한다.
+
+- `Quotation API 테스트`: REST 13개(활성 12개·사용 중단 1개)의 페어·캔들·체결·현재가·호가 그룹
+- `Exchange API 테스트`: REST 38개의 포켓·계정·주문·출금·입금·Travel Rule·서비스 그룹
+- `WebSocket API 테스트`: 공개 12개·비공개 2개 스트림과 `LIST_SUBSCRIPTIONS`
+
+상단 공통 페어는 세 메뉴가 공유한다. 좌측 요청 패널은 열거형(enum)·날짜·숫자 등 타입에 맞는 입력을 제공하고, 우측 결과 패널은 차트·목록·호가·실시간 프레임과 원본 요청·응답/API 출처를 표시한다. 캔들 차트의 시간축 가장자리로 이동하면 과거 또는 최신 방향의 데이터를 중복 없이 이어 붙인다.
+
+공개 조회는 키가 필요 없다. Exchange 읽기와 비공개 WebSocket은 저장소 밖의 읽기 전용 키 파일을 게이트웨이에 설정해야 한다.
+
+```bash
+chmod 400 /secure/path/upbit-access-key /secure/path/upbit-secret-key
+# .env에는 값이 아니라 절대 경로만 둔다.
+UPBIT_ACCESS_KEY_FILE=/secure/path/upbit-access-key
+UPBIT_SECRET_KEY_FILE=/secure/path/upbit-secret-key
+./dev.sh app restart upbit-gateway
+```
+
+실제 주문·모든 취소·자산 이전·입출금 생성/취소·트래블룰 검증은 실행 버튼이 비활성화되고 게이트웨이에서도 403으로 차단된다. 실제 주문 없이 주문 형식·가능 여부를 확인하는 공식 `POST /v1/orders/test`만 허용한다. 브라우저나 웹 서버에는 키·JWT·운영 토큰을 저장하지 않는다.
+
+브라우저가 Upbit를 직접 호출해 `Origin` 헤더가 전달되면 Quotation REST와 공개 WebSocket은 10초당 1회로 제한된다. 이 제품은 같은 출처 역방향 프록시(reverse proxy)와 별도 게이트웨이를 사용하고 상향 `Origin`을 제거하므로 Quotation 그룹별 초당 10회, Exchange 기본 초당 30회, 주문·주문 테스트 초당 8회, 일괄 취소 2초당 1회, WebSocket 연결 초당 5회와 연결별 메시지 초당 5회·분당 100회를 적용한다.
 
 ## API와 계약 확인
 
@@ -101,13 +123,17 @@ API 경로·요청·응답은 [OpenAPI 계약](contracts/api/openapi.yaml), WebS
 | 현재가·호가가 오래됨 | 실시간 수집 워커 heartbeat, `GOODMONEYING_LIVE_UPBIT` | 워커 로그를 확인하고 필요한 프로세스를 재시작한다. |
 | 집계 진행률이 멈춤 | 집계 워커 heartbeat, 작업 대상 실패 | 집계 워커 로그와 시스템 관리 화면의 실패 대상을 확인한다. |
 | 분석 연결이 끊김 | API 프로세스, 브라우저 WebSocket 상태 | API·웹을 재시작하고 동일 선택 상태의 자동 재연결을 확인한다. |
+| 업비트 작업대가 503을 표시함 | 게이트웨이 상태, 키 파일 한 쌍과 권한 | `./dev.sh logs upbit-gateway`를 확인하고 두 파일을 모두 `chmod 400`으로 설정한다. |
+| Exchange가 401·403을 표시함 | API Key 권한과 허용 IP | Upbit API Key 관리에서 읽기/주문 테스트 권한과 게이트웨이 서버 IP를 확인한다. |
+| 429·418을 표시함 | 결과의 제한 그룹·잔여 횟수·재시도 시각 | 자동 반복 호출을 멈추고 표시된 냉각 시간이 지난 뒤 다시 실행한다. |
+| WebSocket 연결이 1008로 종료됨 | 운영 토큰 주입과 명시적 출처 허용 목록 | 웹 역방향 프록시 설정과 `UPBIT_GATEWAY_ALLOWED_ORIGINS`의 실제 웹 출처를 확인한다. |
 
 ## 자동화 검증
 
 ```bash
 uv run pytest -q
 uv run ruff check .
-uv run mypy apps packages tests
+uv run mypy apps/api apps/worker apps/upbit_gateway packages/shared tests
 npm test
 npm run build
 npm run e2e

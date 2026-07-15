@@ -276,10 +276,10 @@ quality_score = round(100 * (
 | GM-PROD-027 | 분석 화면은 WebSocket으로 세션, 차트, 지표, 현재가·호가 요약, 체결 요약을 독립 메시지로 수신하고, 재연결하면 선택 상태를 다시 구독한다. | P2 | Accepted | `docs/contracts/api/realtime-analysis-websocket.schema.json` |
 | GM-PROD-028 | 시스템은 1분 원천봉을 보존하고 5·10·30분·시·일·주·월 봉을 집계 테이블(Materialized Rollup)에 증분 생성한다. 분석 조회는 최신 집계를 우선 사용하고, 집계가 뒤처진 경우 원천봉 파생으로 정확성을 보존한다. | P2.1 | Accepted | GitHub Issue #13, ADR-0009 |
 | GM-PROD-029 | 운영자는 시스템 관리 화면에서 Backfill·실시간 수집·집계 워커의 상태, 실행 중인 코인과 데이터 유형, 집계 작업의 전체·완료 대상 수와 진행률을 실시간으로 확인한다. 집계가 오래되면 시스템은 자동으로 집계 작업을 시작한다. | P2.1 | Accepted | GitHub Issue #13, `docs/contracts/db/schema.sql` |
-| GM-PROD-030 | 업비트 API 테스트 메뉴는 시세 조회, 거래·자산 관리, WebSocket의 2레벨 메뉴와 기능 그룹 탭을 제공하고, 공식 문서에 수록된 모든 현재 REST·WebSocket 기능을 선택할 수 있다. | P2.2 | Accepted | `docs/refinements/requests/2026-07-16-업비트-전체-API-테스트-작업대.md` |
-| GM-PROD-031 | 공통 페어·자산 선택과 기능별 필수·선택 파라미터를 좌측 요청 패널에서 설정하고, 우측 결과 패널은 차트·목록·호가창 등 응답에 적합한 시각화와 원본 요청·응답 추적 정보를 제공한다. | P2.2 | Accepted | `docs/refinements/requests/2026-07-16-업비트-전체-API-테스트-작업대.md` |
-| GM-PROD-032 | 브라우저는 키를 보유하거나 업비트에 직접 연결하지 않고 별도 업비트 API 게이트웨이를 사용한다. 게이트웨이는 공식 그룹별 요청 제한과 인증을 적용하고 키·JWT를 응답·로그에 노출하지 않는다. | P2.2 | Accepted | `docs/refinements/requests/2026-07-16-업비트-전체-API-테스트-작업대.md` |
-| GM-PROD-033 | 실제 주문 생성·취소, 자산 이전, 입출금, 트래블룰 검증은 실행하지 않는다. 주문 검증은 공식 주문 생성 테스트 API만 사용하고, 그 밖의 상태 변경 API는 요청 구성 확인과 로컬 차단 오류까지만 제공한다. | 지속 안전 정책 | Accepted | `docs/refinements/requests/2026-07-16-업비트-전체-API-테스트-작업대.md` |
+| GM-PROD-030 | 업비트 API 테스트 메뉴는 시세 조회, 거래·자산 관리, WebSocket의 2레벨 메뉴와 기능 그룹 탭을 제공하고, 공식 문서에 수록된 모든 현재 REST·WebSocket 기능을 선택할 수 있다. | P2.2 | Implemented | GitHub Issue #19~#24, `docs/contracts/upbit/upbit-api-catalog.yaml` |
+| GM-PROD-031 | 공통 페어·자산 선택과 기능별 필수·선택 파라미터를 좌측 요청 패널에서 설정하고, 우측 결과 패널은 차트·목록·호가창 등 응답에 적합한 시각화와 원본 요청·응답 추적 정보를 제공한다. | P2.2 | Implemented | GitHub Issue #21~#24, `docs/Test/2026-07-16-업비트-전체-API-작업대-통합-검증.md` |
+| GM-PROD-032 | 브라우저는 키를 보유하거나 업비트에 직접 연결하지 않고 별도 업비트 API 게이트웨이를 사용한다. 게이트웨이는 공식 그룹별 요청 제한과 인증을 적용하고 키·JWT를 응답·로그에 노출하지 않는다. | P2.2 | Implemented | ADR-0011, GitHub Issue #19·#20·#23·#24 |
+| GM-PROD-033 | 실제 주문 생성·취소, 자산 이전, 입출금, 트래블룰 검증은 실행하지 않는다. 주문 검증은 공식 주문 생성 테스트 API만 사용하고, 그 밖의 상태 변경 API는 요청 구성 확인과 로컬 차단 오류까지만 제공한다. | 지속 안전 정책 | Implemented | ADR-0011, `docs/Test/2026-07-16-업비트-전체-API-작업대-통합-검증.md` |
 
 ## 정책
 

@@ -42,8 +42,8 @@ flowchart LR
     operator -->|"브라우저"| web
     web -->|"HTTP REST · SSE · WebSocket"| api
     web -->|"카탈로그·endpoint_id<br/>키 없음"| gateway
-    gateway -.->|"허용 목록 REST<br/>Issue #19 미구현"| upbitRest
-    gateway -.->|"공개·비공개 WebSocket<br/>Issue #19 미구현"| upbitWs
+    gateway -->|"허용 목록 REST<br/>Origin 제거 · 그룹 제한"| upbitRest
+    gateway -->|"공개·비공개 WebSocket<br/>JWT · 재연결 · 메시지 제한"| upbitWs
     api <--> db
     realtime -->|"ticker · trade · orderbook · candle.1m"| upbitWs
     realtime <--> db
@@ -75,9 +75,13 @@ flowchart TB
     end
 
     subgraph upbitGateway["apps/upbit_gateway — 업비트 API 게이트웨이"]
-        gatewayRoutes["main.py<br/>health · catalog · 실행 경계"]
+        gatewayRoutes["main.py<br/>health · catalog · REST · WebSocket 경계"]
         gatewayCatalog["catalog.py<br/>계약 카탈로그 로더"]
+        gatewayRest["executor · auth · client<br/>안전 정책 · 요청 제한 · 추적"]
+        gatewayWs["websocket_protocol · security · session<br/>출처 검증 · 구독 · 재연결"]
         gatewayRoutes --> gatewayCatalog
+        gatewayRoutes --> gatewayRest
+        gatewayRoutes --> gatewayWs
     end
 
     subgraph workers["apps/worker — 수집·집계 워커(Worker)"]
@@ -110,7 +114,7 @@ flowchart TB
 
 | 런타임 | 책임 | 상태·복구 기준 |
 |---|---|---|
-| 업비트 API 게이트웨이(Upbit API Gateway) | 브라우저 대신 공식 REST·WebSocket을 연결하고 카탈로그·인증·요청 제한·안전 정책·추적을 한 경계에 둔다. | Issue #19에서는 `/health`, `/v1/catalog`, 403·404·422·501 로컬 판정 경계만 제공하며 업비트 상향 호출은 수행하지 않는다. |
+| 업비트 API 게이트웨이(Upbit API Gateway) | 브라우저 대신 공식 REST·WebSocket을 연결하고 카탈로그·인증·요청 제한·안전 정책·추적을 한 경계에 둔다. | `/health`, `/v1/catalog`, `/v1/requests`, `/v1/websocket`을 제공한다. `read`와 공식 주문 테스트만 상향 호출하고 `blocked`는 자격 증명·제한기·네트워크 전에 403으로 종료한다. 공개·비공개 WebSocket은 독립 연결·구독·재연결하며 운영자 토큰과 명시적 출처 허용 목록을 모두 검증한다. |
 | 실시간 수집 워커(Realtime Collection Worker) | 후보군, 현재가, 체결, 호가 요약, 1분 원천봉을 업비트 WebSocket에서 수집한다. | `GOODMONEYING_LIVE_UPBIT=1` live 프로필에서만 실제 수집하며 heartbeat와 수집 결과를 기록한다. |
 | 백필 수집 워커(Backfill Collection Worker) | DB의 `pending` 백필 작업을 읽어 결측 원천 캔들을 REST로 보충한다. | 기본 10초 폴링, 동시성 1, DB batch upsert 성공 뒤 진행 상태를 기록한다. |
 | 캔들 집계 워커(Candle Aggregation Worker) | 원천 워터마크와 집계 워터마크를 비교해 `5m/10m/30m/60m/1d/1w/1M` OHLCV를 생성한다. | 기본 5초 폴링, 대상별 멱등 upsert와 워커 프로세스 수명 동안 단일 5초 주기 하트비트(heartbeat)를 기록한다. PostgreSQL 연결·문장 실행은 각각 2초 제한, SQLite 잠금 대기는 2초 제한, 실행기 종료 합류(join)는 3초 유예를 적용한다. |

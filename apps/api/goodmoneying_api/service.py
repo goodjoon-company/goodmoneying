@@ -560,6 +560,9 @@ class OperationsService:
                         }
                     )
         aggregation_job = self._repository.latest_candle_aggregation_job()
+        aggregation_worker = self._repository.collection_worker_runtime_status(
+            "candle_aggregation"
+        )
         aggregation_items: list[dict[str, object]] = []
         aggregation: dict[str, object] | None = None
         if aggregation_job is not None:
@@ -583,6 +586,7 @@ class OperationsService:
                 "totalTargetCount": aggregation_job.total_target_count,
                 "completedTargetCount": aggregation_job.completed_target_count,
                 "runningTargetCount": aggregation_job.running_target_count,
+                "pendingTargetCount": aggregation_job.pending_target_count,
                 "failedTargetCount": aggregation_job.failed_target_count,
                 "items": aggregation_items,
             }
@@ -605,6 +609,16 @@ class OperationsService:
                 "status": dashboard.workerStatus.backfill.status,
                 "statusLabel": dashboard.workerStatus.backfill.statusLabel,
                 "items": backfill_items,
+            },
+            "aggregationWorker": {
+                "status": aggregation_worker.status,
+                "statusLabel": aggregation_worker.status_label,
+                "statusDetail": aggregation_worker.status_detail,
+                "lastHeartbeatAt": (
+                    aggregation_worker.last_heartbeat_at.isoformat()
+                    if aggregation_worker.last_heartbeat_at
+                    else None
+                ),
             },
             "aggregation": aggregation,
         }

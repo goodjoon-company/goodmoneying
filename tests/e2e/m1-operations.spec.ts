@@ -239,13 +239,28 @@ test("모바일에서도 코인 분석 메뉴와 분석 화면에 접근할 수 
 });
 
 test("시스템 관리 화면은 WebSocket으로 수집 대상과 집계 진행률을 표시한다", async ({ page }) => {
+  await page.waitForTimeout(31_000);
   await page.goto("/");
   await page.getByRole("button", { name: "시스템 관리" }).click();
 
   await expect(page.getByRole("heading", { name: "시스템 관리" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "실시간 수집" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Backfill 수집" })).toBeVisible();
-  await expect(page.getByText("자동 집계 테이블", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "캔들 집계" })).toBeVisible();
+  const aggregationCard = page.getByLabel("캔들 집계 워커");
+  await expect(aggregationCard.getByText("집계 워커", { exact: true })).toBeVisible();
+  await expect(aggregationCard.getByText("동작 중", { exact: true })).toBeVisible();
+  await expect(aggregationCard.getByText(/마지막 heartbeat/)).toBeVisible();
+  const aggregationCounts = aggregationCard.getByText(/^집계 작업 .* · 전체 \d+ · 완료 \d+ · 실행 \d+ · 대기 \d+ · 실패 \d+$/);
+  await expect(aggregationCounts).toHaveText(
+    "집계 작업 pending · 전체 350 · 완료 0 · 실행 0 · 대기 350 · 실패 0"
+  );
+  const countText = await aggregationCounts.innerText();
+  const counts = countText.match(/전체 (\d+) · 완료 (\d+) · 실행 (\d+) · 대기 (\d+) · 실패 (\d+)/);
+  expect(counts).not.toBeNull();
+  const [, total, completed, running, pending, failed] = counts!.map(Number);
+  expect(total).toBe(completed + running + pending + failed);
+  expect(pending).toBe(350);
   await expect(page.getByText(/WebSocket (연결됨|재연결 중)/)).toBeVisible({ timeout: 60_000 });
   await expect(page.locator(".system-items").first()).toContainText("KRW-");
 

@@ -11,6 +11,7 @@ from typing import Any, Literal, cast
 
 from goodmoneying_shared.aggregation import (
     AGGREGATION_UNITS,
+    SOURCE_FETCH_BATCH_SIZE,
     aggregate_candles,
     rollup_bucket_start,
 )
@@ -33,6 +34,7 @@ from goodmoneying_shared.models import (
     CollectionWorkerDiagnostic,
     CollectionWorkerError,
     CollectionWorkerHeartbeatStatus,
+    CollectionWorkerRuntimeStatus,
     CollectionWorkerStatus,
     CollectionWorkerStatusSummary,
     CollectionWorkerType,
@@ -104,10 +106,19 @@ class SQLiteOperationsRepository:
     M1 동작을 빠르게 검증하기 위한 SQLite 기반 구현이다.
     """
 
-    def __init__(self, database_url: str = ":memory:") -> None:
+    def __init__(
+        self,
+        database_url: str = ":memory:",
+        *,
+        busy_timeout_seconds: float = 5.0,
+    ) -> None:
         self._database_url = database_url
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(database_url, check_same_thread=False)
+        self._conn = sqlite3.connect(
+            database_url,
+            check_same_thread=False,
+            timeout=busy_timeout_seconds,
+        )
         self._conn.row_factory = sqlite3.Row
         self._create_schema()
 
@@ -1071,49 +1082,60 @@ class SQLiteOperationsRepository:
         return self._derive_candles(unit, source)
 
     def materialize_candle_rollups(self, instrument_id: int, unit: str) -> int:
-        rows = self._execute(
-            """
-            SELECT * FROM source_candles
-            WHERE instrument_id = ?
-            ORDER BY candle_start_at
-            """,
-            (instrument_id,),
-        ).fetchall()
-        rollups = aggregate_candles(unit, [self._candle_from_row(row) for row in rows])
-        materialized_at = _to_db_time(now_kst())
-        for item in rollups:
-            self._execute(
-                """
-                INSERT INTO candle_rollups (
-                  instrument_id, candle_unit, candle_start_at, open_price, high_price, low_price,
-                  close_price, trade_volume, trade_amount, completeness, materialized_at
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = self._execute(
+                    """
+                    SELECT * FROM source_candles
+                    WHERE instrument_id = ?
+                    ORDER BY candle_start_at
+                    """,
+                    (instrument_id,),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(instrument_id, candle_unit, candle_start_at) DO UPDATE SET
-                  open_price = excluded.open_price,
-                  high_price = excluded.high_price,
-                  low_price = excluded.low_price,
-                  close_price = excluded.close_price,
-                  trade_volume = excluded.trade_volume,
-                  trade_amount = excluded.trade_amount,
-                  completeness = excluded.completeness,
-                  materialized_at = excluded.materialized_at
-                """,
-                (
-                    instrument_id,
-                    unit,
-                    _to_db_time(item.started_at),
-                    str(item.open),
-                    str(item.high),
-                    str(item.low),
-                    str(item.close),
-                    str(item.volume),
-                    str(item.trade_amount),
-                    item.completeness,
-                    materialized_at,
-                ),
-            )
-        self._conn.commit()
+                source: list[SourceCandle] = []
+                while rows := cursor.fetchmany(SOURCE_FETCH_BATCH_SIZE):
+                    source.extend(self._candle_from_row(row) for row in rows)
+                rollups = aggregate_candles(unit, source)
+                materialized_at = _to_db_time(now_kst())
+                for item in rollups:
+                    self._execute(
+                        """
+                        INSERT INTO candle_rollups (
+                          instrument_id, candle_unit, candle_start_at, open_price, high_price,
+                          low_price, close_price, trade_volume, trade_amount, completeness,
+                          materialized_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(instrument_id, candle_unit, candle_start_at) DO UPDATE SET
+                          open_price = excluded.open_price,
+                          high_price = excluded.high_price,
+                          low_price = excluded.low_price,
+                          close_price = excluded.close_price,
+                          trade_volume = excluded.trade_volume,
+                          trade_amount = excluded.trade_amount,
+                          completeness = excluded.completeness,
+                          materialized_at = excluded.materialized_at
+                        """,
+                        (
+                            instrument_id,
+                            unit,
+                            _to_db_time(item.started_at),
+                            str(item.open),
+                            str(item.high),
+                            str(item.low),
+                            str(item.close),
+                            str(item.volume),
+                            str(item.trade_amount),
+                            item.completeness,
+                            materialized_at,
+                        ),
+                    )
+            except BaseException:
+                self._conn.rollback()
+                raise
+            else:
+                self._conn.commit()
         return len(rollups)
 
     def candle_rollups(
@@ -1286,6 +1308,7 @@ class SQLiteOperationsRepository:
                    SUM(CASE WHEN t.status = 'succeeded' THEN 1 ELSE 0 END)
                      AS completed_target_count,
                    SUM(CASE WHEN t.status = 'running' THEN 1 ELSE 0 END) AS running_target_count,
+                   SUM(CASE WHEN t.status = 'pending' THEN 1 ELSE 0 END) AS pending_target_count,
                    SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) AS failed_target_count
             FROM candle_aggregation_jobs j
             LEFT JOIN candle_aggregation_job_targets t ON t.job_id = j.id
@@ -1306,6 +1329,7 @@ class SQLiteOperationsRepository:
             total_target_count=total,
             completed_target_count=completed,
             running_target_count=int(row["running_target_count"] or 0),
+            pending_target_count=int(row["pending_target_count"] or 0),
             failed_target_count=int(row["failed_target_count"] or 0),
             created_at=_from_db_time(row["created_at"]),
         )
@@ -2116,10 +2140,11 @@ class SQLiteOperationsRepository:
         )
 
     def _realtime_worker_status(self) -> RealtimeWorkerStatus:
-        status, status_label, status_detail, last_heartbeat_at = self._worker_runtime_status(
-            "realtime_collection",
-            stale_after=timedelta(minutes=2),
-        )
+        runtime = self.collection_worker_runtime_status("realtime_collection")
+        status = runtime.status
+        status_label = runtime.status_label
+        status_detail = runtime.status_detail
+        last_heartbeat_at = runtime.last_heartbeat_at
         error_count_24h = self._realtime_error_count_24h()
         run_count_24h = self._realtime_run_count_24h()
         collected_row_count_24h = self._realtime_collected_row_count_24h()
@@ -2150,10 +2175,11 @@ class SQLiteOperationsRepository:
         )
 
     def _backfill_worker_status(self) -> BackfillWorkerStatus:
-        status, status_label, status_detail, last_heartbeat_at = self._worker_runtime_status(
-            "backfill_collection",
-            stale_after=timedelta(seconds=30),
-        )
+        runtime = self.collection_worker_runtime_status("backfill_collection")
+        status = runtime.status
+        status_label = runtime.status_label
+        status_detail = runtime.status_detail
+        last_heartbeat_at = runtime.last_heartbeat_at
         total_error_count = self._backfill_error_count_all()
         total_target_count_all = self._backfill_target_count_all()
         failure_rate_all = (
@@ -2296,6 +2322,18 @@ class SQLiteOperationsRepository:
                 last_heartbeat_at,
             )
         return "running", "동작 중", "최근 heartbeat 정상", last_heartbeat_at
+
+    def collection_worker_runtime_status(
+        self, worker_type: CollectionWorkerType
+    ) -> CollectionWorkerRuntimeStatus:
+        stale_after = {
+            "realtime_collection": timedelta(minutes=2),
+            "backfill_collection": timedelta(seconds=30),
+            "candle_aggregation": timedelta(seconds=30),
+        }[worker_type]
+        return CollectionWorkerRuntimeStatus(
+            *self._worker_runtime_status(worker_type, stale_after=stale_after)
+        )
 
     def _latest_collection_finished_at(self, run_type: str) -> datetime | None:
         row = self._execute(

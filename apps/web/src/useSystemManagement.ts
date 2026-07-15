@@ -5,9 +5,13 @@ export type SystemManagementSnapshot = {
   refreshedAt: string;
   realtime: { status: string; statusLabel: string; items: SystemWorkItem[] };
   backfill: { status: string; statusLabel: string; items: SystemWorkItem[] };
+  aggregationWorker: {
+    status: string; statusLabel: string; statusDetail: string; lastHeartbeatAt: string | null;
+  };
   aggregation: {
     id: number; status: string; progressPercent: string; totalTargetCount: number;
-    completedTargetCount: number; runningTargetCount: number; failedTargetCount: number;
+    completedTargetCount: number; runningTargetCount: number; pendingTargetCount: number;
+    failedTargetCount: number;
     items: AggregationWorkItem[];
   } | null;
 };

@@ -70,12 +70,30 @@ def _analysis_history_candles(
     return candles
 
 
+def _start_aggregation_heartbeat(repository: OperationsRepository) -> None:
+    interval = threading.Event()
+
+    def maintain_heartbeat() -> None:
+        while True:
+            repository.record_collection_worker_heartbeat(
+                "candle_aggregation", "running"
+            )
+            interval.wait(5)
+
+    threading.Thread(
+        target=maintain_heartbeat,
+        name="seeded-e2e-aggregation-heartbeat",
+        daemon=True,
+    ).start()
+
+
 def create_seeded_e2e_app() -> FastAPI:
     repository = SQLiteOperationsRepository()
     seed_repository(repository, FixtureUpbitClient())
     first_target, second_target = repository.list_active_targets()[:2]
     repository.record_collection_worker_heartbeat("realtime_collection", "running")
     repository.record_collection_worker_heartbeat("backfill_collection", "running")
+    repository.record_collection_worker_heartbeat("candle_aggregation", "running")
     repository.record_incremental_collection(
         [],
         [],
@@ -100,6 +118,7 @@ def create_seeded_e2e_app() -> FastAPI:
         OperationsRepository,
         _SerializedOperationsRepository(repository),
     )
+    _start_aggregation_heartbeat(serialized_repository)
     return create_app(serialized_repository)
 
 

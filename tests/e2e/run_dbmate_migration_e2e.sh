@@ -143,6 +143,12 @@ fi
 
 host_binding="$(docker port "$DB_CONTAINER" 5432/tcp | head -1)"
 host_port="${host_binding##*:}"
+(
+  cd "$ROOT_DIR"
+  GOODMONEYING_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${host_port}/${POSTGRES_DB}?sslmode=disable" \
+  GOODMONEYING_LIVE_POSTGRES_TEST=1 \
+    uv run pytest -q tests/e2e/test_live_postgres_candle_aggregation.py
+)
 GOODMONEYING_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${host_port}/${POSTGRES_DB}?sslmode=disable" \
 GOODMONEYING_ENV_FILE="$SNAPSHOT_DIR/missing.env" \
 GOODMONEYING_DB_SCHEMA_FILE="$SNAPSHOT_DIR/local-fallback-schema.sql" \
@@ -151,5 +157,5 @@ GOODMONEYING_FORCE_DOCKER_DB_DUMP=1 \
   "$ROOT_DIR/dev.sh" db dump
 diff -u "$SNAPSHOT_DIR/schema.sql" "$SNAPSHOT_DIR/local-fallback-schema.sql"
 
-printf 'dbmate 마이그레이션 E2E 통과: versions=%s data_rows=%s timezone=%s API=200 snapshot=동일\n' \
+printf 'dbmate 마이그레이션 E2E 통과: versions=%s data_rows=%s timezone=%s API=200 snapshot=동일 집계상태=동일\n' \
   "$version_count" "$instrument_count" "$timezone"

@@ -7,6 +7,7 @@ import time
 from goodmoneying_worker.aggregation_worker import CandleAggregationWorker
 from goodmoneying_worker.runtime import (
     configure_logging_from_environment,
+    create_heartbeat_repository_from_environment,
     create_repository_from_environment,
 )
 
@@ -26,32 +27,43 @@ def poll_seconds_from_environment() -> float:
 
 def run_aggregation_poll_loop(worker: CandleAggregationWorker, poll_seconds: float) -> None:
     try:
-        while True:
-            worker._repository.record_collection_worker_heartbeat(
-                "candle_aggregation", "running"
-            )
+        try:
+            with worker.heartbeat_lifecycle():
+                while True:
+                    completed = worker.run_once()
+                    logger.info(
+                        "aggregation_poll_completed targets=%s poll_seconds=%s",
+                        completed,
+                        poll_seconds,
+                    )
+                    time.sleep(poll_seconds)
+        except Exception as exc:
             try:
-                completed = worker.run_once()
-            except Exception as exc:
-                worker._repository.record_collection_worker_heartbeat(
-                    "candle_aggregation", "failed", str(exc)
+                failed_heartbeat_recorded = worker.record_heartbeat(
+                    "failed",
+                    str(exc),
                 )
-                logger.exception("aggregation_poll_failed error=%s", type(exc).__name__)
-                raise
-            logger.info(
-                "aggregation_poll_completed targets=%s poll_seconds=%s",
-                completed,
-                poll_seconds,
-            )
-            time.sleep(poll_seconds)
+            except Exception:
+                logger.exception("aggregation_failed_heartbeat_failed")
+            else:
+                if not failed_heartbeat_recorded:
+                    logger.error(
+                        "aggregation_failed_heartbeat_skipped reason=in_flight"
+                    )
+            logger.exception("aggregation_poll_failed error=%s", type(exc).__name__)
+            raise
     except KeyboardInterrupt:
         logger.info("aggregation_worker_stopped reason=keyboard_interrupt")
 
 
 def main() -> None:
     configure_logging_from_environment()
+    repository = create_repository_from_environment()
     run_aggregation_poll_loop(
-        CandleAggregationWorker(create_repository_from_environment()),
+        CandleAggregationWorker(
+            repository,
+            create_heartbeat_repository_from_environment(repository),
+        ),
         poll_seconds_from_environment(),
     )
 

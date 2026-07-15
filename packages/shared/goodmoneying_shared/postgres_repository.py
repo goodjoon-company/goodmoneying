@@ -4,6 +4,7 @@ import uuid
 from calendar import monthrange
 from datetime import datetime, timedelta
 from decimal import Decimal
+from math import ceil
 from typing import Any, Literal, cast
 
 import psycopg
@@ -12,6 +13,7 @@ from psycopg.types.json import Jsonb
 
 from goodmoneying_shared.aggregation import (
     AGGREGATION_UNITS,
+    SOURCE_FETCH_BATCH_SIZE,
     aggregate_candles,
     rollup_bucket_start,
 )
@@ -34,6 +36,7 @@ from goodmoneying_shared.models import (
     CollectionWorkerDiagnostic,
     CollectionWorkerError,
     CollectionWorkerHeartbeatStatus,
+    CollectionWorkerRuntimeStatus,
     CollectionWorkerStatus,
     CollectionWorkerStatusSummary,
     CollectionWorkerType,
@@ -92,14 +95,41 @@ def _format_storage_bytes(value: int) -> str:
 class PostgresOperationsRepository:
     """PostgreSQL 계약 기반 런타임 저장소."""
 
-    def __init__(self, database_url: str) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        connect_and_statement_timeout_seconds: float | None = None,
+    ) -> None:
         self._database_url = database_url
+        self._connect_and_statement_timeout_seconds = (
+            connect_and_statement_timeout_seconds
+        )
 
     def _connect(self) -> psycopg.Connection[Any]:
+        options = "-c timezone=Asia/Seoul"
+        connect_timeout: int | None = None
+        if self._connect_and_statement_timeout_seconds is not None:
+            statement_timeout_ms = max(
+                1,
+                round(self._connect_and_statement_timeout_seconds * 1_000),
+            )
+            options += f" -c statement_timeout={statement_timeout_ms}"
+            connect_timeout = max(
+                1,
+                ceil(self._connect_and_statement_timeout_seconds),
+            )
+        if connect_timeout is not None:
+            return psycopg.connect(
+                self._database_url,
+                row_factory=dict_row,
+                options=options,
+                connect_timeout=connect_timeout,
+            )
         return psycopg.connect(
             self._database_url,
             row_factory=dict_row,
-            options="-c timezone=Asia/Seoul",
+            options=options,
         )
 
     def upsert_instrument(self, market_code: str, display_name: str) -> Instrument:
@@ -882,14 +912,17 @@ class PostgresOperationsRepository:
 
     def materialize_candle_rollups(self, instrument_id: int, unit: str) -> int:
         with self._connect() as conn:
-            rows = conn.execute(
+            cursor = conn.execute(
                 """
                 SELECT * FROM source_candles WHERE instrument_id = %s
                 ORDER BY candle_start_at
                 """,
                 (instrument_id,),
-            ).fetchall()
-            rollups = aggregate_candles(unit, [_candle(row) for row in rows])
+            )
+            source: list[SourceCandle] = []
+            while rows := cursor.fetchmany(SOURCE_FETCH_BATCH_SIZE):
+                source.extend(_candle(row) for row in rows)
+            rollups = aggregate_candles(unit, source)
             for item in rollups:
                 conn.execute(
                     """
@@ -1074,6 +1107,7 @@ class PostgresOperationsRepository:
                     SELECT j.id, j.status, j.created_at, COUNT(t.candle_unit) AS total,
                       COUNT(*) FILTER (WHERE t.status = 'succeeded') AS completed,
                       COUNT(*) FILTER (WHERE t.status = 'running') AS running,
+                      COUNT(*) FILTER (WHERE t.status = 'pending') AS pending,
                       COUNT(*) FILTER (WHERE t.status = 'failed') AS failed
                     FROM candle_aggregation_jobs j
                     LEFT JOIN candle_aggregation_job_targets t ON t.job_id = j.id
@@ -1091,6 +1125,7 @@ class PostgresOperationsRepository:
             total_target_count=total,
             completed_target_count=completed,
             running_target_count=int(row["running"]),
+            pending_target_count=int(row["pending"]),
             failed_target_count=int(row["failed"]),
             created_at=cast(datetime, row["created_at"]),
         )
@@ -2037,10 +2072,11 @@ class PostgresOperationsRepository:
         )
 
     def _realtime_worker_status(self) -> RealtimeWorkerStatus:
-        status, status_label, status_detail, last_heartbeat_at = self._worker_runtime_status(
-            "realtime_collection",
-            stale_after=timedelta(minutes=2),
-        )
+        runtime = self.collection_worker_runtime_status("realtime_collection")
+        status = runtime.status
+        status_label = runtime.status_label
+        status_detail = runtime.status_detail
+        last_heartbeat_at = runtime.last_heartbeat_at
         error_count_24h = self._realtime_error_count_24h()
         run_count_24h = self._realtime_run_count_24h()
         collected_row_count_24h = self._realtime_collected_row_count_24h()
@@ -2071,10 +2107,11 @@ class PostgresOperationsRepository:
         )
 
     def _backfill_worker_status(self) -> BackfillWorkerStatus:
-        status, status_label, status_detail, last_heartbeat_at = self._worker_runtime_status(
-            "backfill_collection",
-            stale_after=timedelta(seconds=30),
-        )
+        runtime = self.collection_worker_runtime_status("backfill_collection")
+        status = runtime.status
+        status_label = runtime.status_label
+        status_detail = runtime.status_detail
+        last_heartbeat_at = runtime.last_heartbeat_at
         total_error_count = self._backfill_error_count_all()
         total_target_count_all = self._backfill_target_count_all()
         failure_rate_all = (
@@ -2218,6 +2255,18 @@ class PostgresOperationsRepository:
                 last_heartbeat_at,
             )
         return "running", "동작 중", "최근 heartbeat 정상", last_heartbeat_at
+
+    def collection_worker_runtime_status(
+        self, worker_type: CollectionWorkerType
+    ) -> CollectionWorkerRuntimeStatus:
+        stale_after = {
+            "realtime_collection": timedelta(minutes=2),
+            "backfill_collection": timedelta(seconds=30),
+            "candle_aggregation": timedelta(seconds=30),
+        }[worker_type]
+        return CollectionWorkerRuntimeStatus(
+            *self._worker_runtime_status(worker_type, stale_after=stale_after)
+        )
 
     def _latest_collection_finished_at(self, run_type: str) -> datetime | None:
         with self._connect() as conn:

@@ -8,6 +8,7 @@ from decimal import Decimal
 from goodmoneying_shared.models import CandleView, SourceCandle
 
 AGGREGATION_UNITS = ("5m", "10m", "30m", "60m", "1d", "1w", "1M")
+SOURCE_FETCH_BATCH_SIZE = 1_000
 
 
 def rollup_bucket_start(unit: str, source_at: datetime) -> datetime:
@@ -29,7 +30,13 @@ def rollup_bucket_start(unit: str, source_at: datetime) -> datetime:
 def aggregate_candles(unit: str, source: list[SourceCandle]) -> list[CandleView]:
     """원천 1분·일봉을 분석용 집계 봉으로 멱등 변환한다."""
     minute_units = {"5m": 5, "10m": 10, "30m": 30, "60m": 60}
-    source_1m = [item for item in source if item.candle_unit == "1m"]
+    source_1m: list[SourceCandle] = []
+    source_1d: list[SourceCandle] = []
+    for item in source:
+        if item.candle_unit == "1m":
+            source_1m.append(item)
+        elif item.candle_unit == "1d":
+            source_1d.append(item)
     if unit in minute_units:
         grouped: dict[datetime, list[SourceCandle | CandleView]] = {}
         bucket_size = minute_units[unit]
@@ -39,19 +46,17 @@ def aggregate_candles(unit: str, source: list[SourceCandle]) -> list[CandleView]
             grouped.setdefault(bucket, []).append(item)
         return _aggregate_groups(grouped, bucket_size)
     if unit == "1d":
-        direct_daily = [item for item in source if item.candle_unit == "1d"]
-        if direct_daily:
-            return [_to_candle_view(item) for item in direct_daily]
+        if source_1d:
+            return _to_candle_views(source_1d)
         grouped_daily: dict[datetime, list[SourceCandle | CandleView]] = {}
         for item in source_1m:
             bucket = item.candle_start_at.replace(hour=0, minute=0, second=0, microsecond=0)
             grouped_daily.setdefault(bucket, []).append(item)
         return _aggregate_groups(grouped_daily, 24 * 60)
     if unit in {"1w", "1M"}:
-        direct_daily = [item for item in source if item.candle_unit == "1d"]
         daily: list[CandleView] = (
-            [_to_candle_view(item) for item in direct_daily]
-            if direct_daily
+            _to_candle_views(source_1d)
+            if source_1d
             else aggregate_candles("1d", source)
         )
         grouped_week_month: dict[datetime, list[CandleView]] = {}
@@ -83,8 +88,13 @@ def _to_candle_view(item: SourceCandle) -> CandleView:
     )
 
 
+def _to_candle_views(source: Sequence[SourceCandle]) -> list[CandleView]:
+    return [_to_candle_view(item) for item in source]
+
+
 def _aggregate_groups(
-    grouped: Mapping[datetime, Sequence[SourceCandle | CandleView]], expected_size: int
+    grouped: Mapping[datetime, Sequence[SourceCandle | CandleView]],
+    expected_size: int,
 ) -> list[CandleView]:
     result: list[CandleView] = []
     for bucket, items in sorted(grouped.items()):

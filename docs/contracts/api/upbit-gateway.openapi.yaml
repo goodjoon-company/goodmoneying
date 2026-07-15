@@ -61,7 +61,7 @@ components:
       properties:
         status: {type: string, const: ok}
         service: {type: string, const: upbit-gateway}
-        catalog_version: {type: string}
+        catalog_version: {type: string, const: 1.6.3}
     RestInventory:
       type: object
       additionalProperties: false
@@ -77,7 +77,7 @@ components:
       properties:
         endpoint_id: {type: string, pattern: "^(rest|websocket)\\."}
         safety: {type: string, enum: [read, test, blocked]}
-        source_url: {type: string, format: uri}
+        source_url: {type: string, format: uri, minLength: 1}
     UpbitApiCatalog:
       type: object
       additionalProperties: true
@@ -93,7 +93,7 @@ components:
       properties:
         catalog_version: {type: string, const: 1.6.3}
         verified_at: {type: string, format: date}
-        official_baseline: {type: string, format: uri}
+        official_baseline: {type: string, format: uri, minLength: 1}
         rest_inventory: {$ref: "#/components/schemas/RestInventory"}
         rest_endpoints:
           type: array

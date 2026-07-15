@@ -1,6 +1,1537 @@
 {
   "catalog_version": "1.6.3",
   "official_baseline": "https://docs.upbit.com/kr/llms.txt",
-  "projection": ["endpoint_id", "method", "path", "parameters"],
-  "sha256": "533008ed2cb3549bb142848cb5cb29769550a5572c11babfe16f995ba20c5fd8"
+  "reviewed_at": "2026-07-16",
+  "projection": [
+    "endpoint_id",
+    "method",
+    "path",
+    "parameters"
+  ],
+  "extraction_method": "공식 llms.txt의 REST 목록과 각 reference Markdown의 메서드·경로·파라미터를 대조",
+  "endpoints": [
+    {
+      "endpoint_id": "rest.list-trading-pairs",
+      "method": "GET",
+      "path": "/v1/market/all",
+      "parameters": [
+        {
+          "name": "is_details",
+          "location": "query",
+          "type": "boolean",
+          "required": false
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-candles-seconds",
+      "method": "GET",
+      "path": "/v1/candles/seconds",
+      "parameters": [
+        {
+          "name": "market",
+          "location": "query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "to",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        },
+        {
+          "name": "count",
+          "location": "query",
+          "type": "integer",
+          "required": false,
+          "minimum": 1,
+          "maximum": 200
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-candles-minutes",
+      "method": "GET",
+      "path": "/v1/candles/minutes/{unit}",
+      "parameters": [
+        {
+          "name": "unit",
+          "location": "path",
+          "type": "integer",
+          "required": true,
+          "enum": [
+            1,
+            3,
+            5,
+            10,
+            15,
+            30,
+            60,
+            240
+          ]
+        },
+        {
+          "name": "market",
+          "location": "query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "to",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        },
+        {
+          "name": "count",
+          "location": "query",
+          "type": "integer",
+          "required": false,
+          "minimum": 1,
+          "maximum": 200
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-candles-days",
+      "method": "GET",
+      "path": "/v1/candles/days",
+      "parameters": [
+        {
+          "name": "market",
+          "location": "query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "to",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        },
+        {
+          "name": "count",
+          "location": "query",
+          "type": "integer",
+          "required": false,
+          "minimum": 1,
+          "maximum": 200
+        },
+        {
+          "name": "converting_price_unit",
+          "location": "query",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-candles-weeks",
+      "method": "GET",
+      "path": "/v1/candles/weeks",
+      "parameters": [
+        {
+          "name": "market",
+          "location": "query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "to",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        },
+        {
+          "name": "count",
+          "location": "query",
+          "type": "integer",
+          "required": false,
+          "minimum": 1,
+          "maximum": 200
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-candles-months",
+      "method": "GET",
+      "path": "/v1/candles/months",
+      "parameters": [
+        {
+          "name": "market",
+          "location": "query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "to",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        },
+        {
+          "name": "count",
+          "location": "query",
+          "type": "integer",
+          "required": false,
+          "minimum": 1,
+          "maximum": 200
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-candles-years",
+      "method": "GET",
+      "path": "/v1/candles/years",
+      "parameters": [
+        {
+          "name": "market",
+          "location": "query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "to",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        },
+        {
+          "name": "count",
+          "location": "query",
+          "type": "integer",
+          "required": false,
+          "minimum": 1,
+          "maximum": 200
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-pair-trades",
+      "method": "GET",
+      "path": "/v1/trades/ticks",
+      "parameters": [
+        {
+          "name": "market",
+          "location": "query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "to",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "count",
+          "location": "query",
+          "type": "integer",
+          "required": false,
+          "minimum": 1,
+          "maximum": 500
+        },
+        {
+          "name": "cursor",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "days_ago",
+          "location": "query",
+          "type": "integer",
+          "required": false
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-tickers",
+      "method": "GET",
+      "path": "/v1/ticker",
+      "parameters": [
+        {
+          "name": "markets",
+          "location": "query",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-quote-tickers",
+      "method": "GET",
+      "path": "/v1/ticker/all",
+      "parameters": [
+        {
+          "name": "quote_currencies",
+          "location": "query",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-orderbooks",
+      "method": "GET",
+      "path": "/v1/orderbook",
+      "parameters": [
+        {
+          "name": "markets",
+          "location": "query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "level",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "count",
+          "location": "query",
+          "type": "integer",
+          "required": false,
+          "enum": [
+            1,
+            5,
+            15,
+            30
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-orderbook-instruments",
+      "method": "GET",
+      "path": "/v1/orderbook/instruments",
+      "parameters": [
+        {
+          "name": "markets",
+          "location": "query",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-orderbook-levels",
+      "method": "GET",
+      "path": "/v1/orderbook/supported_levels",
+      "parameters": [
+        {
+          "name": "markets",
+          "location": "query",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.get-pocket-information",
+      "method": "GET",
+      "path": "/v1/pockets",
+      "parameters": []
+    },
+    {
+      "endpoint_id": "rest.get-pocket-api-keys",
+      "method": "GET",
+      "path": "/v1/pockets/api_keys",
+      "parameters": [
+        {
+          "name": "uuids[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "include_expired",
+          "location": "query",
+          "type": "boolean",
+          "required": false
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.get-sub-pocket-balance",
+      "method": "GET",
+      "path": "/v1/pockets/assets",
+      "parameters": [
+        {
+          "name": "uuid",
+          "location": "query",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.post-universal-transfer",
+      "method": "POST",
+      "path": "/v1/pockets/universal_transfers",
+      "parameters": [
+        {
+          "name": "from",
+          "location": "body",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "to",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "currency",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "amount",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "identifier",
+          "location": "body",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.get-universal-transfer",
+      "method": "GET",
+      "path": "/v1/pockets/universal_transfers",
+      "parameters": [
+        {
+          "name": "from",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "to",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "states[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "uuids[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "identifiers[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "start_time",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        },
+        {
+          "name": "end_time",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        },
+        {
+          "name": "currency",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "order_by",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.post-transfer",
+      "method": "POST",
+      "path": "/v1/pockets/transfers",
+      "parameters": [
+        {
+          "name": "to",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "currency",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "amount",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "identifier",
+          "location": "body",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.get-transfer",
+      "method": "GET",
+      "path": "/v1/pockets/transfers",
+      "parameters": [
+        {
+          "name": "direction",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "in",
+            "out"
+          ]
+        },
+        {
+          "name": "to",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "states[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "uuids[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "identifiers[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "start_time",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        },
+        {
+          "name": "end_time",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        },
+        {
+          "name": "currency",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "order_by",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.get-balance",
+      "method": "GET",
+      "path": "/v1/accounts",
+      "parameters": []
+    },
+    {
+      "endpoint_id": "rest.available-order-information",
+      "method": "GET",
+      "path": "/v1/orders/chance",
+      "parameters": [
+        {
+          "name": "market",
+          "location": "query",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.new-order",
+      "method": "POST",
+      "path": "/v1/orders",
+      "parameters": [
+        {
+          "name": "market",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "side",
+          "location": "body",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "ask",
+            "bid"
+          ]
+        },
+        {
+          "name": "volume",
+          "location": "body",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "price",
+          "location": "body",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "ord_type",
+          "location": "body",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "limit",
+            "price",
+            "market",
+            "best"
+          ]
+        },
+        {
+          "name": "identifier",
+          "location": "body",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "time_in_force",
+          "location": "body",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "ioc",
+            "fok",
+            "post_only"
+          ]
+        },
+        {
+          "name": "smp_type",
+          "location": "body",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "cancel_maker",
+            "cancel_taker",
+            "reduce"
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.order-test",
+      "method": "POST",
+      "path": "/v1/orders/test",
+      "parameters": [
+        {
+          "name": "market",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "side",
+          "location": "body",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "ask",
+            "bid"
+          ]
+        },
+        {
+          "name": "volume",
+          "location": "body",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "price",
+          "location": "body",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "ord_type",
+          "location": "body",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "limit",
+            "price",
+            "market",
+            "best"
+          ]
+        },
+        {
+          "name": "identifier",
+          "location": "body",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "time_in_force",
+          "location": "body",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "ioc",
+            "fok",
+            "post_only"
+          ]
+        },
+        {
+          "name": "smp_type",
+          "location": "body",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "cancel_maker",
+            "cancel_taker",
+            "reduce"
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.get-order",
+      "method": "GET",
+      "path": "/v1/order",
+      "parameters": [
+        {
+          "name": "uuid",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "identifier",
+          "location": "query",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-orders-by-ids",
+      "method": "GET",
+      "path": "/v1/orders/uuids",
+      "parameters": [
+        {
+          "name": "market",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "uuids[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "identifiers[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "order_by",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-open-orders",
+      "method": "GET",
+      "path": "/v1/orders/open",
+      "parameters": [
+        {
+          "name": "market",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "state",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "states[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "page",
+          "location": "query",
+          "type": "integer",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "location": "query",
+          "type": "integer",
+          "required": false
+        },
+        {
+          "name": "order_by",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-closed-orders",
+      "method": "GET",
+      "path": "/v1/orders/closed",
+      "parameters": [
+        {
+          "name": "market",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "state",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "states[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "start_time",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        },
+        {
+          "name": "end_time",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        },
+        {
+          "name": "limit",
+          "location": "query",
+          "type": "integer",
+          "required": false
+        },
+        {
+          "name": "order_by",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.cancel-order",
+      "method": "DELETE",
+      "path": "/v1/order",
+      "parameters": [
+        {
+          "name": "uuid",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "identifier",
+          "location": "query",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.cancel-orders-by-ids",
+      "method": "DELETE",
+      "path": "/v1/orders/uuids",
+      "parameters": [
+        {
+          "name": "uuids[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "identifiers[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.batch-cancel-orders",
+      "method": "DELETE",
+      "path": "/v1/orders/open",
+      "parameters": [
+        {
+          "name": "quote_currencies",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "cancel_side",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "all",
+            "ask",
+            "bid"
+          ]
+        },
+        {
+          "name": "count",
+          "location": "query",
+          "type": "integer",
+          "required": false,
+          "maximum": 300
+        },
+        {
+          "name": "order_by",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        },
+        {
+          "name": "pairs",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "exclude_pairs",
+          "location": "query",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.cancel-and-new-order",
+      "method": "POST",
+      "path": "/v1/orders/cancel_and_new",
+      "parameters": [
+        {
+          "name": "prev_order_uuid",
+          "location": "body",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "prev_order_identifier",
+          "location": "body",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "new_ord_type",
+          "location": "body",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "limit",
+            "price",
+            "market",
+            "best"
+          ]
+        },
+        {
+          "name": "new_volume",
+          "location": "body",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "new_price",
+          "location": "body",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "new_identifier",
+          "location": "body",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "new_time_in_force",
+          "location": "body",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "ioc",
+            "fok",
+            "post_only"
+          ]
+        },
+        {
+          "name": "new_smp_type",
+          "location": "body",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "cancel_maker",
+            "cancel_taker",
+            "reduce"
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.available-withdrawal-information",
+      "method": "GET",
+      "path": "/v1/withdraws/chance",
+      "parameters": [
+        {
+          "name": "currency",
+          "location": "query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "net_type",
+          "location": "query",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-withdrawal-addresses",
+      "method": "GET",
+      "path": "/v1/withdraws/coin_addresses",
+      "parameters": []
+    },
+    {
+      "endpoint_id": "rest.withdraw",
+      "method": "POST",
+      "path": "/v1/withdraws/coin",
+      "parameters": [
+        {
+          "name": "currency",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "net_type",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "amount",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "address",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "secondary_address",
+          "location": "body",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "transaction_type",
+          "location": "body",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "default",
+            "internal"
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.withdraw-krw",
+      "method": "POST",
+      "path": "/v1/withdraws/krw",
+      "parameters": [
+        {
+          "name": "amount",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "two_factor_type",
+          "location": "body",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.get-withdrawal",
+      "method": "GET",
+      "path": "/v1/withdraw",
+      "parameters": [
+        {
+          "name": "uuid",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "txid",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "currency",
+          "location": "query",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-withdrawals",
+      "method": "GET",
+      "path": "/v1/withdraws",
+      "parameters": [
+        {
+          "name": "currency",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "state",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "uuids[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "txids[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "location": "query",
+          "type": "integer",
+          "required": false
+        },
+        {
+          "name": "page",
+          "location": "query",
+          "type": "integer",
+          "required": false
+        },
+        {
+          "name": "order_by",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        },
+        {
+          "name": "from",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        },
+        {
+          "name": "to",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.cancel-withdrawal",
+      "method": "DELETE",
+      "path": "/v1/withdraws/coin",
+      "parameters": [
+        {
+          "name": "uuid",
+          "location": "query",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.available-deposit-information",
+      "method": "GET",
+      "path": "/v1/deposits/chance/coin",
+      "parameters": [
+        {
+          "name": "currency",
+          "location": "query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "net_type",
+          "location": "query",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.create-deposit-address",
+      "method": "POST",
+      "path": "/v1/deposits/generate_coin_address",
+      "parameters": [
+        {
+          "name": "currency",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "net_type",
+          "location": "body",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.get-deposit-address",
+      "method": "GET",
+      "path": "/v1/deposits/coin_address",
+      "parameters": [
+        {
+          "name": "currency",
+          "location": "query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "net_type",
+          "location": "query",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-deposit-addresses",
+      "method": "GET",
+      "path": "/v1/deposits/coin_addresses",
+      "parameters": []
+    },
+    {
+      "endpoint_id": "rest.deposit-krw",
+      "method": "POST",
+      "path": "/v1/deposits/krw",
+      "parameters": [
+        {
+          "name": "amount",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "two_factor_type",
+          "location": "body",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.get-deposit",
+      "method": "GET",
+      "path": "/v1/deposit",
+      "parameters": [
+        {
+          "name": "currency",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "uuid",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "txid",
+          "location": "query",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-deposits",
+      "method": "GET",
+      "path": "/v1/deposits",
+      "parameters": [
+        {
+          "name": "currency",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "state",
+          "location": "query",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "uuids[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "txids[]",
+          "location": "query",
+          "type": "array",
+          "items": "string",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "location": "query",
+          "type": "integer",
+          "required": false
+        },
+        {
+          "name": "page",
+          "location": "query",
+          "type": "integer",
+          "required": false
+        },
+        {
+          "name": "order_by",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        },
+        {
+          "name": "from",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        },
+        {
+          "name": "to",
+          "location": "query",
+          "type": "string",
+          "required": false,
+          "format": "date-time"
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.list-travelrule-vasps",
+      "method": "GET",
+      "path": "/v1/travel_rule/vasps",
+      "parameters": []
+    },
+    {
+      "endpoint_id": "rest.verify-travelrule-by-uuid",
+      "method": "POST",
+      "path": "/v1/travel_rule/deposit/uuid",
+      "parameters": [
+        {
+          "name": "deposit_uuid",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "vasp_uuid",
+          "location": "body",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.verify-travelrule-by-txid",
+      "method": "POST",
+      "path": "/v1/travel_rule/deposit/txid",
+      "parameters": [
+        {
+          "name": "vasp_uuid",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "txid",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "currency",
+          "location": "body",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "net_type",
+          "location": "body",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "endpoint_id": "rest.get-service-status",
+      "method": "GET",
+      "path": "/v1/status/wallet",
+      "parameters": []
+    },
+    {
+      "endpoint_id": "rest.list-api-keys",
+      "method": "GET",
+      "path": "/v1/api_keys",
+      "parameters": []
+    }
+  ]
 }

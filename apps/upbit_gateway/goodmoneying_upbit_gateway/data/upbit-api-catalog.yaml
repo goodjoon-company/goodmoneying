@@ -1,0 +1,737 @@
+catalog_version: 1.6.3
+verified_at: 2026-07-16
+official_baseline: https://docs.upbit.com/kr/llms.txt
+rest_base_url: https://api.upbit.com
+websocket_urls:
+  public: wss://api.upbit.com/websocket/v1
+  private: wss://api.upbit.com/websocket/v1/private
+safety_levels:
+  read: 조회 전용
+  test: 실제 주문을 생성하지 않는 공식 주문 생성 테스트
+  blocked: 로컬 요청 미리보기만 허용하며 업비트 상향 전송 금지
+rest_inventory:
+  active_count: 50
+  deprecated_count: 1
+  total_count: 51
+rate_limits:
+  market: {scope: ip, requests: 10, seconds: 1}
+  candle: {scope: ip, requests: 10, seconds: 1}
+  trade: {scope: ip, requests: 10, seconds: 1}
+  ticker: {scope: ip, requests: 10, seconds: 1}
+  orderbook: {scope: ip, requests: 10, seconds: 1}
+  default: {scope: pocket, requests: 30, seconds: 1}
+  order: {scope: pocket, requests: 8, seconds: 1}
+  order-test: {scope: pocket, requests: 8, seconds: 1}
+  order-cancel-all: {scope: pocket, requests: 1, seconds: 2}
+  websocket-connect: {scope: ip_or_pocket, requests: 5, seconds: 1}
+  websocket-message: {scope: connection, requests: 5, seconds: 1, requests_per_minute: 100}
+origin_limit:
+  trigger: {header: Origin, condition: present}
+  applies_to: [quotation-rest, public-websocket]
+  group: origin
+  limit: {requests: 1, seconds: 10}
+
+rest_endpoints:
+  - endpoint_id: rest.list-trading-pairs
+    title: 페어 목록 조회
+    category: quotation
+    functional_group: pair
+    method: GET
+    path: /v1/market/all
+    parameters: [{name: is_details, location: query, type: boolean, required: false}]
+    rate_limit_group: market
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-trading-pairs.md
+  - endpoint_id: rest.list-candles-seconds
+    title: 초 캔들 조회
+    category: quotation
+    functional_group: candle
+    method: GET
+    path: /v1/candles/seconds
+    parameters: &candle_parameters
+      - {name: market, location: query, type: string, required: true}
+      - {name: to, location: query, type: string, required: false, format: date-time}
+      - {name: count, location: query, type: integer, required: false, minimum: 1, maximum: 200}
+    rate_limit_group: candle
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-candles-seconds.md
+  - endpoint_id: rest.list-candles-minutes
+    title: 분 캔들 조회
+    category: quotation
+    functional_group: candle
+    method: GET
+    path: /v1/candles/minutes/{unit}
+    parameters:
+      - {name: unit, location: path, type: integer, required: true, enum: [1, 3, 5, 10, 15, 30, 60, 240]}
+      - {name: market, location: query, type: string, required: true}
+      - {name: to, location: query, type: string, required: false, format: date-time}
+      - {name: count, location: query, type: integer, required: false, minimum: 1, maximum: 200}
+    rate_limit_group: candle
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-candles-minutes.md
+  - endpoint_id: rest.list-candles-days
+    title: 일 캔들 조회
+    category: quotation
+    functional_group: candle
+    method: GET
+    path: /v1/candles/days
+    parameters:
+      - {name: market, location: query, type: string, required: true}
+      - {name: to, location: query, type: string, required: false, format: date-time}
+      - {name: count, location: query, type: integer, required: false, minimum: 1, maximum: 200}
+      - {name: converting_price_unit, location: query, type: string, required: false}
+    rate_limit_group: candle
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-candles-days.md
+  - endpoint_id: rest.list-candles-weeks
+    title: 주 캔들 조회
+    category: quotation
+    functional_group: candle
+    method: GET
+    path: /v1/candles/weeks
+    parameters: *candle_parameters
+    rate_limit_group: candle
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-candles-weeks.md
+  - endpoint_id: rest.list-candles-months
+    title: 월 캔들 조회
+    category: quotation
+    functional_group: candle
+    method: GET
+    path: /v1/candles/months
+    parameters: *candle_parameters
+    rate_limit_group: candle
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-candles-months.md
+  - endpoint_id: rest.list-candles-years
+    title: 연 캔들 조회
+    category: quotation
+    functional_group: candle
+    method: GET
+    path: /v1/candles/years
+    parameters: *candle_parameters
+    rate_limit_group: candle
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-candles-years.md
+  - endpoint_id: rest.list-pair-trades
+    title: 페어 체결 이력 조회
+    category: quotation
+    functional_group: trade
+    method: GET
+    path: /v1/trades/ticks
+    parameters:
+      - {name: market, location: query, type: string, required: true}
+      - {name: to, location: query, type: string, required: false}
+      - {name: count, location: query, type: integer, required: false, minimum: 1, maximum: 500}
+      - {name: cursor, location: query, type: string, required: false}
+      - {name: days_ago, location: query, type: integer, required: false}
+    rate_limit_group: trade
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-pair-trades.md
+  - endpoint_id: rest.list-tickers
+    title: 페어 단위 현재가 조회
+    category: quotation
+    functional_group: ticker
+    method: GET
+    path: /v1/ticker
+    parameters: [{name: markets, location: query, type: string, required: true}]
+    rate_limit_group: ticker
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-tickers.md
+  - endpoint_id: rest.list-quote-tickers
+    title: 마켓 단위 현재가 조회
+    category: quotation
+    functional_group: ticker
+    method: GET
+    path: /v1/ticker/all
+    parameters: [{name: quote_currencies, location: query, type: string, required: true}]
+    rate_limit_group: ticker
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-quote-tickers.md
+  - endpoint_id: rest.list-orderbooks
+    title: 호가 조회
+    category: quotation
+    functional_group: orderbook
+    method: GET
+    path: /v1/orderbook
+    parameters:
+      - {name: markets, location: query, type: string, required: true}
+      - {name: level, location: query, type: string, required: false}
+      - {name: count, location: query, type: integer, required: false, enum: [1, 5, 15, 30]}
+    rate_limit_group: orderbook
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-orderbooks.md
+  - endpoint_id: rest.list-orderbook-instruments
+    title: 호가 정책 조회
+    category: quotation
+    functional_group: orderbook
+    method: GET
+    path: /v1/orderbook/instruments
+    parameters: [{name: markets, location: query, type: string, required: true}]
+    rate_limit_group: orderbook
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-orderbook-instruments.md
+  - endpoint_id: rest.list-orderbook-levels
+    title: 호가 모아보기 단위 조회
+    category: quotation
+    functional_group: orderbook
+    deprecated: true
+    method: GET
+    path: /v1/orderbook/supported_levels
+    parameters: [{name: markets, location: query, type: string, required: true}]
+    rate_limit_group: orderbook
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-orderbook-levels.md
+  - endpoint_id: rest.get-pocket-information
+    title: 포켓 정보 조회
+    category: exchange
+    functional_group: pocket
+    method: GET
+    path: /v1/pockets
+    parameters: []
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/get-pocket-information.md
+  - endpoint_id: rest.get-pocket-api-keys
+    title: 포켓별 API Key 목록 조회
+    category: exchange
+    functional_group: pocket
+    method: GET
+    path: /v1/pockets/api_keys
+    parameters:
+      - {name: "uuids[]", location: query, type: array, items: string, required: false}
+      - {name: include_expired, location: query, type: boolean, required: false}
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/get-pocket-api-keys.md
+  - endpoint_id: rest.get-sub-pocket-balance
+    title: 서브포켓 잔고 조회
+    category: exchange
+    functional_group: pocket
+    method: GET
+    path: /v1/pockets/assets
+    parameters: [{name: uuid, location: query, type: string, required: true}]
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/get-sub-pocket-balance.md
+  - endpoint_id: rest.post-universal-transfer
+    title: 메인포켓 자산 이전
+    category: exchange
+    functional_group: pocket
+    method: POST
+    path: /v1/pockets/universal_transfers
+    parameters:
+      - {name: from, location: body, type: string, required: false}
+      - {name: to, location: body, type: string, required: true}
+      - {name: currency, location: body, type: string, required: true}
+      - {name: amount, location: body, type: string, required: true}
+      - {name: identifier, location: body, type: string, required: false}
+    rate_limit_group: default
+    safety: blocked
+    source_url: https://docs.upbit.com/kr/reference/post-universal-transfer.md
+  - endpoint_id: rest.get-universal-transfer
+    title: 메인포켓 자산 이전 목록 조회
+    category: exchange
+    functional_group: pocket
+    method: GET
+    path: /v1/pockets/universal_transfers
+    parameters: &transfer_list_parameters
+      - {name: from, location: query, type: string, required: false}
+      - {name: to, location: query, type: string, required: false}
+      - {name: "states[]", location: query, type: array, items: string, required: false}
+      - {name: "uuids[]", location: query, type: array, items: string, required: false}
+      - {name: "identifiers[]", location: query, type: array, items: string, required: false}
+      - {name: start_time, location: query, type: string, required: false, format: date-time}
+      - {name: end_time, location: query, type: string, required: false, format: date-time}
+      - {name: currency, location: query, type: string, required: false}
+      - {name: limit, location: query, type: string, required: false}
+      - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/get-universal-transfer.md
+  - endpoint_id: rest.post-transfer
+    title: 서브포켓 자산 이전
+    category: exchange
+    functional_group: pocket
+    method: POST
+    path: /v1/pockets/transfers
+    parameters:
+      - {name: to, location: body, type: string, required: true}
+      - {name: currency, location: body, type: string, required: true}
+      - {name: amount, location: body, type: string, required: true}
+      - {name: identifier, location: body, type: string, required: false}
+    rate_limit_group: default
+    safety: blocked
+    source_url: https://docs.upbit.com/kr/reference/post-transfer.md
+  - endpoint_id: rest.get-transfer
+    title: 서브포켓 자산 이전 목록 조회
+    category: exchange
+    functional_group: pocket
+    method: GET
+    path: /v1/pockets/transfers
+    parameters:
+      - {name: direction, location: query, type: string, required: false, enum: [in, out]}
+      - {name: to, location: query, type: string, required: false}
+      - {name: "states[]", location: query, type: array, items: string, required: false}
+      - {name: "uuids[]", location: query, type: array, items: string, required: false}
+      - {name: "identifiers[]", location: query, type: array, items: string, required: false}
+      - {name: start_time, location: query, type: string, required: false, format: date-time}
+      - {name: end_time, location: query, type: string, required: false, format: date-time}
+      - {name: currency, location: query, type: string, required: false}
+      - {name: limit, location: query, type: string, required: false}
+      - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/get-transfer.md
+  - endpoint_id: rest.get-balance
+    title: 포켓 잔고 조회
+    category: exchange
+    functional_group: asset
+    method: GET
+    path: /v1/accounts
+    parameters: []
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/get-balance.md
+  - endpoint_id: rest.available-order-information
+    title: 페어별 주문 가능 정보 조회
+    category: exchange
+    functional_group: order
+    method: GET
+    path: /v1/orders/chance
+    parameters: [{name: market, location: query, type: string, required: true}]
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/available-order-information.md
+  - endpoint_id: rest.new-order
+    title: 주문 생성
+    category: exchange
+    functional_group: order
+    method: POST
+    path: /v1/orders
+    parameters: &order_parameters
+      - {name: market, location: body, type: string, required: true}
+      - {name: side, location: body, type: string, required: true, enum: [ask, bid]}
+      - {name: volume, location: body, type: string, required: false}
+      - {name: price, location: body, type: string, required: false}
+      - {name: ord_type, location: body, type: string, required: false, enum: [limit, price, market, best]}
+      - {name: identifier, location: body, type: string, required: false}
+      - {name: time_in_force, location: body, type: string, required: false, enum: [ioc, fok, post_only]}
+      - {name: smp_type, location: body, type: string, required: false, enum: [cancel_maker, cancel_taker, reduce]}
+    rate_limit_group: order
+    safety: blocked
+    source_url: https://docs.upbit.com/kr/reference/new-order.md
+  - endpoint_id: rest.order-test
+    title: 주문 생성 테스트
+    category: exchange
+    functional_group: order
+    method: POST
+    path: /v1/orders/test
+    parameters: *order_parameters
+    rate_limit_group: order-test
+    safety: test
+    source_url: https://docs.upbit.com/kr/reference/order-test.md
+  - endpoint_id: rest.get-order
+    title: 개별 주문 조회
+    category: exchange
+    functional_group: order
+    method: GET
+    path: /v1/order
+    parameters:
+      - {name: uuid, location: query, type: string, required: false}
+      - {name: identifier, location: query, type: string, required: false}
+    constraints: [uuid 또는 identifier 중 하나 필수]
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/get-order.md
+  - endpoint_id: rest.list-orders-by-ids
+    title: id로 주문 목록 조회
+    category: exchange
+    functional_group: order
+    method: GET
+    path: /v1/orders/uuids
+    parameters:
+      - {name: market, location: query, type: string, required: false}
+      - {name: "uuids[]", location: query, type: array, items: string, required: false}
+      - {name: "identifiers[]", location: query, type: array, items: string, required: false}
+      - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-orders-by-ids.md
+  - endpoint_id: rest.list-open-orders
+    title: 체결 대기 주문 목록 조회
+    category: exchange
+    functional_group: order
+    method: GET
+    path: /v1/orders/open
+    parameters: &order_list_parameters
+      - {name: market, location: query, type: string, required: false}
+      - {name: state, location: query, type: string, required: false}
+      - {name: "states[]", location: query, type: array, items: string, required: false}
+      - {name: page, location: query, type: integer, required: false}
+      - {name: limit, location: query, type: integer, required: false}
+      - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-open-orders.md
+  - endpoint_id: rest.list-closed-orders
+    title: 종료 주문 목록 조회
+    category: exchange
+    functional_group: order
+    method: GET
+    path: /v1/orders/closed
+    parameters:
+      - {name: market, location: query, type: string, required: false}
+      - {name: state, location: query, type: string, required: false}
+      - {name: "states[]", location: query, type: array, items: string, required: false}
+      - {name: start_time, location: query, type: string, required: false, format: date-time}
+      - {name: end_time, location: query, type: string, required: false, format: date-time}
+      - {name: limit, location: query, type: integer, required: false}
+      - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-closed-orders.md
+  - endpoint_id: rest.cancel-order
+    title: 개별 주문 취소 접수
+    category: exchange
+    functional_group: order
+    method: DELETE
+    path: /v1/order
+    parameters:
+      - {name: uuid, location: query, type: string, required: false}
+      - {name: identifier, location: query, type: string, required: false}
+    constraints: [uuid 또는 identifier 중 하나 필수]
+    rate_limit_group: default
+    safety: blocked
+    source_url: https://docs.upbit.com/kr/reference/cancel-order.md
+  - endpoint_id: rest.cancel-orders-by-ids
+    title: id로 주문 목록 취소 접수
+    category: exchange
+    functional_group: order
+    method: DELETE
+    path: /v1/orders/uuids
+    parameters:
+      - {name: "uuids[]", location: query, type: array, items: string, required: false}
+      - {name: "identifiers[]", location: query, type: array, items: string, required: false}
+    rate_limit_group: default
+    safety: blocked
+    source_url: https://docs.upbit.com/kr/reference/cancel-orders-by-ids.md
+  - endpoint_id: rest.batch-cancel-orders
+    title: 주문 일괄 취소 접수
+    category: exchange
+    functional_group: order
+    method: DELETE
+    path: /v1/orders/open
+    parameters:
+      - {name: quote_currencies, location: query, type: string, required: false}
+      - {name: cancel_side, location: query, type: string, required: false, enum: [all, ask, bid]}
+      - {name: count, location: query, type: integer, required: false, maximum: 300}
+      - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
+      - {name: pairs, location: query, type: string, required: false}
+      - {name: exclude_pairs, location: query, type: string, required: false}
+    rate_limit_group: order-cancel-all
+    safety: blocked
+    source_url: https://docs.upbit.com/kr/reference/batch-cancel-orders.md
+  - endpoint_id: rest.cancel-and-new-order
+    title: 취소 후 재주문
+    category: exchange
+    functional_group: order
+    method: POST
+    path: /v1/orders/cancel_and_new
+    parameters:
+      - {name: prev_order_uuid, location: body, type: string, required: false}
+      - {name: prev_order_identifier, location: body, type: string, required: false}
+      - {name: new_ord_type, location: body, type: string, required: true, enum: [limit, price, market, best]}
+      - {name: new_volume, location: body, type: string, required: false}
+      - {name: new_price, location: body, type: string, required: false}
+      - {name: new_identifier, location: body, type: string, required: false}
+      - {name: new_time_in_force, location: body, type: string, required: false, enum: [ioc, fok, post_only]}
+      - {name: new_smp_type, location: body, type: string, required: false, enum: [cancel_maker, cancel_taker, reduce]}
+    rate_limit_group: order
+    safety: blocked
+    source_url: https://docs.upbit.com/kr/reference/cancel-and-new-order.md
+  - endpoint_id: rest.available-withdrawal-information
+    title: 출금 가능 정보 조회
+    category: exchange
+    functional_group: withdrawal
+    method: GET
+    path: /v1/withdraws/chance
+    parameters:
+      - {name: currency, location: query, type: string, required: true}
+      - {name: net_type, location: query, type: string, required: false}
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/available-withdrawal-information.md
+  - endpoint_id: rest.list-withdrawal-addresses
+    title: 출금 허용 주소 목록 조회
+    category: exchange
+    functional_group: withdrawal
+    method: GET
+    path: /v1/withdraws/coin_addresses
+    parameters: []
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-withdrawal-addresses.md
+  - endpoint_id: rest.withdraw
+    title: 디지털 자산 출금 요청
+    category: exchange
+    functional_group: withdrawal
+    method: POST
+    path: /v1/withdraws/coin
+    parameters:
+      - {name: currency, location: body, type: string, required: true}
+      - {name: net_type, location: body, type: string, required: true}
+      - {name: amount, location: body, type: string, required: true}
+      - {name: address, location: body, type: string, required: true}
+      - {name: secondary_address, location: body, type: string, required: false}
+      - {name: transaction_type, location: body, type: string, required: false, enum: [default, internal]}
+    rate_limit_group: default
+    safety: blocked
+    source_url: https://docs.upbit.com/kr/reference/withdraw.md
+  - endpoint_id: rest.withdraw-krw
+    title: 원화 출금 요청
+    category: exchange
+    functional_group: withdrawal
+    method: POST
+    path: /v1/withdraws/krw
+    parameters:
+      - {name: amount, location: body, type: string, required: true}
+      - {name: two_factor_type, location: body, type: string, required: true}
+    rate_limit_group: default
+    safety: blocked
+    source_url: https://docs.upbit.com/kr/reference/withdraw-krw.md
+  - endpoint_id: rest.get-withdrawal
+    title: 개별 출금 조회
+    category: exchange
+    functional_group: withdrawal
+    method: GET
+    path: /v1/withdraw
+    parameters:
+      - {name: uuid, location: query, type: string, required: false}
+      - {name: txid, location: query, type: string, required: false}
+      - {name: currency, location: query, type: string, required: false}
+    constraints: [uuid 또는 txid 중 하나 필수]
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/get-withdrawal.md
+  - endpoint_id: rest.list-withdrawals
+    title: 출금 목록 조회
+    category: exchange
+    functional_group: withdrawal
+    method: GET
+    path: /v1/withdraws
+    parameters: &ledger_list_parameters
+      - {name: currency, location: query, type: string, required: false}
+      - {name: state, location: query, type: string, required: false}
+      - {name: "uuids[]", location: query, type: array, items: string, required: false}
+      - {name: "txids[]", location: query, type: array, items: string, required: false}
+      - {name: limit, location: query, type: integer, required: false}
+      - {name: page, location: query, type: integer, required: false}
+      - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
+      - {name: from, location: query, type: string, required: false, format: date-time}
+      - {name: to, location: query, type: string, required: false, format: date-time}
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-withdrawals.md
+  - endpoint_id: rest.cancel-withdrawal
+    title: 디지털 자산 출금 취소 요청
+    category: exchange
+    functional_group: withdrawal
+    method: DELETE
+    path: /v1/withdraws/coin
+    parameters: [{name: uuid, location: query, type: string, required: true}]
+    rate_limit_group: default
+    safety: blocked
+    source_url: https://docs.upbit.com/kr/reference/cancel-withdrawal.md
+  - endpoint_id: rest.available-deposit-information
+    title: 디지털 자산 입금 가능 정보 조회
+    category: exchange
+    functional_group: deposit
+    method: GET
+    path: /v1/deposits/chance/coin
+    parameters:
+      - {name: currency, location: query, type: string, required: true}
+      - {name: net_type, location: query, type: string, required: true}
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/available-deposit-information.md
+  - endpoint_id: rest.create-deposit-address
+    title: 입금 주소 생성 요청
+    category: exchange
+    functional_group: deposit
+    method: POST
+    path: /v1/deposits/generate_coin_address
+    parameters:
+      - {name: currency, location: body, type: string, required: true}
+      - {name: net_type, location: body, type: string, required: true}
+    rate_limit_group: default
+    safety: blocked
+    source_url: https://docs.upbit.com/kr/reference/create-deposit-address.md
+  - endpoint_id: rest.get-deposit-address
+    title: 개별 입금 주소 조회
+    category: exchange
+    functional_group: deposit
+    method: GET
+    path: /v1/deposits/coin_address
+    parameters:
+      - {name: currency, location: query, type: string, required: true}
+      - {name: net_type, location: query, type: string, required: true}
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/get-deposit-address.md
+  - endpoint_id: rest.list-deposit-addresses
+    title: 입금 주소 목록 조회
+    category: exchange
+    functional_group: deposit
+    method: GET
+    path: /v1/deposits/coin_addresses
+    parameters: []
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-deposit-addresses.md
+  - endpoint_id: rest.deposit-krw
+    title: 원화 입금
+    category: exchange
+    functional_group: deposit
+    method: POST
+    path: /v1/deposits/krw
+    parameters:
+      - {name: amount, location: body, type: string, required: true}
+      - {name: two_factor_type, location: body, type: string, required: true}
+    rate_limit_group: default
+    safety: blocked
+    source_url: https://docs.upbit.com/kr/reference/deposit-krw.md
+  - endpoint_id: rest.get-deposit
+    title: 개별 입금 조회
+    category: exchange
+    functional_group: deposit
+    method: GET
+    path: /v1/deposit
+    parameters:
+      - {name: currency, location: query, type: string, required: false}
+      - {name: uuid, location: query, type: string, required: false}
+      - {name: txid, location: query, type: string, required: false}
+    constraints: [uuid 또는 txid와 currency 조합 중 하나 필수]
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/get-deposit.md
+  - endpoint_id: rest.list-deposits
+    title: 입금 목록 조회
+    category: exchange
+    functional_group: deposit
+    method: GET
+    path: /v1/deposits
+    parameters: *ledger_list_parameters
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-deposits.md
+  - endpoint_id: rest.list-travelrule-vasps
+    title: 계정주 확인 서비스 지원 거래소 목록 조회
+    category: exchange
+    functional_group: travel_rule
+    method: GET
+    path: /v1/travel_rule/vasps
+    parameters: []
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-travelrule-vasps.md
+  - endpoint_id: rest.verify-travelrule-by-uuid
+    title: 입금 UUID로 계정주 검증 요청
+    category: exchange
+    functional_group: travel_rule
+    method: POST
+    path: /v1/travel_rule/deposit/uuid
+    parameters:
+      - {name: deposit_uuid, location: body, type: string, required: true}
+      - {name: vasp_uuid, location: body, type: string, required: true}
+    rate_limit_group: default
+    additional_limit: {scope: deposit, requests: 1, seconds: 600}
+    safety: blocked
+    source_url: https://docs.upbit.com/kr/reference/verify-travelrule-by-uuid.md
+  - endpoint_id: rest.verify-travelrule-by-txid
+    title: 입금 TxID로 계정주 검증 요청
+    category: exchange
+    functional_group: travel_rule
+    method: POST
+    path: /v1/travel_rule/deposit/txid
+    parameters:
+      - {name: vasp_uuid, location: body, type: string, required: true}
+      - {name: txid, location: body, type: string, required: true}
+      - {name: currency, location: body, type: string, required: true}
+      - {name: net_type, location: body, type: string, required: true}
+    rate_limit_group: default
+    additional_limit: {scope: deposit, requests: 1, seconds: 600}
+    safety: blocked
+    source_url: https://docs.upbit.com/kr/reference/verify-travelrule-by-txid.md
+  - endpoint_id: rest.get-service-status
+    title: 입출금 서비스 상태 조회
+    category: exchange
+    functional_group: service
+    method: GET
+    path: /v1/status/wallet
+    parameters: []
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/get-service-status.md
+  - endpoint_id: rest.list-api-keys
+    title: API Key 목록 조회
+    category: exchange
+    functional_group: service
+    method: GET
+    path: /v1/api_keys
+    parameters: []
+    rate_limit_group: default
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-api-keys.md
+
+websocket_streams:
+  - endpoint_id: websocket.ticker
+    type: ticker
+    visibility: public
+    parameters: &public_stream_parameters
+      - {name: codes, type: array, items: string, required: true}
+      - {name: is_only_snapshot, type: boolean, required: false, default: false}
+      - {name: is_only_realtime, type: boolean, required: false, default: false}
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/websocket-ticker.md
+  - endpoint_id: websocket.trade
+    type: trade
+    visibility: public
+    parameters: *public_stream_parameters
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/websocket-trade.md
+  - endpoint_id: websocket.orderbook
+    type: orderbook
+    visibility: public
+    parameters:
+      - {name: codes, type: array, items: string, required: true}
+      - {name: level, type: number, required: false}
+      - {name: is_only_snapshot, type: boolean, required: false, default: false}
+      - {name: is_only_realtime, type: boolean, required: false, default: false}
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/websocket-orderbook.md
+  - {endpoint_id: websocket.candle-1s, type: candle.1s, visibility: public, parameters: *public_stream_parameters, safety: read, source_url: https://docs.upbit.com/kr/reference/websocket-candle.md}
+  - {endpoint_id: websocket.candle-1m, type: candle.1m, visibility: public, parameters: *public_stream_parameters, safety: read, source_url: https://docs.upbit.com/kr/reference/websocket-candle.md}
+  - {endpoint_id: websocket.candle-3m, type: candle.3m, visibility: public, parameters: *public_stream_parameters, safety: read, source_url: https://docs.upbit.com/kr/reference/websocket-candle.md}
+  - {endpoint_id: websocket.candle-5m, type: candle.5m, visibility: public, parameters: *public_stream_parameters, safety: read, source_url: https://docs.upbit.com/kr/reference/websocket-candle.md}
+  - {endpoint_id: websocket.candle-10m, type: candle.10m, visibility: public, parameters: *public_stream_parameters, safety: read, source_url: https://docs.upbit.com/kr/reference/websocket-candle.md}
+  - {endpoint_id: websocket.candle-15m, type: candle.15m, visibility: public, parameters: *public_stream_parameters, safety: read, source_url: https://docs.upbit.com/kr/reference/websocket-candle.md}
+  - {endpoint_id: websocket.candle-30m, type: candle.30m, visibility: public, parameters: *public_stream_parameters, safety: read, source_url: https://docs.upbit.com/kr/reference/websocket-candle.md}
+  - {endpoint_id: websocket.candle-60m, type: candle.60m, visibility: public, parameters: *public_stream_parameters, safety: read, source_url: https://docs.upbit.com/kr/reference/websocket-candle.md}
+  - {endpoint_id: websocket.candle-240m, type: candle.240m, visibility: public, parameters: *public_stream_parameters, safety: read, source_url: https://docs.upbit.com/kr/reference/websocket-candle.md}
+  - {endpoint_id: websocket.my-asset, type: myAsset, visibility: private, parameters: [], safety: read, source_url: https://docs.upbit.com/kr/reference/websocket-myasset.md}
+  - endpoint_id: websocket.my-order
+    type: myOrder
+    visibility: private
+    parameters: [{name: codes, type: array, items: string, required: false}]
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/websocket-myorder.md
+websocket_operations:
+  - endpoint_id: websocket.list-subscriptions
+    method: LIST_SUBSCRIPTIONS
+    visibility: both
+    parameters: [{name: method, type: string, required: true, const: LIST_SUBSCRIPTIONS}]
+    safety: read
+    source_url: https://docs.upbit.com/kr/reference/list-subscriptions.md
+websocket_formats: [DEFAULT, SIMPLE, JSON_LIST, SIMPLE_LIST]
+gateway_websocket_operations: [connect, subscribe, pause, unsubscribe, reconnect, list]

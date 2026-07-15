@@ -1,15 +1,22 @@
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, cast
 
 import yaml
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_CATALOG_PATH = REPOSITORY_ROOT / "docs/contracts/upbit/upbit-api-catalog.yaml"
+PACKAGED_CATALOG = files("goodmoneying_upbit_gateway").joinpath(
+    "data/upbit-api-catalog.yaml"
+)
 
 
-def load_catalog(path: Path = DEFAULT_CATALOG_PATH) -> dict[str, Any]:
+def load_catalog(path: Path | None = None) -> dict[str, Any]:
     """기계 검증 계약인 업비트 기능 카탈로그를 읽는다."""
-    return cast(dict[str, Any], yaml.safe_load(path.read_text()))
+    text = (
+        path.read_text(encoding="utf-8")
+        if path is not None
+        else PACKAGED_CATALOG.read_text(encoding="utf-8")
+    )
+    return cast(dict[str, Any], yaml.safe_load(text))
 
 
 def endpoint_by_id(catalog: dict[str, Any], endpoint_id: str) -> dict[str, Any] | None:

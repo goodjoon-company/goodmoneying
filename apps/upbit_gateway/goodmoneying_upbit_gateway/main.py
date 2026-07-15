@@ -1,8 +1,8 @@
 from datetime import date
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field
 
 from goodmoneying_upbit_gateway.catalog import endpoint_by_id, load_catalog
 
@@ -15,6 +15,8 @@ class GatewayRequest(BaseModel):
 
 
 class RestInventory(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     active_count: Literal[50]
     deprecated_count: Literal[1]
     total_count: Literal[51]
@@ -25,7 +27,15 @@ class CatalogEntry(BaseModel):
 
     endpoint_id: str = Field(pattern=r"^(rest|websocket)\.")
     safety: Literal["read", "test", "blocked"]
-    source_url: str
+    source_url: AnyUrl
+
+
+class Health(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["ok"]
+    service: Literal["upbit-gateway"]
+    catalog_version: Literal["1.6.3"]
 
 
 class UpbitApiCatalog(BaseModel):
@@ -33,11 +43,11 @@ class UpbitApiCatalog(BaseModel):
 
     catalog_version: Literal["1.6.3"]
     verified_at: date
-    official_baseline: str
+    official_baseline: AnyUrl
     rest_inventory: RestInventory
-    rest_endpoints: list[CatalogEntry]
-    websocket_streams: list[CatalogEntry]
-    websocket_operations: list[CatalogEntry]
+    rest_endpoints: Annotated[list[CatalogEntry], Field(min_length=51, max_length=51)]
+    websocket_streams: Annotated[list[CatalogEntry], Field(min_length=14, max_length=14)]
+    websocket_operations: Annotated[list[CatalogEntry], Field(min_length=1, max_length=1)]
     gateway_websocket_operations: list[
         Literal["connect", "subscribe", "pause", "unsubscribe", "reconnect", "list"]
     ]
@@ -62,13 +72,15 @@ def create_app() -> FastAPI:
     catalog = load_catalog()
     app = FastAPI(title="goodmoneying 업비트 API 게이트웨이", version="0.1.0")
 
-    @app.get("/health")
-    def health() -> dict[str, str]:
-        return {
-            "status": "ok",
-            "service": "upbit-gateway",
-            "catalog_version": str(catalog["catalog_version"]),
-        }
+    @app.get("/health", response_model=Health)
+    def health() -> Health:
+        return Health.model_validate(
+            {
+                "status": "ok",
+                "service": "upbit-gateway",
+                "catalog_version": catalog["catalog_version"],
+            }
+        )
 
     @app.get("/v1/catalog", response_model=UpbitApiCatalog)
     def get_catalog() -> UpbitApiCatalog:

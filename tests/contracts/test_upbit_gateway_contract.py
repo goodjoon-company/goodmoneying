@@ -1,5 +1,5 @@
-import hashlib
 import json
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, cast
 
@@ -203,17 +203,23 @@ def test_rest_catalog_matches_checked_official_v1_6_3_snapshot_exactly() -> None
         }
         for endpoint in catalog["rest_endpoints"]
     ]
-    encoded = json.dumps(
-        projection,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
 
     assert snapshot["official_baseline"] == catalog["official_baseline"]
     assert snapshot["catalog_version"] == catalog["catalog_version"]
+    assert snapshot["reviewed_at"] == str(catalog["verified_at"])
     assert snapshot["projection"] == ["endpoint_id", "method", "path", "parameters"]
-    assert hashlib.sha256(encoded).hexdigest() == snapshot["sha256"]
+    assert snapshot["extraction_method"] == (
+        "공식 llms.txt의 REST 목록과 각 reference Markdown의 메서드·경로·파라미터를 대조"
+    )
+    assert snapshot["endpoints"] == projection
+
+
+def test_packaged_catalog_is_an_exact_copy_of_contract_source_of_truth() -> None:
+    packaged = files("goodmoneying_upbit_gateway").joinpath(
+        "data/upbit-api-catalog.yaml"
+    )
+
+    assert packaged.read_text(encoding="utf-8") == CATALOG_PATH.read_text(encoding="utf-8")
 
 
 def test_gateway_openapi_accepts_endpoint_id_and_never_arbitrary_url() -> None:
@@ -249,6 +255,37 @@ def test_checked_openapi_and_fastapi_runtime_have_status_response_parity() -> No
             "content"
         ]["application/json"]["schema"]
         assert checked_schema == runtime_schema
+
+
+def test_checked_openapi_and_fastapi_runtime_have_catalog_schema_semantic_parity() -> None:
+    from goodmoneying_upbit_gateway.main import create_app
+
+    checked = _load_yaml(OPENAPI_PATH)
+    runtime = create_app().openapi()
+    health_response = {"$ref": "#/components/schemas/Health"}
+    assert checked["paths"]["/health"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"] == health_response
+    assert runtime["paths"]["/health"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"] == health_response
+
+    for schema_name in ("Health", "RestInventory", "CatalogEntry", "UpbitApiCatalog"):
+        assert _semantic_schema(checked["components"]["schemas"][schema_name]) == (
+            _semantic_schema(runtime["components"]["schemas"][schema_name])
+        )
+
+
+def _semantic_schema(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _semantic_schema(item)
+            for key, item in value.items()
+            if key not in {"title", "description"}
+        }
+    if isinstance(value, list):
+        return [_semantic_schema(item) for item in value]
+    return value
 
 
 def test_gateway_websocket_schema_is_valid_and_covers_trace_events() -> None:

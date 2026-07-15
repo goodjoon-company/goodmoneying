@@ -50,7 +50,7 @@ sequenceDiagram
 
 - FastAPI와 Pydantic은 게이트웨이 HTTP 경계를 제공한다.
 - PyYAML은 저장소의 기계 검증 카탈로그를 읽는다.
-- 프로젝트는 `uv run python`의 설치 가능 패키지로 게이트웨이를 노출하며, 카탈로그 경로는 현재 작업 디렉터리(CWD)가 아니라 설치 모듈 위치에서 저장소 루트를 찾는다.
+- 프로젝트는 `uv run python`과 wheel의 설치 가능 패키지로 게이트웨이를 노출한다. 런타임은 `importlib.resources`로 패키지 데이터(package data)를 읽으므로 저장소나 현재 작업 디렉터리(CWD)에 의존하지 않으며, 계약 테스트가 패키지 복사본과 `docs/contracts/` 단일 기준(source of truth)의 바이트 동등성을 보장한다.
 - 게이트웨이는 운영 서버나 DB에 의존하지 않는다.
 - 공식 기능·파라미터·제한의 외부 기준은 업비트 개발자 센터 v1.6.3의 `llms.txt`와 개별 공식 마크다운(markdown)이다.
 

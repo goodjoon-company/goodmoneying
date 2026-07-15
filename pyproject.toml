@@ -28,6 +28,9 @@ package-dir = {"" = "apps/upbit_gateway"}
 where = ["apps/upbit_gateway"]
 include = ["goodmoneying_upbit_gateway*"]
 
+[tool.setuptools.package-data]
+goodmoneying_upbit_gateway = ["data/*.yaml"]
+
 [dependency-groups]
 dev = [
   "mypy>=1.19.0",

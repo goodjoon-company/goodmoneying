@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 from collections.abc import Callable, Mapping
+from math import isfinite
 from typing import Any, cast
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -77,27 +78,56 @@ def validate_parameters(endpoint: Mapping[str, Any], values: Mapping[str, Any]) 
         )
     for name, value in values.items():
         specification = specifications[name]
-        expected = cast(str, specification.get("type"))
-        valid_type = {
-            "string": isinstance(value, str),
-            "integer": isinstance(value, int) and not isinstance(value, bool),
-            "number": isinstance(value, int | float) and not isinstance(value, bool),
-            "boolean": isinstance(value, bool),
-            "array": isinstance(value, list),
-        }.get(expected, True)
-        allowed = specification.get("enum")
-        minimum = specification.get("minimum")
-        maximum = specification.get("maximum")
-        outside_range = (
+        if not _matches_parameter_schema(value, specification):
+            raise InvalidParameters(f"{name} 파라미터가 카탈로그 계약과 다릅니다.")
+
+
+def _matches_parameter_schema(value: Any, specification: Mapping[str, Any]) -> bool:
+    expected = specification.get("type")
+    if expected == "string":
+        valid_type = isinstance(value, str)
+    elif expected == "integer":
+        valid_type = isinstance(value, int) and not isinstance(value, bool)
+    elif expected == "number":
+        valid_type = (
             isinstance(value, int | float)
             and not isinstance(value, bool)
-            and (
-                (minimum is not None and value < minimum)
-                or (maximum is not None and value > maximum)
-            )
+            and _is_finite_number(value)
         )
-        if not valid_type or outside_range or (allowed is not None and value not in allowed):
-            raise InvalidParameters(f"{name} 파라미터가 카탈로그 계약과 다릅니다.")
+    elif expected == "boolean":
+        valid_type = isinstance(value, bool)
+    elif expected == "array":
+        if not isinstance(value, list):
+            return False
+        item_schema = specification.get("items")
+        if isinstance(item_schema, str):
+            item_schema = {"type": item_schema}
+        if not isinstance(item_schema, Mapping):
+            return False
+        valid_type = all(_matches_parameter_schema(item, item_schema) for item in value)
+    else:
+        valid_type = False
+    if not valid_type:
+        return False
+
+    allowed = specification.get("enum")
+    if allowed is not None and value not in allowed:
+        return False
+    minimum = specification.get("minimum")
+    maximum = specification.get("maximum")
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        if minimum is not None and value < minimum:
+            return False
+        if maximum is not None and value > maximum:
+            return False
+    return True
+
+
+def _is_finite_number(value: int | float) -> bool:
+    try:
+        return isfinite(value)
+    except OverflowError:
+        return False
 
 
 def build_upstream_request(

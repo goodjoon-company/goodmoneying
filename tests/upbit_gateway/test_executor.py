@@ -7,6 +7,7 @@ import pytest
 
 from goodmoneying_upbit_gateway.auth import Credentials, query_hash
 from goodmoneying_upbit_gateway.catalog import endpoint_by_id, load_catalog
+from goodmoneying_upbit_gateway.client import InvalidParameters
 from goodmoneying_upbit_gateway.executor import (
     UpbitExecutor,
     UpstreamConnectionError,
@@ -51,6 +52,44 @@ def test_blocked_request_stops_before_credentials_rate_limit_and_network() -> No
 
     with pytest.raises(PolicyBlocked):
         executor.execute(_endpoint("rest.new-order"), {})
+    assert called == []
+
+
+def test_invalid_array_items_stop_before_rate_credentials_and_network() -> None:
+    called: list[str] = []
+
+    class SpyLimiter:
+        def acquire(self, group: str) -> None:
+            called.append("rate")
+
+        def observe(self, value: str | None) -> None:
+            called.append("observe")
+
+        def defer(self, group: str, seconds: float) -> None:
+            called.append("defer")
+
+    def credentials_provider() -> Credentials:
+        called.append("credentials")
+        return Credentials("fake-access", "s" * 64)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called.append("network")
+        return httpx.Response(200, json={"unexpected": True})
+
+    executor = UpbitExecutor(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        credentials_provider=credentials_provider,
+        limiter=SpyLimiter(),
+        base_url="http://127.0.0.1:8123",
+        allow_loopback_test=True,
+    )
+
+    with pytest.raises(InvalidParameters):
+        executor.execute(
+            _endpoint("rest.get-pocket-api-keys"),
+            {"uuids[]": [{"nested": "value"}]},
+        )
+
     assert called == []
 
 

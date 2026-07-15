@@ -11,7 +11,16 @@ from goodmoneying_upbit_gateway.client import (
     InvalidParameters,
     build_upstream_request,
     validate_base_url,
+    validate_parameters,
 )
+
+CATALOG = load_catalog()
+REST_ARRAY_PARAMETERS = [
+    (endpoint, parameter)
+    for endpoint in CATALOG["rest_endpoints"]
+    for parameter in endpoint["parameters"]
+    if parameter["type"] == "array"
+]
 
 
 def _endpoint(endpoint_id: str) -> dict[str, object]:
@@ -138,7 +147,6 @@ def test_catalog_parameter_validation_enforces_required_alternative_groups() -> 
             credentials=Credentials("fake-access", "s" * 64),
             incoming_headers={},
         )
-
     request = build_upstream_request(
         _endpoint("rest.get-order"),
         {"identifier": "fake-identifier"},
@@ -155,3 +163,57 @@ def test_catalog_parameter_validation_enforces_required_alternative_groups() -> 
             credentials=None,
             incoming_headers={},
         )
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "parameter"),
+    REST_ARRAY_PARAMETERS,
+    ids=[
+        f"{endpoint['endpoint_id']}:{parameter['name']}"
+        for endpoint, parameter in REST_ARRAY_PARAMETERS
+    ],
+)
+def test_every_rest_array_parameter_enforces_catalog_item_schema(
+    endpoint: dict[str, object], parameter: dict[str, object]
+) -> None:
+    name = str(parameter["name"])
+
+    validate_parameters(endpoint, {name: ["valid-1", "valid-2"]})
+    for invalid in (
+        {"nested": "value"},
+        [["nested"]],
+        [{"nested": "value"}],
+        [1],
+        [True],
+    ):
+        with pytest.raises(InvalidParameters, match=name.replace("[", r"\[")):
+            validate_parameters(endpoint, {name: invalid})
+
+
+def test_scalar_enum_range_and_numeric_finiteness_follow_catalog_schema() -> None:
+    minute_candles = _endpoint("rest.list-candles-minutes")
+    validate_parameters(minute_candles, {"unit": 1, "market": "KRW-BTC", "count": 200})
+    for invalid in (
+        {"unit": 2, "market": "KRW-BTC"},
+        {"unit": 1, "market": "KRW-BTC", "count": 0},
+        {"unit": 1, "market": "KRW-BTC", "count": 201},
+    ):
+        with pytest.raises(InvalidParameters):
+            validate_parameters(minute_candles, invalid)
+
+    numeric_parameter = next(
+        parameter
+        for stream in CATALOG["websocket_streams"]
+        for parameter in stream["parameters"]
+        if parameter["type"] == "number"
+    )
+    synthetic_endpoint = {
+        "parameters": [{**numeric_parameter, "location": "query"}],
+    }
+    validate_parameters(synthetic_endpoint, {numeric_parameter["name"]: 0.5})
+    for invalid_number in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(InvalidParameters):
+            validate_parameters(
+                synthetic_endpoint,
+                {numeric_parameter["name"]: invalid_number},
+            )

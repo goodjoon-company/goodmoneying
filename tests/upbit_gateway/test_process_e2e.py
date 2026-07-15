@@ -125,7 +125,13 @@ def _execute(base_url: str, endpoint_id: str, parameters: dict[str, object]) -> 
 
 
 def test_actual_gateway_process_uses_canonical_authenticated_query() -> None:
-    with _processes() as (_, gateway_url, _, _):
+    with _processes() as (fake_url, gateway_url, _, _):
+        invalid = _execute(
+            gateway_url,
+            "rest.get-pocket-api-keys",
+            {"uuids[]": [{"nested": "value"}]},
+        )
+        calls_after_invalid = httpx.get(f"{fake_url}/__calls").json()
         response = _execute(
             gateway_url,
             "rest.get-pocket-api-keys",
@@ -139,6 +145,9 @@ def test_actual_gateway_process_uses_canonical_authenticated_query() -> None:
             },
         )
 
+    assert invalid.status_code == 422
+    assert invalid.json()["detail"]["code"] == "INVALID_PARAMETERS"
+    assert calls_after_invalid == []
     assert response.status_code == 200
     assert response.json()["response"]["body"]["raw_query"] == (
         "uuids[]=2026-07-16T03%3A00%3A00%2B09%3A00"

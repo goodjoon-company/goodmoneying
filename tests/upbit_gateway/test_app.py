@@ -114,6 +114,19 @@ def test_execution_route_rejects_websocket_ids_as_rest_contract_errors() -> None
         assert response.json()["detail"]["code"] == "INVALID_REQUEST"
 
 
+def test_execution_route_rejects_invalid_array_items_as_local_422() -> None:
+    response = _client(_fake_executor()).post(
+        "/v1/requests",
+        json={
+            "endpoint_id": "rest.get-pocket-api-keys",
+            "parameters": {"uuids[]": [{"nested": "value"}]},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "INVALID_PARAMETERS"
+
+
 @pytest.mark.parametrize("status_code", [403, 404, 422, 500, 501, 502, 503, 504, 505])
 def test_execution_route_distinguishes_upstream_status_envelope_from_local_error(
     status_code: int,

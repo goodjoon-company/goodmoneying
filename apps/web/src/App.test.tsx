@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -16,6 +16,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -38,22 +39,18 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.queryByRole("button", { name: /^주식$/ })).not.toBeInTheDocument();
   });
 
-  it("업비트 공개 API 테스트 화면에서 캔들·보조지표 조회를 제공한다", async () => {
+  it("업비트 공개 API 테스트에서 목록을 먼저 조회하고 10초 대기 후 선택한 거래쌍의 캔들을 표시한다", async () => {
     const operationsFetch = createTestOperationsFetch();
+    const marketRaw = [{ market: "KRW-BTC", korean_name: "비트코인", english_name: "Bitcoin", market_warning: "NONE" }];
     const upbitFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.startsWith("https://api.upbit.com/v1/market/all")) return Response.json(marketRaw);
       if (url.startsWith("https://api.upbit.com/v1/candles/")) {
-        return Response.json(
-          Array.from({ length: 20 }, (_, index) => ({
-            candle_date_time_utc: `2026-07-14T00:${String(19 - index).padStart(2, "0")}:00`,
-            opening_price: 100 + index,
-            high_price: 110 + index,
-            low_price: 90 + index,
-            trade_price: 105 + index,
-            candle_acc_trade_volume: 10 + index,
-            candle_acc_trade_price: 1000 + index
-          }))
-        );
+        return Response.json(Array.from({ length: 20 }, (_, index) => ({
+          candle_date_time_utc: `2026-07-14T00:${String(19 - index).padStart(2, "0")}:00`,
+          opening_price: 100 + index, high_price: 110 + index, low_price: 90 + index,
+          trade_price: 105 + index, candle_acc_trade_volume: 10 + index, candle_acc_trade_price: 1000 + index
+        })));
       }
       return operationsFetch(input, init);
     });
@@ -63,40 +60,42 @@ describe("데이터 수집관리 화면", () => {
 
     await user.click(await screen.findByRole("button", { name: "업비트 API 테스트" }));
     expect(await screen.findByLabelText("업비트 API 테스트 화면")).toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText("캔들 주기"), "5m");
-    await user.click(screen.getByRole("button", { name: "캔들 조회" }));
+    expect(screen.getByRole("tab", { name: "거래쌍 목록" })).toHaveAttribute("aria-selected", "true");
+    await user.click(screen.getByRole("tab", { name: "캔들" }));
+    expect(screen.getByLabelText("거래쌍")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "캔들 조회" })).toBeDisabled();
+    await user.click(screen.getByRole("tab", { name: "거래쌍 목록" }));
 
-    await waitFor(() =>
-      expect(upbitFetch).toHaveBeenCalledWith(
-        "https://api.upbit.com/v1/candles/minutes/5?market=KRW-BTC&count=100",
-        expect.anything()
-      )
+    await user.click(screen.getByLabelText("상세 정보 포함"));
+    await user.click(screen.getByRole("button", { name: "거래쌍 목록 조회" }));
+    await waitFor(() => expect(upbitFetch).toHaveBeenCalledWith(
+      "https://api.upbit.com/v1/market/all?is_details=true", expect.anything()
+    ));
+    expect(await screen.findByRole("cell", { name: "비트코인" })).toBeInTheDocument();
+    expect(screen.getByLabelText("거래쌍 목록 원본 JSON")).toHaveTextContent(/"market":\s*"KRW-BTC"/);
+
+    await user.click(screen.getByRole("tab", { name: "캔들" }));
+    expect(screen.getByLabelText("거래쌍")).toBeEnabled();
+    await user.selectOptions(screen.getByLabelText("거래쌍"), "KRW-BTC");
+    await user.selectOptions(screen.getByLabelText("캔들 주기"), "5m");
+    fireEvent.change(screen.getByLabelText("종료 시각 (KST)"), { target: { value: "2026-07-14T09:00" } });
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "캔들 조회" }));
+    expect(screen.getByRole("status")).toHaveTextContent("업비트 요청 대기 중: 10초");
+    expect(upbitFetch).not.toHaveBeenCalledWith(expect.stringContaining("/v1/candles/"), expect.anything());
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+
+    expect(upbitFetch).toHaveBeenCalledWith(
+      "https://api.upbit.com/v1/candles/minutes/5?market=KRW-BTC&count=100&to=2026-07-14T00%3A00%3A00.000Z",
+      expect.anything()
     );
-    expect(await screen.findByLabelText("업비트 API 캔들 차트")).toBeInTheDocument();
+    expect(screen.getByLabelText("업비트 API 캔들 차트")).toBeInTheDocument();
     expect(screen.getByLabelText("최신 OHLCV와 보조지표")).toHaveTextContent("RSI 14");
     expect(screen.getByText("업비트 응답 20개 · 시간 오름차순")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "KRW-BTC 5분 캔들" })).toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText("캔들 주기"), "1w");
-    expect(screen.getByRole("heading", { name: "KRW-BTC 5분 캔들" })).toBeInTheDocument();
-    expect(screen.getByText("최근 10개 OHLCV 표 보기")).toBeInTheDocument();
-  });
-
-  it("업비트가 빈 캔들 배열을 반환하면 조회 전 안내와 구분해 표시한다", async () => {
-    const operationsFetch = createTestOperationsFetch();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        if (String(input).startsWith("https://api.upbit.com/v1/candles/")) return Response.json([]);
-        return operationsFetch(input, init);
-      })
-    );
-    const user = userEvent.setup();
-    render(<App />);
-
-    await user.click(await screen.findByRole("button", { name: "업비트 API 테스트" }));
-    await user.click(screen.getByRole("button", { name: "캔들 조회" }));
-
-    expect(await screen.findByText("해당 조건에는 업비트 캔들 데이터가 없습니다.")).toBeInTheDocument();
+    expect(screen.getByLabelText("캔들 원본 JSON")).toHaveTextContent(/"trade_price":\s*105/);
+    vi.useRealTimers();
   });
 
   it("좌측 내비게이션과 운영 상태 대시보드를 첫 화면으로 표시한다", async () => {

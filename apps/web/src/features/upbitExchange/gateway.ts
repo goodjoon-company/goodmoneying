@@ -17,23 +17,56 @@ export class GatewayHttpError extends Error {
 
 export function createHttpExchangeGateway(baseUrl: string, fetcher: Fetch = fetch): ExchangeGateway {
   const normalizedBase = baseUrl.replace(/\/$/, "");
-  const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
+  const request = async <T>(
+    path: string,
+    init?: RequestInit,
+    preserveTraceEnvelope = false
+  ): Promise<T> => {
     const response = await fetcher(`${normalizedBase}${path}`, {
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       ...init
     });
-    if (!response.ok) throw new GatewayHttpError(response.status);
-    return response.json() as Promise<T>;
+    const body: unknown = await response.json();
+    if (!response.ok && !(preserveTraceEnvelope && isTraceEnvelope(body))) {
+      throw new GatewayHttpError(response.status);
+    }
+    return body as T;
   };
   return {
     getHealth: () => request<GatewayHealth>("/health"),
     getCatalog: () => request<ExchangeCatalog>("/v1/catalog"),
-    execute: (payload: GatewayRequest) => request<TraceEnvelope>("/v1/requests", {
-      method: "POST",
-      body: JSON.stringify(payload)
-    })
+    execute: (payload: GatewayRequest) => request<TraceEnvelope>(
+      "/v1/requests",
+      {
+        method: "POST",
+        body: JSON.stringify(payload)
+      },
+      true
+    )
   };
+}
+
+function isTraceEnvelope(value: unknown): value is TraceEnvelope {
+  if (!isRecord(value)) return false;
+  const trace = value as Partial<TraceEnvelope>;
+  return typeof trace.trace_id === "string"
+    && typeof trace.endpoint_id === "string"
+    && isRecord(trace.request)
+    && typeof trace.request.method === "string"
+    && typeof trace.request.path === "string"
+    && isRecord(trace.request.parameters)
+    && isRecord(trace.response)
+    && typeof trace.response.status_code === "number"
+    && "body" in trace.response
+    && isRecord(trace.rate_limit)
+    && typeof trace.rate_limit.group === "string"
+    && typeof trace.duration_ms === "number"
+    && typeof trace.received_at === "string";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function friendlyGatewayError(status: number, _unsafeDetail?: string): string {

@@ -146,11 +146,108 @@ describe("Exchange 전체 REST 작업대", () => {
     const execute = vi.fn();
     render(<ExchangeWorkbench gateway={fakeGateway({ execute })} initialGroup="order" />);
     await userEvent.click(await screen.findByRole("button", { name: /주문 생성 기능 선택/ }));
+    fireEvent.change(screen.getByLabelText("market"), { target: { value: "krw-btc" } });
 
     expect(screen.getByRole("alert")).toHaveTextContent("업비트로 전송하지 않습니다");
     expect(screen.getByRole("region", { name: "최종 요청 미리보기" })).toHaveTextContent("rest.new-order");
+    expect(screen.getByRole("region", { name: "최종 요청 미리보기" })).toHaveTextContent("KRW-BTC");
     expect(screen.getByRole("button", { name: "정책으로 전송 차단됨" })).toBeDisabled();
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["order", /개별 주문 조회 기능 선택/, "uuid 또는 identifier"],
+    ["order", /개별 주문 취소 접수 기능 선택/, "uuid 또는 identifier"],
+    ["withdrawal", /개별 출금 조회 기능 선택/, "uuid 또는 txid"],
+    ["deposit", /개별 입금 조회 기능 선택/, "uuid 또는 txid + currency"]
+  ] as const)(
+    "%s 기능의 대체 필수 입력 조합을 폼에서 안내한다",
+    async (initialGroup, endpointName, guidance) => {
+      render(<ExchangeWorkbench gateway={fakeGateway()} initialGroup={initialGroup} />);
+      await userEvent.click(await screen.findByRole("button", { name: endpointName }));
+
+      expect(screen.getByText((content) => content.includes(guidance))).toBeVisible();
+    }
+  );
+
+  it("영구 차단된 주문 취소도 대체 필수 입력 조합의 충족 여부를 표시한다", async () => {
+    render(<ExchangeWorkbench gateway={fakeGateway()} initialGroup="order" />);
+    await userEvent.click(await screen.findByRole("button", { name: /개별 주문 취소 접수 기능 선택/ }));
+    expect(screen.getByText(/필수 입력 조합.*미충족/)).toBeVisible();
+
+    await userEvent.type(screen.getByLabelText("identifier"), "client-order-id");
+
+    expect(screen.getByText(/필수 입력 조합.*충족/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "정책으로 전송 차단됨" })).toBeDisabled();
+  });
+
+  it("입금 조회의 txid 대안은 currency를 함께 입력해야 충족한다", async () => {
+    const execute = vi.fn(async () => traceFor("rest.get-deposit", []));
+    render(<ExchangeWorkbench gateway={fakeGateway({ execute })} initialGroup="deposit" />);
+    await userEvent.click(await screen.findByRole("button", { name: /개별 입금 조회 기능 선택/ }));
+    await userEvent.type(screen.getByLabelText("txid"), "transaction-id");
+
+    await userEvent.click(screen.getByRole("button", { name: "조회 실행" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("필수 입력 조합");
+    expect(execute).not.toHaveBeenCalled();
+
+    await userEvent.type(screen.getByLabelText("currency"), "BTC");
+    await userEvent.click(screen.getByRole("button", { name: "조회 실행" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+      parameters: { txid: "transaction-id", currency: "BTC" }
+    })));
+  });
+
+  it.each([
+    ["order", /개별 주문 조회 기능 선택/, "identifier"],
+    ["withdrawal", /개별 출금 조회 기능 선택/, "txid"],
+    ["deposit", /개별 입금 조회 기능 선택/, "uuid"]
+  ] as const)(
+    "%s 조회는 대체 필수 입력 조합이 없으면 실행 전에 차단한다",
+    async (initialGroup, endpointName, validField) => {
+      const execute = vi.fn(async ({ endpoint_id }: { endpoint_id: string }) => traceFor(endpoint_id, []));
+      render(<ExchangeWorkbench gateway={fakeGateway({ execute })} initialGroup={initialGroup} />);
+      await userEvent.click(await screen.findByRole("button", { name: endpointName }));
+
+      await userEvent.click(screen.getByRole("button", { name: "조회 실행" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("필수 입력 조합");
+      expect(execute).not.toHaveBeenCalled();
+
+      await userEvent.type(screen.getByLabelText(validField), "test-value");
+      await userEvent.click(screen.getByRole("button", { name: "조회 실행" }));
+      await waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+    }
+  );
+
+  it("비-2xx 추적 봉투는 친화 오류와 원본 추적을 함께 제공한다", async () => {
+    const execute = vi.fn(async () => traceFor(
+      "rest.get-balance",
+      { error: { name: "too_many_requests" } },
+      429
+    ));
+    render(<ExchangeWorkbench gateway={fakeGateway({ execute })} initialGroup="asset" />);
+    await userEvent.click(await screen.findByRole("button", { name: /포켓 잔고 조회 기능 선택/ }));
+
+    await userEvent.click(screen.getByRole("button", { name: "조회 실행" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("요청 수 제한");
+    await userEvent.click(screen.getByRole("button", { name: "원본 추적 열기" }));
+    expect(screen.getByRole("dialog", { name: "API 원본 추적" })).toHaveTextContent("too_many_requests");
+  });
+
+  it("사용자가 명시한 false 불리언을 요청에 직렬화한다", async () => {
+    const execute = vi.fn(async () => traceFor("rest.get-pocket-api-keys", []));
+    render(<ExchangeWorkbench gateway={fakeGateway({ execute })} initialGroup="pocket" />);
+    await userEvent.click(await screen.findByRole("button", { name: /포켓별 API Key 목록 조회 기능 선택/ }));
+    const checkbox = screen.getByLabelText("include_expired");
+    await userEvent.click(checkbox);
+    await userEvent.click(checkbox);
+
+    await userEvent.click(screen.getByRole("button", { name: "조회 실행" }));
+
+    await waitFor(() => expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+      parameters: { include_expired: false }
+    })));
   });
 
   it("서버 자격 증명 부재와 503을 친화적으로 표시하고 비밀값은 DOM에 넣지 않는다", async () => {
@@ -171,9 +268,36 @@ describe("Exchange 전체 REST 작업대", () => {
   it("탭·기능 목록·폼·결과 영역에 접근 가능한 이름과 관계를 제공한다", async () => {
     render(<ExchangeWorkbench gateway={fakeGateway()} />);
     const tabs = await screen.findByRole("tablist", { name: "Exchange API 기능 그룹" });
-    expect(within(tabs).getAllByRole("tab")).toHaveLength(7);
+    const tabButtons = within(tabs).getAllByRole("tab");
+    expect(tabButtons).toHaveLength(7);
+    for (const tab of tabButtons) {
+      expect(tab).toHaveAttribute("aria-controls");
+      expect(document.getElementById(tab.getAttribute("aria-controls") ?? "")).not.toBeNull();
+    }
+    tabButtons[0].focus();
+    await userEvent.keyboard("{ArrowRight}");
+    expect(screen.getByRole("tab", { name: /계정/ })).toHaveFocus();
+    expect(screen.getByRole("tab", { name: /계정/ })).toHaveAttribute("aria-selected", "true");
+    const panelId = screen.getByRole("tab", { name: /계정/ }).getAttribute("aria-controls");
+    expect(document.getElementById(panelId ?? "")).toHaveAttribute("role", "tabpanel");
     expect(screen.getByRole("main", { name: "Exchange API 작업대" })).toBeVisible();
     expect(screen.getByRole("region", { name: "요청 구성" })).toBeVisible();
     expect(screen.getByRole("region", { name: "응답 결과" })).toBeVisible();
+  });
+
+  it("원본 추적 모달로 포커스를 이동하고 Escape로 닫은 뒤 호출 버튼에 복귀한다", async () => {
+    render(<ExchangeWorkbench gateway={fakeGateway()} initialGroup="asset" />);
+    await userEvent.click(await screen.findByRole("button", { name: /포켓 잔고 조회 기능 선택/ }));
+    await userEvent.click(screen.getByRole("button", { name: "조회 실행" }));
+    const trigger = await screen.findByRole("button", { name: "원본 추적 열기" });
+
+    await userEvent.click(trigger);
+
+    expect(screen.getByRole("button", { name: "원본 추적 닫기" })).toHaveFocus();
+    await userEvent.keyboard("{Tab}");
+    expect(screen.getByRole("button", { name: "원본 추적 닫기" })).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "API 원본 추적" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 });

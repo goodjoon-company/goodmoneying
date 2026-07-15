@@ -28,6 +28,7 @@ export type ExchangeCatalogEndpoint = {
   method: string;
   path: string;
   parameters: CatalogParameter[];
+  any_of_required?: string[][];
   rate_limit_group: string;
   safety: ExchangeSafety;
   source_url: string;

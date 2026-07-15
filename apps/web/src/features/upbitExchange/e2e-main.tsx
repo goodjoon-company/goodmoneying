@@ -39,7 +39,7 @@ const gateway: ExchangeGateway = {
     if (state.nextStatus) {
       const status = state.nextStatus;
       state.nextStatus = 0;
-      throw Object.assign(new Error("UNSAFE_DETAIL_MUST_NOT_RENDER"), { status });
+      return traceFor(endpoint_id, { error: { name: "safe_upstream_error" } }, status);
     }
     if (endpoint_id === "rest.get-balance") {
       return traceFor(endpoint_id, [

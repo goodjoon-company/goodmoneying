@@ -62,7 +62,11 @@ const titleOverrides: Record<string, string> = {
   "rest.available-order-information": "페어별 주문 가능 정보 조회",
   "rest.order-test": "주문 생성 테스트",
   "rest.new-order": "주문 생성",
+  "rest.get-order": "개별 주문 조회",
+  "rest.cancel-order": "개별 주문 취소 접수",
   "rest.list-open-orders": "체결 대기 주문 목록 조회",
+  "rest.get-withdrawal": "개별 출금 조회",
+  "rest.get-deposit": "개별 입금 조회",
   "rest.get-service-status": "입출금 서비스 상태 조회"
 };
 
@@ -76,6 +80,8 @@ const parametersByEndpoint: Record<string, ExchangeCatalogEndpoint["parameters"]
   ],
   "rest.order-test": orderParameters(),
   "rest.new-order": orderParameters(),
+  "rest.get-order": identifierParameters("identifier"),
+  "rest.cancel-order": identifierParameters("identifier"),
   "rest.list-open-orders": [
     { name: "market", location: "query", type: "string", required: false },
     { name: "limit", location: "query", type: "integer", required: false, minimum: 1, maximum: 100 }
@@ -88,7 +94,20 @@ const parametersByEndpoint: Record<string, ExchangeCatalogEndpoint["parameters"]
     { name: "currency", location: "body", type: "string", required: true },
     { name: "amount", location: "body", type: "string", required: true },
     { name: "address", location: "body", type: "string", required: true }
+  ],
+  "rest.get-withdrawal": identifierParameters("txid", true),
+  "rest.get-deposit": [
+    { name: "currency", location: "query", type: "string", required: false },
+    { name: "uuid", location: "query", type: "string", required: false },
+    { name: "txid", location: "query", type: "string", required: false }
   ]
+};
+
+const anyOfRequiredByEndpoint: Record<string, string[][]> = {
+  "rest.get-order": [["uuid"], ["identifier"]],
+  "rest.cancel-order": [["uuid"], ["identifier"]],
+  "rest.get-withdrawal": [["uuid"], ["txid"]],
+  "rest.get-deposit": [["uuid"], ["txid", "currency"]]
 };
 
 export const exchangeCatalogFixture: ExchangeCatalog = {
@@ -102,6 +121,9 @@ export const exchangeCatalogFixture: ExchangeCatalog = {
     method: safety === "blocked" || safety === "test" ? "POST" : "GET",
     path: `/v1/${endpointId.replace("rest.", "").replaceAll("-", "/")}`,
     parameters: parametersByEndpoint[endpointId] ?? [],
+    ...(anyOfRequiredByEndpoint[endpointId]
+      ? { any_of_required: anyOfRequiredByEndpoint[endpointId] }
+      : {}),
     rate_limit_group: safety === "test" ? "order-test" : "default",
     safety,
     source_url: `https://docs.upbit.com/kr/reference/${endpointId.replace("rest.", "")}.md`
@@ -146,5 +168,15 @@ function orderParameters(): ExchangeCatalogEndpoint["parameters"] {
     { name: "volume", location: "body", type: "string", required: false },
     { name: "price", location: "body", type: "string", required: false },
     { name: "ord_type", location: "body", type: "string", required: false, enum: ["limit", "price", "market", "best"] }
+  ];
+}
+
+function identifierParameters(alternativeName: string, includeCurrency = false): ExchangeCatalogEndpoint["parameters"] {
+  return [
+    { name: "uuid", location: "query", type: "string", required: false },
+    { name: alternativeName, location: "query", type: "string", required: false },
+    ...(includeCurrency
+      ? [{ name: "currency", location: "query", type: "string", required: false } as const]
+      : [])
   ];
 }

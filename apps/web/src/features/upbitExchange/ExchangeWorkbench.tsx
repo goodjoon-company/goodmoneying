@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { friendlyGatewayError } from "./gateway";
 import type {
   CatalogParameter,
@@ -60,6 +60,8 @@ export function ExchangeWorkbench({
   const [executing, setExecuting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestGenerationRef = useRef(0);
+  const traceTriggerRef = useRef<HTMLButtonElement>(null);
+  const traceCloseRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -90,6 +92,20 @@ export function ExchangeWorkbench({
     setSharedMarket(marketAdapter.normalize(marketValue));
   }, [marketAdapter, marketValue]);
 
+  useEffect(() => {
+    if (!traceOpen) return;
+    traceCloseRef.current?.focus();
+    const handleDialogKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeTrace();
+      if (event.key === "Tab") {
+        event.preventDefault();
+        traceCloseRef.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", handleDialogKeyDown);
+    return () => document.removeEventListener("keydown", handleDialogKeyDown);
+  }, [traceOpen]);
+
   const visibleEndpoints = useMemo(
     () => endpoints.filter((endpoint) => endpoint.functional_group === activeGroup),
     [activeGroup, endpoints]
@@ -105,6 +121,22 @@ export function ExchangeWorkbench({
     setSelectedId(endpoint.endpoint_id);
     resetRequestState();
   };
+  const handleTabKeyDown = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    currentGroup: ExchangeFunctionalGroup
+  ) => {
+    const currentIndex = groups.findIndex((group) => group.id === currentGroup);
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % groups.length;
+    if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + groups.length) % groups.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = groups.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    chooseGroup(groups[nextIndex].id);
+    const tabs = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+    tabs?.[nextIndex]?.focus();
+  };
   const resetRequestState = () => {
     requestGenerationRef.current += 1;
     setValues({});
@@ -116,16 +148,21 @@ export function ExchangeWorkbench({
 
   const execute = async () => {
     if (!selected || selected.safety === "blocked") return;
+    const parameters = toGatewayParameters(
+      selected.parameters,
+      { ...values, market: sharedMarket },
+      marketAdapter
+    );
+    if (!hasRequiredAlternative(selected.any_of_required, parameters)) {
+      setTrace(null);
+      setError(`필수 입력 조합을 입력해 주세요: ${formatRequiredAlternatives(selected.any_of_required)}`);
+      return;
+    }
     const requestGeneration = ++requestGenerationRef.current;
     const requestedEndpointId = selected.endpoint_id;
     setExecuting(true);
     setError(null);
     try {
-      const parameters = toGatewayParameters(
-        selected.parameters,
-        { ...values, market: sharedMarket },
-        marketAdapter
-      );
       const nextTrace = await gateway.execute({
         endpoint_id: requestedEndpointId,
         parameters
@@ -137,6 +174,9 @@ export function ExchangeWorkbench({
         return;
       }
       setTrace(nextTrace);
+      setError(nextTrace.response.status_code >= 400
+        ? friendlyGatewayError(nextTrace.response.status_code)
+        : null);
     } catch (caught) {
       if (requestGenerationRef.current !== requestGeneration) return;
       setTrace(null);
@@ -150,6 +190,10 @@ export function ExchangeWorkbench({
     if (!trace) return;
     onTraceOpen?.(trace);
     setTraceOpen(true);
+  };
+  const closeTrace = () => {
+    setTraceOpen(false);
+    traceTriggerRef.current?.focus();
   };
 
   return (
@@ -181,9 +225,13 @@ export function ExchangeWorkbench({
             <button
               type="button"
               role="tab"
+              id={`exchange-tab-${group.id}`}
+              aria-controls={`exchange-panel-${group.id}`}
               aria-selected={activeGroup === group.id}
+              tabIndex={activeGroup === group.id ? 0 : -1}
               key={group.id}
               onClick={() => chooseGroup(group.id)}
+              onKeyDown={(event) => handleTabKeyDown(event, group.id)}
             >
               {group.label} <span>{count}</span>
             </button>
@@ -194,6 +242,20 @@ export function ExchangeWorkbench({
       {loading ? <p role="status">카탈로그를 불러오는 중입니다.</p> : null}
       <div className="exchange-workbench__grid">
         <section className="exchange-request" aria-label="요청 구성">
+          {groups.filter((group) => group.id !== activeGroup).map((group) => (
+            <div
+              key={group.id}
+              id={`exchange-panel-${group.id}`}
+              role="tabpanel"
+              aria-labelledby={`exchange-tab-${group.id}`}
+              hidden
+            />
+          ))}
+          <div
+            id={`exchange-panel-${activeGroup}`}
+            role="tabpanel"
+            aria-labelledby={`exchange-tab-${activeGroup}`}
+          >
           <nav aria-label="Exchange API 기능 목록" className="exchange-endpoints">
             {visibleEndpoints.map((endpoint) => (
               <button
@@ -225,6 +287,20 @@ export function ExchangeWorkbench({
                   <span>폼과 계약 미리보기만 제공하며 업비트로 전송하지 않습니다.</span>
                 </div>
               ) : null}
+              {selected.any_of_required?.length ? (
+                <p className="parameter-requirement" aria-live="polite">
+                  {`필수 입력 조합: ${formatRequiredAlternatives(selected.any_of_required)} · ${
+                    hasRequiredAlternative(
+                      selected.any_of_required,
+                      toGatewayParameters(
+                        selected.parameters,
+                        { ...values, market: sharedMarket },
+                        marketAdapter
+                      )
+                    ) ? "충족" : "미충족"
+                  }`}
+                </p>
+              ) : null}
               <div className="parameter-grid">
                 {selected.parameters.length === 0 ? <p>추가 파라미터가 없습니다.</p> : null}
                 {selected.parameters.map((parameter) => (
@@ -248,7 +324,14 @@ export function ExchangeWorkbench({
               {selected.safety === "blocked" ? (
                 <section className="request-preview" aria-label="최종 요청 미리보기">
                   <h3>로컬 요청 계약</h3>
-                  <pre>{JSON.stringify({ endpoint_id: selected.endpoint_id, parameters: toPreviewParameters(selected.parameters, values) }, null, 2)}</pre>
+                  <pre>{JSON.stringify({
+                    endpoint_id: selected.endpoint_id,
+                    parameters: toPreviewParameters(
+                      selected.parameters,
+                      { ...values, market: sharedMarket },
+                      marketAdapter
+                    )
+                  }, null, 2)}</pre>
                 </section>
               ) : null}
               <button
@@ -265,12 +348,13 @@ export function ExchangeWorkbench({
               </button>
             </div>
           ) : null}
+          </div>
         </section>
 
         <section className="exchange-result" aria-label="응답 결과">
           <div className="exchange-result__heading">
             <div><p>VISUAL RESPONSE</p><h2>응답 결과</h2></div>
-            {trace ? <button type="button" onClick={openTrace}>원본 추적 열기</button> : null}
+            {trace ? <button ref={traceTriggerRef} type="button" onClick={openTrace}>원본 추적 열기</button> : null}
           </div>
           {error ? <div className="exchange-error" role="alert">{error}</div> : null}
           {!trace && !error ? <p className="exchange-empty">기능을 선택하고 안전한 요청을 실행하세요.</p> : null}
@@ -279,7 +363,7 @@ export function ExchangeWorkbench({
       </div>
 
       {traceOpen && trace ? (
-        <div className="trace-backdrop" role="presentation" onMouseDown={() => setTraceOpen(false)}>
+        <div className="trace-backdrop" role="presentation" onMouseDown={closeTrace}>
           <section
             className="trace-dialog"
             role="dialog"
@@ -287,7 +371,7 @@ export function ExchangeWorkbench({
             aria-label="API 원본 추적"
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <header><div><p>TRACE</p><h2>API 원본 추적</h2></div><button type="button" aria-label="원본 추적 닫기" onClick={() => setTraceOpen(false)}>×</button></header>
+            <header><div><p>TRACE</p><h2>API 원본 추적</h2></div><button ref={traceCloseRef} type="button" aria-label="원본 추적 닫기" onClick={closeTrace}>×</button></header>
             <pre>{JSON.stringify(trace, null, 2)}</pre>
           </section>
         </div>
@@ -376,7 +460,7 @@ function toGatewayParameters(
   const parameters: Record<string, unknown> = {};
   for (const parameter of definitions) {
     const value = values[parameter.name];
-    if (value === undefined || value === "" || value === false) continue;
+    if (value === undefined || value === "") continue;
     if (parameter.name === "market" && typeof value === "string") {
       parameters[parameter.name] = marketAdapter.normalize(value);
     } else if (parameter.type === "array" && typeof value === "string") {
@@ -392,9 +476,27 @@ function toGatewayParameters(
 
 function toPreviewParameters(
   definitions: CatalogParameter[],
-  values: Record<string, string | boolean>
+  values: Record<string, string | boolean>,
+  marketAdapter: ExchangeMarketConceptAdapter
 ) {
-  return toGatewayParameters(definitions, values, defaultMarketAdapter);
+  return toGatewayParameters(definitions, values, marketAdapter);
+}
+
+function hasRequiredAlternative(
+  alternatives: string[][] | undefined,
+  parameters: Record<string, unknown>
+): boolean {
+  if (!alternatives?.length) return true;
+  return alternatives.some((alternative) => alternative.every((name) => hasParameterValue(parameters[name])));
+}
+
+function hasParameterValue(value: unknown): boolean {
+  if (value === undefined || value === null || value === "") return false;
+  return !Array.isArray(value) || value.length > 0;
+}
+
+function formatRequiredAlternatives(alternatives: string[][] | undefined): string {
+  return (alternatives ?? []).map((alternative) => alternative.join(" + ")).join(" 또는 ");
 }
 
 function errorMessage(caught: unknown): string {

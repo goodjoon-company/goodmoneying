@@ -338,6 +338,61 @@ def test_coin_analysis_websocket_sends_small_messages_for_a_watchlist_coin() -> 
         assert list(validator.iter_errors(message)) == []
 
 
+def test_coin_analysis_websocket_changes_watchlist_coin_and_all_units_with_independent_messages(
+) -> None:
+    repository, client = seeded_repository_and_client()
+    first_instrument, second_instrument = repository.list_active_targets()[:2]
+    units = ["1m", "5m", "10m", "30m", "1h", "1d", "1w", "1M"]
+
+    with client.websocket_connect("/v1/realtime/analysis") as websocket:
+        for unit in units:
+            websocket.send_json(
+                {
+                    "version": "1",
+                    "type": "analysis.subscribe",
+                    "sentAt": now_kst().isoformat(),
+                    "instrumentId": first_instrument.id,
+                    "unit": unit,
+                    "rangeDays": 365,
+                }
+            )
+            messages = [websocket.receive_json() for _ in range(5)]
+            messages_by_type = {message["type"]: message for message in messages}
+
+            assert set(messages_by_type) == {
+                "analysis.session",
+                "analysis.instrument",
+                "analysis.chart",
+                "analysis.indicators",
+                "analysis.market",
+            }
+            assert messages_by_type["analysis.chart"]["unit"] == unit
+            assert "candles" not in messages_by_type["analysis.market"]
+
+        websocket.send_json(
+            {
+                "version": "1",
+                "type": "analysis.subscribe",
+                "sentAt": now_kst().isoformat(),
+                "instrumentId": second_instrument.id,
+                "unit": "1d",
+                "rangeDays": 1095,
+            }
+        )
+        changed_messages = [websocket.receive_json() for _ in range(5)]
+
+    changed_by_type = {message["type"]: message for message in changed_messages}
+    assert changed_by_type["analysis.instrument"]["instrument"]["id"] == second_instrument.id
+    assert changed_by_type["analysis.chart"]["unit"] == "1d"
+    assert set(changed_by_type) == {
+        "analysis.session",
+        "analysis.instrument",
+        "analysis.chart",
+        "analysis.indicators",
+        "analysis.market",
+    }
+
+
 def test_coin_analysis_websocket_rejects_a_coin_outside_the_watchlist() -> None:
     repository, client = seeded_repository_and_client()
     outside_watchlist_id = repository.list_candidate_universe()[1][75].instrument.id

@@ -137,8 +137,70 @@ def markets(request: Request) -> JSONResponse:
     _record(request)
     return JSONResponse(
         status_code=200,
-        content=[{"market": "KRW-BTC"}],
+        content=[
+            {"market": "KRW-BTC", "korean_name": "비트코인", "english_name": "Bitcoin"},
+            {"market": "KRW-ETH", "korean_name": "이더리움", "english_name": "Ethereum"},
+        ],
         headers={"Remaining-Req": "group=market; min=600; sec=9"},
+    )
+
+
+@app.get("/v1/candles/minutes/{unit}")
+def minute_candles(unit: int, request: Request) -> JSONResponse:
+    _record(request)
+    market = request.query_params.get("market", "KRW-BTC")
+    minute_base = 19 if "to" not in request.query_params else 9
+    return JSONResponse(
+        status_code=200,
+        content=[
+            {
+                "market": market,
+                "candle_date_time_utc": f"2026-07-15T00:{minute_base - index:02d}:00",
+                "opening_price": 100 + index,
+                "high_price": 110 + index,
+                "low_price": 90 + index,
+                "trade_price": 105 + index,
+                "candle_acc_trade_volume": 10 + index,
+                "candle_acc_trade_price": 1000 + index,
+                "unit": unit,
+            }
+            for index in range(10)
+        ],
+        headers={"Remaining-Req": "group=candles; min=600; sec=9"},
+    )
+
+
+@app.get("/v1/ticker")
+def ticker(request: Request) -> JSONResponse:
+    _record(request)
+    market = request.query_params.get("markets", "KRW-BTC").split(",", maxsplit=1)[0]
+    return JSONResponse(
+        status_code=200,
+        content=[{
+            "market": market,
+            "trade_price": 150_000_000,
+            "acc_trade_price_24h": 90_000_000_000,
+        }],
+        headers={"Remaining-Req": "group=ticker; min=600; sec=9"},
+    )
+
+
+@app.get("/v1/orderbook")
+def orderbook(request: Request) -> JSONResponse:
+    _record(request)
+    market = request.query_params.get("markets", "KRW-BTC").split(",", maxsplit=1)[0]
+    return JSONResponse(
+        status_code=200,
+        content=[{
+            "market": market,
+            "orderbook_units": [{
+                "ask_price": 150_001_000,
+                "ask_size": 0.2,
+                "bid_price": 150_000_000,
+                "bid_size": 0.3,
+            }],
+        }],
+        headers={"Remaining-Req": "group=orderbook; min=600; sec=9"},
     )
 
 

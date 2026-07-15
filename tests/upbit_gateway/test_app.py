@@ -211,6 +211,8 @@ def test_websocket_route_reports_contract_and_missing_private_credentials_withou
         "UPBIT_SECRET_KEY_FILE",
     ):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("UPBIT_GATEWAY_OPERATOR_TOKEN", "local-dev-token")
+    monkeypatch.setenv("UPBIT_GATEWAY_ALLOWED_ORIGINS", "http://testserver")
 
     with _client().websocket_connect(
         "/v1/websocket",

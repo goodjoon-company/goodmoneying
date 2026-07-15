@@ -29,12 +29,14 @@ export function UpbitWebSocketWorkbench({
   markets = [{ market: "KRW-BTC", koreanName: "비트코인" }],
   marketCode,
   onMarketCodeChange,
+  showMarketSelection = true,
   socketFactory = (url) => new WebSocket(url) as unknown as BrowserSocket
 }: {
   gatewayUrl?: string;
   markets?: MarketLike[];
   marketCode?: string;
   onMarketCodeChange?: (marketCode: string) => void;
+  showMarketSelection?: boolean;
   socketFactory?: SocketFactory;
 }) {
   const [tab, setTab] = useState<WorkbenchTab>("ticker");
@@ -229,7 +231,7 @@ export function UpbitWebSocketWorkbench({
       {tabs.map((item) => <button key={item.id} id={`upbit-ws-tab-${item.id}`} role="tab" aria-controls={`upbit-ws-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1} aria-selected={tab === item.id} onKeyDown={(event) => moveTab(event, item.id)} onClick={() => selectTab(item.id)}>{item.label}</button>)}
     </nav>
     <div className="controls" aria-label="웹소켓 구독 조건">
-      {tab !== "asset" && <label>페어<select aria-label="페어" value={market} onChange={(event) => {
+      {showMarketSelection && tab !== "asset" && <label>페어<select aria-label="페어" value={market} onChange={(event) => {
         setInternalMarket(event.target.value);
         onMarketCodeChange?.(event.target.value);
       }}>

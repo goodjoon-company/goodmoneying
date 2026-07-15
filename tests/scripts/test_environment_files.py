@@ -45,8 +45,8 @@ def test_local_env_sample_lists_code_configurable_runtime_keys() -> None:
         "GOODMONEYING_PYTHON_BIN",
         "VITE_DEV_API_PROXY_TARGET",
         "VITE_API_BASE_URL",
-        "VITE_OPERATOR_TOKEN",
     }.issubset(keys)
+    assert "VITE_OPERATOR_TOKEN" not in keys
     assert "GOODMONEYING_WORKER_INTERVAL_SECONDS" not in keys
 
 

@@ -20,7 +20,9 @@ def test_upbit_gateway_has_container_and_local_compose_service() -> None:
     assert service["environment"]["UPBIT_GATEWAY_OPERATOR_TOKEN"] == (
         "${GOODMONEYING_OPERATOR_TOKEN:-local-dev-token}"
     )
-    assert service["environment"]["UPBIT_GATEWAY_TRUST_PROXY_HEADERS"] == "true"
+    assert service["environment"]["UPBIT_GATEWAY_ALLOWED_ORIGINS"] == (
+        "${UPBIT_GATEWAY_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}"
+    )
 
     web = compose["services"]["web"]
     assert web["environment"]["GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL"] == (
@@ -51,6 +53,10 @@ def test_web_proxies_gateway_upgrade_and_injects_operator_token_server_side() ->
     assert '"/upbit-gateway"' in vite
     assert "ws: true" in vite
     assert '"X-Operator-Token": operatorToken' in vite
+    api_proxy = vite.split('"/api": {', maxsplit=1)[1].split('"/upbit-gateway": {', maxsplit=1)[0]
+    assert '"X-Operator-Token": operatorToken' in api_proxy
+    assert "VITE_OPERATOR_TOKEN" not in vite
+    assert "VITE_OPERATOR_TOKEN" not in Path("apps/web/src/api.ts").read_text()
     assert "X-Operator-Token" not in workbench
 
 

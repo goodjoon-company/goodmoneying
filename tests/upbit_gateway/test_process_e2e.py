@@ -77,6 +77,7 @@ def _processes() -> Iterator[tuple[str, str, subprocess.Popen[str], subprocess.P
             "UPBIT_ACCESS_KEY": "fake-e2e-access",
             "UPBIT_SECRET_KEY": FAKE_SECRET_KEY,
             "UPBIT_GATEWAY_OPERATOR_TOKEN": E2E_OPERATOR_TOKEN,
+            "UPBIT_GATEWAY_ALLOWED_ORIGINS": f"http://127.0.0.1:{gateway_port}",
         }
     )
     gateway = subprocess.Popen(

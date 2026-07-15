@@ -514,8 +514,8 @@ start_api() {
 
 start_web() {
   start_background web \
-    env VITE_API_BASE_URL="http://${API_HOST}:${API_PORT}" \
-      VITE_OPERATOR_TOKEN="$OPERATOR_TOKEN" \
+    env VITE_API_BASE_URL="/api" \
+      VITE_DEV_API_PROXY_TARGET="http://${API_HOST}:${API_PORT}" \
       GOODMONEYING_OPERATOR_TOKEN="$OPERATOR_TOKEN" \
       VITE_DEV_UPBIT_GATEWAY_PROXY_TARGET="http://${UPBIT_GATEWAY_HOST}:${UPBIT_GATEWAY_PORT}" \
       GOODMONEYING_WEB_HOST="$WEB_HOST" \
@@ -543,7 +543,7 @@ start_upbit_gateway() {
   start_background upbit-gateway \
     env PYTHONPATH=apps/upbit_gateway \
       UPBIT_GATEWAY_OPERATOR_TOKEN="$OPERATOR_TOKEN" \
-      UPBIT_GATEWAY_TRUST_PROXY_HEADERS=true \
+      UPBIT_GATEWAY_ALLOWED_ORIGINS="http://localhost:${WEB_PORT},http://127.0.0.1:${WEB_PORT},http://${WEB_HOST}:${WEB_PORT}" \
       TZ="$APP_TIMEZONE" \
       "$PYTHON_BIN" -m uvicorn goodmoneying_upbit_gateway.main:app \
       --host "$UPBIT_GATEWAY_HOST" --port "$UPBIT_GATEWAY_PORT"

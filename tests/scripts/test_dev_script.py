@@ -533,14 +533,16 @@ def test_dev_background_launcher_starts_process_in_new_session() -> None:
     assert "stdin=subprocess.DEVNULL" in launcher
 
 
-def test_dev_script_passes_operator_token_to_vite_dev_server() -> None:
+def test_dev_script_keeps_operator_token_out_of_vite_client_environment() -> None:
     script = Path("dev.sh").read_text()
 
     start_web_body = script.split("start_web() {", maxsplit=1)[1].split(
         "\n}", maxsplit=1
     )[0]
 
-    assert 'VITE_OPERATOR_TOKEN="$OPERATOR_TOKEN"' in start_web_body
+    assert 'VITE_OPERATOR_TOKEN="$OPERATOR_TOKEN"' not in start_web_body
+    assert 'GOODMONEYING_OPERATOR_TOKEN="$OPERATOR_TOKEN"' in start_web_body
+    assert 'VITE_API_BASE_URL="/api"' in start_web_body
 
 
 def test_dev_script_runs_vite_directly_for_trackable_web_process() -> None:

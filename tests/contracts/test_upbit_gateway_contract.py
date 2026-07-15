@@ -282,7 +282,7 @@ def test_gateway_openapi_accepts_endpoint_id_and_never_arbitrary_url() -> None:
             "header": "X-Operator-Token",
             "injection_boundary": "same-origin-reverse-proxy",
         },
-        "origin_policy": "same-origin-or-explicit-allowlist",
+        "origin_policy": "explicit-allowlist-only",
     }
     catalog_schema = contract["paths"]["/v1/catalog"]["get"]["responses"]["200"]["content"][
         "application/json"

@@ -10,13 +10,12 @@ from urllib.parse import urlsplit
 class WebSocketSecuritySettings:
     operator_token: str
     allowed_origins: tuple[str, ...]
-    trust_proxy_headers: bool = False
 
     @classmethod
     def from_environment(cls, environ: Mapping[str, str]) -> WebSocketSecuritySettings:
         operator_token = environ.get(
             "UPBIT_GATEWAY_OPERATOR_TOKEN",
-            environ.get("GOODMONEYING_OPERATOR_TOKEN", "local-dev-token"),
+            environ.get("GOODMONEYING_OPERATOR_TOKEN", ""),
         )
         allowed_origins = tuple(
             normalized
@@ -26,7 +25,6 @@ class WebSocketSecuritySettings:
         return cls(
             operator_token=operator_token,
             allowed_origins=allowed_origins,
-            trust_proxy_headers=environ.get("UPBIT_GATEWAY_TRUST_PROXY_HEADERS") == "true",
         )
 
     def authorizes(self, headers: Mapping[str, str], *, websocket_scheme: str) -> bool:
@@ -38,21 +36,8 @@ class WebSocketSecuritySettings:
         origin = _normalize_origin(headers.get("origin", ""))
         if origin is None:
             return False
-        if origin in self.allowed_origins:
-            return True
-        forwarded_host = ""
-        forwarded_proto = ""
-        if self.trust_proxy_headers:
-            forwarded_host = (
-                headers.get("x-forwarded-host", "").split(",", maxsplit=1)[0].strip()
-            )
-            forwarded_proto = (
-                headers.get("x-forwarded-proto", "").split(",", maxsplit=1)[0].strip()
-            )
-        host = forwarded_host or headers.get("host", "")
-        direct_proto = "https" if websocket_scheme == "wss" else "http"
-        proto = forwarded_proto or direct_proto
-        return origin == _normalize_origin(f"{proto}://{host}")
+        _ = websocket_scheme
+        return origin in self.allowed_origins
 
 
 def _normalize_origin(value: str) -> str | None:

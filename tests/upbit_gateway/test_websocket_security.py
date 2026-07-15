@@ -41,7 +41,9 @@ def test_downstream_websocket_rejects_wrong_token_cross_origin_and_missing_origi
 
 
 def test_downstream_websocket_accepts_authenticated_same_origin() -> None:
-    client = _client(WebSocketSecuritySettings(operator_token="operator", allowed_origins=()))
+    client = _client(WebSocketSecuritySettings(
+        operator_token="operator", allowed_origins=("http://testserver",)
+    ))
 
     with _connect(
         client,
@@ -53,21 +55,14 @@ def test_downstream_websocket_accepts_authenticated_same_origin() -> None:
     assert response["code"] == "INVALID_CONTROL"
 
 
-def test_downstream_websocket_accepts_explicit_origin_and_forwarded_same_origin() -> None:
+def test_downstream_websocket_accepts_only_explicit_origin_and_rejects_forwarded_host() -> None:
     explicit = _client(
         WebSocketSecuritySettings(
             operator_token="operator",
             allowed_origins=("https://app.example",),
         )
     )
-    forwarded = _client(
-        WebSocketSecuritySettings(
-            operator_token="operator",
-            allowed_origins=(),
-            trust_proxy_headers=True,
-        )
-    )
-    direct = _client(WebSocketSecuritySettings(operator_token="operator", allowed_origins=()))
+    forwarded = _client(WebSocketSecuritySettings(operator_token="operator", allowed_origins=()))
 
     with _connect(
         explicit,
@@ -75,20 +70,8 @@ def test_downstream_websocket_accepts_explicit_origin_and_forwarded_same_origin(
     ) as websocket:
         websocket.send_json({"action": "unknown", "request_id": "explicit"})
         explicit_response = websocket.receive_json()
-    with _connect(
-        forwarded,
-        {
-            "origin": "https://money.example",
-            "host": "upbit-gateway:8001",
-            "x-forwarded-host": "money.example",
-            "x-forwarded-proto": "https",
-            "x-operator-token": "operator",
-        },
-    ) as websocket:
-        websocket.send_json({"action": "unknown", "request_id": "forwarded"})
-        forwarded_response = websocket.receive_json()
     with pytest.raises(WebSocketDisconnect), _connect(
-        direct,
+        forwarded,
         {
             "origin": "https://money.example",
             "host": "upbit-gateway:8001",
@@ -100,7 +83,6 @@ def test_downstream_websocket_accepts_explicit_origin_and_forwarded_same_origin(
         pass
 
     assert explicit_response["code"] == "INVALID_CONTROL"
-    assert forwarded_response["code"] == "INVALID_CONTROL"
 
 
 def test_security_settings_parse_trimmed_explicit_origins_and_operator_token() -> None:
@@ -114,13 +96,15 @@ def test_security_settings_parse_trimmed_explicit_origins_and_operator_token() -
     assert settings == WebSocketSecuritySettings(
         operator_token="separate-token",
         allowed_origins=("https://one.example", "https://two.example"),
-        trust_proxy_headers=False,
     )
 
-    trusted = WebSocketSecuritySettings.from_environment(
-        {
-            "UPBIT_GATEWAY_OPERATOR_TOKEN": "token",
-            "UPBIT_GATEWAY_TRUST_PROXY_HEADERS": "true",
-        }
-    )
-    assert trusted.trust_proxy_headers is True
+
+def test_security_settings_fail_closed_without_operator_token_or_allowed_origin() -> None:
+    settings = WebSocketSecuritySettings.from_environment({})
+
+    assert settings.operator_token == ""
+    assert settings.allowed_origins == ()
+    assert settings.authorizes(
+        {"origin": "http://testserver", "x-operator-token": "local-dev-token"},
+        websocket_scheme="ws",
+    ) is False

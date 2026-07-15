@@ -16,4 +16,5 @@ __pycache__/
 *.egg-info/
 apps/web/tsconfig.tsbuildinfo
 .gstack/
+.drawio-tmp/
 .goodjoon-workflow/

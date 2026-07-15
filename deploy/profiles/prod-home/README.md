@@ -7,7 +7,7 @@
 | 서버 | 역할 | 서비스 |
 |---|---|---|
 | Mac Mini M4 | infra, 배포 제어 | postgres, GitHub Actions runner |
-| APP SERVER 01 | application | api, realtime-collection-worker, backfill-collection-worker |
+| APP SERVER 01 | application | api, 업비트 API 게이트웨이(Upbit API Gateway), realtime-collection-worker, backfill-collection-worker, candle-aggregation-worker |
 | bmax-ubuntu | web | web |
 
 ## 배포 실행 흐름
@@ -15,9 +15,9 @@
 ![prod-home 배포 실행 흐름](./prod-home-deploy-flow.drawio.svg)
 
 - `release` 브랜치 push 또는 수동 실행(`workflow_dispatch`)은 Mac Mini M4의 GitHub Actions runner에서 `.github/workflows/deploy.yml`을 실행한다.
-- workflow는 검증 후 Mac Mini M4의 로그인 셸(login shell)에 SSH로 들어가 `api`, `worker`, `web` 이미지를 private GHCR(GitHub Container Registry)에 `release-{short-sha}` 태그(tag)로 push한다. `worker` 이미지는 실시간 수집 워커(Realtime Collection Worker)와 백필 수집 워커(Backfill Collection Worker)가 함께 사용한다.
+- workflow는 검증 후 Mac Mini M4의 로그인 셸(login shell)에 SSH로 들어가 `api`, `worker`, `upbit-gateway`, `web`, `migrations` 이미지를 private GHCR(GitHub Container Registry)에 `release-{short-sha}` 태그(tag)로 push한다. `worker` 이미지는 세 수집·집계 워커가 함께 사용한다.
 - runner에서 `deploy/scripts/deploy-profile.sh prod-home "${IMAGE_TAG}"`가 실행되고, `runner/profile.env`와 `runner/hosts.env`를 읽어 서버별 target compose 파일을 복사한 뒤 원격 `docker compose pull`과 `up -d`를 실행한다.
-- 배포 후 runner에서 `deploy/scripts/healthcheck-profile.sh prod-home`이 API, web, PostgreSQL, 실시간 수집 워커, 백필 수집 워커 상태를 점검하고, 통과하면 운영 URL 대상으로 `npm run e2e`를 실행한다.
+- 배포 후 runner에서 `deploy/scripts/healthcheck-profile.sh prod-home`이 API, 업비트 API 게이트웨이, web, PostgreSQL, 실시간 수집 워커, 백필 수집 워커 상태를 점검하고, 통과하면 운영 URL 대상으로 `npm run e2e`를 실행한다.
 
 ## 파일 실행 주체
 
@@ -27,7 +27,7 @@
 | `deploy/scripts/*.sh` | Mac Mini M4 runner | profile을 읽고 SSH로 target 서버를 제어하는 공통 스크립트 |
 | `deploy/profiles/prod-home/runner/` | Mac Mini M4 runner | runner가 읽는 profile/env/path 입력값 |
 | `deploy/profiles/prod-home/target/infra/compose.yml` | Mac Mini M4 target | PostgreSQL compose 정의 |
-| `deploy/profiles/prod-home/target/app/compose.yml` | APP SERVER 01 target | API, 실시간 수집 워커, 백필 수집 워커 compose 정의 |
+| `deploy/profiles/prod-home/target/app/compose.yml` | APP SERVER 01 target | API, 업비트 API 게이트웨이, 수집·집계 워커 compose 정의 |
 | `deploy/profiles/prod-home/target/web/compose.yml` | bmax-ubuntu target | web compose 정의 |
 | `deploy/profiles/prod-home/target/*/*.sh` | target 서버 | 각 서버에 복사되어 해당 서버에서 직접 start/stop 실행 |
 
@@ -86,6 +86,11 @@ GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS=60
 GOODMONEYING_BACKFILL_POLL_SECONDS=10
 GOODMONEYING_BACKFILL_BATCH_SIZE=3000
 GOODMONEYING_LOG_LEVEL=INFO
+UPBIT_GATEWAY_BASE_URL=https://api.upbit.com
+UPBIT_GATEWAY_TIMEOUT_SECONDS=10
+UPBIT_GATEWAY_ALLOWED_ORIGINS=http://100.68.208.102:8080
+UPBIT_ACCESS_KEY_FILE=/etc/goodmoneying/upbit-access-key
+UPBIT_SECRET_KEY_FILE=/etc/goodmoneying/upbit-secret-key
 ```
 
 ### bmax-ubuntu: `/home/goodjoon/applications/goodmoneying/env/web.env`
@@ -97,9 +102,9 @@ GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL=http://100.115.38.59:8001
 GOODMONEYING_OPERATOR_TOKEN=prod-home-example-operator-token-rotate
 ```
 
-Web 정적 앱의 API base URL은 `/api`로 빌드한다. Nginx 프록시(proxy)는 런타임(runtime) `GOODMONEYING_API_INTERNAL_URL`과 `GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL`로 API 서버와 업비트 웹소켓 게이트웨이(WebSocket gateway)에 각각 전달하고, `GOODMONEYING_OPERATOR_TOKEN`을 `X-Operator-Token` 헤더(header)로 붙인다. 브라우저 번들(bundle)과 URL에는 운영 토큰을 포함하지 않는다.
+Web 정적 앱의 API base URL은 `/api`로 빌드한다. Nginx 프록시(proxy)는 런타임(runtime) `GOODMONEYING_API_INTERNAL_URL`과 `GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL`로 API 서버와 업비트 API 게이트웨이에 각각 전달하고, `GOODMONEYING_OPERATOR_TOKEN`을 `X-Operator-Token` 헤더(header)로 붙인다. 브라우저 번들(bundle)과 URL에는 운영 토큰을 포함하지 않는다.
 
-업비트 REST 작업대와의 공통 화면 통합은 GitHub Issue #21, 전체 작업대 통합 E2E·QA·문서·인계는 GitHub Issue #24에서 완료한다. 운영에서 웹소켓(WebSocket) 프록시를 활성화하기 전에 Issue #24의 배포 구성과 자격 증명 검증을 함께 닫아야 한다.
+게이트웨이는 `100.115.38.59:8001`에 바인딩하고 `UPBIT_GATEWAY_ALLOWED_ORIGINS`에 실제 웹 출처만 명시한다. 키 파일은 APP SERVER 01의 `GOODMONEYING_APP_CONFIG_DIR` 아래에 소유자 읽기 전용(`chmod 400`)으로 두며 이미지·저장소·웹 서버로 복사하지 않는다. 전달 `Host`는 출처 인증 근거로 사용하지 않는다.
 
 ## GHCR pull 로그인
 

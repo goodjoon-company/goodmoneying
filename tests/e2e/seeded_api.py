@@ -7,6 +7,7 @@ from datetime import timedelta
 from decimal import Decimal
 from functools import wraps
 from typing import Any, cast
+from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI
@@ -16,6 +17,7 @@ from goodmoneying_shared.models import SourceCandle
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_shared.time import now_kst
+from goodmoneying_upbit_gateway.catalog import load_catalog, rest_endpoint_by_id
 from goodmoneying_worker.collector import seed_repository
 from goodmoneying_worker.upbit_client import FixtureUpbitClient
 
@@ -119,7 +121,104 @@ def create_seeded_e2e_app() -> FastAPI:
         _SerializedOperationsRepository(repository),
     )
     _start_aggregation_heartbeat(serialized_repository)
-    return create_app(serialized_repository)
+    app = create_app(serialized_repository)
+    catalog = load_catalog()
+
+    @app.get("/v1/catalog")
+    def get_fake_upbit_catalog() -> dict[str, Any]:
+        return catalog
+
+    @app.post("/v1/requests")
+    def execute_fake_upbit_request(payload: dict[str, Any]) -> dict[str, Any]:
+        endpoint_id = str(payload.get("endpoint_id", ""))
+        parameters = cast(dict[str, Any], payload.get("parameters", {}))
+        endpoint = rest_endpoint_by_id(catalog, endpoint_id)
+        if endpoint is None:
+            return {
+                "detail": {
+                    "code": "UNKNOWN_ENDPOINT",
+                    "message": "가짜 카탈로그에 없는 기능입니다.",
+                }
+            }
+        body = _fake_upbit_body(endpoint_id, parameters)
+        return {
+            "trace_id": str(uuid4()),
+            "endpoint_id": endpoint_id,
+            "request": {
+                "method": endpoint["method"],
+                "path": endpoint["path"],
+                "parameters": parameters,
+            },
+            "response": {"status_code": 200, "body": body},
+            "rate_limit": {
+                "group": endpoint["rate_limit_group"],
+                "remaining_sec": 9,
+                "retry_after": None,
+            },
+            "duration_ms": 3.2,
+            "received_at": now_kst().isoformat(),
+        }
+
+    return app
+
+
+def _fake_upbit_body(endpoint_id: str, parameters: dict[str, Any]) -> list[dict[str, Any]]:
+    if endpoint_id == "rest.list-trading-pairs":
+        return [
+            {"market": "KRW-BTC", "korean_name": "비트코인", "english_name": "Bitcoin"},
+            {"market": "KRW-ETH", "korean_name": "이더리움", "english_name": "Ethereum"},
+        ]
+    if "candles" in endpoint_id:
+        past = "to" in parameters
+        minute_base = 19 if not past else 9
+        return [
+            {
+                "market": str(parameters.get("market", "KRW-BTC")),
+                "candle_date_time_utc": f"2026-07-15T00:{minute_base - index:02d}:00",
+                "opening_price": 100 + index,
+                "high_price": 110 + index,
+                "low_price": 90 + index,
+                "trade_price": 105 + index,
+                "candle_acc_trade_volume": 10 + index,
+                "candle_acc_trade_price": 1000 + index,
+            }
+            for index in range(10)
+        ]
+    if endpoint_id == "rest.list-pair-trades":
+        return [
+            {
+                "market": "KRW-BTC",
+                "trade_price": 150_000_000,
+                "trade_volume": 0.1,
+                "ask_bid": "BID",
+                "timestamp": 1_768_000_000_000,
+            }
+        ]
+    if "tickers" in endpoint_id:
+        return [
+            {
+                "market": "KRW-BTC",
+                "trade_price": 150_000_000,
+                "acc_trade_price_24h": 90_000_000_000,
+            }
+        ]
+    if endpoint_id == "rest.list-orderbooks":
+        return [
+            {
+                "market": "KRW-BTC",
+                "orderbook_units": [
+                    {
+                        "ask_price": 150_001_000,
+                        "ask_size": 0.2,
+                        "bid_price": 150_000_000,
+                        "bid_size": 0.3,
+                    }
+                ],
+            }
+        ]
+    if endpoint_id == "rest.list-orderbook-instruments":
+        return [{"market": "KRW-BTC", "supported_levels": [0, 10_000], "tick_size": 1000}]
+    return [{"market": "KRW-BTC", "supported_levels": [0, 10_000]}]
 
 
 def main() -> None:

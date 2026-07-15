@@ -40,7 +40,7 @@ export default defineConfig({
             GOODMONEYING_DATABASE_URL: "",
             GOODMONEYING_DEMO_DATA: "0",
             GOODMONEYING_OPERATOR_TOKEN: operatorToken,
-            PYTHONPATH: "apps/api:apps/worker:packages/shared"
+            PYTHONPATH: "apps/api:apps/worker:apps/upbit_gateway:packages/shared"
           },
           url: `${apiBaseURL}/health`,
           reuseExistingServer: false,
@@ -54,6 +54,7 @@ export default defineConfig({
             E2E_WEB_HOST: webURL.hostname,
             E2E_WEB_PORT: webURL.port,
             VITE_API_BASE_URL: apiBaseURL,
+            VITE_DEV_UPBIT_GATEWAY_PROXY_TARGET: apiBaseURL,
             VITE_OPERATOR_TOKEN: operatorToken
           },
           url: webBaseURL,

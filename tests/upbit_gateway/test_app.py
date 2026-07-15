@@ -164,6 +164,24 @@ def test_execution_route_requires_correct_operator_token() -> None:
     assert valid.status_code == 200
 
 
+def test_execution_route_uses_deployment_operator_token_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("UPBIT_GATEWAY_OPERATOR_TOKEN", raising=False)
+    monkeypatch.setenv("GOODMONEYING_OPERATOR_TOKEN", "deployment-token")
+    module = importlib.import_module("goodmoneying_upbit_gateway.main")
+    create_app = cast(Any, module.create_app)
+    client = TestClient(cast(FastAPI, create_app(executor=_fake_executor())))
+
+    response = client.post(
+        "/v1/requests",
+        headers={"X-Operator-Token": "deployment-token"},
+        json={"endpoint_id": "rest.list-trading-pairs", "parameters": {}},
+    )
+
+    assert response.status_code == 200
+
+
 def test_execution_route_distinguishes_blocked_unknown_and_invalid() -> None:
     client = _client(_fake_executor())
 

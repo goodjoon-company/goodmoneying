@@ -35,7 +35,10 @@ from goodmoneying_upbit_gateway.executor import (
 from goodmoneying_upbit_gateway.rate_limit import GroupRateLimiter, rate_limits_from_catalog
 from goodmoneying_upbit_gateway.safety import PolicyBlocked
 from goodmoneying_upbit_gateway.websocket_protocol import WebSocketRateLimiter
-from goodmoneying_upbit_gateway.websocket_security import WebSocketSecuritySettings
+from goodmoneying_upbit_gateway.websocket_security import (
+    WebSocketSecuritySettings,
+    operator_token_from_environment,
+)
 from goodmoneying_upbit_gateway.websocket_session import (
     DownstreamDisconnected,
     GatewayWebSocketSession,
@@ -195,7 +198,7 @@ def create_app(
     expected_rest_operator_token = (
         rest_operator_token
         if rest_operator_token is not None
-        else os.environ.get("UPBIT_GATEWAY_OPERATOR_TOKEN", "")
+        else operator_token_from_environment(os.environ)
     )
     app = FastAPI(title="goodmoneying 업비트 API 게이트웨이", version="0.1.0")
     websocket_connect_limit = catalog["rate_limits"]["websocket-connect"]

@@ -99,6 +99,21 @@ def test_security_settings_parse_trimmed_explicit_origins_and_operator_token() -
     )
 
 
+def test_security_settings_prefers_gateway_token_and_falls_back_to_deployment_token() -> None:
+    fallback = WebSocketSecuritySettings.from_environment(
+        {"GOODMONEYING_OPERATOR_TOKEN": "deployment-token"}
+    )
+    explicit = WebSocketSecuritySettings.from_environment(
+        {
+            "GOODMONEYING_OPERATOR_TOKEN": "deployment-token",
+            "UPBIT_GATEWAY_OPERATOR_TOKEN": "gateway-token",
+        }
+    )
+
+    assert fallback.operator_token == "deployment-token"
+    assert explicit.operator_token == "gateway-token"
+
+
 def test_security_settings_fail_closed_without_operator_token_or_allowed_origin() -> None:
     settings = WebSocketSecuritySettings.from_environment({})
 

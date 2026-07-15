@@ -14,6 +14,23 @@ dependencies = [
   "websockets>=15.0.0",
 ]
 
+[build-system]
+requires = ["setuptools>=80.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv]
+package = true
+
+[tool.setuptools]
+package-dir = {"" = "apps/upbit_gateway"}
+
+[tool.setuptools.packages.find]
+where = ["apps/upbit_gateway"]
+include = ["goodmoneying_upbit_gateway*"]
+
+[tool.setuptools.package-data]
+goodmoneying_upbit_gateway = ["data/*.yaml"]
+
 [dependency-groups]
 dev = [
   "mypy>=1.19.0",
@@ -23,7 +40,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["apps/api", "apps/worker", "packages/shared"]
+pythonpath = ["apps/api", "apps/worker", "apps/upbit_gateway", "packages/shared"]
 testpaths = ["tests"]
 markers = [
   "live: 실제 외부 API를 호출하는 테스트",
@@ -32,14 +49,14 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py314"
-src = ["apps/api", "apps/worker", "packages/shared", "tests"]
+src = ["apps/api", "apps/worker", "apps/upbit_gateway", "packages/shared", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
 python_version = "3.14"
-mypy_path = "apps/api:apps/worker:packages/shared"
+mypy_path = "apps/api:apps/worker:apps/upbit_gateway:packages/shared"
 strict = true
 warn_unreachable = true
 warn_unused_ignores = true

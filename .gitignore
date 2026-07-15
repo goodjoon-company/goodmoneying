@@ -13,6 +13,7 @@ playwright-report/
 .ruff_cache/
 __pycache__/
 *.pyc
+*.egg-info/
 apps/web/tsconfig.tsbuildinfo
 .gstack/
 .goodjoon-workflow/

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goodmoneying.local/contracts/upbit-gateway-websocket.schema.json",
+  "title": "업비트 게이트웨이 WebSocket 추적 이벤트",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "trace_id", "state", "received_at"],
+      "properties": {
+        "type": {"const": "connection"},
+        "trace_id": {"type": "string"},
+        "state": {"enum": ["connecting", "connected", "paused", "closed", "reconnecting"]},
+        "received_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "trace_id", "endpoint_id", "action", "parameters", "received_at"],
+      "properties": {
+        "type": {"const": "subscription"},
+        "trace_id": {"type": "string"},
+        "endpoint_id": {"type": "string", "pattern": "^websocket\\."},
+        "action": {"enum": ["subscribe", "pause", "unsubscribe", "reconnect", "list"]},
+        "parameters": {"type": "object", "additionalProperties": true},
+        "received_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "trace_id", "endpoint_id", "payload", "received_at"],
+      "properties": {
+        "type": {"const": "frame"},
+        "trace_id": {"type": "string"},
+        "endpoint_id": {"type": "string", "pattern": "^websocket\\."},
+        "payload": {},
+        "received_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "trace_id", "code", "message", "received_at"],
+      "properties": {
+        "type": {"const": "error"},
+        "trace_id": {"type": "string"},
+        "code": {"enum": ["NETWORK", "AUTHENTICATION", "AUTHORIZATION", "VALIDATION", "POLICY_BLOCKED", "UPBIT"]},
+        "message": {"type": "string"},
+        "received_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  ]
+}

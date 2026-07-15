@@ -1,0 +1,155 @@
+openapi: 3.1.0
+info:
+  title: goodmoneying 업비트 API 게이트웨이
+  version: 0.1.0
+  description: 카탈로그 기반 비파괴 업비트 API 시험 경계
+paths:
+  /health:
+    get:
+      operationId: getGatewayHealth
+      responses:
+        "200":
+          description: 게이트웨이와 카탈로그 준비 상태
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Health"}
+  /v1/catalog:
+    get:
+      operationId: getUpbitCatalog
+      responses:
+        "200":
+          description: 공식 Upbit v1.6.3 REST·WebSocket 기능 카탈로그
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UpbitApiCatalog"}
+  /v1/requests:
+    post:
+      operationId: executeCatalogRequest
+      description: endpoint_id 허용 목록과 비파괴 정책을 판정하며 Issue #19에서는 상향 호출을 수행하지 않는다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/GatewayRequest"}
+      responses:
+        "501":
+          description: 알려진 endpoint_id의 상향 호출 미구현
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+        "403":
+          description: 비파괴 정책에 따라 차단된 endpoint_id
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+        "404":
+          description: 카탈로그에 없는 endpoint_id
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+        "422":
+          description: 요청 검증 오류
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/HTTPValidationError"}
+components:
+  schemas:
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status, service, catalog_version]
+      properties:
+        status: {type: string, const: ok}
+        service: {type: string, const: upbit-gateway}
+        catalog_version: {type: string, const: 1.6.3}
+    RestInventory:
+      type: object
+      additionalProperties: false
+      required: [active_count, deprecated_count, total_count]
+      properties:
+        active_count: {type: integer, const: 50}
+        deprecated_count: {type: integer, const: 1}
+        total_count: {type: integer, const: 51}
+    CatalogEntry:
+      type: object
+      additionalProperties: true
+      required: [endpoint_id, safety, source_url]
+      properties:
+        endpoint_id: {type: string, pattern: "^(rest|websocket)\\."}
+        safety: {type: string, enum: [read, test, blocked]}
+        source_url: {type: string, format: uri, minLength: 1}
+    UpbitApiCatalog:
+      type: object
+      additionalProperties: true
+      required:
+        - catalog_version
+        - verified_at
+        - official_baseline
+        - rest_inventory
+        - rest_endpoints
+        - websocket_streams
+        - websocket_operations
+        - gateway_websocket_operations
+      properties:
+        catalog_version: {type: string, const: 1.6.3}
+        verified_at: {type: string, format: date}
+        official_baseline: {type: string, format: uri, minLength: 1}
+        rest_inventory: {$ref: "#/components/schemas/RestInventory"}
+        rest_endpoints:
+          type: array
+          minItems: 51
+          maxItems: 51
+          items: {$ref: "#/components/schemas/CatalogEntry"}
+        websocket_streams:
+          type: array
+          minItems: 14
+          maxItems: 14
+          items: {$ref: "#/components/schemas/CatalogEntry"}
+        websocket_operations:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items: {$ref: "#/components/schemas/CatalogEntry"}
+        gateway_websocket_operations:
+          type: array
+          items:
+            type: string
+            enum: [connect, subscribe, pause, unsubscribe, reconnect, list]
+    GatewayRequest:
+      type: object
+      additionalProperties: false
+      required: [endpoint_id, parameters]
+      properties:
+        endpoint_id:
+          type: string
+          pattern: "^(rest|websocket)\\."
+        parameters:
+          type: object
+          additionalProperties: true
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [detail]
+      properties:
+        detail:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}
+    ValidationError:
+      type: object
+      required: [loc, msg, type]
+      properties:
+        loc:
+          type: array
+          items: {anyOf: [{type: string}, {type: integer}]}
+        msg: {type: string}
+        type: {type: string}
+    HTTPValidationError:
+      type: object
+      properties:
+        detail:
+          type: array
+          items: {$ref: "#/components/schemas/ValidationError"}

@@ -35,7 +35,7 @@ const primaryMenuItems: { id: SectionId; label: string; badge: string }[] = [
 
 const upbitWorkbenchMenuItems: { id: WorkbenchModuleId; label: string; badge: string }[] = [
   { id: "quotation", label: "Quotation API 테스트", badge: "13" },
-  { id: "exchange", label: "Exchange API 테스트", badge: "SLOT" },
+  { id: "exchange", label: "Exchange API 테스트", badge: "38" },
   { id: "websocket", label: "WebSocket API 테스트", badge: "SLOT" }
 ];
 

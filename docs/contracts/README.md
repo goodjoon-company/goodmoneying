@@ -8,6 +8,9 @@
 |---|---|---|---|
 | 테이블·인덱스·제약조건 | `db/migrations/*.sql` | dbmate, API, 워커, 저장소 구현 | `tests/contracts/test_db_contract.py`, 마이그레이션 E2E |
 | HTTP 경로·요청·응답·오류 | `api/openapi.yaml` | 웹, FastAPI | `tests/contracts/test_api_contract.py` |
+| 업비트 게이트웨이 HTTP 경계 | `api/upbit-gateway.openapi.yaml` | 업비트 API 작업대, 게이트웨이 | `tests/contracts/test_upbit_gateway_contract.py` |
+| 업비트 게이트웨이 WebSocket 이벤트 | `api/upbit-gateway-websocket.schema.json` | 업비트 API 작업대, 게이트웨이 | `tests/contracts/test_upbit_gateway_contract.py` |
+| 공식 Upbit 기능·파라미터·안전 정책 | `upbit/upbit-api-catalog.yaml` | 업비트 API 작업대, 게이트웨이 | `tests/contracts/test_upbit_gateway_contract.py` |
 | 코인 분석 실시간 메시지 | `api/realtime-analysis-websocket.schema.json` | 분석 화면, 운영 서버 | API·프론트엔드 메시지 테스트 |
 | 시스템 관리 실시간 메시지 | `api/realtime-system-management-websocket.md` | 시스템 관리 화면, 운영 서버 | API·프론트엔드 메시지 테스트 |
 | 미래 내부 이벤트 | `protobuf/` | 승인된 메시지 큐 소비자 | 스키마별 테스트 |
@@ -20,6 +23,7 @@
 |---|---|---|
 | DB | `docs/contracts/db/` | 변경 이력 `migrations/*.sql`, 생성 스냅샷 `schema.sql` |
 | API | `docs/contracts/api/` | `openapi.yaml` |
+| Upbit | `docs/contracts/upbit/` | `upbit-api-catalog.yaml` |
 | Message | `docs/contracts/protobuf/` | `*.proto` |
 
 ## 변경 순서

@@ -8,6 +8,11 @@
 - 문서 제목: `# <모듈명> 설계`
 - `docs/02_Architecture.md`의 모듈 색인에서 반드시 링크한다.
 
+## 현재 모듈 문서
+
+- [업비트 수집 파이프라인](upbit-collection-pipeline.md)
+- [업비트 API 게이트웨이](upbit-api-gateway.md)
+
 ## 권장 구조
 
 ```md

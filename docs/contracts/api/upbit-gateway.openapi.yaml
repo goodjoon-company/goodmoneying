@@ -1,0 +1,70 @@
+openapi: 3.1.0
+info:
+  title: goodmoneying 업비트 API 게이트웨이
+  version: 0.1.0
+  description: 카탈로그 기반 비파괴 업비트 API 시험 경계
+paths:
+  /health:
+    get:
+      operationId: getGatewayHealth
+      responses:
+        "200":
+          description: 게이트웨이와 카탈로그 준비 상태
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Health"}
+  /v1/catalog:
+    get:
+      operationId: getUpbitCatalog
+      responses:
+        "200":
+          description: 공식 Upbit v1.6.3 REST·WebSocket 기능 카탈로그
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+  /v1/requests:
+    post:
+      operationId: executeCatalogRequest
+      description: endpoint_id 허용 목록 경계이며 Issue #19에서는 501만 반환한다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/GatewayRequest"}
+      responses:
+        "501":
+          description: 상향 호출 미구현
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+components:
+  schemas:
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status, service, catalog_version]
+      properties:
+        status: {type: string, const: ok}
+        service: {type: string, const: upbit-gateway}
+        catalog_version: {type: string}
+    GatewayRequest:
+      type: object
+      additionalProperties: false
+      required: [endpoint_id, parameters]
+      properties:
+        endpoint_id:
+          type: string
+          pattern: "^(rest|websocket)\\."
+        parameters:
+          type: object
+          additionalProperties: true
+    ErrorResponse:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}

@@ -1,7 +1,7 @@
 # 아키텍처 개발 사양
 
 Status: Accepted
-Last Updated: 2026-07-15
+Last Updated: 2026-07-16
 
 ## 문서 역할과 읽는 순서
 
@@ -32,6 +32,7 @@ flowchart LR
     subgraph gm["goodmoneying 단일 개발·운영 환경"]
         web["운영 화면<br/>React + Vite"]
         api["운영 서버<br/>FastAPI"]
+        gateway["업비트 API 게이트웨이<br/>FastAPI"]
         realtime["실시간 수집 워커<br/>Python"]
         backfill["백필 수집 워커<br/>Python"]
         aggregation["캔들 집계 워커<br/>Python"]
@@ -40,7 +41,9 @@ flowchart LR
 
     operator -->|"브라우저"| web
     web -->|"HTTP REST · SSE · WebSocket"| api
-    web -.->|"공개 조회 전용<br/>업비트 API 테스트"| upbitRest
+    web -->|"카탈로그·endpoint_id<br/>키 없음"| gateway
+    gateway -.->|"허용 목록 REST<br/>Issue #19 미구현"| upbitRest
+    gateway -.->|"공개·비공개 WebSocket<br/>Issue #19 미구현"| upbitWs
     api <--> db
     realtime -->|"ticker · trade · orderbook · candle.1m"| upbitWs
     realtime <--> db
@@ -49,7 +52,7 @@ flowchart LR
     aggregation <--> db
 ```
 
-브라우저의 업비트 API 테스트 페이지는 공개 조회 기능을 검증하는 예외 경로다. 수집·저장·분석의 제품 데이터 경로는 반드시 서버 측 워커와 PostgreSQL을 통과한다.
+브라우저의 업비트 API 테스트 페이지도 업비트에 직접 연결하지 않는다. 별도 게이트웨이가 키·허용 목록·요청 제한·비파괴 정책 경계를 소유하며 브라우저에는 카탈로그와 마스킹된 추적 정보만 제공한다. 수집·저장·분석의 제품 데이터 경로는 기존 서버 측 워커와 PostgreSQL을 통과한다.
 
 ## 소프트웨어 아키텍처(Software Architecture)
 
@@ -71,6 +74,12 @@ flowchart TB
         routes --> service
     end
 
+    subgraph upbitGateway["apps/upbit_gateway — 업비트 API 게이트웨이"]
+        gatewayRoutes["main.py<br/>health · catalog · 실행 경계"]
+        gatewayCatalog["catalog.py<br/>계약 카탈로그 로더"]
+        gatewayRoutes --> gatewayCatalog
+    end
+
     subgraph workers["apps/worker — 수집·집계 워커(Worker)"]
         rt["realtime_collection_worker"]
         bf["backfill_collection_worker"]
@@ -88,6 +97,7 @@ flowchart TB
     end
 
     client --> routes
+    client --> gatewayRoutes
     service --> repo
     rt --> repo
     bf --> repo
@@ -100,6 +110,7 @@ flowchart TB
 
 | 런타임 | 책임 | 상태·복구 기준 |
 |---|---|---|
+| 업비트 API 게이트웨이(Upbit API Gateway) | 브라우저 대신 공식 REST·WebSocket을 연결하고 카탈로그·인증·요청 제한·안전 정책·추적을 한 경계에 둔다. | Issue #19에서는 `/health`, `/v1/catalog`, 501 실행 경계만 제공하며 업비트 상향 호출은 수행하지 않는다. |
 | 실시간 수집 워커(Realtime Collection Worker) | 후보군, 현재가, 체결, 호가 요약, 1분 원천봉을 업비트 WebSocket에서 수집한다. | `GOODMONEYING_LIVE_UPBIT=1` live 프로필에서만 실제 수집하며 heartbeat와 수집 결과를 기록한다. |
 | 백필 수집 워커(Backfill Collection Worker) | DB의 `pending` 백필 작업을 읽어 결측 원천 캔들을 REST로 보충한다. | 기본 10초 폴링, 동시성 1, DB batch upsert 성공 뒤 진행 상태를 기록한다. |
 | 캔들 집계 워커(Candle Aggregation Worker) | 원천 워터마크와 집계 워터마크를 비교해 `5m/10m/30m/60m/1d/1w/1M` OHLCV를 생성한다. | 기본 5초 폴링, 대상별 멱등 upsert와 heartbeat를 기록한다. |
@@ -156,9 +167,10 @@ sequenceDiagram
 |---|---|---|---|
 | 운영 화면 | `apps/web/` | 화면 상태, HTTP·SSE·WebSocket 소비 | [사용 안내](사용설명서-M1-업비트-수집-운영-mvp.md) |
 | 운영 서버 | `apps/api/goodmoneying_api/` | API 경계, 화면용 조회, 분석 조합 | [HTTP·실시간 계약](contracts/api/README.md) |
+| 업비트 API 게이트웨이 | `apps/upbit_gateway/goodmoneying_upbit_gateway/` | 공식 기능 카탈로그 제공, 키·요청 제한·안전 정책 경계 | [게이트웨이 설계](02_Architecture/upbit-api-gateway.md) |
 | 수집·집계 워커 | `apps/worker/goodmoneying_worker/` | 실시간 수집, Backfill, 집계 작업 | [업비트 수집 파이프라인](02_Architecture/upbit-collection-pipeline.md) |
 | 공유 도메인·저장소 | `packages/shared/goodmoneying_shared/` | 모델, 집계 계산, 저장소 포트와 구현 | [DB 계약](contracts/db/README.md) |
-| 데이터 계약 | `docs/contracts/` | DB·HTTP·WebSocket의 기계 검증 기준 | [계약 기준](contracts/README.md) |
+| 데이터 계약 | `docs/contracts/` | DB·HTTP·WebSocket·업비트 기능 카탈로그의 기계 검증 기준 | [계약 기준](contracts/README.md) |
 
 ## 아키텍처 결정과 변경 규칙
 

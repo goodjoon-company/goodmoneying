@@ -24,6 +24,7 @@ from goodmoneying_upbit_gateway.websocket_protocol import (
     build_subscription_request,
     decode_upstream_frame,
     redact_websocket_value,
+    validate_control_message,
     validate_format,
     validate_subscription,
     validate_ticket,
@@ -147,24 +148,24 @@ class GatewayWebSocketSession:
     async def handle(self, control: Mapping[str, Any]) -> None:
         request_id = control.get("request_id")
         try:
-            if not isinstance(request_id, str) or not request_id:
-                raise InvalidWebSocketControl("request_id가 필요합니다.")
+            validate_control_message(control)
             action = control.get("action")
             if action not in self._catalog["gateway_websocket_operations"]:
                 raise InvalidWebSocketControl("지원하지 않는 action입니다.")
+            validated_request_id = cast(str, request_id)
             async with self._control_lock:
                 if action == "connect":
-                    await self._connect(control, request_id)
+                    await self._connect(control, validated_request_id)
                 elif action == "subscribe":
-                    await self._subscribe(control, request_id)
+                    await self._subscribe(control, validated_request_id)
                 elif action == "pause":
-                    await self._pause(control, request_id)
+                    await self._pause(control, validated_request_id)
                 elif action == "unsubscribe":
-                    await self._unsubscribe(control, request_id)
+                    await self._unsubscribe(control, validated_request_id)
                 elif action == "reconnect":
-                    await self._manual_reconnect(request_id)
+                    await self._manual_reconnect(validated_request_id)
                 else:
-                    await self._list(request_id)
+                    await self._list(validated_request_id)
         except InvalidWebSocketControl as exc:
             await self._error(
                 request_id=request_id if isinstance(request_id, str) else None,
@@ -220,7 +221,9 @@ class GatewayWebSocketSession:
             raise InvalidWebSocketControl("현재 연결 가시성과 스트림 가시성이 다릅니다.")
         self._subscriptions[endpoint_id] = subscription
         await self._send_upstream(
-            build_subscription_request(self._required_ticket(), [subscription], self._format)
+            build_subscription_request(
+                self._required_ticket(), list(self._subscriptions.values()), self._format
+            )
         )
         await self._send(
             {
@@ -381,14 +384,14 @@ class GatewayWebSocketSession:
                     }
                 )
             if generation == self._generation and not self._closed:
-                await self._auto_reconnect(generation, "상향 연결이 종료되었습니다.")
+                await self._auto_reconnect(generation)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except Exception:
             if generation == self._generation and not self._closed:
-                await self._auto_reconnect(generation, str(exc))
+                await self._auto_reconnect(generation)
 
-    async def _auto_reconnect(self, generation: int, reason: str) -> None:
+    async def _auto_reconnect(self, generation: int) -> None:
         delays = (0.25, 0.5, 1.0, 2.0, 5.0)
         for delay in delays:
             if self._closed or generation != self._generation:
@@ -405,10 +408,11 @@ class GatewayWebSocketSession:
         await self._error(
             request_id=None,
             code="UPSTREAM_CONNECTION_ERROR",
-            message=f"상향 재연결에 실패했습니다: {reason}",
+            message="업비트 상향 웹소켓(WebSocket) 재연결에 실패했습니다.",
             status=502,
             recoverable=False,
         )
+        await self._connection_event("closed", None)
 
     async def _connection_event(
         self, state: str, request_id: str | None, *, retry_in: float | None = None

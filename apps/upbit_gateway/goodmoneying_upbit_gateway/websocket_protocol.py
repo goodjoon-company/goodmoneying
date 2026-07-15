@@ -35,9 +35,62 @@ def validate_format(value: Any) -> str:
 
 
 def validate_ticket(value: Any) -> str:
-    if not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 128:
-        raise InvalidWebSocketControl("ticket은 1~128바이트 문자열이어야 합니다.")
+    if not isinstance(value, str) or not value.strip() or len(value) > 128:
+        raise InvalidWebSocketControl("ticket은 1~128자 문자열이어야 합니다.")
     return value.strip()
+
+
+def validate_control_message(control: Mapping[str, Any]) -> None:
+    action = control.get("action")
+    specifications: dict[str, tuple[set[str], set[str]]] = {
+        "connect": (
+            {"action", "request_id", "visibility", "ticket", "format"},
+            {"action", "request_id", "visibility", "ticket", "format"},
+        ),
+        "subscribe": (
+            {"action", "request_id", "endpoint_id", "parameters"},
+            {"action", "request_id", "endpoint_id", "parameters"},
+        ),
+        "pause": (
+            {"action", "request_id", "paused"},
+            {"action", "request_id", "paused"},
+        ),
+        "unsubscribe": (
+            {"action", "request_id", "endpoint_id"},
+            {"action", "request_id", "endpoint_id"},
+        ),
+        "reconnect": ({"action", "request_id"}, {"action", "request_id"}),
+        "list": ({"action", "request_id"}, {"action", "request_id"}),
+    }
+    if not isinstance(action, str) or action not in specifications:
+        raise InvalidWebSocketControl("지원하지 않는 action입니다.")
+    required, allowed = specifications[action]
+    missing = required - set(control)
+    extra = set(control) - allowed
+    if missing:
+        raise InvalidWebSocketControl(f"필수 필드가 없습니다: {', '.join(sorted(missing))}")
+    if extra:
+        raise InvalidWebSocketControl(f"지원하지 않는 필드입니다: {', '.join(sorted(extra))}")
+    request_id = control["request_id"]
+    if not isinstance(request_id, str) or not request_id or len(request_id) > 128:
+        raise InvalidWebSocketControl("request_id는 1~128자 문자열이어야 합니다.")
+    if action == "connect":
+        if control["visibility"] not in {"public", "private"}:
+            raise InvalidWebSocketControl("visibility는 public 또는 private이어야 합니다.")
+        validate_ticket(control["ticket"])
+        validate_format(control["format"])
+    elif action == "subscribe":
+        endpoint_id = control["endpoint_id"]
+        if not isinstance(endpoint_id, str) or not endpoint_id.startswith("websocket."):
+            raise InvalidWebSocketControl("endpoint_id는 websocket.으로 시작해야 합니다.")
+        if not isinstance(control["parameters"], Mapping):
+            raise InvalidWebSocketControl("parameters는 객체여야 합니다.")
+    elif action == "pause" and not isinstance(control["paused"], bool):
+        raise InvalidWebSocketControl("paused는 boolean이어야 합니다.")
+    elif action == "unsubscribe":
+        endpoint_id = control["endpoint_id"]
+        if not isinstance(endpoint_id, str) or not endpoint_id.startswith("websocket."):
+            raise InvalidWebSocketControl("endpoint_id는 websocket.으로 시작해야 합니다.")
 
 
 def validate_subscription(

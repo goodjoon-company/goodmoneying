@@ -58,3 +58,24 @@ test("고립된 업비트 웹소켓 작업대가 공개·비공개 제어와 raw
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await workbench.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBeTruthy();
 });
+
+test("브라우저가 같은 출처 프록시를 거쳐 게이트웨이와 가짜 업비트에 연결한다", async ({ page }) => {
+  await page.goto("/src/features/upbitWebSocket/harness.html");
+  const workbench = page.getByLabel("업비트 웹소켓 작업대");
+
+  await page.getByRole("button", { name: "연결", exact: true }).click();
+  await expect(workbench.getByText("connected", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "구독", exact: true }).click();
+  await expect(page.getByLabel("실시간 현재가")).toContainText("100");
+  await page.getByRole("button", { name: "raw 추적" }).click();
+  await expect(page.getByRole("dialog", { name: "raw frame 추적" })).toContainText(
+    "public · DEFAULT · websocket.ticker"
+  );
+  await page.getByRole("button", { name: "닫기" }).click();
+
+  await page.getByRole("tab", { name: "내 자산" }).click();
+  await page.getByRole("button", { name: "연결", exact: true }).click();
+  await expect(workbench.getByText("connected", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "구독", exact: true }).click();
+  await expect(workbench.getByRole("status")).toContainText("subscribed");
+});

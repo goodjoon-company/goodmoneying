@@ -15,6 +15,7 @@ from websockets.typing import Origin
 
 ROOT = Path(__file__).resolve().parents[2]
 FAKE_SECRET_KEY = "e" * 64
+E2E_OPERATOR_TOKEN = "e2e-operator-token"
 
 
 def _free_port() -> int:
@@ -75,6 +76,7 @@ def _processes() -> Iterator[tuple[str, str, subprocess.Popen[str], subprocess.P
             "UPBIT_GATEWAY_WEBSOCKET_PRIVATE_URL": f"ws://127.0.0.1:{fake_port}/websocket/private",
             "UPBIT_ACCESS_KEY": "fake-e2e-access",
             "UPBIT_SECRET_KEY": FAKE_SECRET_KEY,
+            "UPBIT_GATEWAY_OPERATOR_TOKEN": E2E_OPERATOR_TOKEN,
         }
     )
     gateway = subprocess.Popen(
@@ -231,7 +233,9 @@ def test_actual_gateway_and_fake_upbit_websocket_process_end_to_end() -> None:
 
     with _processes() as (fake_url, gateway_url, fake, gateway):
         websocket_url = gateway_url.replace("http://", "ws://") + "/v1/websocket"
-        with connect(websocket_url, origin=Origin("https://browser.example")) as public:
+        headers = {"X-Operator-Token": E2E_OPERATOR_TOKEN}
+        origin = Origin(gateway_url)
+        with connect(websocket_url, origin=origin, additional_headers=headers) as public:
             public.send(
                 '{"action":"connect","request_id":"c","visibility":"public",'
                 '"ticket":"ticket-public","format":"JSON_LIST"}'
@@ -246,7 +250,7 @@ def test_actual_gateway_and_fake_upbit_websocket_process_end_to_end() -> None:
             public.send('{"action":"list","request_id":"l"}')
             listed = [json.loads(public.recv()), json.loads(public.recv())]
 
-        with connect(websocket_url) as private:
+        with connect(websocket_url, origin=origin, additional_headers=headers) as private:
             private.send(
                 '{"action":"connect","request_id":"pc","visibility":"private",'
                 '"ticket":"ticket-private","format":"DEFAULT"}'
@@ -268,6 +272,10 @@ def test_actual_gateway_and_fake_upbit_websocket_process_end_to_end() -> None:
     assert frame["binary"] is True
     assert frame["payload"][0]["code"] == "KRW-BTC"
     assert {item["event"] for item in listed} == {"subscription", "frame"}
+    public_list_frame = next(item for item in listed if item["event"] == "frame")
+    assert public_list_frame["payload"]["result"] == [
+        {"type": "ticker", "codes": ["KRW-BTC"], "is_only_realtime": True}
+    ]
     assert (private_connected["state"], private_subscribed["action"]) == (
         "connected",
         "subscribed",
@@ -275,6 +283,7 @@ def test_actual_gateway_and_fake_upbit_websocket_process_end_to_end() -> None:
     assert {item["event"] for item in private_listed} == {"subscription", "frame"}
     private_frames = [item for item in private_listed if item["event"] == "frame"]
     assert private_frames[0]["payload"]["method"] == "LIST_SUBSCRIPTIONS"
+    assert private_frames[0]["payload"]["result"] == [{"type": "myAsset"}]
     websocket_connections = [call for call in calls if call["method"] == "WEBSOCKET"]
     assert websocket_connections[0]["origin"] is None
     assert websocket_connections[0]["authorization"] is None
@@ -301,7 +310,11 @@ def test_actual_websocket_malformed_error_reconnect_and_message_rate_limit() -> 
 
     with _processes() as (_, gateway_url, _, _):
         websocket_url = gateway_url.replace("http://", "ws://") + "/v1/websocket"
-        with connect(websocket_url) as websocket:
+        with connect(
+            websocket_url,
+            origin=Origin(gateway_url),
+            additional_headers={"X-Operator-Token": E2E_OPERATOR_TOKEN},
+        ) as websocket:
             websocket.send(
                 '{"action":"connect","request_id":"c","visibility":"public",'
                 '"ticket":"ticket","format":"DEFAULT"}'

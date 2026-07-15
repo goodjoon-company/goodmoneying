@@ -1,5 +1,10 @@
 import type { CandleUnit, GatewayFrameEvent, MarketLike, Visibility, WorkbenchTab } from "./types";
 
+export function defaultGatewayWebSocketUrl(location: Pick<Location, "protocol" | "host">) {
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${scheme}//${location.host}/upbit-gateway/v1/websocket`;
+}
+
 export function marketOptions(markets: MarketLike[]) {
   return markets.map((market) => {
     const value = market.market.trim().toUpperCase();

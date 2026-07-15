@@ -16,6 +16,7 @@ RUN npm run build
 FROM nginx:1.29-alpine
 ENV TZ=Asia/Seoul
 ENV GOODMONEYING_API_INTERNAL_URL=http://api:8000
+ENV GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL=http://upbit-gateway:8001
 ENV GOODMONEYING_OPERATOR_TOKEN=local-dev-token
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 COPY apps/web/nginx.conf.template /etc/nginx/templates/default.conf.template

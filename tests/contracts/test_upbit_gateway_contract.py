@@ -3,6 +3,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 import yaml
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
 
@@ -277,6 +278,11 @@ def test_gateway_openapi_accepts_endpoint_id_and_never_arbitrary_url() -> None:
     assert contract["x-websocket"] == {
         "path": "/v1/websocket",
         "message_schema": "./upbit-gateway-websocket.schema.json",
+        "authentication": {
+            "header": "X-Operator-Token",
+            "injection_boundary": "same-origin-reverse-proxy",
+        },
+        "origin_policy": "same-origin-or-explicit-allowlist",
     }
     catalog_schema = contract["paths"]["/v1/catalog"]["get"]["responses"]["200"]["content"][
         "application/json"
@@ -421,3 +427,50 @@ def test_gateway_websocket_schema_is_valid_and_covers_controls_and_trace_events(
         "binary",
         "provenance",
     } <= set(frame["required"])
+
+
+def test_runtime_websocket_control_validation_matches_json_schema() -> None:
+    from goodmoneying_upbit_gateway.websocket_protocol import (
+        InvalidWebSocketControl,
+        validate_control_message,
+    )
+
+    schema = cast(dict[str, Any], json.loads(WEBSOCKET_SCHEMA_PATH.read_text()))
+    validator = Draft202012Validator(schema)
+    valid: list[dict[str, Any]] = [
+        {
+            "action": "connect",
+            "request_id": "connect",
+            "visibility": "public",
+            "ticket": "ticket",
+            "format": "DEFAULT",
+        },
+        {
+            "action": "subscribe",
+            "request_id": "subscribe",
+            "endpoint_id": "websocket.ticker",
+            "parameters": {"codes": ["KRW-BTC"]},
+        },
+        {"action": "pause", "request_id": "pause", "paused": True},
+        {
+            "action": "unsubscribe",
+            "request_id": "unsubscribe",
+            "endpoint_id": "websocket.ticker",
+        },
+        {"action": "reconnect", "request_id": "reconnect"},
+        {"action": "list", "request_id": "list"},
+    ]
+    invalid: list[dict[str, Any]] = [
+        {"action": "connect", "request_id": "missing"},
+        {**valid[0], "request_id": "x" * 129},
+        {**valid[0], "unexpected": True},
+        {"action": "list", "request_id": "list", "endpoint_id": "websocket.ticker"},
+    ]
+
+    for control in valid:
+        assert list(validator.iter_errors(control)) == []
+        validate_control_message(control)
+    for control in invalid:
+        assert list(validator.iter_errors(control))
+        with pytest.raises(InvalidWebSocketControl):
+            validate_control_message(control)

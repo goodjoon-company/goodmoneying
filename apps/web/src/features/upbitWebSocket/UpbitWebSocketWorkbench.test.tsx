@@ -114,6 +114,75 @@ describe("업비트 웹소켓 작업대", () => {
     ]);
   });
 
+  it("공개·비공개 연결과 프레임 상태를 분리하고 선택한 연결만 해제·지운다", () => {
+    const sockets: FakeSocket[] = [];
+    render(<UpbitWebSocketWorkbench socketFactory={() => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      return socket;
+    }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^연결$/ }));
+    act(() => sockets[0].open());
+    act(() => sockets[0].message({ event: "connection", state: "connected", visibility: "public", format: "DEFAULT" }));
+    act(() => sockets[0].message(frameEvent("public-trace", "public", { type: "ticker", code: "KRW-BTC", trade_price: 100 })));
+    fireEvent.click(screen.getByRole("tab", { name: "내 자산" }));
+    fireEvent.click(screen.getByRole("button", { name: /^연결$/ }));
+    act(() => sockets[1].open());
+    act(() => sockets[1].message({ event: "connection", state: "connected", visibility: "private", format: "DEFAULT" }));
+
+    expect(sockets[0].closed).toBe(false);
+    expect(screen.getByText("connected", { selector: ".status" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "연결 해제" }));
+    expect(sockets[1].closed).toBe(true);
+    expect(sockets[0].closed).toBe(false);
+    fireEvent.click(screen.getByRole("tab", { name: "현재가" }));
+    expect(screen.getByLabelText("실시간 현재가")).toHaveTextContent("100");
+    fireEvent.click(screen.getByRole("button", { name: "프레임 지우기" }));
+    expect(screen.queryByLabelText("실시간 현재가")).not.toBeInTheDocument();
+  });
+
+  it("raw 출처와 비공개 자산·주문 목록을 구조화해 표시한다", () => {
+    const socket = new FakeSocket();
+    render(<UpbitWebSocketWorkbench socketFactory={() => socket} />);
+    fireEvent.click(screen.getByRole("tab", { name: "내 자산" }));
+    fireEvent.click(screen.getByRole("button", { name: /^연결$/ }));
+    act(() => socket.open());
+    act(() => socket.message({ event: "connection", state: "connected", visibility: "private", format: "DEFAULT" }));
+    act(() => socket.message(frameEvent("asset-trace", "private", {
+      type: "myAsset",
+      assets: [{ currency: "KRW", balance: 1200, locked: 30 }]
+    }, ["websocket.my-asset"])));
+
+    expect(screen.getByLabelText("내 자산 이벤트")).toHaveTextContent("KRW");
+    expect(screen.getByLabelText("내 자산 이벤트")).toHaveTextContent("1,200");
+    fireEvent.click(screen.getByRole("button", { name: "raw 추적" }));
+    const dialog = screen.getByRole("dialog", { name: "raw frame 추적" });
+    expect(dialog).toHaveTextContent("private · DEFAULT · websocket.my-asset");
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "raw frame 추적" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "raw 추적" })).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("tab", { name: "내 주문" }));
+    act(() => socket.message(frameEvent("order-trace", "private", {
+      type: "myOrder", code: "KRW-BTC", state: "wait", price: 1000, volume: 2
+    }, ["websocket.my-order"])));
+    expect(screen.getByLabelText("내 주문 이벤트")).toHaveTextContent("KRW-BTC");
+    expect(screen.getByLabelText("내 주문 이벤트")).toHaveTextContent("wait");
+  });
+
+  it("방향키로 탭을 이동하고 선택한 탭에 초점을 둔다", () => {
+    render(<UpbitWebSocketWorkbench />);
+    const ticker = screen.getByRole("tab", { name: "현재가" });
+
+    ticker.focus();
+    fireEvent.keyDown(ticker, { key: "ArrowRight" });
+
+    const trade = screen.getByRole("tab", { name: "체결" });
+    expect(trade).toHaveAttribute("aria-selected", "true");
+    expect(trade).toHaveFocus();
+  });
+
   it("상위 공통 페어 선택을 사용하고 변경을 통지하며 탭·재연결 뒤에도 유지한다", () => {
     const socket = new FakeSocket();
     const onMarketCodeChange = vi.fn();
@@ -147,3 +216,22 @@ describe("업비트 웹소켓 작업대", () => {
     expect(subscribe).toMatchObject({ endpoint_id: "websocket.trade", parameters: { codes: ["KRW-BTC"] } });
   });
 });
+
+function frameEvent(
+  traceId: string,
+  visibility: "public" | "private",
+  payload: Record<string, unknown>,
+  endpointIds = ["websocket.ticker"]
+) {
+  return {
+    event: "frame",
+    trace_id: traceId,
+    connection_id: `${visibility}-connection`,
+    sequence: 1,
+    received_at: "2026-07-16T00:00:00Z",
+    payload,
+    raw: JSON.stringify(payload),
+    binary: true,
+    provenance: { visibility, format: "DEFAULT", endpoint_ids: endpointIds }
+  };
+}

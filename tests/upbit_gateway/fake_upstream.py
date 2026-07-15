@@ -78,6 +78,7 @@ async def _serve_websocket(websocket: WebSocket, *, visibility: str) -> None:
             authorization.removeprefix("Bearer "), FAKE_SECRET_KEY, algorithms=["HS512"]
         )
         assert payload["access_key"] == FAKE_ACCESS_KEY
+    active_subscriptions: list[dict[str, Any]] = []
     try:
         while True:
             request = await websocket.receive_json()
@@ -95,9 +96,14 @@ async def _serve_websocket(websocket: WebSocket, *, visibility: str) -> None:
             operation = request[1]
             if operation.get("method") == "LIST_SUBSCRIPTIONS":
                 await websocket.send_json(
-                    {"method": "LIST_SUBSCRIPTIONS", "result": [], "ticket": ticket}
+                    {
+                        "method": "LIST_SUBSCRIPTIONS",
+                        "result": active_subscriptions,
+                        "ticket": ticket,
+                    }
                 )
                 continue
+            active_subscriptions = request[1:-1]
             code = next(
                 (code for item in request[1:-1] for code in item.get("codes", [])), None
             )

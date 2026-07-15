@@ -21,6 +21,7 @@ from goodmoneying_upbit_gateway.executor import (
 from goodmoneying_upbit_gateway.rate_limit import GroupRateLimiter, rate_limits_from_catalog
 from goodmoneying_upbit_gateway.safety import PolicyBlocked
 from goodmoneying_upbit_gateway.websocket_protocol import WebSocketRateLimiter
+from goodmoneying_upbit_gateway.websocket_security import WebSocketSecuritySettings
 from goodmoneying_upbit_gateway.websocket_session import (
     GatewayWebSocketSession,
     WebSocketUpstreamSettings,
@@ -164,9 +165,16 @@ def _default_executor(catalog: dict[str, Any]) -> UpbitExecutor:
     )
 
 
-def create_app(*, executor: UpbitExecutor | None = None) -> FastAPI:
+def create_app(
+    *,
+    executor: UpbitExecutor | None = None,
+    websocket_security: WebSocketSecuritySettings | None = None,
+) -> FastAPI:
     catalog = load_catalog()
     request_executor = executor or _default_executor(catalog)
+    downstream_security = websocket_security or WebSocketSecuritySettings.from_environment(
+        os.environ
+    )
     app = FastAPI(title="goodmoneying 업비트 API 게이트웨이", version="0.1.0")
     websocket_connect_limit = catalog["rate_limits"]["websocket-connect"]
     websocket_connect_limiter = WebSocketRateLimiter(
@@ -261,6 +269,15 @@ def create_app(*, executor: UpbitExecutor | None = None) -> FastAPI:
 
     @app.websocket("/v1/websocket")
     async def websocket_relay(websocket: WebSocket) -> None:
+        if not downstream_security.authorizes(
+            websocket.headers,
+            websocket_scheme=websocket.url.scheme,
+        ):
+            await websocket.close(
+                code=1008,
+                reason="웹소켓(WebSocket) 연결 정책상 허용되지 않습니다.",
+            )
+            return
         await websocket.accept()
         session = GatewayWebSocketSession(
             downstream=websocket,

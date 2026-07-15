@@ -93,10 +93,13 @@ GOODMONEYING_LOG_LEVEL=INFO
 ```bash
 GOODMONEYING_WEB_INTERNAL_URL=http://100.68.208.102:8080
 GOODMONEYING_API_INTERNAL_URL=http://100.115.38.59:8000
+GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL=http://100.115.38.59:8001
 GOODMONEYING_OPERATOR_TOKEN=prod-home-example-operator-token-rotate
 ```
 
-Web 정적 앱의 API base URL은 `/api`로 빌드한다. Nginx 프록시(proxy)는 런타임(runtime) `GOODMONEYING_API_INTERNAL_URL`로 API 서버에 전달하고, `GOODMONEYING_OPERATOR_TOKEN`을 `X-Operator-Token` 헤더(header)로 붙인다. 브라우저 번들(bundle)에는 운영 토큰을 포함하지 않는다.
+Web 정적 앱의 API base URL은 `/api`로 빌드한다. Nginx 프록시(proxy)는 런타임(runtime) `GOODMONEYING_API_INTERNAL_URL`과 `GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL`로 API 서버와 업비트 웹소켓 게이트웨이(WebSocket gateway)에 각각 전달하고, `GOODMONEYING_OPERATOR_TOKEN`을 `X-Operator-Token` 헤더(header)로 붙인다. 브라우저 번들(bundle)과 URL에는 운영 토큰을 포함하지 않는다.
+
+업비트 REST 작업대와의 공통 화면 통합은 GitHub Issue #21, 전체 작업대 통합 E2E·QA·문서·인계는 GitHub Issue #24에서 완료한다. 운영에서 웹소켓(WebSocket) 프록시를 활성화하기 전에 Issue #24의 배포 구성과 자격 증명 검증을 함께 닫아야 한다.
 
 ## GHCR pull 로그인
 

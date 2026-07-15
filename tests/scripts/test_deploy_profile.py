@@ -139,6 +139,9 @@ def test_web_nginx_proxy_preserves_websocket_upgrade_headers() -> None:
 
     assert "proxy_set_header Upgrade $http_upgrade;" in nginx_template
     assert 'proxy_set_header Connection "upgrade";' in nginx_template
+    assert "location /upbit-gateway/" in nginx_template
+    assert "GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL" in nginx_template
+    assert "proxy_set_header X-Forwarded-Host $http_host;" in nginx_template
 
 
 def test_prod_home_compose_files_assign_expected_services() -> None:
@@ -177,6 +180,15 @@ def test_prod_home_compose_uses_external_env_files() -> None:
         in app["candle-aggregation-worker"]["env_file"]
     )
     assert "${GOODMONEYING_WEB_BASE_DIR}/env/web.env" in web["web"]["env_file"]
+
+
+def test_prod_home_web_environment_documents_upbit_gateway_proxy_target() -> None:
+    sample = (ROOT / "deploy/profiles/prod-home/env-samples/web.env.sample").read_text()
+    readme = (ROOT / "deploy/profiles/prod-home/README.md").read_text()
+
+    assert "GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL=" in sample
+    assert "GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL=" in readme
+    assert "#24" in readme
 
 
 def test_prod_home_app_workers_do_not_override_runtime_env_file_values() -> None:

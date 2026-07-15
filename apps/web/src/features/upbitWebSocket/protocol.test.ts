@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendBoundedFrame, framePayloads, marketOptions, streamForTab } from "./protocol";
+import { appendBoundedFrame, defaultGatewayWebSocketUrl, framePayloads, marketOptions, streamForTab } from "./protocol";
 import type { GatewayFrameEvent } from "./types";
 
 describe("업비트 웹소켓 작업대 프로토콜", () => {
@@ -18,6 +18,15 @@ describe("업비트 웹소켓 작업대 프로토콜", () => {
     expect(streamForTab("candle", "240m")).toEqual({ endpointId: "websocket.candle-240m", visibility: "public" });
     expect(streamForTab("asset", "1s")).toEqual({ endpointId: "websocket.my-asset", visibility: "private" });
     expect(streamForTab("order", "1s")).toEqual({ endpointId: "websocket.my-order", visibility: "private" });
+  });
+
+  it("브라우저 토큰 없이 같은 출처의 게이트웨이 프록시 URL을 만든다", () => {
+    expect(defaultGatewayWebSocketUrl({ protocol: "http:", host: "localhost:5173" })).toBe(
+      "ws://localhost:5173/upbit-gateway/v1/websocket"
+    );
+    expect(defaultGatewayWebSocketUrl({ protocol: "https:", host: "money.example" })).toBe(
+      "wss://money.example/upbit-gateway/v1/websocket"
+    );
   });
 
   it("JSON_LIST frame을 시각화 항목으로 풀고 raw frame은 최근 200개만 보존한다", () => {

@@ -9,6 +9,7 @@ import pytest
 
 from goodmoneying_upbit_gateway.auth import CredentialConfigurationError, Credentials
 from goodmoneying_upbit_gateway.catalog import load_catalog
+from goodmoneying_upbit_gateway.websocket_protocol import WebSocketRateLimiter
 from goodmoneying_upbit_gateway.websocket_session import (
     GatewayWebSocketSession,
     InvalidUpstreamConfiguration,
@@ -215,6 +216,12 @@ def test_list_unsubscribe_and_manual_reconnect_preserve_one_desired_snapshot() -
 
     assert len(connector.connections) == 3
     first_messages = [json.loads(item) for item in connector.connections[0].sent]
+    assert first_messages[1] == [
+        {"ticket": "ticket"},
+        {"type": "ticker", "codes": ["KRW-BTC"]},
+        {"type": "trade", "codes": ["KRW-BTC"]},
+        {"format": "SIMPLE"},
+    ]
     assert first_messages[-1] == [
         {"ticket": "ticket"},
         {"method": "LIST_SUBSCRIPTIONS"},
@@ -231,6 +238,48 @@ def test_list_unsubscribe_and_manual_reconnect_preserve_one_desired_snapshot() -
     assert all(connection.closed for connection in connector.connections)
     statuses = [event["state"] for event in downstream.events if event["event"] == "connection"]
     assert "reconnecting" in statuses
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        {
+            "action": "connect",
+            "request_id": "missing-format",
+            "visibility": "public",
+            "ticket": "ticket",
+        },
+        {
+            "action": "connect",
+            "request_id": "x" * 129,
+            "visibility": "public",
+            "ticket": "ticket",
+            "format": "DEFAULT",
+        },
+        {
+            "action": "connect",
+            "request_id": "extra",
+            "visibility": "public",
+            "ticket": "ticket",
+            "format": "DEFAULT",
+            "unexpected": True,
+        },
+    ],
+)
+def test_runtime_control_rejects_messages_rejected_by_json_schema(
+    control: dict[str, Any],
+) -> None:
+    async def scenario() -> tuple[FakeDownstream, FakeConnector]:
+        session, downstream, connector = _session()
+        await session.handle(control)
+        await session.close()
+        return downstream, connector
+
+    downstream, connector = asyncio.run(scenario())
+
+    error = next(event for event in downstream.events if event["event"] == "error")
+    assert (error["code"], error["status"]) == ("INVALID_CONTROL", 422)
+    assert connector.calls == []
 
 
 def test_unexpected_disconnect_reconnects_with_backoff_and_resubscribes_once() -> None:
@@ -275,6 +324,73 @@ def test_unexpected_disconnect_reconnects_with_backoff_and_resubscribes_once() -
         )
     finally:
         asyncio.run(session.close())
+
+
+def test_exhausted_automatic_reconnect_reports_masked_error_and_closed_state() -> None:
+    sleeps: list[float] = []
+    downstream = FakeDownstream()
+    first = FakeUpstream()
+    attempts = 0
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    async def connector(url: str, headers: dict[str, str]) -> FakeUpstream:
+        nonlocal attempts
+        attempts += 1
+        if attempts > 1:
+            raise RuntimeError(f"failed {url} Authorization=Bearer leaked-token")
+        return first
+
+    async def scenario() -> None:
+        session = GatewayWebSocketSession(
+            downstream=downstream,
+            catalog=load_catalog(),
+            settings=WebSocketUpstreamSettings.production(load_catalog()),
+            connector=connector,
+            sleep=sleep,
+            connect_limiter=WebSocketRateLimiter(per_second=100, per_minute=100),
+        )
+        await session.handle(
+            {
+                "action": "connect",
+                "request_id": "connect",
+                "visibility": "public",
+                "ticket": "ticket",
+                "format": "DEFAULT",
+            }
+        )
+        await first.messages.put(ConnectionError("network gone"))
+        for _ in range(30):
+            await asyncio.sleep(0)
+            if downstream.events[-1].get("state") == "closed":
+                break
+        await session.close(notify=False)
+
+    asyncio.run(scenario())
+
+    assert sleeps == [0.25, 0.5, 1.0, 2.0, 5.0]
+    assert attempts == 6
+    assert downstream.events[-2:] == [
+        {
+            "event": "error",
+            "request_id": None,
+            "code": "UPSTREAM_CONNECTION_ERROR",
+            "message": "업비트 상향 웹소켓(WebSocket) 재연결에 실패했습니다.",
+            "status": 502,
+            "recoverable": False,
+        },
+        {
+            "event": "connection",
+            "request_id": None,
+            "state": "closed",
+            "connection_id": downstream.events[0]["connection_id"],
+            "visibility": "public",
+            "format": "DEFAULT",
+        },
+    ]
+    assert "leaked-token" not in json.dumps(downstream.events)
+    assert "api.upbit.com" not in json.dumps(downstream.events)
 
 
 def test_only_explicit_loopback_test_flag_allows_upstream_override() -> None:

@@ -175,7 +175,10 @@ def test_websocket_route_reports_contract_and_missing_private_credentials_withou
     ):
         monkeypatch.delenv(key, raising=False)
 
-    with _client().websocket_connect("/v1/websocket") as websocket:
+    with _client().websocket_connect(
+        "/v1/websocket",
+        headers={"Origin": "http://testserver", "X-Operator-Token": "local-dev-token"},
+    ) as websocket:
         websocket.send_json({"action": "unknown", "request_id": "bad"})
         invalid = websocket.receive_json()
         websocket.send_json(

@@ -46,11 +46,21 @@
 .upbit-api-test-intro h2 { margin: 2px 0 6px; }
 .upbit-api-test-intro p { max-width: 760px; color: #98a69d; }
 .upbit-api-test-intro a { flex: 0 0 auto; color: #8de6b7; font-size: 13px; font-weight: 800; }
-.upbit-api-test-form { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(130px, .7fr) minmax(110px, .45fr) auto; align-items: end; gap: 12px; padding: 16px; }
+.upbit-api-request-panel { padding: 16px; }
+.upbit-api-tabs { display: flex; gap: 6px; border-bottom: 1px solid rgb(255 255 255 / .08); padding-bottom: 12px; }
+.upbit-api-tabs button { min-height: 38px; border: 1px solid transparent; border-radius: 7px; padding: 0 14px; background: transparent; color: #98a69d; font-weight: 800; }
+.upbit-api-tabs button[aria-selected="true"] { border-color: #426b55; background: #193426; color: #e8f3eb; }
+.upbit-api-test-form { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(130px, .7fr) minmax(110px, .45fr) minmax(180px, .9fr) auto; align-items: end; gap: 12px; padding: 16px 0 0; }
+.upbit-market-form { grid-template-columns: minmax(180px, 1fr) auto; }
 .upbit-api-test-form label { display: grid; gap: 6px; color: #98a69d; font-size: 12px; font-weight: 800; }
 .upbit-api-test-form input, .upbit-api-test-form select { min-height: 38px; border: 1px solid rgb(255 255 255 / .12); border-radius: 7px; padding: 0 10px; background: #101713; color: #edf6ef; font: inherit; }
 .upbit-api-test-form button { min-height: 38px; border: 0; border-radius: 7px; padding: 0 16px; background: #e8f3eb; color: #102016; font-weight: 900; }
 .upbit-api-test-form button:disabled { opacity: .65; }
+.upbit-checkbox { grid-template-columns: auto 1fr; align-items: center; min-height: 38px; }
+.upbit-checkbox input { width: 18px; min-height: 18px; margin: 0; accent-color: #65c995; }
+.upbit-rate-limit-wait { margin: 0; border: 1px solid #76623f; border-radius: 8px; padding: 10px 12px; background: #292215; color: #f2d58a; }
+.upbit-page-button { min-height: 38px; margin-top: 12px; border: 1px solid #426b55; border-radius: 7px; padding: 0 12px; background: #193426; color: #e8f3eb; font-weight: 800; }
+.upbit-page-button:disabled { opacity: .65; }
 .upbit-api-test-empty { padding: 28px; color: #98a69d; text-align: center; }
 .upbit-api-test-chart-panel { min-width: 0; padding: 16px; }
 .upbit-api-test-chart-panel .panel-heading { align-items: flex-start; }
@@ -60,11 +70,16 @@
 .upbit-api-test-grid article { display: grid; gap: 7px; min-height: 82px; padding: 13px; }
 .upbit-api-test-grid span { color: #849188; font-size: 12px; }
 .upbit-api-test-grid strong { color: #edf6ef; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 14px; }
-.upbit-api-test-table { overflow-x: auto; padding: 14px 16px; }
+.upbit-api-test-table, .upbit-api-test-raw, .upbit-market-result { min-width: 0; padding: 14px 16px; }
 .upbit-api-test-table summary { cursor: pointer; color: #dce7df; font-size: 14px; font-weight: 800; }
-.upbit-api-test-table table { width: 100%; min-width: 680px; margin-top: 12px; border-collapse: collapse; color: #dce7df; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; }
-.upbit-api-test-table th, .upbit-api-test-table td { border-top: 1px solid rgb(255 255 255 / .08); padding: 9px 8px; text-align: right; white-space: nowrap; }
-.upbit-api-test-table th:first-child, .upbit-api-test-table td:first-child { text-align: left; }
+.upbit-api-test-raw summary { cursor: pointer; color: #dce7df; font-size: 14px; font-weight: 800; }
+.upbit-api-test-raw pre { max-width: 100%; max-height: 360px; overflow: auto; margin: 12px 0 0; padding: 12px; border-radius: 7px; background: #101713; color: #b8d6c2; font: 12px/1.5 "JetBrains Mono", ui-monospace, monospace; }
+.upbit-market-result > label { display: grid; gap: 6px; max-width: 360px; color: #98a69d; font-size: 12px; font-weight: 800; }
+.upbit-market-result input { min-height: 38px; border: 1px solid rgb(255 255 255 / .12); border-radius: 7px; padding: 0 10px; background: #101713; color: #edf6ef; font: inherit; }
+.upbit-table-scroll { max-width: 100%; overflow-x: auto; }
+.upbit-table-scroll table { width: 100%; min-width: 680px; margin-top: 12px; border-collapse: collapse; color: #dce7df; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; }
+.upbit-table-scroll th, .upbit-table-scroll td { border-top: 1px solid rgb(255 255 255 / .08); padding: 9px 8px; text-align: right; white-space: nowrap; }
+.upbit-table-scroll th:first-child, .upbit-table-scroll td:first-child { text-align: left; }
 
 @media (max-width: 1080px) {
   .analysis-page { grid-template-columns: 210px minmax(0, 1fr); padding-inline: 24px; }
@@ -92,7 +107,11 @@
   .upbit-api-test-page { padding-inline: 16px; }
   .upbit-api-test-form { grid-template-columns: 1fr 1fr; }
   .upbit-api-test-form input, .upbit-api-test-form select, .upbit-api-test-form button { min-height: 44px; }
+  .upbit-api-tabs button { min-height: 44px; }
   .upbit-api-test-form button { grid-column: 1 / -1; }
+  .upbit-page-button { min-height: 44px; }
+  .upbit-market-form { grid-template-columns: 1fr; }
+  .upbit-checkbox { min-height: 44px; }
   .upbit-api-test-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .upbit-api-test-chart { min-height: 340px; }
 }

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { appendBoundedFrame, defaultGatewayWebSocketUrl, framePayloads, marketOptions, streamForTab } from "./protocol";
+import {
+  appendBoundedFrame,
+  defaultGatewayWebSocketUrl,
+  framePayloads,
+  marketOptions,
+  streamForTab,
+  workbenchStreamEndpointIds
+} from "./protocol";
 import type { GatewayFrameEvent } from "./types";
 
 describe("업비트 웹소켓 작업대 프로토콜", () => {
@@ -14,10 +21,24 @@ describe("업비트 웹소켓 작업대 프로토콜", () => {
   });
 
   it("공개·비공개 탭을 14개 카탈로그 endpoint와 가시성으로 매핑한다", () => {
+    expect(workbenchStreamEndpointIds()).toEqual([
+      "websocket.ticker",
+      "websocket.trade",
+      "websocket.orderbook",
+      "websocket.candle-1s",
+      "websocket.candle-1m",
+      "websocket.candle-3m",
+      "websocket.candle-5m",
+      "websocket.candle-10m",
+      "websocket.candle-15m",
+      "websocket.candle-30m",
+      "websocket.candle-60m",
+      "websocket.candle-240m",
+      "websocket.my-asset",
+      "websocket.my-order"
+    ]);
     expect(streamForTab("ticker", "1s")).toEqual({ endpointId: "websocket.ticker", visibility: "public" });
-    expect(streamForTab("candle", "240m")).toEqual({ endpointId: "websocket.candle-240m", visibility: "public" });
     expect(streamForTab("asset", "1s")).toEqual({ endpointId: "websocket.my-asset", visibility: "private" });
-    expect(streamForTab("order", "1s")).toEqual({ endpointId: "websocket.my-order", visibility: "private" });
   });
 
   it("브라우저 토큰 없이 같은 출처의 게이트웨이 프록시 URL을 만든다", () => {

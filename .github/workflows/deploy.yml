@@ -95,7 +95,7 @@ jobs:
         run: uv run ruff check .
 
       - name: Python type check
-        run: uv run mypy apps/api apps/worker packages/shared tests
+        run: uv run mypy apps/api apps/worker apps/upbit_gateway packages/shared tests
 
       - name: Python tests
         run: uv run pytest
@@ -126,6 +126,17 @@ jobs:
             export DOCKER_HOST='${DOCKER_HOST}'
             export DOCKER_BUILDKIT='${DOCKER_BUILDKIT}'
             '${RUNNER_DOCKER_BIN}' buildx build --platform '${BUILD_PLATFORMS}' --push -f apps/worker/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-worker:${IMAGE_TAG} .
+          "
+
+      - name: Build and push upbit gateway
+        run: |
+          ssh -o BatchMode=yes "${RUNNER_LOGIN_SHELL_HOST}" "
+            set -euo pipefail
+            cd '${GITHUB_WORKSPACE}'
+            export DOCKER_CONFIG='${DOCKER_CONFIG}'
+            export DOCKER_HOST='${DOCKER_HOST}'
+            export DOCKER_BUILDKIT='${DOCKER_BUILDKIT}'
+            '${RUNNER_DOCKER_BIN}' buildx build --platform '${BUILD_PLATFORMS}' --push -f apps/upbit_gateway/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-upbit-gateway:${IMAGE_TAG} .
           "
 
       - name: Build and push web

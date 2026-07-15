@@ -350,6 +350,29 @@ def test_checked_openapi_and_fastapi_runtime_have_status_response_parity() -> No
             {"$ref": "#/components/schemas/ErrorResponse"},
         ]
     }
+    assert checked["paths"]["/v1/requests"]["post"]["security"] == [
+        {"OperatorToken": []}
+    ]
+    assert runtime["paths"]["/v1/requests"]["post"]["security"] == checked["paths"][
+        "/v1/requests"
+    ]["post"]["security"]
+    assert checked["components"]["securitySchemes"]["OperatorToken"] == {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Operator-Token",
+        "description": "같은 출처 역방향 프록시가 서버에서 주입하는 운영자 토큰",
+    }
+    assert runtime["components"]["securitySchemes"]["OperatorToken"] == checked[
+        "components"
+    ]["securitySchemes"]["OperatorToken"]
+    assert checked["paths"]["/v1/requests"]["post"]["responses"]["401"]["content"][
+        "application/json"
+    ]["schema"] == {
+        "anyOf": [
+            {"$ref": "#/components/schemas/TraceEnvelope"},
+            {"$ref": "#/components/schemas/ErrorResponse"},
+        ]
+    }
     assert checked["paths"]["/v1/requests"]["post"]["responses"]["default"]["content"][
         "application/json"
     ]["schema"] == {"$ref": "#/components/schemas/TraceEnvelope"}

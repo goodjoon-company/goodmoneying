@@ -29,6 +29,7 @@ ssh_args=(-o BatchMode=yes -o ConnectTimeout=10)
 retry_attempts="${GOODMONEYING_HEALTHCHECK_RETRIES:-30}"
 retry_interval_seconds="${GOODMONEYING_HEALTHCHECK_RETRY_INTERVAL_SECONDS:-2}"
 api_health_url="$GOODMONEYING_API_INTERNAL_URL/health"
+upbit_gateway_health_url="$GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL/health"
 web_health_url="$GOODMONEYING_WEB_INTERNAL_URL/"
 postgres_check='pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 container_running_check_template="{{.State.Running}}"
@@ -38,6 +39,7 @@ backfill_worker_remote_command="PATH=$REMOTE_DOCKER_PATH docker inspect -f '$con
 
 commands=(
   "retry $retry_attempts ${retry_interval_seconds}s curl ${curl_args[*]} $api_health_url"
+  "retry $retry_attempts ${retry_interval_seconds}s curl ${curl_args[*]} $upbit_gateway_health_url"
   "retry $retry_attempts ${retry_interval_seconds}s curl ${curl_args[*]} $web_health_url"
   "ssh ${ssh_args[*]} $GOODMONEYING_INFRA_HOST $postgres_remote_command"
   "ssh ${ssh_args[*]} $GOODMONEYING_APP_HOST $realtime_worker_remote_command"
@@ -72,6 +74,7 @@ retry_command() {
 }
 
 retry_command "API healthcheck" curl "${curl_args[@]}" "$api_health_url" >/dev/null
+retry_command "Upbit gateway healthcheck" curl "${curl_args[@]}" "$upbit_gateway_health_url" >/dev/null
 retry_command "Web healthcheck" curl "${curl_args[@]}" "$web_health_url" >/dev/null
 ssh "${ssh_args[@]}" \
   "$GOODMONEYING_INFRA_HOST" \

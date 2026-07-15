@@ -91,6 +91,8 @@ def test_prod_home_profile_has_required_files() -> None:
     assert (profile_dir / "target/app/stop.sh").is_file()
     assert (profile_dir / "target/app/start-api.sh").is_file()
     assert (profile_dir / "target/app/stop-api.sh").is_file()
+    assert (profile_dir / "target/app/start-upbit-gateway.sh").is_file()
+    assert (profile_dir / "target/app/stop-upbit-gateway.sh").is_file()
     assert (profile_dir / "target/app/start-realtime-collection-worker.sh").is_file()
     assert (profile_dir / "target/app/stop-realtime-collection-worker.sh").is_file()
     assert (profile_dir / "target/app/start-backfill-collection-worker.sh").is_file()
@@ -106,6 +108,8 @@ def test_prod_home_readme_documents_required_env_files() -> None:
     assert "GOODMONEYING_DATABASE_URL" in readme
     assert "GOODMONEYING_OPERATOR_TOKEN" in readme
     assert "GOODMONEYING_API_INTERNAL_URL" in readme
+    assert "GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL" in readme
+    assert "UPBIT_GATEWAY_ALLOWED_ORIGINS" in readme
     assert "Nginx 프록시(proxy)" in readme
     assert "GOODMONEYING_INFRA_POSTGRES_DATA_DIR" in readme
     assert "GOODMONEYING_APP_CONFIG_DIR" in readme
@@ -154,6 +158,7 @@ def test_prod_home_compose_files_assign_expected_services() -> None:
     assert set(services(app)) == {
         "migrate",
         "api",
+        "upbit-gateway",
         "realtime-collection-worker",
         "backfill-collection-worker",
         "candle-aggregation-worker",
@@ -168,6 +173,7 @@ def test_prod_home_compose_uses_external_env_files() -> None:
 
     assert "${GOODMONEYING_INFRA_BASE_DIR}/env/infra.env" in infra["postgres"]["env_file"]
     assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["api"]["env_file"]
+    assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["upbit-gateway"]["env_file"]
     assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["migrate"]["env_file"]
     assert (
         "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["realtime-collection-worker"]["env_file"]
@@ -188,7 +194,17 @@ def test_prod_home_web_environment_documents_upbit_gateway_proxy_target() -> Non
 
     assert "GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL=" in sample
     assert "GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL=" in readme
-    assert "#24" in readme
+    assert "업비트 API 게이트웨이" in readme
+
+
+def test_prod_home_app_environment_configures_gateway_without_direct_keys() -> None:
+    sample = (ROOT / "deploy/profiles/prod-home/env-samples/app.env.sample").read_text()
+
+    assert "UPBIT_GATEWAY_ALLOWED_ORIGINS=http://100.68.208.102:8080" in sample
+    assert "UPBIT_ACCESS_KEY_FILE=/etc/goodmoneying/upbit-access-key" in sample
+    assert "UPBIT_SECRET_KEY_FILE=/etc/goodmoneying/upbit-secret-key" in sample
+    assert "UPBIT_ACCESS_KEY=" not in sample
+    assert "UPBIT_SECRET_KEY=" not in sample
 
 
 def test_prod_home_app_workers_do_not_override_runtime_env_file_values() -> None:
@@ -278,6 +294,7 @@ def test_prod_home_compose_binds_ports_to_tailscale_ips() -> None:
 
     assert infra["postgres"]["ports"] == ["100.107.98.22:5432:5432"]
     assert app["api"]["ports"] == ["100.115.38.59:8000:8000"]
+    assert app["upbit-gateway"]["ports"] == ["100.115.38.59:8001:8001"]
     assert web["web"]["ports"] == ["100.68.208.102:8080:80"]
 
 
@@ -301,6 +318,15 @@ def test_prod_home_compose_uses_fixed_ghcr_image_names() -> None:
     assert (
         app["api"]["image"] == "ghcr.io/goodjoon-company/goodmoneying-api:${GOODMONEYING_IMAGE_TAG}"
     )
+    assert app["upbit-gateway"]["image"] == (
+        "ghcr.io/goodjoon-company/goodmoneying-upbit-gateway:${GOODMONEYING_IMAGE_TAG}"
+    )
+    assert app["upbit-gateway"]["healthcheck"]["test"][-1].find(
+        "127.0.0.1:8001/health"
+    ) >= 0
+    assert "${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro" in app[
+        "upbit-gateway"
+    ]["volumes"]
     assert (
         app["realtime-collection-worker"]["image"]
         == "ghcr.io/goodjoon-company/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}"
@@ -324,6 +350,8 @@ def test_prod_home_target_local_scripts_use_local_compose_env() -> None:
             "stop.sh",
             "start-api.sh",
             "stop-api.sh",
+            "start-upbit-gateway.sh",
+            "stop-upbit-gateway.sh",
             "start-realtime-collection-worker.sh",
             "stop-realtime-collection-worker.sh",
             "start-backfill-collection-worker.sh",
@@ -348,6 +376,12 @@ def test_prod_home_target_local_scripts_use_local_compose_env() -> None:
     assert '"$@"' in (target_dir / "app/start-api.sh").read_text()
     assert "up -d api" in (target_dir / "app/start-api.sh").read_text()
     assert "stop api" in (target_dir / "app/stop-api.sh").read_text()
+    assert "up -d upbit-gateway" in (
+        target_dir / "app/start-upbit-gateway.sh"
+    ).read_text()
+    assert "stop upbit-gateway" in (
+        target_dir / "app/stop-upbit-gateway.sh"
+    ).read_text()
     assert (
         "up -d realtime-collection-worker"
         in (target_dir / "app/start-realtime-collection-worker.sh").read_text()
@@ -532,6 +566,10 @@ def test_healthcheck_script_dry_run_prints_checks() -> None:
     assert (
         "retry 30 2s curl -fsS --connect-timeout 5 --max-time 10 http://100.68.208.102:8080/"
     ) in result.stdout
+    assert (
+        "retry 30 2s curl -fsS --connect-timeout 5 --max-time 10 "
+        "http://100.115.38.59:8001/health"
+    ) in result.stdout
     assert "ssh -o BatchMode=yes -o ConnectTimeout=10" in result.stdout
     assert (
         "ssh -o BatchMode=yes -o ConnectTimeout=10 Mac-Mini-M4.local "
@@ -559,12 +597,22 @@ def test_healthcheck_script_dry_run_prints_checks_in_order() -> None:
 
     assert result.returncode == 0
     api_index = result.stdout.index("http://100.115.38.59:8000/health")
+    gateway_index = result.stdout.index("http://100.115.38.59:8001/health")
     web_index = result.stdout.index("http://100.68.208.102:8080/")
     postgres_index = result.stdout.index("docker exec goodmoneying-postgres")
     realtime_worker_index = result.stdout.index("goodmoneying-realtime-collection-worker")
     backfill_worker_index = result.stdout.index("goodmoneying-backfill-collection-worker")
-    assert api_index < web_index < postgres_index < realtime_worker_index
+    assert api_index < gateway_index < web_index < postgres_index < realtime_worker_index
     assert realtime_worker_index < backfill_worker_index
+
+
+def test_deploy_workflow_builds_and_checks_upbit_gateway() -> None:
+    workflow = (ROOT / ".github/workflows/deploy.yml").read_text()
+
+    assert "uv run mypy apps/api apps/worker apps/upbit_gateway packages/shared tests" in workflow
+    assert "Build and push upbit gateway" in workflow
+    assert "apps/upbit_gateway/Dockerfile" in workflow
+    assert "goodmoneying-upbit-gateway:${IMAGE_TAG}" in workflow
 
 
 def test_start_script_dry_run_uses_target_compose_env_in_start_order() -> None:

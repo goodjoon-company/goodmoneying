@@ -97,6 +97,26 @@ describe("Exchange 전체 REST 작업대", () => {
     expect(screen.getByLabelText("공통 페어")).toHaveValue("KRW-ETH");
   });
 
+  it("통합 작업대에서는 중복 market 입력을 숨기고 상위 공통 페어를 요청에 사용한다", async () => {
+    const execute = vi.fn(async () => traceFor("rest.available-order-information", []));
+    render(
+      <ExchangeWorkbench
+        gateway={fakeGateway({ execute })}
+        initialGroup="order"
+        marketValue="KRW-ETH"
+        showMarketSelection={false}
+      />
+    );
+    await userEvent.click(await screen.findByRole("button", { name: /페어별 주문 가능 정보 조회 기능 선택/ }));
+
+    expect(screen.queryByLabelText("market")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "조회 실행" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith({
+      endpoint_id: "rest.available-order-information",
+      parameters: { market: "KRW-ETH" }
+    }));
+  });
+
   it("공식 주문 테스트는 테스트 배지와 함께 확인 절차 없이 실행한다", async () => {
     const execute = vi.fn(async () => traceFor("rest.order-test", { result: "accepted" }, 201));
     render(<ExchangeWorkbench gateway={fakeGateway({ execute })} initialGroup="order" />);
@@ -293,6 +313,8 @@ describe("Exchange 전체 REST 작업대", () => {
 
     await userEvent.click(trigger);
 
+    expect(trigger.querySelector("svg")).not.toBeNull();
+    expect(trigger).toHaveTextContent("");
     expect(screen.getByRole("button", { name: "원본 추적 닫기" })).toHaveFocus();
     await userEvent.keyboard("{Tab}");
     expect(screen.getByRole("button", { name: "원본 추적 닫기" })).toHaveFocus();

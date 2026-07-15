@@ -12,13 +12,35 @@ from fastapi.testclient import TestClient
 from goodmoneying_upbit_gateway.auth import Credentials
 from goodmoneying_upbit_gateway.executor import UpbitExecutor
 from goodmoneying_upbit_gateway.rate_limit import GroupRateLimiter
+from goodmoneying_upbit_gateway.websocket_security import WebSocketSecuritySettings
+
+TEST_OPERATOR_TOKEN = "local-dev-token"
 
 
-def _client(executor: UpbitExecutor | None = None) -> TestClient:
+def _client(
+    executor: UpbitExecutor | None = None,
+    *,
+    default_operator_header: bool = True,
+) -> TestClient:
     module = importlib.import_module("goodmoneying_upbit_gateway.main")
     create_app = cast(Any, module.create_app)
-    app = cast(FastAPI, create_app(executor=executor))
-    return TestClient(app)
+    app = cast(
+        FastAPI,
+        create_app(
+            executor=executor,
+            rest_operator_token=TEST_OPERATOR_TOKEN,
+            websocket_security=WebSocketSecuritySettings(
+                operator_token=TEST_OPERATOR_TOKEN,
+                allowed_origins=("http://testserver",),
+            ),
+        ),
+    )
+    headers = (
+        {"X-Operator-Token": TEST_OPERATOR_TOKEN}
+        if default_operator_header
+        else None
+    )
+    return TestClient(app, headers=headers)
 
 
 def _fake_executor(status_code: int = 200) -> UpbitExecutor:
@@ -42,7 +64,7 @@ def test_health_reports_service_catalog_version_and_secret_free_credential_state
 ) -> None:
     monkeypatch.setenv("UPBIT_ACCESS_KEY", "health-access-must-not-leak")
     monkeypatch.setenv("UPBIT_SECRET_KEY", "health-secret-must-not-leak")
-    response = _client().get("/health")
+    response = _client(default_operator_header=False).get("/health")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -66,7 +88,7 @@ def test_health_reports_credentials_absent_without_browser_key_input(
     ):
         monkeypatch.delenv(key, raising=False)
 
-    response = _client().get("/health")
+    response = _client(default_operator_header=False).get("/health")
 
     assert response.status_code == 200
     assert response.json()["credentials_configured"] is False
@@ -79,14 +101,14 @@ def test_health_reports_invalid_credential_files_as_absent(
     monkeypatch.setenv("UPBIT_ACCESS_KEY_FILE", str(tmp_path / "missing-access"))
     monkeypatch.setenv("UPBIT_SECRET_KEY_FILE", str(tmp_path / "missing-secret"))
 
-    response = _client().get("/health")
+    response = _client(default_operator_header=False).get("/health")
 
     assert response.status_code == 200
     assert response.json()["credentials_configured"] is False
 
 
 def test_catalog_returns_contract_without_contacting_upbit() -> None:
-    response = _client().get("/v1/catalog")
+    response = _client(default_operator_header=False).get("/v1/catalog")
 
     assert response.status_code == 200
     payload = response.json()
@@ -111,6 +133,53 @@ def test_execution_route_returns_trace_envelope_from_upstream() -> None:
     assert response.status_code == 200
     assert response.json()["endpoint_id"] == "rest.list-trading-pairs"
     assert response.json()["response"]["body"] == {"markets": ["KRW-BTC"]}
+
+
+def test_execution_route_requires_correct_operator_token() -> None:
+    client = _client(_fake_executor(), default_operator_header=False)
+
+    missing = client.post(
+        "/v1/requests",
+        json={"endpoint_id": "rest.list-trading-pairs", "parameters": {}},
+    )
+    invalid = client.post(
+        "/v1/requests",
+        headers={"X-Operator-Token": "wrong-token"},
+        json={"endpoint_id": "rest.list-trading-pairs", "parameters": {}},
+    )
+    valid = client.post(
+        "/v1/requests",
+        headers={"X-Operator-Token": TEST_OPERATOR_TOKEN},
+        json={"endpoint_id": "rest.list-trading-pairs", "parameters": {}},
+    )
+
+    assert (missing.status_code, missing.json()["detail"]["code"]) == (
+        401,
+        "OPERATOR_TOKEN_REQUIRED",
+    )
+    assert (invalid.status_code, invalid.json()["detail"]["code"]) == (
+        403,
+        "OPERATOR_TOKEN_INVALID",
+    )
+    assert valid.status_code == 200
+
+
+def test_execution_route_uses_deployment_operator_token_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("UPBIT_GATEWAY_OPERATOR_TOKEN", raising=False)
+    monkeypatch.setenv("GOODMONEYING_OPERATOR_TOKEN", "deployment-token")
+    module = importlib.import_module("goodmoneying_upbit_gateway.main")
+    create_app = cast(Any, module.create_app)
+    client = TestClient(cast(FastAPI, create_app(executor=_fake_executor())))
+
+    response = client.post(
+        "/v1/requests",
+        headers={"X-Operator-Token": "deployment-token"},
+        json={"endpoint_id": "rest.list-trading-pairs", "parameters": {}},
+    )
+
+    assert response.status_code == 200
 
 
 def test_execution_route_distinguishes_blocked_unknown_and_invalid() -> None:

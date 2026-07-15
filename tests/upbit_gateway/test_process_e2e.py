@@ -124,9 +124,38 @@ def _execute(base_url: str, endpoint_id: str, parameters: dict[str, object]) -> 
     return httpx.post(
         f"{base_url}/v1/requests",
         json={"endpoint_id": endpoint_id, "parameters": parameters},
-        headers={"Origin": "https://browser.example"},
+        headers={
+            "Origin": "https://browser.example",
+            "X-Operator-Token": E2E_OPERATOR_TOKEN,
+        },
         timeout=3,
     )
+
+
+def test_actual_gateway_process_requires_correct_rest_operator_token() -> None:
+    with _processes() as (fake_url, gateway_url, _, _):
+        payload = {"endpoint_id": "rest.list-trading-pairs", "parameters": {}}
+        calls_before = httpx.get(f"{fake_url}/__calls", timeout=3).json()
+        missing = httpx.post(f"{gateway_url}/v1/requests", json=payload, timeout=3)
+        invalid = httpx.post(
+            f"{gateway_url}/v1/requests",
+            headers={"X-Operator-Token": "wrong-token"},
+            json=payload,
+            timeout=3,
+        )
+        calls_after_rejections = httpx.get(f"{fake_url}/__calls", timeout=3).json()
+        valid = _execute(gateway_url, "rest.list-trading-pairs", {})
+
+    assert (missing.status_code, missing.json()["detail"]["code"]) == (
+        401,
+        "OPERATOR_TOKEN_REQUIRED",
+    )
+    assert (invalid.status_code, invalid.json()["detail"]["code"]) == (
+        403,
+        "OPERATOR_TOKEN_INVALID",
+    )
+    assert calls_after_rejections == calls_before
+    assert valid.status_code == 200
 
 
 def test_actual_gateway_process_uses_canonical_authenticated_query() -> None:
@@ -227,6 +256,30 @@ def test_actual_gateway_process_against_fake_upstream_end_to_end() -> None:
         assert sensitive not in combined
         assert sensitive not in process_output
     assert "Bearer " not in process_output
+
+
+def test_every_blocked_catalog_endpoint_returns_403_without_upstream_call() -> None:
+    with _processes() as (fake_url, gateway_url, _, _):
+        catalog = httpx.get(f"{gateway_url}/v1/catalog", timeout=3).json()
+        blocked_endpoint_ids = [
+            endpoint["endpoint_id"]
+            for endpoint in catalog["rest_endpoints"]
+            if endpoint["safety"] == "blocked"
+        ]
+        calls_before = httpx.get(f"{fake_url}/__calls", timeout=3).json()
+
+        responses = [
+            _execute(gateway_url, endpoint_id, {})
+            for endpoint_id in blocked_endpoint_ids
+        ]
+        calls_after = httpx.get(f"{fake_url}/__calls", timeout=3).json()
+
+    assert len(blocked_endpoint_ids) == 14
+    assert [response.status_code for response in responses] == [403] * 14
+    assert {
+        response.json()["detail"]["code"] for response in responses
+    } == {"POLICY_BLOCKED"}
+    assert calls_after == calls_before
 
 
 def test_actual_gateway_and_fake_upbit_websocket_process_end_to_end() -> None:

@@ -1,6 +1,6 @@
 # API 계약 개발 사양
 
-이 디렉터리는 브라우저와 운영 서버 사이의 HTTP·WebSocket 인터페이스(interface) 단일 기준(source of truth)이다. 제품 의미는 [제품 개발 사양](../../01_Product.md), 런타임 전송 구조는 [아키텍처 개발 사양](../../02_Architecture.md)에서 확인하고, 경로·필드·오류 처리는 여기서만 정의한다.
+이 디렉터리는 브라우저와 운영 서버·업비트 API 게이트웨이 사이의 HTTP·WebSocket 인터페이스(interface) 단일 기준(source of truth)이다. 제품 의미는 [제품 개발 사양](../../01_Product.md), 런타임 전송 구조는 [아키텍처 개발 사양](../../02_Architecture.md)에서 확인하고, 경로·필드·오류 처리는 여기서만 정의한다.
 
 ## 기준 파일과 소비자
 

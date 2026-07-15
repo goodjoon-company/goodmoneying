@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qsl
 
@@ -149,13 +150,20 @@ def markets(request: Request) -> JSONResponse:
 def minute_candles(unit: int, request: Request) -> JSONResponse:
     _record(request)
     market = request.query_params.get("market", "KRW-BTC")
-    minute_base = 19 if "to" not in request.query_params else 9
+    upper_bound_value = request.query_params.get("to")
+    upper_bound = (
+        datetime.fromisoformat(upper_bound_value.replace("Z", "+00:00"))
+        if upper_bound_value
+        else datetime(2026, 7, 15, 0, 20, tzinfo=UTC)
+    )
     return JSONResponse(
         status_code=200,
         content=[
             {
                 "market": market,
-                "candle_date_time_utc": f"2026-07-15T00:{minute_base - index:02d}:00",
+                "candle_date_time_utc": (
+                    upper_bound - timedelta(minutes=unit * (index + 1))
+                ).strftime("%Y-%m-%dT%H:%M:%S"),
                 "opening_price": 100 + index,
                 "high_price": 110 + index,
                 "low_price": 90 + index,

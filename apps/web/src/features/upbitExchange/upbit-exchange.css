@@ -37,6 +37,7 @@
 .safety--blocked { color: var(--exchange-red); background: #fef3f2; }
 .exchange-form { padding: 1rem; }
 .exchange-form__title, .exchange-result__heading, .trace-dialog header { display: flex; justify-content: space-between; gap: 1rem; align-items: flex-start; }
+.exchange-result__heading .trace-icon-button { display: inline-grid; width: 2.25rem; height: 2.25rem; flex: 0 0 auto; place-items: center; padding: 0; border: 1px solid var(--exchange-line); border-radius: .5rem; background: transparent; color: inherit; cursor: pointer; }
 .exchange-form__title h2, .exchange-result__heading h2, .trace-dialog h2 { margin: 0 0 .3rem; font-size: 1.15rem; }
 .exchange-form__title code { color: var(--exchange-muted); font-size: .75rem; overflow-wrap: anywhere; }
 .parameter-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin: 1rem 0; }

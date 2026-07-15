@@ -11,6 +11,7 @@ from goodmoneying_upbit_gateway.auth import CredentialConfigurationError, Creden
 from goodmoneying_upbit_gateway.catalog import load_catalog
 from goodmoneying_upbit_gateway.websocket_protocol import WebSocketRateLimiter
 from goodmoneying_upbit_gateway.websocket_session import (
+    DownstreamDisconnected,
     GatewayWebSocketSession,
     InvalidUpstreamConfiguration,
     WebSocketUpstreamSettings,
@@ -23,6 +24,22 @@ class FakeDownstream:
 
     async def send_json(self, event: dict[str, Any]) -> None:
         self.events.append(event)
+
+
+class ClosedDownstream:
+    async def send_json(self, event: dict[str, Any]) -> None:
+        raise RuntimeError('Cannot call "send" once a close message has been sent.')
+
+
+class ClosingDownstream(FakeDownstream):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = False
+
+    async def send_json(self, event: dict[str, Any]) -> None:
+        if self.closed:
+            raise RuntimeError('Cannot call "send" once a close message has been sent.')
+        await super().send_json(event)
 
 
 class FakeUpstream:
@@ -130,6 +147,114 @@ def test_public_connect_subscribe_binary_frame_pause_and_resume() -> None:
     assert frames[0]["sequence"] == 1
     assert "trace_id" in frames[0]
     assert connector.connections[0].closed is True
+
+
+def test_downstream_disconnect_is_not_retried_as_an_error_response() -> None:
+    async def scenario() -> None:
+        session = GatewayWebSocketSession(
+            downstream=ClosedDownstream(),
+            catalog=load_catalog(),
+            settings=WebSocketUpstreamSettings.production(load_catalog()),
+        )
+        with pytest.raises(DownstreamDisconnected):
+            await session.handle({"action": "unknown", "request_id": "closed"})
+        await session.close(notify=False)
+
+    asyncio.run(scenario())
+
+
+def test_downstream_disconnect_while_forwarding_frame_closes_without_reconnect() -> None:
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    async def scenario() -> tuple[ClosingDownstream, FakeConnector, asyncio.Task[None]]:
+        downstream = ClosingDownstream()
+        connector = FakeConnector()
+        session = GatewayWebSocketSession(
+            downstream=downstream,
+            catalog=load_catalog(),
+            settings=WebSocketUpstreamSettings.production(load_catalog()),
+            connector=connector,
+            sleep=sleep,
+        )
+        await session.handle(
+            {
+                "action": "connect",
+                "request_id": "connect",
+                "visibility": "public",
+                "ticket": "ticket",
+                "format": "DEFAULT",
+            }
+        )
+        await session.handle(
+            {
+                "action": "subscribe",
+                "request_id": "subscribe",
+                "endpoint_id": "websocket.ticker",
+                "parameters": {"codes": ["KRW-BTC"]},
+            }
+        )
+        reader = session._reader_task
+        assert reader is not None
+        downstream.closed = True
+        await connector.connections[0].messages.put(
+            '{"type":"ticker","code":"KRW-BTC","trade_price":100}'
+        )
+        await asyncio.wait_for(reader, timeout=1)
+        await session.close(notify=False)
+        return downstream, connector, reader
+
+    downstream, connector, reader = asyncio.run(scenario())
+
+    assert reader.exception() is None
+    assert sleeps == []
+    assert len(connector.connections) == 1
+    assert connector.connections[0].closed is True
+    assert all(event.get("state") != "reconnecting" for event in downstream.events)
+
+
+def test_downstream_disconnect_during_upstream_error_recovery_closes_without_task_error() -> None:
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    async def scenario() -> tuple[ClosingDownstream, FakeConnector, asyncio.Task[None]]:
+        downstream = ClosingDownstream()
+        connector = FakeConnector()
+        session = GatewayWebSocketSession(
+            downstream=downstream,
+            catalog=load_catalog(),
+            settings=WebSocketUpstreamSettings.production(load_catalog()),
+            connector=connector,
+            sleep=sleep,
+        )
+        await session.handle(
+            {
+                "action": "connect",
+                "request_id": "connect",
+                "visibility": "public",
+                "ticket": "ticket",
+                "format": "DEFAULT",
+            }
+        )
+        reader = session._reader_task
+        assert reader is not None
+        downstream.closed = True
+        await connector.connections[0].messages.put(RuntimeError("upstream read failed"))
+        await asyncio.wait_for(reader, timeout=1)
+        await session.close(notify=False)
+        return downstream, connector, reader
+
+    downstream, connector, reader = asyncio.run(scenario())
+
+    assert reader.exception() is None
+    assert sleeps == []
+    assert len(connector.connections) == 1
+    assert connector.connections[0].closed is True
+    assert all(event.get("state") != "reconnecting" for event in downstream.events)
 
 
 def test_private_connect_uses_server_only_authorization_and_missing_credentials_is_503() -> None:

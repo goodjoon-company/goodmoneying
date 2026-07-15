@@ -26,29 +26,53 @@ cp .env.sample .env
 ./dev.sh
 ./dev.sh infra start
 ./dev.sh app start api
+./dev.sh app start upbit-gateway
 ./dev.sh app start web
 ```
 
 - API: `http://127.0.0.1:8000`
 - 운영 화면: `http://127.0.0.1:5173`
+- 업비트 API 게이트웨이: `http://127.0.0.1:8001`
 - 기본 운영 토큰(Authentication): `local-dev-token`
 
 `./dev.sh`는 파라미터가 없으면 사용법을 출력한다. 루트 `.env` 파일이 있으면 자동으로 읽고, 셸에서 직접 지정한 환경변수는 `.env` 값보다 우선한다. 기본값은 `.env.sample`에 있다.
 
-infra는 Podman Compose로 PostgreSQL을 관리하고, app은 로컬 개발 프로세스로 API, web, 실시간 수집 워커, 백필 수집 워커, 캔들 집계 워커를 개별 start/stop/status 할 수 있다.
+infra는 Podman Compose로 PostgreSQL을 관리하고, app은 로컬 개발 프로세스로 API, web, 업비트 API 게이트웨이(Upbit API Gateway), 실시간 수집 워커, 백필 수집 워커, 캔들 집계 워커를 개별 start/stop/status 할 수 있다.
 
 ```bash
 ./dev.sh status
 ./dev.sh infra status
 ./dev.sh app status
 ./dev.sh app start api
+./dev.sh app start upbit-gateway
 ./dev.sh app stop api
 ./dev.sh app restart web
 ./dev.sh app start realtime-collection-worker
 ./dev.sh app start backfill-collection-worker
 ./dev.sh app start candle-aggregation-worker
 ./dev.sh logs api
+./dev.sh logs upbit-gateway
 ```
+
+## 업비트 전체 API 작업대
+
+`업비트 API 테스트` 아래의 `Quotation API 테스트`, `Exchange API 테스트`, `WebSocket API 테스트` 메뉴에서 공식 v1.6.3 기준 REST 51개(활성 50개·사용 중단 1개), WebSocket 스트림 14개와 `LIST_SUBSCRIPTIONS`를 탐색한다. 공통 페어를 선택하면 세 메뉴에 전달되고, 좌측에서 기능별 필수·선택 파라미터를 설정하며, 우측에서 차트·목록·호가·실시간 프레임과 원본 응답/API 출처를 확인한다. 캔들 차트의 시간축 가장자리를 이동하면 이전·다음 페이지를 이어서 조회한다.
+
+브라우저는 Upbit 키를 갖거나 `api.upbit.com`에 직접 연결하지 않는다. 별도 게이트웨이가 브라우저 `Origin`을 제거하므로 Quotation은 공식 그룹별 초당 10회 제한을 사용한다. Exchange 기본 그룹은 포켓(Pocket)당 초당 30회, 주문·공식 주문 테스트는 초당 8회, 일괄 취소는 2초당 1회다. WebSocket은 연결 초당 5회, 연결별 메시지 초당 5회·분당 100회다. `Origin`이 Upbit까지 전달될 때 적용되는 10초당 1회 제한은 서버 게이트웨이 상향에는 적용되지 않는다.
+
+게이트웨이의 `POST /v1/requests`와 WebSocket 연결은 `GOODMONEYING_OPERATOR_TOKEN`을 검증한다. 웹 역방향 프록시(reverse proxy)가 런타임(runtime)에 `X-Operator-Token`을 주입하며 브라우저 번들(bundle)에는 토큰을 포함하지 않는다. 8001 포트에 직접 REST 요청을 보내면 토큰 누락은 401, 오류 토큰은 403으로 상향 호출 전에 거부된다.
+
+Exchange 읽기와 비공개 WebSocket을 시험하려면 저장소 밖의 키 파일을 소유자 읽기 전용으로 준비하고 `.env`에 절대 경로만 지정한다. 값 자체를 `.env`, 명령 인자, 저장소, 브라우저에 넣지 않는다.
+
+```bash
+chmod 400 /secure/path/upbit-access-key /secure/path/upbit-secret-key
+UPBIT_ACCESS_KEY_FILE=/secure/path/upbit-access-key
+UPBIT_SECRET_KEY_FILE=/secure/path/upbit-secret-key
+./dev.sh app start upbit-gateway
+./dev.sh app start web
+```
+
+실제 주문 생성·모든 취소·자산 이전·입출금 생성/취소·트래블룰 검증은 로컬 정책으로 차단한다. 주문 가능 여부는 실제 주문을 만들지 않는 공식 `POST /v1/orders/test`만 상향 호출한다.
 
 ### DB 마이그레이션(Migration)
 
@@ -107,7 +131,7 @@ podman compose up --build
 ```bash
 uv run pytest -q
 uv run ruff check .
-uv run mypy apps packages tests
+uv run mypy apps/api apps/worker apps/upbit_gateway packages/shared tests
 npm test
 npm run build
 npm run e2e

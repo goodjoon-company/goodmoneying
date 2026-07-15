@@ -35,6 +35,10 @@ class InvalidUpstreamConfiguration(ValueError):
     pass
 
 
+class DownstreamDisconnected(RuntimeError):
+    pass
+
+
 class Downstream(Protocol):
     async def send_json(self, event: dict[str, Any]) -> None: ...
 
@@ -175,6 +179,8 @@ class GatewayWebSocketSession:
                     await self._manual_reconnect(validated_request_id)
                 else:
                     await self._list(validated_request_id)
+        except DownstreamDisconnected:
+            raise
         except InvalidWebSocketControl as exc:
             await self._error(
                 request_id=request_id if isinstance(request_id, str) else None,
@@ -396,33 +402,40 @@ class GatewayWebSocketSession:
                 await self._auto_reconnect(generation)
         except asyncio.CancelledError:
             raise
+        except DownstreamDisconnected:
+            await self.close(notify=False)
         except Exception:
             if generation == self._generation and not self._closed:
                 await self._auto_reconnect(generation)
 
     async def _auto_reconnect(self, generation: int) -> None:
-        delays = (0.25, 0.5, 1.0, 2.0, 5.0)
-        for delay in delays:
-            if self._closed or generation != self._generation:
-                return
-            await self._connection_event("reconnecting", None, retry_in=delay)
-            await self._sleep(delay)
-            if self._closed or generation != self._generation:
-                return
-            try:
-                await self._replace_upstream(request_id=None, resubscribe=True)
-                return
-            except Exception:
-                generation = self._generation
-        await self._error(
-            request_id=None,
-            code="UPSTREAM_CONNECTION_ERROR",
-            message="업비트 상향 웹소켓(WebSocket) 재연결에 실패했습니다.",
-            status=502,
-            recoverable=False,
-        )
-        await self._connection_event("closed", None)
-        await self.close(notify=False)
+        try:
+            delays = (0.25, 0.5, 1.0, 2.0, 5.0)
+            for delay in delays:
+                if self._closed or generation != self._generation:
+                    return
+                await self._connection_event("reconnecting", None, retry_in=delay)
+                await self._sleep(delay)
+                if self._closed or generation != self._generation:
+                    return
+                try:
+                    await self._replace_upstream(request_id=None, resubscribe=True)
+                    return
+                except DownstreamDisconnected:
+                    raise
+                except Exception:
+                    generation = self._generation
+            await self._error(
+                request_id=None,
+                code="UPSTREAM_CONNECTION_ERROR",
+                message="업비트 상향 웹소켓(WebSocket) 재연결에 실패했습니다.",
+                status=502,
+                recoverable=False,
+            )
+            await self._connection_event("closed", None)
+            await self.close(notify=False)
+        except DownstreamDisconnected:
+            await self.close(notify=False)
 
     async def _connection_event(
         self, state: str, request_id: str | None, *, retry_in: float | None = None
@@ -461,7 +474,12 @@ class GatewayWebSocketSession:
 
     async def _send(self, event: dict[str, Any]) -> None:
         async with self._send_lock:
-            await self._downstream.send_json(event)
+            try:
+                await self._downstream.send_json(event)
+            except RuntimeError as exc:
+                raise DownstreamDisconnected(
+                    "하향 웹소켓(WebSocket) 연결이 종료되었습니다."
+                ) from exc
 
     def _new_message_limiter(self) -> WebSocketRateLimiter:
         return WebSocketRateLimiter(

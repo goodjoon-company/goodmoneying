@@ -6,6 +6,14 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 
+def operator_token_from_environment(environ: Mapping[str, str]) -> str:
+    """게이트웨이 전용 값을 우선하고 공용 배포 토큰을 대체값으로 사용한다."""
+    return environ.get(
+        "UPBIT_GATEWAY_OPERATOR_TOKEN",
+        environ.get("GOODMONEYING_OPERATOR_TOKEN", ""),
+    )
+
+
 @dataclass(frozen=True)
 class WebSocketSecuritySettings:
     operator_token: str
@@ -13,10 +21,7 @@ class WebSocketSecuritySettings:
 
     @classmethod
     def from_environment(cls, environ: Mapping[str, str]) -> WebSocketSecuritySettings:
-        operator_token = environ.get(
-            "UPBIT_GATEWAY_OPERATOR_TOKEN",
-            environ.get("GOODMONEYING_OPERATOR_TOKEN", ""),
-        )
+        operator_token = operator_token_from_environment(environ)
         allowed_origins = tuple(
             normalized
             for value in environ.get("UPBIT_GATEWAY_ALLOWED_ORIGINS", "").split(",")

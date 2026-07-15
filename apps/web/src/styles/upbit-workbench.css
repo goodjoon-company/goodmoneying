@@ -70,6 +70,13 @@
 @media (max-width: 680px) {
   .upbit-workbench { padding: 0 16px 40px; }
   .upbit-workbench-intro { flex-direction: column; }
+  .upbit-extension-shell { min-width: 0; grid-template-columns: minmax(0, 1fr); }
+  .upbit-common-selection {
+    width: auto;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .upbit-common-selection > * { min-width: 0; }
   .upbit-common-selection, .upbit-dynamic-fields, .upbit-ticker-cards { grid-template-columns: 1fr; }
   .upbit-request-builder input, .upbit-request-builder select, .upbit-execute-button, .upbit-workbench-tabs button { min-height: 44px; }
   .upbit-result-panel { min-height: 400px; padding: 12px; }

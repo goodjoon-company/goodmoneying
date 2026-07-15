@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { FileJson } from "lucide-react";
 import { friendlyGatewayError } from "./gateway";
 import type {
   CatalogParameter,
@@ -33,6 +34,7 @@ export type ExchangeWorkbenchProps = {
   marketValue?: string;
   onMarketChange?: (market: string) => void;
   onTraceOpen?: (trace: TraceEnvelope) => void;
+  showMarketSelection?: boolean;
 };
 
 export type ExchangeWorkbenchExtensionProps = Pick<
@@ -46,7 +48,8 @@ export function ExchangeWorkbench({
   marketAdapter = defaultMarketAdapter,
   marketValue = "",
   onMarketChange,
-  onTraceOpen
+  onTraceOpen,
+  showMarketSelection = true
 }: ExchangeWorkbenchProps) {
   const [activeGroup, setActiveGroup] = useState(initialGroup);
   const [endpoints, setEndpoints] = useState<ExchangeCatalogEndpoint[]>([]);
@@ -303,7 +306,9 @@ export function ExchangeWorkbench({
               ) : null}
               <div className="parameter-grid">
                 {selected.parameters.length === 0 ? <p>추가 파라미터가 없습니다.</p> : null}
-                {selected.parameters.map((parameter) => (
+                {selected.parameters.filter((parameter) =>
+                  showMarketSelection || parameter.name !== "market"
+                ).map((parameter) => (
                   <ParameterInput
                     key={parameter.name}
                     parameter={parameter}
@@ -354,7 +359,10 @@ export function ExchangeWorkbench({
         <section className="exchange-result" aria-label="응답 결과">
           <div className="exchange-result__heading">
             <div><p>VISUAL RESPONSE</p><h2>응답 결과</h2></div>
-            {trace ? <button ref={traceTriggerRef} type="button" onClick={openTrace}>원본 추적 열기</button> : null}
+            {trace ? <button ref={traceTriggerRef} className="trace-icon-button" type="button"
+              aria-label="원본 추적 열기" onClick={openTrace}>
+              <FileJson size={18} aria-hidden="true" />
+            </button> : null}
           </div>
           {error ? <div className="exchange-error" role="alert">{error}</div> : null}
           {!trace && !error ? <p className="exchange-empty">기능을 선택하고 안전한 요청을 실행하세요.</p> : null}

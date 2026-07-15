@@ -9,7 +9,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import AnyUrl, BaseModel, ConfigDict, Field
 
-from goodmoneying_upbit_gateway.auth import CredentialConfigurationError, load_credentials
+from goodmoneying_upbit_gateway.auth import (
+    CredentialConfigurationError,
+    credentials_are_configured,
+    load_credentials,
+)
 from goodmoneying_upbit_gateway.catalog import load_catalog, rest_endpoint_by_id
 from goodmoneying_upbit_gateway.client import InvalidParameters
 from goodmoneying_upbit_gateway.executor import (
@@ -51,6 +55,7 @@ class Health(BaseModel):
     status: Literal["ok"]
     service: Literal["upbit-gateway"]
     catalog_version: Literal["1.6.3"]
+    credentials_configured: bool
 
 
 class UpbitApiCatalog(BaseModel):
@@ -186,6 +191,7 @@ def create_app(*, executor: UpbitExecutor | None = None) -> FastAPI:
                 "status": "ok",
                 "service": "upbit-gateway",
                 "catalog_version": catalog["catalog_version"],
+                "credentials_configured": credentials_are_configured(os.environ),
             }
         )
 

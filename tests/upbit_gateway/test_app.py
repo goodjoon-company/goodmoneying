@@ -37,7 +37,11 @@ def _fake_executor(status_code: int = 200) -> UpbitExecutor:
     )
 
 
-def test_health_reports_service_and_catalog_version() -> None:
+def test_health_reports_service_catalog_version_and_secret_free_credential_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("UPBIT_ACCESS_KEY", "health-access-must-not-leak")
+    monkeypatch.setenv("UPBIT_SECRET_KEY", "health-secret-must-not-leak")
     response = _client().get("/health")
 
     assert response.status_code == 200
@@ -45,7 +49,40 @@ def test_health_reports_service_and_catalog_version() -> None:
         "status": "ok",
         "service": "upbit-gateway",
         "catalog_version": "1.6.3",
+        "credentials_configured": True,
     }
+    assert "health-access-must-not-leak" not in response.text
+    assert "health-secret-must-not-leak" not in response.text
+
+
+def test_health_reports_credentials_absent_without_browser_key_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for key in (
+        "UPBIT_ACCESS_KEY",
+        "UPBIT_SECRET_KEY",
+        "UPBIT_ACCESS_KEY_FILE",
+        "UPBIT_SECRET_KEY_FILE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    response = _client().get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["credentials_configured"] is False
+
+
+def test_health_reports_invalid_credential_files_as_absent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("UPBIT_ACCESS_KEY_FILE", str(tmp_path / "missing-access"))
+    monkeypatch.setenv("UPBIT_SECRET_KEY_FILE", str(tmp_path / "missing-secret"))
+
+    response = _client().get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["credentials_configured"] is False
 
 
 def test_catalog_returns_contract_without_contacting_upbit() -> None:

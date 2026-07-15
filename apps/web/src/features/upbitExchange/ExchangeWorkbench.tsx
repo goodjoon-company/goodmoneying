@@ -1,0 +1,416 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { friendlyGatewayError } from "./gateway";
+import type {
+  CatalogParameter,
+  ExchangeCatalogEndpoint,
+  ExchangeFunctionalGroup,
+  ExchangeGateway,
+  ExchangeMarketConceptAdapter,
+  TraceEnvelope
+} from "./types";
+import "./upbit-exchange.css";
+
+const groups: Array<{ id: ExchangeFunctionalGroup; label: string }> = [
+  { id: "pocket", label: "포켓" },
+  { id: "asset", label: "계정" },
+  { id: "order", label: "주문" },
+  { id: "withdrawal", label: "출금" },
+  { id: "deposit", label: "입금" },
+  { id: "travel_rule", label: "Travel Rule" },
+  { id: "service", label: "서비스" }
+];
+
+const defaultMarketAdapter: ExchangeMarketConceptAdapter = {
+  normalize: (value) => value.trim().toUpperCase(),
+  suggestions: ["KRW-BTC", "KRW-ETH"],
+  inputLabel: "market"
+};
+
+export type ExchangeWorkbenchProps = {
+  gateway: ExchangeGateway;
+  initialGroup?: ExchangeFunctionalGroup;
+  marketAdapter?: ExchangeMarketConceptAdapter;
+  marketValue?: string;
+  onMarketChange?: (market: string) => void;
+  onTraceOpen?: (trace: TraceEnvelope) => void;
+};
+
+export type ExchangeWorkbenchExtensionProps = Pick<
+  ExchangeWorkbenchProps,
+  "gateway" | "marketAdapter" | "marketValue" | "onMarketChange" | "onTraceOpen"
+>;
+
+export function ExchangeWorkbench({
+  gateway,
+  initialGroup = "pocket",
+  marketAdapter = defaultMarketAdapter,
+  marketValue = "",
+  onMarketChange,
+  onTraceOpen
+}: ExchangeWorkbenchProps) {
+  const [activeGroup, setActiveGroup] = useState(initialGroup);
+  const [endpoints, setEndpoints] = useState<ExchangeCatalogEndpoint[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [credentialConfigured, setCredentialConfigured] = useState<boolean | null>(null);
+  const [values, setValues] = useState<Record<string, string | boolean>>({});
+  const [sharedMarket, setSharedMarket] = useState(() => marketAdapter.normalize(marketValue));
+  const [trace, setTrace] = useState<TraceEnvelope | null>(null);
+  const [traceOpen, setTraceOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [executing, setExecuting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const requestGenerationRef = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([gateway.getHealth(), gateway.getCatalog()]).then(
+      ([health, catalog]) => {
+        if (cancelled) return;
+        const exchangeEndpoints = catalog.rest_endpoints.filter(
+          (endpoint) => endpoint.category === "exchange"
+        );
+        setCredentialConfigured(health.credentials_configured);
+        setEndpoints(exchangeEndpoints);
+        setSelectedId(
+          exchangeEndpoints.find((endpoint) => endpoint.functional_group === initialGroup)
+            ?.endpoint_id ?? null
+        );
+        setLoading(false);
+      },
+      (caught: unknown) => {
+        if (cancelled) return;
+        setError(errorMessage(caught));
+        setLoading(false);
+      }
+    );
+    return () => { cancelled = true; };
+  }, [gateway, initialGroup]);
+
+  useEffect(() => {
+    setSharedMarket(marketAdapter.normalize(marketValue));
+  }, [marketAdapter, marketValue]);
+
+  const visibleEndpoints = useMemo(
+    () => endpoints.filter((endpoint) => endpoint.functional_group === activeGroup),
+    [activeGroup, endpoints]
+  );
+  const selected = endpoints.find((endpoint) => endpoint.endpoint_id === selectedId) ?? null;
+
+  const chooseGroup = (group: ExchangeFunctionalGroup) => {
+    setActiveGroup(group);
+    setSelectedId(endpoints.find((endpoint) => endpoint.functional_group === group)?.endpoint_id ?? null);
+    resetRequestState();
+  };
+  const chooseEndpoint = (endpoint: ExchangeCatalogEndpoint) => {
+    setSelectedId(endpoint.endpoint_id);
+    resetRequestState();
+  };
+  const resetRequestState = () => {
+    requestGenerationRef.current += 1;
+    setValues({});
+    setTrace(null);
+    setTraceOpen(false);
+    setError(null);
+    setExecuting(false);
+  };
+
+  const execute = async () => {
+    if (!selected || selected.safety === "blocked") return;
+    const requestGeneration = ++requestGenerationRef.current;
+    const requestedEndpointId = selected.endpoint_id;
+    setExecuting(true);
+    setError(null);
+    try {
+      const parameters = toGatewayParameters(
+        selected.parameters,
+        { ...values, market: sharedMarket },
+        marketAdapter
+      );
+      const nextTrace = await gateway.execute({
+        endpoint_id: requestedEndpointId,
+        parameters
+      });
+      if (requestGenerationRef.current !== requestGeneration) return;
+      if (nextTrace.endpoint_id !== requestedEndpointId) {
+        setTrace(null);
+        setError("응답 출처가 선택한 API 기능과 일치하지 않습니다.");
+        return;
+      }
+      setTrace(nextTrace);
+    } catch (caught) {
+      if (requestGenerationRef.current !== requestGeneration) return;
+      setTrace(null);
+      setError(errorMessage(caught));
+    } finally {
+      if (requestGenerationRef.current === requestGeneration) setExecuting(false);
+    }
+  };
+
+  const openTrace = () => {
+    if (!trace) return;
+    onTraceOpen?.(trace);
+    setTraceOpen(true);
+  };
+
+  return (
+    <main className="exchange-workbench" aria-label="Exchange API 작업대">
+      <header className="exchange-workbench__header">
+        <div>
+          <p className="exchange-workbench__eyebrow">UPBIT DEVELOPER WORKBENCH</p>
+          <h1>Exchange API</h1>
+          <p>조회와 공식 주문 테스트만 실행하고 자산을 바꾸는 요청은 로컬에서 차단합니다.</p>
+        </div>
+        <output
+          className={`credential-state ${credentialConfigured ? "is-ready" : "is-absent"}`}
+          aria-label="자격 증명 상태"
+          role="status"
+        >
+          <span aria-hidden="true" />
+          {credentialConfigured === null
+            ? "서버 확인 중"
+            : credentialConfigured
+              ? "서버 설정됨"
+              : "서버 미설정"}
+        </output>
+      </header>
+
+      <div className="exchange-tabs" role="tablist" aria-label="Exchange API 기능 그룹">
+        {groups.map((group) => {
+          const count = endpoints.filter((endpoint) => endpoint.functional_group === group.id).length;
+          return (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeGroup === group.id}
+              key={group.id}
+              onClick={() => chooseGroup(group.id)}
+            >
+              {group.label} <span>{count}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {loading ? <p role="status">카탈로그를 불러오는 중입니다.</p> : null}
+      <div className="exchange-workbench__grid">
+        <section className="exchange-request" aria-label="요청 구성">
+          <nav aria-label="Exchange API 기능 목록" className="exchange-endpoints">
+            {visibleEndpoints.map((endpoint) => (
+              <button
+                type="button"
+                key={endpoint.endpoint_id}
+                data-endpoint-id={endpoint.endpoint_id}
+                className={selectedId === endpoint.endpoint_id ? "is-selected" : ""}
+                aria-label={`${endpoint.title} 기능 선택`}
+                onClick={() => chooseEndpoint(endpoint)}
+              >
+                <span>{endpoint.title}</span>
+                <small className={`safety safety--${endpoint.safety}`}>{safetyLabel(endpoint.safety)}</small>
+              </button>
+            ))}
+          </nav>
+
+          {selected ? (
+            <div className="exchange-form">
+              <div className="exchange-form__title">
+                <div>
+                  <h2>{selected.title}</h2>
+                  <code>{selected.method} {selected.path}</code>
+                </div>
+                {selected.safety === "test" ? <strong className="test-badge">비파괴 테스트</strong> : null}
+              </div>
+              {selected.safety === "blocked" ? (
+                <div className="danger-banner" role="alert">
+                  <strong>위험 작업 · 영구 차단</strong>
+                  <span>폼과 계약 미리보기만 제공하며 업비트로 전송하지 않습니다.</span>
+                </div>
+              ) : null}
+              <div className="parameter-grid">
+                {selected.parameters.length === 0 ? <p>추가 파라미터가 없습니다.</p> : null}
+                {selected.parameters.map((parameter) => (
+                  <ParameterInput
+                    key={parameter.name}
+                    parameter={parameter}
+                    value={parameter.name === "market" ? sharedMarket : values[parameter.name]}
+                    marketAdapter={marketAdapter}
+                    onChange={(value) => {
+                      if (parameter.name === "market" && typeof value === "string") {
+                        const normalized = marketAdapter.normalize(value);
+                        setSharedMarket(normalized);
+                        onMarketChange?.(normalized);
+                        return;
+                      }
+                      setValues((current) => ({ ...current, [parameter.name]: value }));
+                    }}
+                  />
+                ))}
+              </div>
+              {selected.safety === "blocked" ? (
+                <section className="request-preview" aria-label="최종 요청 미리보기">
+                  <h3>로컬 요청 계약</h3>
+                  <pre>{JSON.stringify({ endpoint_id: selected.endpoint_id, parameters: toPreviewParameters(selected.parameters, values) }, null, 2)}</pre>
+                </section>
+              ) : null}
+              <button
+                className="exchange-execute"
+                type="button"
+                disabled={executing || selected.safety === "blocked"}
+                onClick={execute}
+              >
+                {selected.safety === "blocked"
+                  ? "정책으로 전송 차단됨"
+                  : selected.safety === "test"
+                    ? "주문 테스트 실행"
+                    : executing ? "실행 중" : "조회 실행"}
+              </button>
+            </div>
+          ) : null}
+        </section>
+
+        <section className="exchange-result" aria-label="응답 결과">
+          <div className="exchange-result__heading">
+            <div><p>VISUAL RESPONSE</p><h2>응답 결과</h2></div>
+            {trace ? <button type="button" onClick={openTrace}>원본 추적 열기</button> : null}
+          </div>
+          {error ? <div className="exchange-error" role="alert">{error}</div> : null}
+          {!trace && !error ? <p className="exchange-empty">기능을 선택하고 안전한 요청을 실행하세요.</p> : null}
+          {trace && selected ? <ResultView endpoint={selected} trace={trace} /> : null}
+        </section>
+      </div>
+
+      {traceOpen && trace ? (
+        <div className="trace-backdrop" role="presentation" onMouseDown={() => setTraceOpen(false)}>
+          <section
+            className="trace-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="API 원본 추적"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header><div><p>TRACE</p><h2>API 원본 추적</h2></div><button type="button" aria-label="원본 추적 닫기" onClick={() => setTraceOpen(false)}>×</button></header>
+            <pre>{JSON.stringify(trace, null, 2)}</pre>
+          </section>
+        </div>
+      ) : null}
+    </main>
+  );
+}
+
+function ParameterInput({
+  parameter,
+  value,
+  marketAdapter,
+  onChange
+}: {
+  parameter: CatalogParameter;
+  value: string | boolean | undefined;
+  marketAdapter: ExchangeMarketConceptAdapter;
+  onChange: (value: string | boolean) => void;
+}) {
+  const label = parameter.name === "market" ? marketAdapter.inputLabel : parameter.name;
+  const common = { id: `exchange-param-${parameter.name}`, required: parameter.required };
+  return (
+    <label className="parameter-field" htmlFor={common.id}>
+      <span>{label}{parameter.required ? " *" : ""}</span>
+      {parameter.type === "boolean" ? (
+        <input {...common} aria-label={label} type="checkbox" checked={value === true} onChange={(event) => onChange(event.target.checked)} />
+      ) : parameter.enum ? (
+        <select {...common} aria-label={label} value={typeof value === "string" ? value : ""} onChange={(event) => onChange(event.target.value)}>
+          <option value="">선택</option>
+          {parameter.enum.map((item) => <option key={String(item)} value={String(item)}>{String(item)}</option>)}
+        </select>
+      ) : (
+        <input
+          {...common}
+          aria-label={label}
+          type={parameter.format === "date-time" ? "datetime-local" : parameter.type === "integer" || parameter.type === "number" ? "number" : "text"}
+          min={parameter.minimum}
+          max={parameter.maximum}
+          list={parameter.name === "market" ? "exchange-market-suggestions" : undefined}
+          placeholder={parameter.type === "array" ? "쉼표로 여러 값을 구분" : undefined}
+          value={typeof value === "string" ? value : ""}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      )}
+      {parameter.name === "market" ? (
+        <datalist id="exchange-market-suggestions">
+          {marketAdapter.suggestions.map((market) => <option key={market} value={market} />)}
+        </datalist>
+      ) : null}
+    </label>
+  );
+}
+
+function ResultView({ endpoint, trace }: { endpoint: ExchangeCatalogEndpoint; trace: TraceEnvelope }) {
+  const body = trace.response.body;
+  const rows = Array.isArray(body) ? body.filter(isRecord) : isRecord(body) ? [body] : [];
+  if (endpoint.functional_group === "asset") return <DataTable label="계정 잔고 결과" rows={rows} />;
+  if (endpoint.functional_group === "order") return <DataTable label="주문 결과" rows={rows} />;
+  if (endpoint.functional_group === "withdrawal" || endpoint.functional_group === "deposit") {
+    return <DataTable label="입출금 결과" rows={rows} />;
+  }
+  if (endpoint.functional_group === "service") {
+    return <div className="status-cards" aria-label="서비스 상태 결과">{rows.map((row, index) => <article key={index}>{Object.entries(row).map(([key, value]) => <p key={key}><span>{key}</span><strong>{display(value)}</strong></p>)}</article>)}</div>;
+  }
+  return rows.length > 0 ? <DataTable label="API 결과" rows={rows} /> : <pre>{JSON.stringify(body, null, 2)}</pre>;
+}
+
+function DataTable({ label, rows }: { label: string; rows: Record<string, unknown>[] }) {
+  const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+  if (rows.length === 0) return <p>응답 데이터가 비어 있습니다.</p>;
+  return (
+    <div className="result-table-scroll">
+      <table aria-label={label}>
+        <thead><tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
+        <tbody>{rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column}>{display(row[column])}</td>)}</tr>)}</tbody>
+      </table>
+    </div>
+  );
+}
+
+function toGatewayParameters(
+  definitions: CatalogParameter[],
+  values: Record<string, string | boolean>,
+  marketAdapter: ExchangeMarketConceptAdapter
+): Record<string, unknown> {
+  const parameters: Record<string, unknown> = {};
+  for (const parameter of definitions) {
+    const value = values[parameter.name];
+    if (value === undefined || value === "" || value === false) continue;
+    if (parameter.name === "market" && typeof value === "string") {
+      parameters[parameter.name] = marketAdapter.normalize(value);
+    } else if (parameter.type === "array" && typeof value === "string") {
+      parameters[parameter.name] = value.split(",").map((item) => item.trim()).filter(Boolean);
+    } else if ((parameter.type === "integer" || parameter.type === "number") && typeof value === "string") {
+      parameters[parameter.name] = Number(value);
+    } else {
+      parameters[parameter.name] = value;
+    }
+  }
+  return parameters;
+}
+
+function toPreviewParameters(
+  definitions: CatalogParameter[],
+  values: Record<string, string | boolean>
+) {
+  return toGatewayParameters(definitions, values, defaultMarketAdapter);
+}
+
+function errorMessage(caught: unknown): string {
+  const status = isRecord(caught) && typeof caught.status === "number" ? caught.status : 500;
+  return friendlyGatewayError(status);
+}
+
+function safetyLabel(safety: ExchangeCatalogEndpoint["safety"]) {
+  return safety === "read" ? "조회" : safety === "test" ? "테스트" : "차단";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function display(value: unknown) {
+  if (value === null || value === undefined) return "—";
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
+}

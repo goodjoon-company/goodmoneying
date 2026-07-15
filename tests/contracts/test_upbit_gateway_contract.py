@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, cast
@@ -8,6 +9,7 @@ from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
 CATALOG_PATH = Path("docs/contracts/upbit/upbit-api-catalog.yaml")
 OPENAPI_PATH = Path("docs/contracts/api/upbit-gateway.openapi.yaml")
 WEBSOCKET_SCHEMA_PATH = Path("docs/contracts/api/upbit-gateway-websocket.schema.json")
+OFFICIAL_SNAPSHOT_PATH = Path("tests/contracts/fixtures/upbit-v1.6.3-rest-snapshot.json")
 
 EXPECTED_REST_IDS = {
     f"rest.{slug}"
@@ -56,7 +58,6 @@ EXPECTED_WEBSOCKET_TYPES = {
     "candle.240m",
     "myAsset",
     "myOrder",
-    "LIST_SUBSCRIPTIONS",
 }
 
 
@@ -70,9 +71,17 @@ def test_catalog_covers_official_v1_6_3_rest_and_websocket_inventory() -> None:
     assert catalog["catalog_version"] == "1.6.3"
     assert catalog["official_baseline"] == "https://docs.upbit.com/kr/llms.txt"
     assert {endpoint["endpoint_id"] for endpoint in catalog["rest_endpoints"]} == EXPECTED_REST_IDS
-    assert {stream["type"] for stream in catalog["websocket_streams"]} == (
-        EXPECTED_WEBSOCKET_TYPES
-    )
+    assert {stream["type"] for stream in catalog["websocket_streams"]} == EXPECTED_WEBSOCKET_TYPES
+    assert catalog["rest_inventory"] == {
+        "active_count": 50,
+        "deprecated_count": 1,
+        "total_count": 51,
+    }
+    deprecated = [endpoint for endpoint in catalog["rest_endpoints"] if endpoint.get("deprecated")]
+    assert [endpoint["endpoint_id"] for endpoint in deprecated] == [
+        "rest.list-orderbook-levels"
+    ]
+    assert len(catalog["rest_endpoints"]) - len(deprecated) == 50
 
 
 def test_catalog_defines_typed_parameters_rate_limits_and_official_sources() -> None:
@@ -83,7 +92,7 @@ def test_catalog_defines_typed_parameters_rate_limits_and_official_sources() -> 
         "trade",
         "ticker",
         "orderbook",
-        "exchange-default",
+        "default",
         "order",
         "order-test",
         "order-cancel-all",
@@ -139,6 +148,24 @@ def test_websocket_catalog_defines_typed_parameters_limits_and_gateway_operation
         "pause",
         "unsubscribe",
         "reconnect",
+        "list",
+    ]
+    assert catalog["websocket_operations"] == [
+        {
+            "endpoint_id": "websocket.list-subscriptions",
+            "method": "LIST_SUBSCRIPTIONS",
+            "visibility": "both",
+            "parameters": [
+                {
+                    "name": "method",
+                    "type": "string",
+                    "required": True,
+                    "const": "LIST_SUBSCRIPTIONS",
+                }
+            ],
+            "safety": "read",
+            "source_url": "https://docs.upbit.com/kr/reference/list-subscriptions.md",
+        }
     ]
     assert catalog["websocket_formats"] == ["DEFAULT", "SIMPLE", "JSON_LIST", "SIMPLE_LIST"]
     assert catalog["rate_limits"]["websocket-connect"] == {
@@ -155,16 +182,73 @@ def test_websocket_catalog_defines_typed_parameters_limits_and_gateway_operation
             assert isinstance(parameter["required"], bool)
 
 
+def test_origin_limit_separates_trigger_scope_group_and_limit() -> None:
+    catalog = _load_yaml(CATALOG_PATH)
+
+    assert catalog["origin_limit"] == {
+        "trigger": {"header": "Origin", "condition": "present"},
+        "applies_to": ["quotation-rest", "public-websocket"],
+        "group": "origin",
+        "limit": {"requests": 1, "seconds": 10},
+    }
+
+
+def test_rest_catalog_matches_checked_official_v1_6_3_snapshot_exactly() -> None:
+    catalog = _load_yaml(CATALOG_PATH)
+    snapshot = cast(dict[str, Any], json.loads(OFFICIAL_SNAPSHOT_PATH.read_text()))
+    projection = [
+        {
+            key: endpoint[key]
+            for key in ("endpoint_id", "method", "path", "parameters")
+        }
+        for endpoint in catalog["rest_endpoints"]
+    ]
+    encoded = json.dumps(
+        projection,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+
+    assert snapshot["official_baseline"] == catalog["official_baseline"]
+    assert snapshot["catalog_version"] == catalog["catalog_version"]
+    assert snapshot["projection"] == ["endpoint_id", "method", "path", "parameters"]
+    assert hashlib.sha256(encoded).hexdigest() == snapshot["sha256"]
+
+
 def test_gateway_openapi_accepts_endpoint_id_and_never_arbitrary_url() -> None:
     contract = _load_yaml(OPENAPI_PATH)
-    serialized = yaml.safe_dump(contract, allow_unicode=True)
 
     assert contract["openapi"] == "3.1.0"
     assert {"/health", "/v1/catalog", "/v1/requests"} <= set(contract["paths"])
     request_schema = contract["components"]["schemas"]["GatewayRequest"]
     assert request_schema["required"] == ["endpoint_id", "parameters"]
     assert "endpoint_id" in request_schema["properties"]
-    assert "url" not in serialized.lower()
+    assert "url" not in request_schema["properties"]
+    catalog_schema = contract["paths"]["/v1/catalog"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    assert catalog_schema == {"$ref": "#/components/schemas/UpbitApiCatalog"}
+
+
+def test_checked_openapi_and_fastapi_runtime_have_status_response_parity() -> None:
+    from goodmoneying_upbit_gateway.main import create_app
+
+    checked = _load_yaml(OPENAPI_PATH)
+    runtime = create_app().openapi()
+    for path, method in [("/health", "get"), ("/v1/catalog", "get"), ("/v1/requests", "post")]:
+        assert set(checked["paths"][path][method]["responses"]) == set(
+            runtime["paths"][path][method]["responses"]
+        )
+
+    for status in ("403", "404", "501", "422"):
+        checked_schema = checked["paths"]["/v1/requests"]["post"]["responses"][status][
+            "content"
+        ]["application/json"]["schema"]
+        runtime_schema = runtime["paths"]["/v1/requests"]["post"]["responses"][status][
+            "content"
+        ]["application/json"]["schema"]
+        assert checked_schema == runtime_schema
 
 
 def test_gateway_websocket_schema_is_valid_and_covers_trace_events() -> None:

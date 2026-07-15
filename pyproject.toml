@@ -14,6 +14,20 @@ dependencies = [
   "websockets>=15.0.0",
 ]
 
+[build-system]
+requires = ["setuptools>=80.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv]
+package = true
+
+[tool.setuptools]
+package-dir = {"" = "apps/upbit_gateway"}
+
+[tool.setuptools.packages.find]
+where = ["apps/upbit_gateway"]
+include = ["goodmoneying_upbit_gateway*"]
+
 [dependency-groups]
 dev = [
   "mypy>=1.19.0",

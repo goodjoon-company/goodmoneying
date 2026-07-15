@@ -1,0 +1,6 @@
+{
+  "catalog_version": "1.6.3",
+  "official_baseline": "https://docs.upbit.com/kr/llms.txt",
+  "projection": ["endpoint_id", "method", "path", "parameters"],
+  "sha256": "533008ed2cb3549bb142848cb5cb29769550a5572c11babfe16f995ba20c5fd8"
+}

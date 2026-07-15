@@ -4,7 +4,7 @@
 
 `apps/upbit_gateway/`는 브라우저와 업비트 Open API 사이의 독립 보안·운영 경계다. 카탈로그의 `endpoint_id`만 받아 공식 경로를 선택하고, 키·JWT·Authorization 헤더를 브라우저·응답·로그에 노출하지 않는다. 이후 이 모듈이 그룹별 요청 제한, `Remaining-Req`, 429·418 처리, 마스킹된 추적 봉투(Trace Envelope), 공개·비공개 WebSocket 연결을 소유한다.
 
-Issue #19의 실행 골격은 `/health`, `/v1/catalog`, `/v1/requests`의 501 응답까지만 제공한다. 업비트 상향 호출 코드는 의도적으로 없다.
+Issue #19의 실행 골격은 `/health`, `/v1/catalog`, `/v1/requests`의 로컬 판정까지만 제공한다. 차단 기능은 403, 알려진 미구현 기능은 501, 알 수 없는 기능은 404, 요청 형식 오류는 422로 구분한다. 업비트 상향 호출 코드는 의도적으로 없다.
 
 ## 책임이 아닌 것
 
@@ -34,7 +34,13 @@ sequenceDiagram
     C-->>G: endpoint_id·파라미터·안전 등급
     G-->>B: 키 없는 카탈로그
     B->>G: POST /v1/requests(endpoint_id, parameters)
-    G-->>B: 501 UPSTREAM_NOT_IMPLEMENTED
+    alt 차단 endpoint_id
+        G-->>B: 403 POLICY_BLOCKED
+    else 알려진 미구현 endpoint_id
+        G-->>B: 501 UPSTREAM_NOT_IMPLEMENTED
+    else 알 수 없는 endpoint_id
+        G-->>B: 404 UNKNOWN_ENDPOINT
+    end
     Note over G,U: Issue #19에서는 네트워크 전송 없음
 ```
 
@@ -44,6 +50,7 @@ sequenceDiagram
 
 - FastAPI와 Pydantic은 게이트웨이 HTTP 경계를 제공한다.
 - PyYAML은 저장소의 기계 검증 카탈로그를 읽는다.
+- 프로젝트는 `uv run python`의 설치 가능 패키지로 게이트웨이를 노출하며, 카탈로그 경로는 현재 작업 디렉터리(CWD)가 아니라 설치 모듈 위치에서 저장소 루트를 찾는다.
 - 게이트웨이는 운영 서버나 DB에 의존하지 않는다.
 - 공식 기능·파라미터·제한의 외부 기준은 업비트 개발자 센터 v1.6.3의 `llms.txt`와 개별 공식 마크다운(markdown)이다.
 

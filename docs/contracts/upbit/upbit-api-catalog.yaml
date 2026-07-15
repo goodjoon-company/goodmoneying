@@ -9,19 +9,27 @@ safety_levels:
   read: 조회 전용
   test: 실제 주문을 생성하지 않는 공식 주문 생성 테스트
   blocked: 로컬 요청 미리보기만 허용하며 업비트 상향 전송 금지
+rest_inventory:
+  active_count: 50
+  deprecated_count: 1
+  total_count: 51
 rate_limits:
   market: {scope: ip, requests: 10, seconds: 1}
   candle: {scope: ip, requests: 10, seconds: 1}
   trade: {scope: ip, requests: 10, seconds: 1}
   ticker: {scope: ip, requests: 10, seconds: 1}
   orderbook: {scope: ip, requests: 10, seconds: 1}
-  exchange-default: {scope: pocket, requests: 30, seconds: 1}
+  default: {scope: pocket, requests: 30, seconds: 1}
   order: {scope: pocket, requests: 8, seconds: 1}
   order-test: {scope: pocket, requests: 8, seconds: 1}
   order-cancel-all: {scope: pocket, requests: 1, seconds: 2}
   websocket-connect: {scope: ip_or_pocket, requests: 5, seconds: 1}
   websocket-message: {scope: connection, requests: 5, seconds: 1, requests_per_minute: 100}
-origin_limit: {scope: origin, requests: 1, seconds: 10}
+origin_limit:
+  trigger: {header: Origin, condition: present}
+  applies_to: [quotation-rest, public-websocket]
+  group: origin
+  limit: {requests: 1, seconds: 10}
 
 rest_endpoints:
   - endpoint_id: rest.list-trading-pairs
@@ -181,7 +189,7 @@ rest_endpoints:
     method: GET
     path: /v1/pockets
     parameters: []
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/get-pocket-information.md
   - endpoint_id: rest.get-pocket-api-keys
@@ -193,7 +201,7 @@ rest_endpoints:
     parameters:
       - {name: "uuids[]", location: query, type: array, items: string, required: false}
       - {name: include_expired, location: query, type: boolean, required: false}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/get-pocket-api-keys.md
   - endpoint_id: rest.get-sub-pocket-balance
@@ -203,7 +211,7 @@ rest_endpoints:
     method: GET
     path: /v1/pockets/assets
     parameters: [{name: uuid, location: query, type: string, required: true}]
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/get-sub-pocket-balance.md
   - endpoint_id: rest.post-universal-transfer
@@ -218,7 +226,7 @@ rest_endpoints:
       - {name: currency, location: body, type: string, required: true}
       - {name: amount, location: body, type: string, required: true}
       - {name: identifier, location: body, type: string, required: false}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/post-universal-transfer.md
   - endpoint_id: rest.get-universal-transfer
@@ -238,7 +246,7 @@ rest_endpoints:
       - {name: currency, location: query, type: string, required: false}
       - {name: limit, location: query, type: string, required: false}
       - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/get-universal-transfer.md
   - endpoint_id: rest.post-transfer
@@ -252,7 +260,7 @@ rest_endpoints:
       - {name: currency, location: body, type: string, required: true}
       - {name: amount, location: body, type: string, required: true}
       - {name: identifier, location: body, type: string, required: false}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/post-transfer.md
   - endpoint_id: rest.get-transfer
@@ -272,7 +280,7 @@ rest_endpoints:
       - {name: currency, location: query, type: string, required: false}
       - {name: limit, location: query, type: string, required: false}
       - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/get-transfer.md
   - endpoint_id: rest.get-balance
@@ -282,7 +290,7 @@ rest_endpoints:
     method: GET
     path: /v1/accounts
     parameters: []
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/get-balance.md
   - endpoint_id: rest.available-order-information
@@ -292,7 +300,7 @@ rest_endpoints:
     method: GET
     path: /v1/orders/chance
     parameters: [{name: market, location: query, type: string, required: true}]
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/available-order-information.md
   - endpoint_id: rest.new-order
@@ -333,7 +341,7 @@ rest_endpoints:
       - {name: uuid, location: query, type: string, required: false}
       - {name: identifier, location: query, type: string, required: false}
     constraints: [uuid 또는 identifier 중 하나 필수]
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/get-order.md
   - endpoint_id: rest.list-orders-by-ids
@@ -347,7 +355,7 @@ rest_endpoints:
       - {name: "uuids[]", location: query, type: array, items: string, required: false}
       - {name: "identifiers[]", location: query, type: array, items: string, required: false}
       - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-orders-by-ids.md
   - endpoint_id: rest.list-open-orders
@@ -363,7 +371,7 @@ rest_endpoints:
       - {name: page, location: query, type: integer, required: false}
       - {name: limit, location: query, type: integer, required: false}
       - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-open-orders.md
   - endpoint_id: rest.list-closed-orders
@@ -380,7 +388,7 @@ rest_endpoints:
       - {name: end_time, location: query, type: string, required: false, format: date-time}
       - {name: limit, location: query, type: integer, required: false}
       - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-closed-orders.md
   - endpoint_id: rest.cancel-order
@@ -393,7 +401,7 @@ rest_endpoints:
       - {name: uuid, location: query, type: string, required: false}
       - {name: identifier, location: query, type: string, required: false}
     constraints: [uuid 또는 identifier 중 하나 필수]
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/cancel-order.md
   - endpoint_id: rest.cancel-orders-by-ids
@@ -405,7 +413,7 @@ rest_endpoints:
     parameters:
       - {name: "uuids[]", location: query, type: array, items: string, required: false}
       - {name: "identifiers[]", location: query, type: array, items: string, required: false}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/cancel-orders-by-ids.md
   - endpoint_id: rest.batch-cancel-orders
@@ -451,7 +459,7 @@ rest_endpoints:
     parameters:
       - {name: currency, location: query, type: string, required: true}
       - {name: net_type, location: query, type: string, required: false}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/available-withdrawal-information.md
   - endpoint_id: rest.list-withdrawal-addresses
@@ -461,7 +469,7 @@ rest_endpoints:
     method: GET
     path: /v1/withdraws/coin_addresses
     parameters: []
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-withdrawal-addresses.md
   - endpoint_id: rest.withdraw
@@ -477,7 +485,7 @@ rest_endpoints:
       - {name: address, location: body, type: string, required: true}
       - {name: secondary_address, location: body, type: string, required: false}
       - {name: transaction_type, location: body, type: string, required: false, enum: [default, internal]}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/withdraw.md
   - endpoint_id: rest.withdraw-krw
@@ -489,7 +497,7 @@ rest_endpoints:
     parameters:
       - {name: amount, location: body, type: string, required: true}
       - {name: two_factor_type, location: body, type: string, required: true}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/withdraw-krw.md
   - endpoint_id: rest.get-withdrawal
@@ -503,7 +511,7 @@ rest_endpoints:
       - {name: txid, location: query, type: string, required: false}
       - {name: currency, location: query, type: string, required: false}
     constraints: [uuid 또는 txid 중 하나 필수]
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/get-withdrawal.md
   - endpoint_id: rest.list-withdrawals
@@ -522,7 +530,7 @@ rest_endpoints:
       - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
       - {name: from, location: query, type: string, required: false, format: date-time}
       - {name: to, location: query, type: string, required: false, format: date-time}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-withdrawals.md
   - endpoint_id: rest.cancel-withdrawal
@@ -532,7 +540,7 @@ rest_endpoints:
     method: DELETE
     path: /v1/withdraws/coin
     parameters: [{name: uuid, location: query, type: string, required: true}]
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/cancel-withdrawal.md
   - endpoint_id: rest.available-deposit-information
@@ -544,7 +552,7 @@ rest_endpoints:
     parameters:
       - {name: currency, location: query, type: string, required: true}
       - {name: net_type, location: query, type: string, required: true}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/available-deposit-information.md
   - endpoint_id: rest.create-deposit-address
@@ -556,7 +564,7 @@ rest_endpoints:
     parameters:
       - {name: currency, location: body, type: string, required: true}
       - {name: net_type, location: body, type: string, required: true}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/create-deposit-address.md
   - endpoint_id: rest.get-deposit-address
@@ -568,7 +576,7 @@ rest_endpoints:
     parameters:
       - {name: currency, location: query, type: string, required: true}
       - {name: net_type, location: query, type: string, required: true}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/get-deposit-address.md
   - endpoint_id: rest.list-deposit-addresses
@@ -578,7 +586,7 @@ rest_endpoints:
     method: GET
     path: /v1/deposits/coin_addresses
     parameters: []
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-deposit-addresses.md
   - endpoint_id: rest.deposit-krw
@@ -590,7 +598,7 @@ rest_endpoints:
     parameters:
       - {name: amount, location: body, type: string, required: true}
       - {name: two_factor_type, location: body, type: string, required: true}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/deposit-krw.md
   - endpoint_id: rest.get-deposit
@@ -604,7 +612,7 @@ rest_endpoints:
       - {name: uuid, location: query, type: string, required: false}
       - {name: txid, location: query, type: string, required: false}
     constraints: [uuid 또는 txid와 currency 조합 중 하나 필수]
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/get-deposit.md
   - endpoint_id: rest.list-deposits
@@ -614,7 +622,7 @@ rest_endpoints:
     method: GET
     path: /v1/deposits
     parameters: *ledger_list_parameters
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-deposits.md
   - endpoint_id: rest.list-travelrule-vasps
@@ -624,7 +632,7 @@ rest_endpoints:
     method: GET
     path: /v1/travel_rule/vasps
     parameters: []
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-travelrule-vasps.md
   - endpoint_id: rest.verify-travelrule-by-uuid
@@ -636,7 +644,7 @@ rest_endpoints:
     parameters:
       - {name: deposit_uuid, location: body, type: string, required: true}
       - {name: vasp_uuid, location: body, type: string, required: true}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     additional_limit: {scope: deposit, requests: 1, seconds: 600}
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/verify-travelrule-by-uuid.md
@@ -651,7 +659,7 @@ rest_endpoints:
       - {name: txid, location: body, type: string, required: true}
       - {name: currency, location: body, type: string, required: true}
       - {name: net_type, location: body, type: string, required: true}
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     additional_limit: {scope: deposit, requests: 1, seconds: 600}
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/verify-travelrule-by-txid.md
@@ -662,7 +670,7 @@ rest_endpoints:
     method: GET
     path: /v1/status/wallet
     parameters: []
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/get-service-status.md
   - endpoint_id: rest.list-api-keys
@@ -672,7 +680,7 @@ rest_endpoints:
     method: GET
     path: /v1/api_keys
     parameters: []
-    rate_limit_group: exchange-default
+    rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-api-keys.md
 
@@ -718,11 +726,12 @@ websocket_streams:
     parameters: [{name: codes, type: array, items: string, required: false}]
     safety: read
     source_url: https://docs.upbit.com/kr/reference/websocket-myorder.md
+websocket_operations:
   - endpoint_id: websocket.list-subscriptions
-    type: LIST_SUBSCRIPTIONS
+    method: LIST_SUBSCRIPTIONS
     visibility: both
     parameters: [{name: method, type: string, required: true, const: LIST_SUBSCRIPTIONS}]
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-subscriptions.md
 websocket_formats: [DEFAULT, SIMPLE, JSON_LIST, SIMPLE_LIST]
-gateway_websocket_operations: [connect, subscribe, pause, unsubscribe, reconnect]
+gateway_websocket_operations: [connect, subscribe, pause, unsubscribe, reconnect, list]

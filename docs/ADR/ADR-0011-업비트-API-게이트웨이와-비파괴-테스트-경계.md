@@ -16,7 +16,7 @@ Related Issue: [#19](https://github.com/goodjoon-company/goodmoneying/issues/19)
 - 공식 REST·WebSocket 기능, 파라미터, 요청 제한 그룹, 안전 등급은 카탈로그를 단일 기준(source of truth)으로 둔다.
 - 조회는 `read`, `POST /v1/orders/test`는 `test`, 실제 주문·모든 취소·자산 이전·입출금 생성·취소·트래블룰 검증은 `blocked`로 분류한다.
 - `blocked`는 로컬 미리보기와 정책 오류까지만 허용하고 업비트에는 전송하지 않는다.
-- Issue #19에서는 health·catalog와 501 실행 경계만 만들며 인증이나 상향 네트워크 호출은 구현하지 않는다.
+- Issue #19에서는 health·catalog와 정책 차단·기능 식별·요청 검증·상향 미구현을 구분하는 로컬 판정 경계만 만들며 인증이나 상향 네트워크 호출은 구현하지 않는다.
 
 ## 대안과 트레이드오프
 

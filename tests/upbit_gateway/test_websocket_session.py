@@ -11,6 +11,7 @@ from goodmoneying_upbit_gateway.auth import CredentialConfigurationError, Creden
 from goodmoneying_upbit_gateway.catalog import load_catalog
 from goodmoneying_upbit_gateway.websocket_protocol import WebSocketRateLimiter
 from goodmoneying_upbit_gateway.websocket_session import (
+    DownstreamDisconnected,
     GatewayWebSocketSession,
     InvalidUpstreamConfiguration,
     WebSocketUpstreamSettings,
@@ -23,6 +24,11 @@ class FakeDownstream:
 
     async def send_json(self, event: dict[str, Any]) -> None:
         self.events.append(event)
+
+
+class ClosedDownstream:
+    async def send_json(self, event: dict[str, Any]) -> None:
+        raise RuntimeError('Cannot call "send" once a close message has been sent.')
 
 
 class FakeUpstream:
@@ -130,6 +136,20 @@ def test_public_connect_subscribe_binary_frame_pause_and_resume() -> None:
     assert frames[0]["sequence"] == 1
     assert "trace_id" in frames[0]
     assert connector.connections[0].closed is True
+
+
+def test_downstream_disconnect_is_not_retried_as_an_error_response() -> None:
+    async def scenario() -> None:
+        session = GatewayWebSocketSession(
+            downstream=ClosedDownstream(),
+            catalog=load_catalog(),
+            settings=WebSocketUpstreamSettings.production(load_catalog()),
+        )
+        with pytest.raises(DownstreamDisconnected):
+            await session.handle({"action": "unknown", "request_id": "closed"})
+        await session.close(notify=False)
+
+    asyncio.run(scenario())
 
 
 def test_private_connect_uses_server_only_authorization_and_missing_credentials_is_503() -> None:

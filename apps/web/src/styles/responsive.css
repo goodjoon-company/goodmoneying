@@ -99,17 +99,25 @@
   }
 
   .product-nav {
-    overflow-x: auto;
+    display: grid;
+    overflow-x: visible;
     padding-bottom: 2px;
     scrollbar-width: thin;
   }
 
   .product-nav section {
-    flex: 0 0 auto;
-    width: max-content;
+    display: flex;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
   }
 
-  .primary-nav-items { flex: 0 0 auto; width: max-content; }
+  .primary-nav-items {
+    display: flex;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+  }
 
   .product-nav h2 {
     position: absolute;

@@ -35,6 +35,10 @@ class InvalidUpstreamConfiguration(ValueError):
     pass
 
 
+class DownstreamDisconnected(RuntimeError):
+    pass
+
+
 class Downstream(Protocol):
     async def send_json(self, event: dict[str, Any]) -> None: ...
 
@@ -175,6 +179,8 @@ class GatewayWebSocketSession:
                     await self._manual_reconnect(validated_request_id)
                 else:
                     await self._list(validated_request_id)
+        except DownstreamDisconnected:
+            raise
         except InvalidWebSocketControl as exc:
             await self._error(
                 request_id=request_id if isinstance(request_id, str) else None,
@@ -461,7 +467,12 @@ class GatewayWebSocketSession:
 
     async def _send(self, event: dict[str, Any]) -> None:
         async with self._send_lock:
-            await self._downstream.send_json(event)
+            try:
+                await self._downstream.send_json(event)
+            except RuntimeError as exc:
+                raise DownstreamDisconnected(
+                    "하향 웹소켓(WebSocket) 연결이 종료되었습니다."
+                ) from exc
 
     def _new_message_limiter(self) -> WebSocketRateLimiter:
         return WebSocketRateLimiter(

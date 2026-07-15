@@ -27,6 +27,7 @@ from goodmoneying_upbit_gateway.safety import PolicyBlocked
 from goodmoneying_upbit_gateway.websocket_protocol import WebSocketRateLimiter
 from goodmoneying_upbit_gateway.websocket_security import WebSocketSecuritySettings
 from goodmoneying_upbit_gateway.websocket_session import (
+    DownstreamDisconnected,
     GatewayWebSocketSession,
     WebSocketUpstreamSettings,
 )
@@ -298,7 +299,7 @@ def create_app(
                     await session.handle(payload)
                 else:
                     await session.handle({"action": "invalid", "request_id": "invalid-message"})
-        except WebSocketDisconnect:
+        except (DownstreamDisconnected, WebSocketDisconnect):
             pass
         finally:
             await session.close(notify=False)

@@ -216,5 +216,5 @@ flowchart TB
 - 호가 원천 스냅샷(Snapshot)은 호가 요약만으로 답할 수 없는 전략 실험이 승인될 때까지 저장하지 않는다.
 - 기술적 분석 지표와 외부 알림 발송은 사용자 시나리오가 승인된 뒤 계산 위치, 캐싱, 채널, 빈도 제한을 설계한다.
 - 현재 브라우저 갱신은 SSE(Server-Sent Events), 업비트 시세 수집은 서버 측 WebSocket을 유지한다.
-- 코인 분석 화면은 `docs/contracts/api/realtime-analysis-websocket.schema.json`의 WebSocket 계약을 사용한다. 기존 SSE 경로는 제거하지 않는다.
+- 코인 분석 화면은 `docs/contracts/api/realtime-analysis-websocket.schema.json`의 WebSocket 계약을 사용한다. 같은 연결의 구독 변경은 `analysis.session` 승인 순서로 세대를 구분해 이전 구독의 지연 프레임을 폐기한다. 기존 SSE 경로는 제거하지 않는다.
 - 미래 결정 게이트는 `docs/ADR/ADR-0007-Post-MVP-아키텍처-결정-게이트.md`를 따른다.

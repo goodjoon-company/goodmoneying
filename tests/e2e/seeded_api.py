@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import threading
 from collections.abc import Callable
+from datetime import timedelta
 from decimal import Decimal
 from functools import wraps
 from typing import Any, cast
@@ -39,10 +40,40 @@ class _SerializedOperationsRepository:
         return synchronized
 
 
+def _analysis_history_candles(
+    first_instrument_id: int, second_instrument_id: int
+) -> list[SourceCandle]:
+    day_start = now_kst().replace(hour=0, minute=0, second=0, microsecond=0)
+    candles: list[SourceCandle] = []
+    histories = (
+        (first_instrument_id, Decimal("1000000"), (1000, 300, 30)),
+        (second_instrument_id, Decimal("2000000"), (900, 20)),
+    )
+    for instrument_id, price_base, day_offsets in histories:
+        for index, day_offset in enumerate(day_offsets, start=1):
+            started_at = day_start - timedelta(days=day_offset)
+            open_price = price_base + Decimal(index)
+            candles.append(
+                SourceCandle(
+                    instrument_id=instrument_id,
+                    candle_unit="1d",
+                    candle_start_at=started_at,
+                    open_price=open_price,
+                    high_price=open_price + Decimal("10"),
+                    low_price=open_price - Decimal("10"),
+                    close_price=open_price + Decimal("5"),
+                    trade_volume=Decimal(index * 10),
+                    trade_amount=(open_price + Decimal("5")) * Decimal(index * 10),
+                    collected_at=started_at,
+                )
+            )
+    return candles
+
+
 def create_seeded_e2e_app() -> FastAPI:
     repository = SQLiteOperationsRepository()
     seed_repository(repository, FixtureUpbitClient())
-    target = repository.list_active_targets()[0]
+    first_target, second_target = repository.list_active_targets()[:2]
     repository.record_collection_worker_heartbeat("realtime_collection", "running")
     repository.record_collection_worker_heartbeat("backfill_collection", "running")
     repository.record_incremental_collection(
@@ -50,7 +81,7 @@ def create_seeded_e2e_app() -> FastAPI:
         [],
         [
             SourceCandle(
-                instrument_id=target.id,
+                instrument_id=first_target.id,
                 candle_unit="1m",
                 candle_start_at=now_kst(),
                 open_price=Decimal("1"),
@@ -60,7 +91,8 @@ def create_seeded_e2e_app() -> FastAPI:
                 trade_volume=Decimal("1"),
                 trade_amount=Decimal("1"),
                 collected_at=now_kst(),
-            )
+            ),
+            *_analysis_history_candles(first_target.id, second_target.id),
         ],
     )
     repository.schedule_candle_aggregation()

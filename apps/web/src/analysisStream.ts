@@ -48,6 +48,7 @@ export const initialAnalysisState: AnalysisState = {
 };
 
 export type AnalysisMessage =
+  | { type: "analysis.session"; subscriptionId: string }
   | { type: "analysis.instrument"; instrument: Instrument }
   | { type: "analysis.chart"; unit: AnalysisUnit; chunkIndex: number; chunkCount: number; candles: Candle[] }
   | { type: "analysis.indicators"; chunkIndex: number; chunkCount: number; points: IndicatorPoint[] }

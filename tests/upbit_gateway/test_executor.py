@@ -54,7 +54,9 @@ def test_blocked_request_stops_before_credentials_rate_limit_and_network() -> No
     assert called == []
 
 
-@pytest.mark.parametrize("status", [200, 400, 401, 429, 418])
+@pytest.mark.parametrize(
+    "status", [200, 400, 401, 403, 404, 418, 429, 500, 502, 503, 504]
+)
 def test_executor_preserves_json_upstream_status_and_observes_remaining_req(status: int) -> None:
     executor = _executor(
         lambda request: httpx.Response(
@@ -127,7 +129,7 @@ def test_exchange_trace_masks_query_hash_even_when_upstream_reflects_it() -> Non
     assert raw_hash not in str(result.envelope)
 
 
-def test_browser_origin_uses_separate_origin_group_without_forwarding_header() -> None:
+def test_browser_origin_is_stripped_without_reducing_quotation_throughput() -> None:
     acquired: list[str] = []
 
     class SpyLimiter:
@@ -159,5 +161,65 @@ def test_browser_origin_uses_separate_origin_group_without_forwarding_header() -
         incoming_headers={"Origin": "https://browser.example"},
     )
 
-    assert acquired == ["market", "origin"]
+    assert acquired == ["market"]
     assert "Origin" not in seen[0].headers
+
+
+def test_ten_browser_origin_requests_keep_official_market_group_throughput() -> None:
+    now = [0.0]
+    waits: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        waits.append(seconds)
+        now[0] += seconds
+
+    executor = UpbitExecutor(
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"ok": True}))
+        ),
+        credentials_provider=lambda: Credentials("fake-access", "s" * 64),
+        limiter=GroupRateLimiter(clock=lambda: now[0], sleep=sleep),
+        base_url="http://127.0.0.1:8123",
+        allow_loopback_test=True,
+    )
+
+    for _ in range(10):
+        executor.execute(
+            _endpoint("rest.list-trading-pairs"),
+            {},
+            incoming_headers={"Origin": "https://browser.example"},
+        )
+
+    assert waits == []
+
+
+def test_repeated_418_never_shortens_existing_penalty() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            418,
+            json={"error": {"message": "Blocked for 120 seconds."}},
+            headers={"Retry-After": "30"},
+        )
+
+    deferred: list[float] = []
+
+    class SpyLimiter:
+        def acquire(self, group: str) -> None:
+            pass
+
+        def observe(self, value: str | None) -> None:
+            pass
+
+        def defer(self, group: str, seconds: float) -> None:
+            deferred.append(seconds)
+
+    executor = UpbitExecutor(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        credentials_provider=lambda: Credentials("fake-access", "s" * 64),
+        limiter=SpyLimiter(),
+        base_url="http://127.0.0.1:8123",
+        allow_loopback_test=True,
+    )
+    executor.execute(_endpoint("rest.list-trading-pairs"), {})
+
+    assert deferred == [120.0]

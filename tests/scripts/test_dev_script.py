@@ -63,6 +63,8 @@ def test_dev_script_without_arguments_prints_usage() -> None:
     assert "infra start" in result.stdout
     assert "app start" in result.stdout
     assert "db migrate" in result.stdout
+    assert "upbit-gateway 단독" in result.stdout
+    assert "DB 마이그레이션을 생략" in result.stdout
 
 
 def test_dev_script_status_lists_infra_and_app_units() -> None:

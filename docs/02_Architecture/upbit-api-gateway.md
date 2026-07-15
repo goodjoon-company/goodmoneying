@@ -4,7 +4,7 @@
 
 `apps/upbit_gateway/`는 브라우저와 업비트 Open API 사이의 독립 보안·운영 경계다. 카탈로그의 `endpoint_id`만 받아 공식 경로를 선택하고, 키·JWT·Authorization 헤더·쿼리 해시(query hash)를 브라우저·응답·로그에 노출하지 않는다. 이 모듈은 JWT 인증(authentication), 그룹별 요청 제한(rate limit), `Remaining-Req`, 429·418 냉각(cooldown), 마스킹된 추적 봉투(Trace Envelope)를 소유한다. WebSocket 연결은 후속 범위다.
 
-Issue #20의 REST 실행기는 `read`와 공식 `POST /v1/orders/test`인 `test`만 상향 호출한다. `blocked`는 자격 증명 로드, 요청 제한기, HTTP 클라이언트보다 먼저 403으로 종료한다. 알 수 없는 기능은 404, 계약 위반은 422, 상향 시간 초과는 504, 비 JSON 응답은 502로 구분하며 상향 JSON의 200·201·400·401·418·429 상태는 그대로 보존한다.
+Issue #20의 REST 실행기는 `read`와 공식 `POST /v1/orders/test`인 `test`만 상향 호출한다. `blocked`는 자격 증명 로드, 요청 제한기, HTTP 클라이언트보다 먼저 로컬 403으로 종료한다. 알 수 없는 REST 기능은 로컬 404, 계약 위반은 로컬 422, 상향 시간 초과는 로컬 504, 비 JSON 응답은 로컬 502로 구분한다. 상향 JSON 응답의 200·201·400·401·403·404·418·429·500·502·503·504는 같은 상태의 추적 봉투(Trace Envelope)로 보존하므로, 403·404·502·503·504의 응답 본문 형태로 로컬 정책 오류와 상향 응답을 구분한다.
 
 ## 책임이 아닌 것
 
@@ -44,19 +44,20 @@ sequenceDiagram
         U-->>G: JSON + Remaining-Req
         G-->>B: 마스킹된 추적 봉투 + 상향 상태
     end
-    Note over B,U: 브라우저 Origin은 상향 전달하지 않고 별도 origin 그룹 제한만 적용
+    Note over B,U: 브라우저 Origin은 제거하며 실제 상향 endpoint 그룹 제한만 적용
 ```
 
-실행 엔진은 `endpoint_id` 조회 → 안전 등급 검사 → 파라미터 검증 → 요청 제한 적용 → 필요한 경우에만 자격 증명 로드와 JWT 생성 → 고정 경로 전송 → 민감 정보 제거 → 추적 봉투 반환 순서를 지킨다. `blocked`는 자격 증명·제한·전송 단계에 도달할 수 없다. 브라우저의 `Origin`은 상향으로 전달하지 않지만 공식 시세 `origin` 그룹 1회/10초 제한에는 반영한다.
+실행 엔진은 REST 전용 `endpoint_id` 조회 → 안전 등급 검사 → 파라미터 검증 → 요청 제한 적용 → 필요한 경우에만 자격 증명 로드와 JWT 생성 → 고정 경로 전송 → 민감 정보 제거 → 추적 봉투 반환 순서를 지킨다. WebSocket 식별자는 계약 경계에서 422로 거부하고, `blocked`는 자격 증명·제한·전송 단계에 도달할 수 없다. 브라우저의 `Origin`은 상향 요청에서 제거한다. 업비트가 실제로 `Origin`을 수신한 요청에만 적용하는 `origin` 그룹 1회/10초를 게이트웨이가 임의 적용하지 않으며, 시세 조회는 실제 상향 `market` 그룹의 공식 10회/초를 따른다.
 
-프로덕션 상향 기본 URL은 `https://api.upbit.com`으로 고정한다. 가짜 상류 서버는 명시적 테스트 플래그와 루프백(loopback) 호스트가 함께 있을 때만 허용한다. 429·418은 자동 재시도하지 않고 상태를 호출자에게 전달하면서 각각 다음 초 또는 `Retry-After` 기간 동안 해당 그룹을 냉각한다.
+프로덕션 상향 기본 URL은 `https://api.upbit.com`으로 고정한다. 가짜 상류 서버는 명시적 테스트 플래그와 루프백(loopback) 호스트가 함께 있을 때만 허용한다. 429·418은 자동 재시도하지 않고 상태를 호출자에게 전달한다. 429는 해당 그룹을 다음 초까지 냉각하고, 418은 `Retry-After` 헤더와 공식 오류 JSON 본문의 기간·차단 종료 시각·메시지에서 읽은 값 중 가장 긴 기간을 적용한다. 뒤따르는 더 짧은 418이나 잘못된 값은 기존 냉각을 줄이지 않으며 유효한 기간이 하나도 없으면 보수적으로 60초를 적용한다.
 
 ## 의존성
 
 - FastAPI와 Pydantic은 게이트웨이 HTTP 경계를 제공한다.
 - HTTPX는 고정 허용 목록 상향 전송과 시간 초과를, PyJWT는 HS512 서명을 제공한다.
-- JWT는 매 요청 새 UUID nonce를 사용하며, 쿼리와 JSON 본문의 입력 순서를 보존한 비 URL 인코딩 문자열의 SHA512 해시를 사용한다.
+- JWT는 매 요청 새 UUID nonce를 사용한다. 배열 키 반복과 입력 순서, 대괄호, 불리언(boolean) 소문자 표현을 보존한 단 하나의 정규 쿼리 문자열(canonical query string)을 만들고, 그 문자열을 실제 URL·JSON 본문과 SHA512 쿼리 해시(query hash)에 동일하게 사용한다.
 - 자격 증명은 저장소 밖 환경 변수 한 쌍 또는 절대 경로의 읽기 전용 일반 파일 한 쌍에서 지연 로드한다. 두 방식을 섞거나 일부만 설정하면 상향 호출 전에 실패한다.
+- Compose에서 파일 자격 증명을 쓸 때는 저장소 밖 파일을 `chmod 400`으로 읽기 전용 설정하고 그 절대 경로를 `UPBIT_ACCESS_KEY_FILE`·`UPBIT_SECRET_KEY_FILE`로 지정한 뒤 `docker-compose.upbit-secrets.yml`을 추가 병합한다. Compose 비밀정보(Secret)는 컨테이너의 `/run/secrets/`에 연결되며 값은 저장소나 이미지에 들어가지 않는다.
 - PyYAML은 저장소의 기계 검증 카탈로그를 읽는다.
 - 프로젝트는 `uv run python`과 wheel의 설치 가능 패키지로 게이트웨이를 노출한다. 런타임은 `importlib.resources`로 패키지 데이터(package data)를 읽으므로 저장소나 현재 작업 디렉터리(CWD)에 의존하지 않으며, 계약 테스트가 패키지 복사본과 `docs/contracts/` 단일 기준(source of truth)의 바이트 동등성을 보장한다.
 - 게이트웨이는 운영 서버나 DB에 의존하지 않는다.

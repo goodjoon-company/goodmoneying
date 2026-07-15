@@ -15,3 +15,18 @@ def test_upbit_gateway_has_container_and_local_compose_service() -> None:
     assert service["healthcheck"]["test"][-1].find("127.0.0.1:8001/health") >= 0
     assert service["environment"]["UPBIT_ACCESS_KEY"] == "${UPBIT_ACCESS_KEY:-}"
     assert service["environment"]["UPBIT_SECRET_KEY"] == "${UPBIT_SECRET_KEY:-}"
+
+
+def test_compose_secret_override_mounts_read_only_key_files() -> None:
+    override = yaml.safe_load(Path("docker-compose.upbit-secrets.yml").read_text())
+    service = override["services"]["upbit-gateway"]
+
+    assert service["environment"] == {
+        "UPBIT_ACCESS_KEY_FILE": "/run/secrets/upbit_access_key",
+        "UPBIT_SECRET_KEY_FILE": "/run/secrets/upbit_secret_key",
+        "UPBIT_ACCESS_KEY": None,
+        "UPBIT_SECRET_KEY": None,
+    }
+    assert service["secrets"] == ["upbit_access_key", "upbit_secret_key"]
+    assert override["secrets"]["upbit_access_key"]["file"] == "${UPBIT_ACCESS_KEY_FILE}"
+    assert override["secrets"]["upbit_secret_key"]["file"] == "${UPBIT_SECRET_KEY_FILE}"

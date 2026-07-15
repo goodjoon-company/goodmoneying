@@ -10,6 +10,7 @@ import pytest
 from goodmoneying_upbit_gateway.auth import (
     CredentialConfigurationError,
     Credentials,
+    ParameterValue,
     build_query_string,
     create_jwt,
     load_credentials,
@@ -18,15 +19,18 @@ from goodmoneying_upbit_gateway.auth import (
 
 
 def test_query_hash_uses_unencoded_original_parameter_order_and_repeated_array_keys() -> None:
-    parameters = [
+    parameters: list[tuple[str, ParameterValue]] = [
         ("market", "KRW-BTC"),
         ("states[]", ["wait", "watch"]),
         ("memo", "한글 값"),
+        ("include_expired", True),
     ]
 
     query_string = build_query_string(parameters)
 
-    assert query_string == "market=KRW-BTC&states[]=wait&states[]=watch&memo=한글+값"
+    assert query_string == (
+        "market=KRW-BTC&states[]=wait&states[]=watch&memo=한글+값&include_expired=true"
+    )
     assert query_hash(query_string) == hashlib.sha512(query_string.encode("utf-8")).hexdigest()
 
 

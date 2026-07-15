@@ -52,7 +52,17 @@ def load_credentials(environ: Mapping[str, str]) -> Credentials:
 
 def build_query_string(parameters: Sequence[tuple[str, ParameterValue]]) -> str:
     """입력 순서와 배열 키 반복을 보존한 비인코딩 쿼리 문자열을 만든다."""
-    return unquote(urlencode(parameters, doseq=True))
+    normalized: list[tuple[str, str | int | float]] = []
+    for key, value in parameters:
+        values = value if isinstance(value, Sequence) and not isinstance(value, str) else [value]
+        normalized.extend((key, _query_scalar(item)) for item in values)
+    return unquote(urlencode(normalized))
+
+
+def _query_scalar(value: str | int | float | bool) -> str | int | float:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return value
 
 
 def query_hash(query_string: str) -> str:

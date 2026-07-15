@@ -98,6 +98,8 @@ usage() {
   db 는 dbmate 로 버전 DB 마이그레이션을 관리한다.
   app 은 로컬 개발 프로세스로 실행한다. API 는 기본적으로 PostgreSQL 을 바라본다.
   app start 와 app restart 는 DB 마이그레이션 성공 후 앱을 시작한다.
+  upbit-gateway 단독 start/restart 는 DB에 의존하지 않아 DB 마이그레이션을 생략한다.
+  all 대상은 기존 앱을 함께 시작하므로 DB 마이그레이션을 수행한다.
   루트 .env 파일이 있으면 자동으로 읽는다. 셸 환경변수는 .env 값보다 우선한다.
 
 기본 endpoint:

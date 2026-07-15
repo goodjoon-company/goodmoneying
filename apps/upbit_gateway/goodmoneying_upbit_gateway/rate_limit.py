@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import re
 import time
 from collections import defaultdict, deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from datetime import datetime
+from email.utils import parsedate_to_datetime
+from math import ceil
 from threading import Lock
+from typing import Any
 
 RATE_LIMITS: dict[str, tuple[int, float]] = {
     "market": (10, 1.0),
@@ -15,7 +20,6 @@ RATE_LIMITS: dict[str, tuple[int, float]] = {
     "order": (8, 1.0),
     "order-test": (8, 1.0),
     "order-cancel-all": (1, 2.0),
-    "origin": (1, 10.0),
 }
 
 def parse_remaining_req(value: str | None) -> tuple[str, int] | None:
@@ -32,6 +36,107 @@ def parse_remaining_req(value: str | None) -> tuple[str, int] | None:
     if group is None or second_quota is None or not second_quota.isdigit():
         return None
     return group, int(second_quota)
+
+
+def parse_penalty_seconds(
+    retry_after: str | None,
+    body: Any,
+    *,
+    now: Callable[[], float] = time.time,
+    fallback_seconds: float = 60.0,
+) -> float:
+    """418 응답의 헤더·JSON에서 가장 긴 차단 시간을 보수적으로 선택한다."""
+    current = now()
+    candidates: list[float] = []
+    if retry_after is not None:
+        candidate = _duration_or_deadline(retry_after, current)
+        if candidate is not None:
+            candidates.append(candidate)
+    _collect_penalty_candidates(body, current, candidates)
+    return float(ceil(max(candidates))) if candidates else fallback_seconds
+
+
+_DURATION_KEYS = {
+    "retry_after",
+    "retry_after_seconds",
+    "block_duration",
+    "block_duration_seconds",
+    "blocked_for",
+    "remaining_seconds",
+}
+_DEADLINE_KEYS = {"blocked_until", "block_until", "retry_at"}
+_DURATION_PATTERN = re.compile(
+    r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>seconds?|secs?|minutes?|mins?|hours?|초|분|시간)",
+    re.IGNORECASE,
+)
+
+
+def _collect_penalty_candidates(value: Any, current: float, candidates: list[float]) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            normalized_key = re.sub(
+                r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key)
+            ).replace("-", "_").lower()
+            if normalized_key in _DURATION_KEYS:
+                candidate = _duration_or_deadline(item, current)
+                if candidate is not None:
+                    candidates.append(candidate)
+            elif normalized_key in _DEADLINE_KEYS:
+                candidate = _deadline_seconds(item, current)
+                if candidate is not None:
+                    candidates.append(candidate)
+            _collect_penalty_candidates(item, current, candidates)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_penalty_candidates(item, current, candidates)
+    elif isinstance(value, str):
+        for match in _DURATION_PATTERN.finditer(value):
+            amount = float(match.group("value"))
+            unit = match.group("unit").lower()
+            multiplier = 3600.0 if unit in {"hour", "hours", "시간"} else 60.0 if unit in {
+                "minute",
+                "minutes",
+                "min",
+                "mins",
+                "분",
+            } else 1.0
+            candidates.append(amount * multiplier)
+
+
+def _duration_or_deadline(value: Any, current: float) -> float | None:
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return float(value) if value > 0 else None
+    if not isinstance(value, str):
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        return _deadline_seconds(value, current)
+    return seconds if seconds > 0 else None
+
+
+def _deadline_seconds(value: Any, current: float) -> float | None:
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        deadline_value = float(value)
+        if current > 0 and deadline_value > current * 100:
+            deadline_value /= 1_000
+        seconds = deadline_value - current
+        return seconds if seconds > 0 else None
+    if not isinstance(value, str):
+        return None
+    try:
+        return _deadline_seconds(float(value), current)
+    except ValueError:
+        pass
+    try:
+        deadline = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        try:
+            deadline = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    seconds = deadline.timestamp() - current
+    return seconds if seconds > 0 else None
 
 
 class GroupRateLimiter:

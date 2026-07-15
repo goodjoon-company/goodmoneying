@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from typing import Any, cast
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -117,7 +117,6 @@ def build_upstream_request(
     }
     path = cast(str, endpoint["path"])
     query: list[tuple[str, ParameterValue]] = []
-    request_query: list[tuple[str, str | int | float | bool | None]] = []
     body: dict[str, Any] = {}
     for name, value in parameters.items():
         location = specifications[name]["location"]
@@ -126,15 +125,12 @@ def build_upstream_request(
         elif location == "query":
             parameter_value = cast(ParameterValue, value)
             query.append((name, parameter_value))
-            if isinstance(parameter_value, Sequence) and not isinstance(parameter_value, str):
-                request_query.extend((name, item) for item in parameter_value)
-            else:
-                request_query.append((name, parameter_value))
         elif location == "body":
             body[name] = value
 
     headers: dict[str, str] = {"Accept": "application/json"}
-    auth_query_string = build_auth_query_string(endpoint, parameters)
+    canonical_query = build_query_string(query)
+    auth_query_string = canonical_query or build_auth_query_string(endpoint, parameters)
     if endpoint["category"] == "exchange":
         if credentials is None:
             raise InvalidParameters("거래소 조회·테스트 호출에는 API 인증 정보가 필요합니다.")
@@ -146,10 +142,11 @@ def build_upstream_request(
         headers["Authorization"] = f"Bearer {token}"
 
     url = f"{validate_base_url(base_url, allow_loopback_test=allow_loopback_test)}{path}"
+    if canonical_query:
+        url = f"{url}?{canonical_query}"
     return httpx.Request(
         method=cast(str, endpoint["method"]),
         url=url,
-        params=request_query or None,
         json=body or None,
         headers=headers,
     )

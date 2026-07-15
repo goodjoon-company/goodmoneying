@@ -16,7 +16,7 @@ from goodmoneying_upbit_gateway.client import (
     validate_base_url,
     validate_parameters,
 )
-from goodmoneying_upbit_gateway.rate_limit import parse_remaining_req
+from goodmoneying_upbit_gateway.rate_limit import parse_penalty_seconds, parse_remaining_req
 from goodmoneying_upbit_gateway.safety import SafetyLevel, SafetyPolicy
 from goodmoneying_upbit_gateway.trace import sanitize
 
@@ -76,10 +76,6 @@ class UpbitExecutor:
         validate_parameters(endpoint, parameters)
         rate_group = cast(str, endpoint["rate_limit_group"])
         self._limiter.acquire(rate_group)
-        if endpoint["category"] == "quotation" and any(
-            key.lower() == "origin" for key in (incoming_headers or {})
-        ):
-            self._limiter.acquire("origin")
         credentials = (
             self._credentials_provider() if endpoint["category"] == "exchange" else None
         )
@@ -103,22 +99,24 @@ class UpbitExecutor:
         remaining = parse_remaining_req(remaining_header)
         response_group = (
             remaining[0]
-            if remaining is not None and remaining[0] in {rate_group, "origin"}
+            if remaining is not None and remaining[0] == rate_group
             else rate_group
         )
         retry_after = response.headers.get("Retry-After")
-        if response.status_code == 429:
-            self._limiter.defer(response_group, 1.0)
-        elif response.status_code == 418:
-            try:
-                block_seconds = min(max(float(retry_after or "60"), 1.0), 3600.0)
-            except ValueError:
-                block_seconds = 60.0
-            self._limiter.defer(response_group, block_seconds)
         try:
             body = response.json()
         except ValueError:
+            if response.status_code == 418:
+                self._limiter.defer(
+                    response_group, parse_penalty_seconds(retry_after, None)
+                )
             raise UpstreamProtocolError("업비트 상향 응답이 JSON 형식이 아닙니다.") from None
+        if response.status_code == 429:
+            self._limiter.defer(response_group, 1.0)
+        elif response.status_code == 418:
+            self._limiter.defer(
+                response_group, parse_penalty_seconds(retry_after, body)
+            )
 
         sensitive_values = {
             request.headers.get("Authorization", ""),

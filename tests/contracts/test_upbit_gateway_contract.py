@@ -258,7 +258,10 @@ def test_checked_openapi_and_fastapi_runtime_have_status_response_parity() -> No
             runtime["paths"][path][method]["responses"]
         )
 
-    statuses = {"200", "201", "400", "401", "403", "404", "418", "422", "429", "502", "503", "504"}
+    statuses = {
+        "200", "201", "400", "401", "403", "404", "418", "422", "429",
+        "500", "502", "503", "504",
+    }
     assert set(checked["paths"]["/v1/requests"]["post"]["responses"]) == statuses
     for status in statuses:
         checked_schema = checked["paths"]["/v1/requests"]["post"]["responses"][status][
@@ -267,7 +270,7 @@ def test_checked_openapi_and_fastapi_runtime_have_status_response_parity() -> No
         runtime_schema = runtime["paths"]["/v1/requests"]["post"]["responses"][status][
             "content"
         ]["application/json"]["schema"]
-        assert checked_schema == runtime_schema
+        assert _semantic_schema(checked_schema) == _semantic_schema(runtime_schema)
 
 
 def test_checked_openapi_and_fastapi_runtime_have_catalog_schema_semantic_parity() -> None:
@@ -283,13 +286,14 @@ def test_checked_openapi_and_fastapi_runtime_have_catalog_schema_semantic_parity
         "application/json"
     ]["schema"] == health_response
 
-    for schema_name in (
-        "Health", "RestInventory", "CatalogEntry", "UpbitApiCatalog",
-        "TraceRequest", "TraceResponse", "TraceRateLimit", "TraceEnvelope",
-    ):
+    assert set(checked["components"]["schemas"]) == set(runtime["components"]["schemas"])
+    for schema_name in checked["components"]["schemas"]:
         assert _semantic_schema(checked["components"]["schemas"][schema_name]) == (
             _semantic_schema(runtime["components"]["schemas"][schema_name])
         )
+
+    assert checked["components"]["schemas"]["ErrorDetail"]["additionalProperties"] is False
+    assert checked["components"]["schemas"]["ErrorResponse"]["additionalProperties"] is False
 
 
 def _semantic_schema(value: Any) -> Any:

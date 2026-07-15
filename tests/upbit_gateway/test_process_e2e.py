@@ -36,7 +36,9 @@ def _wait_ready(url: str, process: subprocess.Popen[str]) -> None:
 
 
 @contextmanager
-def _processes() -> Iterator[tuple[str, str]]:
+def _processes() -> Iterator[
+    tuple[str, str, subprocess.Popen[str], subprocess.Popen[str]]
+]:
     fake_port = _free_port()
     gateway_port = _free_port()
     environment = os.environ.copy()
@@ -95,7 +97,7 @@ def _processes() -> Iterator[tuple[str, str]]:
         gateway_url = f"http://127.0.0.1:{gateway_port}"
         _wait_ready(f"{fake_url}/__calls", fake)
         _wait_ready(f"{gateway_url}/health", gateway)
-        yield fake_url, gateway_url
+        yield fake_url, gateway_url, fake, gateway
     finally:
         for process in (gateway, fake):
             process.terminate()
@@ -104,6 +106,13 @@ def _processes() -> Iterator[tuple[str, str]]:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
+                process.wait(timeout=5)
+
+
+def _process_output(process: subprocess.Popen[str]) -> str:
+    stdout = process.stdout.read() if process.stdout is not None else ""
+    stderr = process.stderr.read() if process.stderr is not None else ""
+    return stdout + stderr
 
 
 def _execute(base_url: str, endpoint_id: str, parameters: dict[str, object]) -> httpx.Response:
@@ -115,11 +124,31 @@ def _execute(base_url: str, endpoint_id: str, parameters: dict[str, object]) -> 
     )
 
 
+def test_actual_gateway_process_uses_canonical_authenticated_query() -> None:
+    with _processes() as (_, gateway_url, _, _):
+        response = _execute(
+            gateway_url,
+            "rest.get-pocket-api-keys",
+            {"uuids[]": ["fake-1", "fake-2"], "include_expired": True},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["response"]["body"]["canonical_query"] == (
+        "uuids[]=fake-1&uuids[]=fake-2&include_expired=true"
+    )
+
+
 def test_actual_gateway_process_against_fake_upstream_end_to_end() -> None:
-    with _processes() as (fake_url, gateway_url):
+    with _processes() as (fake_url, gateway_url, fake, gateway):
         public = _execute(gateway_url, "rest.list-trading-pairs", {})
+        origin_started_at = time.monotonic()
+        origin_responses = [
+            _execute(gateway_url, "rest.list-trading-pairs", {}) for _ in range(2)
+        ]
+        origin_elapsed = time.monotonic() - origin_started_at
         authenticated_read = _execute(gateway_url, "rest.get-pocket-information", {})
         unauthorized = _execute(gateway_url, "rest.get-balance", {})
+        websocket = _execute(gateway_url, "websocket.ticker", {})
         order_statuses = [
             _execute(
                 gateway_url,
@@ -128,18 +157,42 @@ def test_actual_gateway_process_against_fake_upstream_end_to_end() -> None:
             ).status_code
             for status in (1000, 400, 429, 418)
         ]
+        cooldown_started_at = time.monotonic()
+        after_cooldown = _execute(
+            gateway_url,
+            "rest.order-test",
+            {"side": "bid", "market": "KRW-BTC", "price": "400", "ord_type": "price"},
+        )
+        cooldown_elapsed = time.monotonic() - cooldown_started_at
         blocked = _execute(gateway_url, "rest.new-order", {})
         upstream_calls = httpx.get(f"{fake_url}/__calls").json()
 
+    process_output = _process_output(fake) + _process_output(gateway)
     assert public.status_code == 200
+    assert [response.status_code for response in origin_responses] == [200, 200]
+    assert origin_elapsed < 1
     assert authenticated_read.status_code == 200
     assert unauthorized.status_code == 401
+    assert websocket.status_code == 422
     assert order_statuses == [201, 400, 429, 418]
+    assert after_cooldown.status_code == 400
+    assert cooldown_elapsed >= 0.9
     assert blocked.status_code == 403
     assert all(call["origin"] is None for call in upstream_calls)
     assert not any(call["path"] == "/v1/orders" for call in upstream_calls)
     combined = "".join(
-        response.text for response in (public, authenticated_read, unauthorized, blocked)
+        response.text
+        for response in (
+            public,
+            *origin_responses,
+            authenticated_read,
+            unauthorized,
+            websocket,
+            after_cooldown,
+            blocked,
+        )
     )
     assert "fake-e2e-access" not in combined
     assert FAKE_SECRET_KEY not in combined
+    assert "fake-e2e-access" not in process_output
+    assert FAKE_SECRET_KEY not in process_output

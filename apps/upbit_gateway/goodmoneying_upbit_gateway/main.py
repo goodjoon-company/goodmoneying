@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import AnyUrl, BaseModel, ConfigDict, Field
 
 from goodmoneying_upbit_gateway.auth import CredentialConfigurationError, load_credentials
-from goodmoneying_upbit_gateway.catalog import endpoint_by_id, load_catalog
+from goodmoneying_upbit_gateway.catalog import load_catalog, rest_endpoint_by_id
 from goodmoneying_upbit_gateway.client import InvalidParameters
 from goodmoneying_upbit_gateway.executor import (
     UpbitExecutor,
@@ -25,7 +25,7 @@ from goodmoneying_upbit_gateway.safety import PolicyBlocked
 class GatewayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    endpoint_id: str = Field(pattern=r"^(rest|websocket)\.")
+    endpoint_id: str = Field(pattern=r"^rest\.")
     parameters: dict[str, Any]
 
 
@@ -69,11 +69,15 @@ class UpbitApiCatalog(BaseModel):
 
 
 class ErrorDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     code: str
     message: str
 
 
 class ErrorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     detail: ErrorDetail
 
 
@@ -123,7 +127,15 @@ ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
 
 TRACE_RESPONSES: dict[int | str, dict[str, Any]] = {
     status: {"model": TraceEnvelope, "description": "업비트 상향 JSON 응답과 마스킹된 추적"}
-    for status in (201, 400, 401, 418, 429)
+    for status in (201, 400, 401, 418, 429, 500)
+}
+
+MIXED_RESPONSES: dict[int | str, dict[str, Any]] = {
+    status: {
+        "model": TraceEnvelope | ErrorResponse,
+        "description": "로컬 게이트웨이 오류 또는 상태를 보존한 업비트 상향 응답",
+    }
+    for status in (403, 404, 502, 503, 504)
 }
 
 
@@ -177,10 +189,10 @@ def create_app(*, executor: UpbitExecutor | None = None) -> FastAPI:
     @app.post(
         "/v1/requests",
         response_model=TraceEnvelope,
-        responses=ERROR_RESPONSES | TRACE_RESPONSES,
+        responses=ERROR_RESPONSES | TRACE_RESPONSES | MIXED_RESPONSES,
     )
     def execute_request(payload: GatewayRequest, request: Request) -> JSONResponse:
-        endpoint = endpoint_by_id(catalog, payload.endpoint_id)
+        endpoint = rest_endpoint_by_id(catalog, payload.endpoint_id)
         if endpoint is None:
             raise HTTPException(
                 status_code=404,

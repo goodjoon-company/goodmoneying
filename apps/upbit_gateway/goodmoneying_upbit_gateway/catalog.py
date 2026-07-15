@@ -26,3 +26,11 @@ def endpoint_by_id(catalog: dict[str, Any], endpoint_id: str) -> dict[str, Any] 
             if endpoint["endpoint_id"] == endpoint_id:
                 return endpoint
     return None
+
+
+def rest_endpoint_by_id(catalog: dict[str, Any], endpoint_id: str) -> dict[str, Any] | None:
+    """REST 실행 경계에서 WebSocket 항목을 제외하고 endpoint_id를 찾는다."""
+    for endpoint in cast(list[dict[str, Any]], catalog["rest_endpoints"]):
+        if endpoint["endpoint_id"] == endpoint_id:
+            return endpoint
+    return None

@@ -57,6 +57,14 @@ def pockets(request: Request) -> JSONResponse:
     return JSONResponse(status_code=200, content={"pocket": "fake"})
 
 
+@app.get("/v1/pockets/api_keys")
+def pocket_api_keys(request: Request) -> JSONResponse:
+    _record(request)
+    canonical_query = request.scope["query_string"].decode()
+    _decode(request, canonical_query)
+    return JSONResponse(status_code=200, content={"canonical_query": canonical_query})
+
+
 @app.get("/v1/accounts")
 def unauthorized(request: Request) -> JSONResponse:
     _record(request)
@@ -71,10 +79,15 @@ async def order_test(request: Request) -> JSONResponse:
     _decode(request, build_query_string(list(body.items())))
     status_by_price = {"1000": 201, "400": 400, "429": 429, "418": 418}
     status = status_by_price[body["price"]]
+    content: dict[str, Any] = {"fake_order_test": True, "status": status}
+    headers = {"Remaining-Req": "group=order-test; min=480; sec=7"}
+    if status == 418:
+        content["error"] = {"message": "Blocked for 1 seconds."}
+        headers["Retry-After"] = "1"
     return JSONResponse(
         status_code=status,
-        content={"fake_order_test": True, "status": status},
-        headers={"Remaining-Req": "group=order-test; min=480; sec=7"},
+        content=content,
+        headers=headers,
     )
 
 

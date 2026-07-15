@@ -53,15 +53,21 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/TraceEnvelope"}
         "403":
-          description: 비파괴 정책에 따라 차단된 endpoint_id
+          description: 로컬 정책 차단 또는 업비트 상향 403
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/ErrorResponse"}
+              schema:
+                anyOf:
+                  - {$ref: "#/components/schemas/TraceEnvelope"}
+                  - {$ref: "#/components/schemas/ErrorResponse"}
         "404":
-          description: 카탈로그에 없는 endpoint_id
+          description: 로컬 미등록 endpoint_id 또는 업비트 상향 404
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/ErrorResponse"}
+              schema:
+                anyOf:
+                  - {$ref: "#/components/schemas/TraceEnvelope"}
+                  - {$ref: "#/components/schemas/ErrorResponse"}
         "422":
           description: 요청 검증 오류
           content:
@@ -78,20 +84,34 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/TraceEnvelope"}
         "502":
-          description: 업비트 상향 비 JSON 응답
+          description: 로컬 상향 프로토콜 오류 또는 업비트 상향 502
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/ErrorResponse"}
+              schema:
+                anyOf:
+                  - {$ref: "#/components/schemas/TraceEnvelope"}
+                  - {$ref: "#/components/schemas/ErrorResponse"}
         "503":
-          description: 인증 설정 오류
+          description: 로컬 인증 설정 오류 또는 업비트 상향 503
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/ErrorResponse"}
+              schema:
+                anyOf:
+                  - {$ref: "#/components/schemas/TraceEnvelope"}
+                  - {$ref: "#/components/schemas/ErrorResponse"}
         "504":
-          description: 업비트 상향 호출 시간 초과
+          description: 로컬 상향 호출 시간 초과 또는 업비트 상향 504
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/ErrorResponse"}
+              schema:
+                anyOf:
+                  - {$ref: "#/components/schemas/TraceEnvelope"}
+                  - {$ref: "#/components/schemas/ErrorResponse"}
+        "500":
+          description: 업비트 상향 서버 내부 오류
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
 components:
   schemas:
     Health:
@@ -162,7 +182,7 @@ components:
       properties:
         endpoint_id:
           type: string
-          pattern: "^(rest|websocket)\\."
+          pattern: "^rest\\."
         parameters:
           type: object
           additionalProperties: true
@@ -207,30 +227,16 @@ components:
         rate_limit: {$ref: "#/components/schemas/TraceRateLimit"}
         duration_ms: {type: number, minimum: 0}
         received_at: {type: string, format: date-time}
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: {type: string}
+        message: {type: string}
     ErrorResponse:
       type: object
       additionalProperties: false
       required: [detail]
       properties:
-        detail:
-          type: object
-          additionalProperties: false
-          required: [code, message]
-          properties:
-            code: {type: string}
-            message: {type: string}
-    ValidationError:
-      type: object
-      required: [loc, msg, type]
-      properties:
-        loc:
-          type: array
-          items: {anyOf: [{type: string}, {type: integer}]}
-        msg: {type: string}
-        type: {type: string}
-    HTTPValidationError:
-      type: object
-      properties:
-        detail:
-          type: array
-          items: {$ref: "#/components/schemas/ValidationError"}
+        detail: {$ref: "#/components/schemas/ErrorDetail"}

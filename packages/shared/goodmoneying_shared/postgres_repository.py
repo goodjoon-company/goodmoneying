@@ -34,6 +34,7 @@ from goodmoneying_shared.models import (
     CollectionWorkerDiagnostic,
     CollectionWorkerError,
     CollectionWorkerHeartbeatStatus,
+    CollectionWorkerRuntimeStatus,
     CollectionWorkerStatus,
     CollectionWorkerStatusSummary,
     CollectionWorkerType,
@@ -1074,6 +1075,7 @@ class PostgresOperationsRepository:
                     SELECT j.id, j.status, j.created_at, COUNT(t.candle_unit) AS total,
                       COUNT(*) FILTER (WHERE t.status = 'succeeded') AS completed,
                       COUNT(*) FILTER (WHERE t.status = 'running') AS running,
+                      COUNT(*) FILTER (WHERE t.status = 'pending') AS pending,
                       COUNT(*) FILTER (WHERE t.status = 'failed') AS failed
                     FROM candle_aggregation_jobs j
                     LEFT JOIN candle_aggregation_job_targets t ON t.job_id = j.id
@@ -1091,6 +1093,7 @@ class PostgresOperationsRepository:
             total_target_count=total,
             completed_target_count=completed,
             running_target_count=int(row["running"]),
+            pending_target_count=int(row["pending"]),
             failed_target_count=int(row["failed"]),
             created_at=cast(datetime, row["created_at"]),
         )
@@ -2037,10 +2040,11 @@ class PostgresOperationsRepository:
         )
 
     def _realtime_worker_status(self) -> RealtimeWorkerStatus:
-        status, status_label, status_detail, last_heartbeat_at = self._worker_runtime_status(
-            "realtime_collection",
-            stale_after=timedelta(minutes=2),
-        )
+        runtime = self.collection_worker_runtime_status("realtime_collection")
+        status = runtime.status
+        status_label = runtime.status_label
+        status_detail = runtime.status_detail
+        last_heartbeat_at = runtime.last_heartbeat_at
         error_count_24h = self._realtime_error_count_24h()
         run_count_24h = self._realtime_run_count_24h()
         collected_row_count_24h = self._realtime_collected_row_count_24h()
@@ -2071,10 +2075,11 @@ class PostgresOperationsRepository:
         )
 
     def _backfill_worker_status(self) -> BackfillWorkerStatus:
-        status, status_label, status_detail, last_heartbeat_at = self._worker_runtime_status(
-            "backfill_collection",
-            stale_after=timedelta(seconds=30),
-        )
+        runtime = self.collection_worker_runtime_status("backfill_collection")
+        status = runtime.status
+        status_label = runtime.status_label
+        status_detail = runtime.status_detail
+        last_heartbeat_at = runtime.last_heartbeat_at
         total_error_count = self._backfill_error_count_all()
         total_target_count_all = self._backfill_target_count_all()
         failure_rate_all = (
@@ -2218,6 +2223,18 @@ class PostgresOperationsRepository:
                 last_heartbeat_at,
             )
         return "running", "동작 중", "최근 heartbeat 정상", last_heartbeat_at
+
+    def collection_worker_runtime_status(
+        self, worker_type: CollectionWorkerType
+    ) -> CollectionWorkerRuntimeStatus:
+        stale_after = {
+            "realtime_collection": timedelta(minutes=2),
+            "backfill_collection": timedelta(seconds=30),
+            "candle_aggregation": timedelta(seconds=30),
+        }[worker_type]
+        return CollectionWorkerRuntimeStatus(
+            *self._worker_runtime_status(worker_type, stale_after=stale_after)
+        )
 
     def _latest_collection_finished_at(self, run_type: str) -> datetime | None:
         with self._connect() as conn:

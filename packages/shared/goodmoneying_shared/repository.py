@@ -17,6 +17,7 @@ from goodmoneying_shared.models import (
     CollectionDashboardTarget,
     CollectionRun,
     CollectionWorkerHeartbeatStatus,
+    CollectionWorkerRuntimeStatus,
     CollectionWorkerStatusSummary,
     CollectionWorkerType,
     CoverageSegment,
@@ -139,6 +140,10 @@ class OperationsRepository(Protocol):
         status: CollectionWorkerHeartbeatStatus,
         error_message: str | None = None,
     ) -> None: ...
+
+    def collection_worker_runtime_status(
+        self, worker_type: CollectionWorkerType
+    ) -> CollectionWorkerRuntimeStatus: ...
 
     def record_collection_run_failure(
         self,

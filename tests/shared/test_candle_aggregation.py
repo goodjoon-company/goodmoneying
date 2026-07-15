@@ -104,6 +104,7 @@ def test_오래된_집계는_활성_코인과_단위별_자동_집계_작업을_
     assert job is not None
     assert job.total_target_count == 7
     assert job.completed_target_count == 0
+    assert job.pending_target_count == 7
     assert job.progress_percent == Decimal("0")
 
 
@@ -140,4 +141,5 @@ def test_집계_워커는_자동_작업을_완료하고_진행률을_100으로_�
     assert job is not None
     assert job.status == "succeeded"
     assert job.completed_target_count == 7
+    assert job.pending_target_count == 0
     assert job.progress_percent == Decimal("100")

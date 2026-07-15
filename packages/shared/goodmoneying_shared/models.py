@@ -130,6 +130,7 @@ class CandleAggregationJob:
     total_target_count: int
     completed_target_count: int
     running_target_count: int
+    pending_target_count: int
     failed_target_count: int
     created_at: datetime
 
@@ -328,6 +329,14 @@ class CollectionWorkerError:
     occurred_at: datetime
     code: str
     message: str
+
+
+@dataclass(frozen=True)
+class CollectionWorkerRuntimeStatus:
+    status: CollectionWorkerStatus
+    status_label: str
+    status_detail: str
+    last_heartbeat_at: datetime | None
 
 
 @dataclass(frozen=True)

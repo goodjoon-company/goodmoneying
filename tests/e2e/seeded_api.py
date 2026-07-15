@@ -45,6 +45,7 @@ def create_seeded_e2e_app() -> FastAPI:
     target = repository.list_active_targets()[0]
     repository.record_collection_worker_heartbeat("realtime_collection", "running")
     repository.record_collection_worker_heartbeat("backfill_collection", "running")
+    repository.record_collection_worker_heartbeat("candle_aggregation", "running")
     repository.record_incremental_collection(
         [],
         [],

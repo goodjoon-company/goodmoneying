@@ -33,6 +33,24 @@ def install_fake_dbmate(tmp_path: Path) -> tuple[Path, Path]:
     return executable, log_file
 
 
+def install_fake_docker(tmp_path: Path) -> tuple[Path, Path]:
+    log_file = tmp_path / "docker.log"
+    executable = tmp_path / "docker"
+    executable.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf 'args=%s\\n' \"$*\" >> \"$DEV_DOCKER_LOG\"\n"
+        "printf 'database_url=%s\\n' \"${GOODMONEYING_DATABASE_URL:-}\" "
+        ">> \"$DEV_DOCKER_LOG\"\n"
+        "if [[ \"$1\" == \"info\" && \"$*\" == *\"OperatingSystem\"* ]]; then\n"
+        "  printf '%s\\n' \"$DEV_DOCKER_OPERATING_SYSTEM\"\n"
+        "elif [[ \"$1\" == \"info\" && \"$*\" == *\"OSType\"* ]]; then\n"
+        "  printf '%s\\n' \"$DEV_DOCKER_OS_TYPE\"\n"
+        "fi\n"
+    )
+    executable.chmod(0o755)
+    return executable, log_file
+
+
 def test_dev_script_without_arguments_prints_usage() -> None:
     result = run_dev_script()
 
@@ -287,9 +305,109 @@ def test_dev_script_has_pinned_docker_schema_dump_fallback() -> None:
     assert 'DOCKER_CONFIG="$DBMATE_DOCKER_CONFIG"' in script
     assert "host.docker.internal" in script
     assert "--add-host host.docker.internal:host-gateway" in script
+    assert '[[ "$docker_operating_system" == "Docker Desktop" ]]' in script
+    assert "docker_network_args=(--network host)" in script
     assert "GOODMONEYING_DB_SCHEMA_FILE" in script
     assert "GOODMONEYING_FORCE_DOCKER_DB_DUMP" in script
     assert "normalize_schema_snapshot" in script
+
+
+def test_dev_script_uses_host_network_for_linux_docker_schema_dump(
+    tmp_path: Path,
+) -> None:
+    fake_docker, docker_log = install_fake_docker(tmp_path)
+    schema_file = tmp_path / "schema.sql"
+    schema_file.write_text("-- test schema\n")
+    env = os.environ.copy()
+    env.update(
+        {
+            "GOODMONEYING_ENV_FILE": str(tmp_path / "missing.env"),
+            "GOODMONEYING_DATABASE_URL": (
+                "postgresql://user:password@127.0.0.1:15432/goodmoneying"
+            ),
+            "GOODMONEYING_DB_SCHEMA_FILE": str(schema_file),
+            "GOODMONEYING_DBMATE_DOCKER_CONFIG": str(tmp_path / "docker-config"),
+            "GOODMONEYING_FORCE_DOCKER_DB_DUMP": "1",
+            "DEV_DOCKER_LOG": str(docker_log),
+            "DEV_DOCKER_OPERATING_SYSTEM": "Ubuntu 24.04 LTS",
+            "DEV_DOCKER_OS_TYPE": "linux",
+            "PATH": f"{tmp_path}:{env['PATH']}",
+        }
+    )
+
+    result = run_dev_script("db", "dump", env=env)
+
+    assert result.returncode == 0, result.stderr
+    log = docker_log.read_text()
+    run_args = next(line for line in log.splitlines() if line.startswith("args=run "))
+    assert "--network host" in run_args
+    assert "--add-host" not in run_args
+    assert "database_url=postgresql://user:password@127.0.0.1:15432/" in log
+
+
+def test_dev_script_uses_host_gateway_for_docker_desktop_schema_dump(
+    tmp_path: Path,
+) -> None:
+    fake_docker, docker_log = install_fake_docker(tmp_path)
+    schema_file = tmp_path / "schema.sql"
+    schema_file.write_text("-- test schema\n")
+    env = os.environ.copy()
+    env.update(
+        {
+            "GOODMONEYING_ENV_FILE": str(tmp_path / "missing.env"),
+            "GOODMONEYING_DATABASE_URL": (
+                "postgresql://user:password@127.0.0.1:15432/goodmoneying"
+            ),
+            "GOODMONEYING_DB_SCHEMA_FILE": str(schema_file),
+            "GOODMONEYING_DBMATE_DOCKER_CONFIG": str(tmp_path / "docker-config"),
+            "GOODMONEYING_FORCE_DOCKER_DB_DUMP": "1",
+            "DEV_DOCKER_LOG": str(docker_log),
+            "DEV_DOCKER_OPERATING_SYSTEM": "Docker Desktop",
+            "DEV_DOCKER_OS_TYPE": "linux",
+            "PATH": f"{tmp_path}:{env['PATH']}",
+        }
+    )
+
+    result = run_dev_script("db", "dump", env=env)
+
+    assert result.returncode == 0, result.stderr
+    log = docker_log.read_text()
+    run_args = next(line for line in log.splitlines() if line.startswith("args=run "))
+    assert "--add-host host.docker.internal:host-gateway" in run_args
+    assert "--network host" not in run_args
+    assert "database_url=postgresql://user:password@host.docker.internal:15432/" in log
+
+
+def test_dev_script_rejects_unsupported_docker_os_for_schema_dump(
+    tmp_path: Path,
+) -> None:
+    fake_docker, docker_log = install_fake_docker(tmp_path)
+    schema_file = tmp_path / "schema.sql"
+    schema_file.write_text("-- test schema\n")
+    env = os.environ.copy()
+    env.update(
+        {
+            "GOODMONEYING_ENV_FILE": str(tmp_path / "missing.env"),
+            "GOODMONEYING_DATABASE_URL": (
+                "postgresql://user:password@127.0.0.1:15432/goodmoneying"
+            ),
+            "GOODMONEYING_DB_SCHEMA_FILE": str(schema_file),
+            "GOODMONEYING_DBMATE_DOCKER_CONFIG": str(tmp_path / "docker-config"),
+            "GOODMONEYING_FORCE_DOCKER_DB_DUMP": "1",
+            "DEV_DOCKER_LOG": str(docker_log),
+            "DEV_DOCKER_OPERATING_SYSTEM": "Unknown Docker OS",
+            "DEV_DOCKER_OS_TYPE": "windows",
+            "PATH": f"{tmp_path}:{env['PATH']}",
+        }
+    )
+
+    result = run_dev_script("db", "dump", env=env)
+
+    assert result.returncode != 0
+    assert "지원하지 않는 Docker 운영체제" in result.stderr
+    assert not any(
+        line.startswith("args=run ") for line in docker_log.read_text().splitlines()
+    )
 
 
 def test_dev_script_rejects_baseline_only_rollback(tmp_path: Path) -> None:

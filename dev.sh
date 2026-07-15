@@ -195,7 +195,8 @@ database_url_for_docker() {
 }
 
 dump_schema() {
-  local schema_dir schema_name docker_database_url
+  local schema_dir schema_name docker_database_url docker_operating_system docker_os_type
+  local -a docker_network_args
   require_schema_dumper
   if [[ -n "${GOODMONEYING_DBMATE_BIN:-}" ]] \
     || { [[ "${GOODMONEYING_FORCE_DOCKER_DB_DUMP:-0}" != "1" ]] \
@@ -207,10 +208,25 @@ dump_schema() {
 
   schema_dir="$(cd "$(dirname "$DB_SCHEMA_FILE")" && pwd)"
   schema_name="$(basename "$DB_SCHEMA_FILE")"
-  docker_database_url="$(database_url_for_docker)"
+  docker_operating_system="$(
+    DOCKER_CONFIG="$DBMATE_DOCKER_CONFIG" docker info --format '{{.OperatingSystem}}'
+  )"
+  docker_os_type="$(
+    DOCKER_CONFIG="$DBMATE_DOCKER_CONFIG" docker info --format '{{.OSType}}'
+  )"
+  if [[ "$docker_operating_system" == "Docker Desktop" ]]; then
+    docker_database_url="$(database_url_for_docker)"
+    docker_network_args=(--add-host host.docker.internal:host-gateway)
+  elif [[ "$docker_os_type" == "linux" ]]; then
+    docker_database_url="$DATABASE_URL"
+    docker_network_args=(--network host)
+  else
+    print_error "지원하지 않는 Docker 운영체제입니다: ${docker_operating_system} (${docker_os_type})"
+    return 1
+  fi
   GOODMONEYING_DATABASE_URL="$docker_database_url" DBMATE_STRICT=true \
     DOCKER_CONFIG="$DBMATE_DOCKER_CONFIG" docker run --rm \
-    --add-host host.docker.internal:host-gateway \
+    "${docker_network_args[@]}" \
     -e GOODMONEYING_DATABASE_URL \
     -e DBMATE_STRICT \
     -v "$schema_dir:/output" \

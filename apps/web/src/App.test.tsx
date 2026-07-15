@@ -46,13 +46,25 @@ describe("데이터 수집관리 화면", () => {
       if (url === "/upbit-gateway/v1/catalog") return Response.json({
         catalog_version: "1.6.3", verified_at: "2026-07-16",
         official_baseline: "https://docs.upbit.com/kr/llms.txt",
-        rest_endpoints: [{
-          endpoint_id: "rest.list-trading-pairs", title: "페어 목록 조회", category: "quotation",
-          functional_group: "pair", method: "GET", path: "/v1/market/all",
-          parameters: [{ name: "is_details", location: "query", type: "boolean", required: false }],
-          rate_limit_group: "market", safety: "read",
-          source_url: "https://docs.upbit.com/kr/reference/list-trading-pairs"
-        }]
+        rest_endpoints: [
+          {
+            endpoint_id: "rest.list-trading-pairs", title: "페어 목록 조회", category: "quotation",
+            functional_group: "pair", method: "GET", path: "/v1/market/all",
+            parameters: [{ name: "is_details", location: "query", type: "boolean", required: false }],
+            rate_limit_group: "market", safety: "read",
+            source_url: "https://docs.upbit.com/kr/reference/list-trading-pairs"
+          },
+          {
+            endpoint_id: "rest.get-balance", title: "포켓 잔고 조회", category: "exchange",
+            functional_group: "asset", method: "GET", path: "/v1/accounts", parameters: [],
+            rate_limit_group: "exchange-default", safety: "read",
+            source_url: "https://docs.upbit.com/kr/reference/get-balance"
+          }
+        ]
+      });
+      if (url === "/upbit-gateway/health") return Response.json({
+        status: "ok", service: "upbit-gateway", catalog_version: "1.6.3",
+        credentials_configured: false
       });
       if (url === "/upbit-gateway/v1/requests") return Response.json({
         trace_id: "3cb59f4b-49b4-4b7d-951a-00f015bedee9", endpoint_id: "rest.list-trading-pairs",
@@ -75,6 +87,13 @@ describe("데이터 수집관리 화면", () => {
     await user.click(screen.getByLabelText("상세 정보 포함"));
     await user.click(screen.getByRole("button", { name: "요청 실행" }));
     expect(await screen.findByRole("cell", { name: "비트코인" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Exchange API 테스트" }));
+    expect(await screen.findByRole("main", { name: "Exchange API 작업대" })).toBeInTheDocument();
+    await waitFor(() => expect(upbitFetch.mock.calls.map(([input]) => String(input)))
+      .toContain("/upbit-gateway/health"));
+    await waitFor(() => expect(screen.getByRole("status", { name: "자격 증명 상태" }))
+      .toHaveTextContent("서버 미설정"));
+    expect(screen.queryByText("Exchange API 모듈 연결 대기")).not.toBeInTheDocument();
     expect(JSON.stringify(upbitFetch.mock.calls)).not.toContain("https://api.upbit.com");
   });
 

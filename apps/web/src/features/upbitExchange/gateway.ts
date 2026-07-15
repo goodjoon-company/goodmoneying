@@ -15,7 +15,10 @@ export class GatewayHttpError extends Error {
   }
 }
 
-export function createHttpExchangeGateway(baseUrl: string, fetcher: Fetch = fetch): ExchangeGateway {
+export function createHttpExchangeGateway(
+  baseUrl: string,
+  fetcher: Fetch = (input, init) => fetch(input, init)
+): ExchangeGateway {
   const normalizedBase = baseUrl.replace(/\/$/, "");
   const request = async <T>(
     path: string,

@@ -1,4 +1,5 @@
 import { ExchangeWorkbench, createHttpExchangeGateway } from "../features/upbitExchange";
+import { UpbitWebSocketWorkbench } from "../features/upbitWebSocket";
 import { UpbitApiWorkbench } from "./upbit-api-test/UpbitApiWorkbench";
 import type {
   WorkbenchExtensionProps,
@@ -15,11 +16,19 @@ function ExchangeWorkbenchExtension({ context, onContextChange }: WorkbenchExten
     onMarketChange={(market) => onContextChange(marketContext(market))} />;
 }
 
-const defaultExtensions: WorkbenchModuleExtension[] = [{
-  id: "exchange",
-  label: "Exchange API",
-  Component: ExchangeWorkbenchExtension
-}];
+function WebSocketWorkbenchExtension({ context, onContextChange }: WorkbenchExtensionProps) {
+  return <UpbitWebSocketWorkbench
+    markets={[{ market: context.market, koreanName: context.base }]}
+    marketCode={context.market}
+    onMarketCodeChange={(market) => onContextChange(marketContext(market))}
+    showMarketSelection={false}
+  />;
+}
+
+const defaultExtensions: WorkbenchModuleExtension[] = [
+  { id: "exchange", label: "Exchange API", Component: ExchangeWorkbenchExtension },
+  { id: "websocket", label: "WebSocket API", Component: WebSocketWorkbenchExtension }
+];
 
 export function UpbitApiTest({ moduleId, market, onMarketChange, extensions }: {
   moduleId: WorkbenchModuleId;

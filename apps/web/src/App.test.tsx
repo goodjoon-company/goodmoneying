@@ -94,6 +94,12 @@ describe("데이터 수집관리 화면", () => {
     await waitFor(() => expect(screen.getByRole("status", { name: "자격 증명 상태" }))
       .toHaveTextContent("서버 미설정"));
     expect(screen.queryByText("Exchange API 모듈 연결 대기")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "WebSocket API 테스트" }));
+    expect(await screen.findByLabelText("업비트 웹소켓 작업대")).toBeInTheDocument();
+    expect(screen.getByLabelText("공개 연결 상태")).toHaveTextContent("closed");
+    expect(screen.getByLabelText("비공개 연결 상태")).toHaveTextContent("closed");
+    expect(screen.queryByLabelText("페어")).not.toBeInTheDocument();
+    expect(screen.queryByText("WebSocket API 모듈 연결 대기")).not.toBeInTheDocument();
     expect(JSON.stringify(upbitFetch.mock.calls)).not.toContain("https://api.upbit.com");
   });
 

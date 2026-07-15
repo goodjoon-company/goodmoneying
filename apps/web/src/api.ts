@@ -352,7 +352,6 @@ export type CollectionCoverageSegmentsResponse = {
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
-const OPERATOR_TOKEN = import.meta.env.VITE_OPERATOR_TOKEN ?? "";
 export const JANUARY_2026_BACKFILL_START = "2026-01-01T00:00:00+09:00";
 export const JANUARY_2026_BACKFILL_END = "2026-02-01T00:00:00+09:00";
 
@@ -633,9 +632,6 @@ async function sendJson<T>(path: string, method: string, body?: unknown): Promis
   const headers: Record<string, string> = {
     "Content-Type": "application/json"
   };
-  if (OPERATOR_TOKEN) {
-    headers["X-Operator-Token"] = OPERATOR_TOKEN;
-  }
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method,
     headers,
@@ -648,13 +644,9 @@ async function sendJson<T>(path: string, method: string, body?: unknown): Promis
 }
 
 async function sendEmpty(path: string, method: string): Promise<void> {
-  const headers: Record<string, string> = {};
-  if (OPERATOR_TOKEN) {
-    headers["X-Operator-Token"] = OPERATOR_TOKEN;
-  }
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method,
-    headers
+    headers: {}
   });
   if (!response.ok) {
     throw new Error(`${path} failed with ${response.status}`);

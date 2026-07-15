@@ -40,10 +40,12 @@ services:
       TZ: Asia/Seoul
       UPBIT_GATEWAY_BASE_URL: https://api.upbit.com
       UPBIT_GATEWAY_TIMEOUT_SECONDS: ${UPBIT_GATEWAY_TIMEOUT_SECONDS:-10}
+      UPBIT_GATEWAY_OPERATOR_TOKEN: ${GOODMONEYING_OPERATOR_TOKEN:-local-dev-token}
+      UPBIT_GATEWAY_ALLOWED_ORIGINS: ${UPBIT_GATEWAY_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       UPBIT_ACCESS_KEY: ${UPBIT_ACCESS_KEY:-}
       UPBIT_SECRET_KEY: ${UPBIT_SECRET_KEY:-}
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)\""]
       interval: 10s

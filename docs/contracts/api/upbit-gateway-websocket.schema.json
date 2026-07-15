@@ -1,55 +1,115 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://goodmoneying.local/contracts/upbit-gateway-websocket.schema.json",
-  "title": "업비트 게이트웨이 WebSocket 추적 이벤트",
+  "title": "업비트 게이트웨이 웹소켓(WebSocket) 제어와 추적 계약",
   "oneOf": [
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "trace_id", "state", "received_at"],
-      "properties": {
-        "type": {"const": "connection"},
-        "trace_id": {"type": "string"},
-        "state": {"enum": ["connecting", "connected", "paused", "closed", "reconnecting"]},
-        "received_at": {"type": "string", "format": "date-time"}
-      }
+    {"$ref": "#/$defs/ClientControl"},
+    {"$ref": "#/$defs/ServerEvent"}
+  ],
+  "$defs": {
+    "RequestId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "Format": {"enum": ["DEFAULT", "SIMPLE", "JSON_LIST", "SIMPLE_LIST"]},
+    "EndpointId": {"type": "string", "pattern": "^websocket\\."},
+    "ClientControl": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "request_id", "visibility", "ticket", "format"],
+          "properties": {
+            "action": {"const": "connect"}, "request_id": {"$ref": "#/$defs/RequestId"},
+            "visibility": {"enum": ["public", "private"]},
+            "ticket": {"type": "string", "minLength": 1, "maxLength": 128},
+            "format": {"$ref": "#/$defs/Format"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "request_id", "endpoint_id", "parameters"],
+          "properties": {
+            "action": {"const": "subscribe"}, "request_id": {"$ref": "#/$defs/RequestId"},
+            "endpoint_id": {"$ref": "#/$defs/EndpointId"},
+            "parameters": {"type": "object", "additionalProperties": true}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "request_id", "paused"],
+          "properties": {
+            "action": {"const": "pause"}, "request_id": {"$ref": "#/$defs/RequestId"},
+            "paused": {"type": "boolean"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "request_id", "endpoint_id"],
+          "properties": {
+            "action": {"const": "unsubscribe"}, "request_id": {"$ref": "#/$defs/RequestId"},
+            "endpoint_id": {"$ref": "#/$defs/EndpointId"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "request_id"],
+          "properties": {"action": {"const": "reconnect"}, "request_id": {"$ref": "#/$defs/RequestId"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["action", "request_id"],
+          "properties": {"action": {"const": "list"}, "request_id": {"$ref": "#/$defs/RequestId"}}
+        }
+      ]
     },
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "trace_id", "endpoint_id", "action", "parameters", "received_at"],
-      "properties": {
-        "type": {"const": "subscription"},
-        "trace_id": {"type": "string"},
-        "endpoint_id": {"type": "string", "pattern": "^websocket\\."},
-        "action": {"enum": ["subscribe", "pause", "unsubscribe", "reconnect", "list"]},
-        "parameters": {"type": "object", "additionalProperties": true},
-        "received_at": {"type": "string", "format": "date-time"}
-      }
-    },
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "trace_id", "endpoint_id", "payload", "received_at"],
-      "properties": {
-        "type": {"const": "frame"},
-        "trace_id": {"type": "string"},
-        "endpoint_id": {"type": "string", "pattern": "^websocket\\."},
-        "payload": {},
-        "received_at": {"type": "string", "format": "date-time"}
-      }
-    },
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "trace_id", "code", "message", "received_at"],
-      "properties": {
-        "type": {"const": "error"},
-        "trace_id": {"type": "string"},
-        "code": {"enum": ["NETWORK", "AUTHENTICATION", "AUTHORIZATION", "VALIDATION", "POLICY_BLOCKED", "UPBIT"]},
-        "message": {"type": "string"},
-        "received_at": {"type": "string", "format": "date-time"}
-      }
+    "ServerEvent": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": true,
+          "required": ["event", "state", "request_id", "connection_id", "visibility", "format"],
+          "properties": {
+            "event": {"const": "connection"},
+            "state": {"enum": ["connecting", "connected", "paused", "closed", "reconnecting"]},
+            "request_id": {"type": ["string", "null"]}, "connection_id": {"type": ["string", "null"]},
+            "visibility": {"enum": ["public", "private", null]}, "format": {"$ref": "#/$defs/Format"},
+            "retry_in_seconds": {"type": "number", "minimum": 0}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": true,
+          "required": ["event", "request_id", "action", "subscriptions"],
+          "properties": {
+            "event": {"const": "subscription"}, "request_id": {"$ref": "#/$defs/RequestId"},
+            "action": {"enum": ["subscribed", "unsubscribed", "list-requested"]},
+            "endpoint_id": {"$ref": "#/$defs/EndpointId"},
+            "subscriptions": {"type": "array", "items": {"$ref": "#/$defs/EndpointId"}}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["event", "trace_id", "connection_id", "sequence", "received_at", "payload", "raw", "binary", "provenance"],
+          "properties": {
+            "event": {"const": "frame"}, "trace_id": {"type": "string", "format": "uuid"},
+            "connection_id": {"type": "string", "format": "uuid"}, "sequence": {"type": "integer", "minimum": 1},
+            "received_at": {"type": "string", "format": "date-time"}, "payload": {},
+            "raw": {"type": "string", "maxLength": 262144}, "binary": {"type": "boolean"},
+            "provenance": {
+              "type": "object", "additionalProperties": false,
+              "required": ["visibility", "format", "endpoint_ids"],
+              "properties": {
+                "visibility": {"enum": ["public", "private"]}, "format": {"$ref": "#/$defs/Format"},
+                "endpoint_ids": {"type": "array", "items": {"$ref": "#/$defs/EndpointId"}}
+              }
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["event", "request_id", "code", "message", "status", "recoverable"],
+          "properties": {
+            "event": {"const": "error"}, "request_id": {"type": ["string", "null"]},
+            "code": {"type": "string"}, "message": {"type": "string"},
+            "status": {"type": "integer", "minimum": 400, "maximum": 599}, "recoverable": {"type": "boolean"}
+          }
+        }
+      ]
     }
-  ]
+  }
 }

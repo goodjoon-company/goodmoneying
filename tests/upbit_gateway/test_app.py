@@ -199,3 +199,48 @@ assert catalog["catalog_version"] == "1.6.3"
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+def test_websocket_route_reports_contract_and_missing_private_credentials_without_closing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for key in (
+        "UPBIT_ACCESS_KEY",
+        "UPBIT_SECRET_KEY",
+        "UPBIT_ACCESS_KEY_FILE",
+        "UPBIT_SECRET_KEY_FILE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("UPBIT_GATEWAY_OPERATOR_TOKEN", "local-dev-token")
+    monkeypatch.setenv("UPBIT_GATEWAY_ALLOWED_ORIGINS", "http://testserver")
+
+    with _client().websocket_connect(
+        "/v1/websocket",
+        headers={"Origin": "http://testserver", "X-Operator-Token": "local-dev-token"},
+    ) as websocket:
+        websocket.send_json({"action": "unknown", "request_id": "bad"})
+        invalid = websocket.receive_json()
+        websocket.send_json(
+            {
+                "action": "connect",
+                "request_id": "private",
+                "visibility": "private",
+                "ticket": "ticket",
+                "format": "DEFAULT",
+            }
+        )
+        missing = websocket.receive_json()
+
+    assert invalid == {
+        "event": "error",
+        "request_id": "bad",
+        "code": "INVALID_CONTROL",
+        "message": "지원하지 않는 action입니다.",
+        "status": 422,
+        "recoverable": True,
+    }
+    assert (missing["event"], missing["code"], missing["status"]) == (
+        "error",
+        "CREDENTIALS_NOT_CONFIGURED",
+        503,
+    )

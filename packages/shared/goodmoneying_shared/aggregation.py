@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from calendar import monthrange
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
 
 from goodmoneying_shared.models import CandleView, SourceCandle
 
 AGGREGATION_UNITS = ("5m", "10m", "30m", "60m", "1d", "1w", "1M")
+PROGRESS_INTERVAL = 1_000
 
 
 def rollup_bucket_start(unit: str, source_at: datetime) -> datetime:
@@ -26,36 +27,51 @@ def rollup_bucket_start(unit: str, source_at: datetime) -> datetime:
     raise ValueError(f"지원하지 않는 집계 단위다: {unit}")
 
 
-def aggregate_candles(unit: str, source: list[SourceCandle]) -> list[CandleView]:
+def aggregate_candles(
+    unit: str,
+    source: list[SourceCandle],
+    on_progress: Callable[[], None] | None = None,
+) -> list[CandleView]:
     """원천 1분·일봉을 분석용 집계 봉으로 멱등 변환한다."""
     minute_units = {"5m": 5, "10m": 10, "30m": 30, "60m": 60}
-    source_1m = [item for item in source if item.candle_unit == "1m"]
+    _notify_progress(on_progress)
+    source_1m: list[SourceCandle] = []
+    source_1d: list[SourceCandle] = []
+    for index, item in enumerate(source, start=1):
+        if item.candle_unit == "1m":
+            source_1m.append(item)
+        elif item.candle_unit == "1d":
+            source_1d.append(item)
+        if index % PROGRESS_INTERVAL == 0:
+            _notify_progress(on_progress)
     if unit in minute_units:
         grouped: dict[datetime, list[SourceCandle | CandleView]] = {}
         bucket_size = minute_units[unit]
-        for item in source_1m:
+        for index, item in enumerate(source_1m, start=1):
             minute = item.candle_start_at.minute - (item.candle_start_at.minute % bucket_size)
             bucket = item.candle_start_at.replace(minute=minute, second=0, microsecond=0)
             grouped.setdefault(bucket, []).append(item)
-        return _aggregate_groups(grouped, bucket_size)
+            if index % PROGRESS_INTERVAL == 0:
+                _notify_progress(on_progress)
+        return _aggregate_groups(grouped, bucket_size, on_progress)
     if unit == "1d":
-        direct_daily = [item for item in source if item.candle_unit == "1d"]
-        if direct_daily:
-            return [_to_candle_view(item) for item in direct_daily]
+        if source_1d:
+            return _to_candle_views(source_1d, on_progress)
         grouped_daily: dict[datetime, list[SourceCandle | CandleView]] = {}
-        for item in source_1m:
+        for index, item in enumerate(source_1m, start=1):
             bucket = item.candle_start_at.replace(hour=0, minute=0, second=0, microsecond=0)
             grouped_daily.setdefault(bucket, []).append(item)
-        return _aggregate_groups(grouped_daily, 24 * 60)
+            if index % PROGRESS_INTERVAL == 0:
+                _notify_progress(on_progress)
+        return _aggregate_groups(grouped_daily, 24 * 60, on_progress)
     if unit in {"1w", "1M"}:
-        direct_daily = [item for item in source if item.candle_unit == "1d"]
         daily: list[CandleView] = (
-            [_to_candle_view(item) for item in direct_daily]
-            if direct_daily
-            else aggregate_candles("1d", source)
+            _to_candle_views(source_1d, on_progress)
+            if source_1d
+            else aggregate_candles("1d", source, on_progress)
         )
         grouped_week_month: dict[datetime, list[CandleView]] = {}
-        for daily_item in daily:
+        for index, daily_item in enumerate(daily, start=1):
             if unit == "1w":
                 week_start = daily_item.started_at - timedelta(days=daily_item.started_at.weekday())
                 bucket = week_start.replace(
@@ -66,7 +82,11 @@ def aggregate_candles(unit: str, source: list[SourceCandle]) -> list[CandleView]
                     day=1, hour=0, minute=0, second=0, microsecond=0
                 )
             grouped_week_month.setdefault(bucket, []).append(daily_item)
-        return _aggregate_groups(grouped_week_month, 7 if unit == "1w" else 0)
+            if index % PROGRESS_INTERVAL == 0:
+                _notify_progress(on_progress)
+        return _aggregate_groups(
+            grouped_week_month, 7 if unit == "1w" else 0, on_progress
+        )
     raise ValueError(f"지원하지 않는 집계 단위다: {unit}")
 
 
@@ -83,11 +103,25 @@ def _to_candle_view(item: SourceCandle) -> CandleView:
     )
 
 
-def _aggregate_groups(
-    grouped: Mapping[datetime, Sequence[SourceCandle | CandleView]], expected_size: int
+def _to_candle_views(
+    source: Sequence[SourceCandle], on_progress: Callable[[], None] | None
 ) -> list[CandleView]:
     result: list[CandleView] = []
-    for bucket, items in sorted(grouped.items()):
+    for index, item in enumerate(source, start=1):
+        result.append(_to_candle_view(item))
+        if index % PROGRESS_INTERVAL == 0:
+            _notify_progress(on_progress)
+    _notify_progress(on_progress)
+    return result
+
+
+def _aggregate_groups(
+    grouped: Mapping[datetime, Sequence[SourceCandle | CandleView]],
+    expected_size: int,
+    on_progress: Callable[[], None] | None = None,
+) -> list[CandleView]:
+    result: list[CandleView] = []
+    for index, (bucket, items) in enumerate(sorted(grouped.items()), start=1):
         ordered = sorted(items, key=_started_at)
         required_size = (
             monthrange(bucket.year, bucket.month)[1] if expected_size == 0 else expected_size
@@ -104,7 +138,15 @@ def _aggregate_groups(
                 completeness="complete" if len(ordered) == required_size else "partial",
             )
         )
+        if index % PROGRESS_INTERVAL == 0:
+            _notify_progress(on_progress)
+    _notify_progress(on_progress)
     return result
+
+
+def _notify_progress(on_progress: Callable[[], None] | None) -> None:
+    if on_progress is not None:
+        on_progress()
 
 
 def _started_at(item: SourceCandle | CandleView) -> datetime:

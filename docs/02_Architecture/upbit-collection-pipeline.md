@@ -66,7 +66,7 @@ flowchart TB
 |---|---|---|
 | 실시간 수집 워커(Realtime Collection Worker) | 업비트 웹소켓(WebSocket) 시세 스트림 수신, 수집 후보군과 증분 수집 저장. 런타임은 `GOODMONEYING_LIVE_UPBIT=1` live 프로필만 허용 | Python 단일 프로세스 |
 | 백필 수집 워커(Backfill Collection Worker) | DB 상태 폴링으로 pending 백필 작업 확인, 원천 캔들 결측 구간 백필 실행, fetch 성공 heartbeat와 DB batch upsert 완료 기준 진행 상태 기록 | Python 단일 프로세스, 기본 10초 폴링, 기본 최대 3000개 저장 배치(batch) |
-| 캔들 집계 워커(Candle Aggregation Worker) | 원천봉보다 오래된 집계 단위를 감지하고 작업 대상별 OHLCV rollup을 upsert, 진행률과 heartbeat 기록 | Python 단일 프로세스, 기본 5초 폴링 |
+| 캔들 집계 워커(Candle Aggregation Worker) | 원천봉보다 오래된 집계 단위를 감지하고 작업 대상별 OHLCV rollup을 upsert, 진행률과 원천 조회·변환·저장 heartbeat 기록 | Python 단일 프로세스, 기본 5초 폴링 |
 | 운영 서버(Operations Server) | 화면 단위 View Model API, 원천 리소스 API, 쓰기 API, 저장된 worker 상태 조회 | FastAPI |
 | 운영 화면 | 데이터 수집관리 내비게이션, worker 현황판, 대시보드, Backfill 관리, 백필 제어, 관심종목, 코인 상세 레이어, 코인 분석 | React, 기존 대시보드/관심종목은 SSE(Server-Sent Events), 코인 분석은 WebSocket 증분 메시지, React Query HTTP 폴링(Polling) 보조 |
 | PostgreSQL | 원천 사실, 설정, 품질, 감사, 알림 이벤트 저장. API·워커 런타임은 DDL(Data Definition Language)을 실행하지 않는다. | 변경 이력 `docs/contracts/db/migrations/`, 생성 스냅샷 `docs/contracts/db/schema.sql` |

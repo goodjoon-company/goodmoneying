@@ -4,6 +4,7 @@ import sqlite3
 import threading
 import uuid
 from calendar import monthrange
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any, Literal, cast
 
 from goodmoneying_shared.aggregation import (
     AGGREGATION_UNITS,
+    PROGRESS_INTERVAL,
     aggregate_candles,
     rollup_bucket_start,
 )
@@ -1071,18 +1073,30 @@ class SQLiteOperationsRepository:
                 return rollups
         return self._derive_candles(unit, source)
 
-    def materialize_candle_rollups(self, instrument_id: int, unit: str) -> int:
-        rows = self._execute(
+    def materialize_candle_rollups(
+        self,
+        instrument_id: int,
+        unit: str,
+        on_progress: Callable[[], None] | None = None,
+    ) -> int:
+        if on_progress is not None:
+            on_progress()
+        cursor = self._execute(
             """
             SELECT * FROM source_candles
             WHERE instrument_id = ?
             ORDER BY candle_start_at
             """,
             (instrument_id,),
-        ).fetchall()
-        rollups = aggregate_candles(unit, [self._candle_from_row(row) for row in rows])
+        )
+        source: list[SourceCandle] = []
+        while rows := cursor.fetchmany(PROGRESS_INTERVAL):
+            source.extend(self._candle_from_row(row) for row in rows)
+            if on_progress is not None:
+                on_progress()
+        rollups = aggregate_candles(unit, source, on_progress)
         materialized_at = _to_db_time(now_kst())
-        for item in rollups:
+        for index, item in enumerate(rollups, start=1):
             self._execute(
                 """
                 INSERT INTO candle_rollups (
@@ -1114,7 +1128,11 @@ class SQLiteOperationsRepository:
                     materialized_at,
                 ),
             )
+            if on_progress is not None and index % PROGRESS_INTERVAL == 0:
+                on_progress()
         self._conn.commit()
+        if on_progress is not None:
+            on_progress()
         return len(rollups)
 
     def candle_rollups(

@@ -32,6 +32,6 @@
 
 `realtime.items`와 `backfill.items`는 `instrument`, `dataTypes`를 포함한다.
 
-`aggregationWorker`는 집계 작업 상태와 독립적인 실제 `candle_aggregation` 워커 heartbeat 상태다. `status`는 `running`, `stale`, `failed` 중 하나이며, `lastHeartbeatAt`은 heartbeat 기록이 없으면 `null`이다.
+`aggregationWorker`는 집계 작업 상태와 독립적인 실제 `candle_aggregation` 워커 heartbeat 상태다. `status`는 `running`, `stale`, `failed` 중 하나이며, `lastHeartbeatAt`은 heartbeat 기록이 없으면 `null`이다. 집계 워커는 작업 시작·대상 경계뿐 아니라 원천봉 변환과 집계봉 저장 중에도 진행 heartbeat를 갱신한다. 따라서 `stale`은 장기 대상을 정상 처리 중이라는 뜻이 아니라 30초 넘게 진행 heartbeat가 없다는 뜻이다.
 
 `aggregation`의 대상 수는 `totalTargetCount = completedTargetCount + runningTargetCount + pendingTargetCount + failedTargetCount`를 만족한다. `aggregation.items`는 `instrument`, `unit`, `status`, `rowsWritten`을 포함한다. 집계 작업이 없으면 `aggregation`은 `null`이지만 `aggregationWorker`는 항상 전송한다.

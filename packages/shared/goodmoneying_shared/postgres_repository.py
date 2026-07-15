@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from calendar import monthrange
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal, cast
@@ -12,6 +13,7 @@ from psycopg.types.json import Jsonb
 
 from goodmoneying_shared.aggregation import (
     AGGREGATION_UNITS,
+    PROGRESS_INTERVAL,
     aggregate_candles,
     rollup_bucket_start,
 )
@@ -881,17 +883,29 @@ class PostgresOperationsRepository:
                 return rollups
         return _derive_candles(unit, source)
 
-    def materialize_candle_rollups(self, instrument_id: int, unit: str) -> int:
+    def materialize_candle_rollups(
+        self,
+        instrument_id: int,
+        unit: str,
+        on_progress: Callable[[], None] | None = None,
+    ) -> int:
+        if on_progress is not None:
+            on_progress()
         with self._connect() as conn:
-            rows = conn.execute(
+            cursor = conn.execute(
                 """
                 SELECT * FROM source_candles WHERE instrument_id = %s
                 ORDER BY candle_start_at
                 """,
                 (instrument_id,),
-            ).fetchall()
-            rollups = aggregate_candles(unit, [_candle(row) for row in rows])
-            for item in rollups:
+            )
+            source: list[SourceCandle] = []
+            while rows := cursor.fetchmany(PROGRESS_INTERVAL):
+                source.extend(_candle(row) for row in rows)
+                if on_progress is not None:
+                    on_progress()
+            rollups = aggregate_candles(unit, source, on_progress)
+            for index, item in enumerate(rollups, start=1):
                 conn.execute(
                     """
                     INSERT INTO candle_rollups (
@@ -918,6 +932,10 @@ class PostgresOperationsRepository:
                         item.completeness,
                     ),
                 )
+                if on_progress is not None and index % PROGRESS_INTERVAL == 0:
+                    on_progress()
+        if on_progress is not None:
+            on_progress()
         return len(rollups)
 
     def candle_rollups(

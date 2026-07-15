@@ -102,7 +102,7 @@ flowchart TB
 |---|---|---|
 | 실시간 수집 워커(Realtime Collection Worker) | 후보군, 현재가, 체결, 호가 요약, 1분 원천봉을 업비트 WebSocket에서 수집한다. | `GOODMONEYING_LIVE_UPBIT=1` live 프로필에서만 실제 수집하며 heartbeat와 수집 결과를 기록한다. |
 | 백필 수집 워커(Backfill Collection Worker) | DB의 `pending` 백필 작업을 읽어 결측 원천 캔들을 REST로 보충한다. | 기본 10초 폴링, 동시성 1, DB batch upsert 성공 뒤 진행 상태를 기록한다. |
-| 캔들 집계 워커(Candle Aggregation Worker) | 원천 워터마크와 집계 워터마크를 비교해 `5m/10m/30m/60m/1d/1w/1M` OHLCV를 생성한다. | 기본 5초 폴링, 대상별 멱등 upsert와 heartbeat를 기록한다. |
+| 캔들 집계 워커(Candle Aggregation Worker) | 원천 워터마크와 집계 워터마크를 비교해 `5m/10m/30m/60m/1d/1w/1M` OHLCV를 생성한다. | 기본 5초 폴링, 대상별 멱등 upsert와 원천 조회·변환·저장 진행 heartbeat를 기록한다. |
 | 운영 서버(Operations Server) | REST, SSE, WebSocket, 설정 변경, 백필 제어, 분석 조회를 제공한다. | 조회 중 무거운 수집·집계를 수행하지 않고 저장된 뷰 모델을 우선 읽는다. |
 | 운영 화면 | 관심종목, 코인 분석, 시스템 관리, 수집·Backfill 운영 기능을 렌더링한다. | 스트림 단절 시 각 화면 계약에 정의된 재연결 또는 HTTP 보조 경로를 사용한다. |
 | PostgreSQL | 원천 사실, 수집 설정·계획, 화면용 상태, 작업, 감사 기록을 보존한다. | DB 변경의 단일 기준은 `docs/contracts/db/migrations/`이다. API·워커 런타임은 DDL(Data Definition Language)을 실행하지 않는다. |

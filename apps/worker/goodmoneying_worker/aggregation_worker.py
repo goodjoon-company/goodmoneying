@@ -63,6 +63,7 @@ class CandleAggregationWorker:
     ) -> None:
         self._repository = repository
         self._heartbeat_repository = heartbeat_repository or repository
+        self._heartbeat_single_flight = threading.Lock()
 
     def run_once(self) -> int:
         self._repository.schedule_candle_aggregation()
@@ -109,13 +110,22 @@ class CandleAggregationWorker:
         )
 
     def _record_running_heartbeat(self) -> None:
-        self.record_heartbeat("running")
+        if not self.record_heartbeat("running"):
+            logger.error(
+                "aggregation_running_heartbeat_skipped reason=in_flight"
+            )
 
     def record_heartbeat(
         self,
         status: CollectionWorkerHeartbeatStatus,
         error_message: str | None = None,
-    ) -> None:
-        self._heartbeat_repository.record_collection_worker_heartbeat(
-            "candle_aggregation", status, error_message
-        )
+    ) -> bool:
+        if not self._heartbeat_single_flight.acquire(blocking=False):
+            return False
+        try:
+            self._heartbeat_repository.record_collection_worker_heartbeat(
+                "candle_aggregation", status, error_message
+            )
+        finally:
+            self._heartbeat_single_flight.release()
+        return True

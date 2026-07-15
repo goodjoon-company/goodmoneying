@@ -438,6 +438,117 @@ def test_정상_집계_폴링이_끝나면_heartbeat_스레드가_남지_않는�
     )
 
 
+def test_차단된_heartbeat_중_집계가_3회_실패해도_소유자는_유한_시간에_반환한다(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+    heartbeat_calls: list[tuple[str, str]] = []
+    caught_errors: list[RuntimeError] = []
+
+    class FailingJobRepository:
+        def schedule_candle_aggregation(self) -> None:
+            return None
+
+        def claim_next_candle_aggregation_job(self) -> None:
+            assert callback_started.wait(timeout=0.1)
+            raise RuntimeError("집계 실패")
+
+        def record_collection_worker_heartbeat(
+            self,
+            worker_type: str,
+            status: str,
+            error_message: str | None = None,
+        ) -> None:
+            heartbeat_calls.append((threading.current_thread().name, status))
+            callback_started.set()
+            release_callback.wait()
+
+    real_runner = aggregation_worker.PeriodicHeartbeatRunner
+
+    def fast_shutdown_runner(
+        heartbeat: Callable[[], None], interval_seconds: float
+    ) -> aggregation_worker.PeriodicHeartbeatRunner:
+        return real_runner(
+            heartbeat,
+            interval_seconds,
+            shutdown_grace_seconds=0.01,
+        )
+
+    monkeypatch.setattr(
+        aggregation_worker,
+        "PeriodicHeartbeatRunner",
+        fast_shutdown_runner,
+    )
+    repository: Any = FailingJobRepository()
+    worker = aggregation_worker.CandleAggregationWorker(repository, repository)
+
+    def run_repeated_errors() -> None:
+        for _ in range(3):
+            try:
+                aggregation_collection_worker.run_aggregation_poll_loop(
+                    worker,
+                    poll_seconds=0,
+                )
+            except RuntimeError as exc:
+                caught_errors.append(exc)
+
+    owner = threading.Thread(target=run_repeated_errors)
+    with caplog.at_level("ERROR"):
+        owner.start()
+        owner.join(timeout=0.2)
+    owner_returned = owner.is_alive() is False
+    blocked_threads = [
+        thread
+        for thread in threading.enumerate()
+        if thread.name == HEARTBEAT_THREAD_NAME
+    ]
+    heartbeat_call_count_before_release = len(heartbeat_calls)
+
+    release_callback.set()
+    owner.join(timeout=1)
+    for thread in blocked_threads:
+        thread.join(timeout=1)
+
+    assert owner_returned is True
+    assert len(caught_errors) == 3
+    assert heartbeat_call_count_before_release == 1
+    assert len(blocked_threads) <= 1
+    assert any(
+        message.startswith("aggregation_failed_heartbeat_skipped")
+        for message in caplog.messages
+    )
+
+
+def test_heartbeat가_차단되지_않으면_집계_실패_상태를_저장한다() -> None:
+    class FailingJobRepository:
+        def schedule_candle_aggregation(self) -> None:
+            return None
+
+        def claim_next_candle_aggregation_job(self) -> None:
+            raise RuntimeError("집계 실패")
+
+    repository: Any = FailingJobRepository()
+    heartbeat_repository = SQLiteOperationsRepository()
+    worker = aggregation_worker.CandleAggregationWorker(
+        repository,
+        heartbeat_repository,
+    )
+
+    with pytest.raises(RuntimeError, match="집계 실패"):
+        aggregation_collection_worker.run_aggregation_poll_loop(worker, poll_seconds=0)
+
+    runtime_status = heartbeat_repository.collection_worker_runtime_status(
+        "candle_aggregation"
+    )
+    assert runtime_status.status == "failed"
+    assert runtime_status.status_detail == "집계 실패"
+    assert all(
+        thread.name != HEARTBEAT_THREAD_NAME for thread in threading.enumerate()
+    )
+
+
 def test_worker_logging_uses_info_level_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GOODMONEYING_LOG_LEVEL", raising=False)
 

@@ -38,7 +38,18 @@ def run_aggregation_poll_loop(worker: CandleAggregationWorker, poll_seconds: flo
                     )
                     time.sleep(poll_seconds)
         except Exception as exc:
-            worker.record_heartbeat("failed", str(exc))
+            try:
+                failed_heartbeat_recorded = worker.record_heartbeat(
+                    "failed",
+                    str(exc),
+                )
+            except Exception:
+                logger.exception("aggregation_failed_heartbeat_failed")
+            else:
+                if not failed_heartbeat_recorded:
+                    logger.error(
+                        "aggregation_failed_heartbeat_skipped reason=in_flight"
+                    )
             logger.exception("aggregation_poll_failed error=%s", type(exc).__name__)
             raise
     except KeyboardInterrupt:

@@ -27,6 +27,25 @@ SAFE_LIVE_REQUESTS: tuple[tuple[str, Mapping[str, object]], ...] = (
     ),
 )
 
+SAFE_LIVE_ALLOWED_OUTCOMES: Mapping[str, frozenset[tuple[int, str | None]]] = {
+    "rest.list-trading-pairs": frozenset({(200, None)}),
+    "rest.get-balance": frozenset(
+        {
+            (200, None),
+            (401, "no_authorization_ip"),
+            (401, "out_of_scope"),
+        }
+    ),
+    "rest.order-test": frozenset(
+        {
+            (201, None),
+            (400, "under_min_total_bid"),
+            (401, "no_authorization_ip"),
+            (401, "out_of_scope"),
+        }
+    ),
+}
+
 
 def parse_key_file(path: Path) -> Credentials:
     """라벨이 있는 한 파일에서 값을 읽되 호출자에게 키 이름이나 원문을 돌려주지 않는다."""
@@ -124,3 +143,49 @@ def run_safe_verification(
             "upstream_calls": 0,
         },
     }
+
+
+def safe_verification_succeeded(report: Mapping[str, object]) -> bool:
+    """세 가지 안전 호출과 로컬 차단 검증이 허용표와 정확히 일치하는지 판정한다."""
+    raw_results = report.get("allowed_results")
+    if not isinstance(raw_results, list):
+        return False
+
+    outcomes: dict[str, tuple[int, str | None]] = {}
+    for raw_result in raw_results:
+        if not isinstance(raw_result, dict) or raw_result.get("error") is not None:
+            return False
+        endpoint_id = raw_result.get("endpoint_id")
+        status_code = raw_result.get("status_code")
+        error_name = raw_result.get("error_name")
+        if (
+            not isinstance(endpoint_id, str)
+            or not isinstance(status_code, int)
+            or isinstance(status_code, bool)
+            or (error_name is not None and not isinstance(error_name, str))
+            or endpoint_id in outcomes
+        ):
+            return False
+        outcomes[endpoint_id] = (status_code, error_name)
+
+    if outcomes.keys() != SAFE_LIVE_ALLOWED_OUTCOMES.keys():
+        return False
+    if any(
+        outcomes[endpoint_id] not in allowed
+        for endpoint_id, allowed in SAFE_LIVE_ALLOWED_OUTCOMES.items()
+    ):
+        return False
+
+    blocked = report.get("blocked_verification")
+    if not isinstance(blocked, dict):
+        return False
+    catalog_count = blocked.get("catalog_count")
+    locally_blocked = blocked.get("locally_blocked")
+    upstream_calls = blocked.get("upstream_calls")
+    return (
+        isinstance(catalog_count, int)
+        and not isinstance(catalog_count, bool)
+        and catalog_count > 0
+        and locally_blocked == catalog_count
+        and upstream_calls == 0
+    )

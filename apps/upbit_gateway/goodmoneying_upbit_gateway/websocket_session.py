@@ -402,6 +402,8 @@ class GatewayWebSocketSession:
                 await self._auto_reconnect(generation)
         except asyncio.CancelledError:
             raise
+        except DownstreamDisconnected:
+            await self.close(notify=False)
         except Exception:
             if generation == self._generation and not self._closed:
                 await self._auto_reconnect(generation)
@@ -418,6 +420,8 @@ class GatewayWebSocketSession:
             try:
                 await self._replace_upstream(request_id=None, resubscribe=True)
                 return
+            except DownstreamDisconnected:
+                raise
             except Exception:
                 generation = self._generation
         await self._error(

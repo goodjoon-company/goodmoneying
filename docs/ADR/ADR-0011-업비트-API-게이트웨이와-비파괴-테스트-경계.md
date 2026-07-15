@@ -12,6 +12,7 @@ Related Issues: [#19](https://github.com/goodjoon-company/goodmoneying/issues/19
 
 - `apps/upbit_gateway/`를 운영 서버와 독립된 FastAPI 런타임 경계로 둔다.
 - 브라우저는 업비트 키를 보유하지 않고 업비트에 직접 연결하지 않는다.
+- REST 실행과 하향 WebSocket은 웹 역방향 프록시가 서버에서 주입한 운영자 토큰을 검증한다. REST 토큰 누락·불일치는 요청 본문 검증과 업비트 상향 호출 전에 거부한다.
 - 게이트웨이는 임의 URL 대신 `docs/contracts/upbit/upbit-api-catalog.yaml`의 `endpoint_id`만 받는다.
 - 공식 REST·WebSocket 기능, 파라미터, 요청 제한 그룹, 안전 등급은 카탈로그를 단일 기준(source of truth)으로 둔다.
 - 조회는 `read`, `POST /v1/orders/test`는 `test`, 실제 주문·모든 취소·자산 이전·입출금 생성·취소·트래블룰 검증은 `blocked`로 분류한다.

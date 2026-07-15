@@ -7,7 +7,10 @@ from pathlib import Path
 
 import httpx
 
-from goodmoneying_upbit_gateway.live_verification import run_safe_verification
+from goodmoneying_upbit_gateway.live_verification import (
+    run_safe_verification,
+    safe_verification_succeeded,
+)
 
 
 def main() -> int:
@@ -19,8 +22,7 @@ def main() -> int:
     with httpx.Client(timeout=10) as client:
         report = run_safe_verification(args.key_file, http_client=client)
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    public = report["allowed_results"][0]
-    return 0 if public["status_code"] == 200 else 1
+    return 0 if safe_verification_succeeded(report) else 1
 
 
 if __name__ == "__main__":

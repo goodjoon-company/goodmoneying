@@ -1,12 +1,22 @@
+import hmac
 import os
 from datetime import date, datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    Security,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.security import APIKeyHeader
 from pydantic import AnyUrl, BaseModel, ConfigDict, Field
 
 from goodmoneying_upbit_gateway.auth import (
@@ -139,7 +149,7 @@ ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
 
 TRACE_RESPONSES: dict[int | str, dict[str, Any]] = {
     status: {"model": TraceEnvelope, "description": "업비트 상향 JSON 응답과 마스킹된 추적"}
-    for status in (201, 400, 401, 418, 429, 500)
+    for status in (201, 400, 418, 429, 500)
 }
 
 MIXED_RESPONSES: dict[int | str, dict[str, Any]] = {
@@ -147,7 +157,7 @@ MIXED_RESPONSES: dict[int | str, dict[str, Any]] = {
         "model": TraceEnvelope | ErrorResponse,
         "description": "로컬 게이트웨이 오류 또는 상태를 보존한 업비트 상향 응답",
     }
-    for status in (403, 404, 422, 502, 503, 504)
+    for status in (401, 403, 404, 422, 502, 503, 504)
 }
 
 DEFAULT_TRACE_RESPONSE: dict[int | str, dict[str, Any]] = {
@@ -175,11 +185,17 @@ def create_app(
     *,
     executor: UpbitExecutor | None = None,
     websocket_security: WebSocketSecuritySettings | None = None,
+    rest_operator_token: str | None = None,
 ) -> FastAPI:
     catalog = load_catalog()
     request_executor = executor or _default_executor(catalog)
     downstream_security = websocket_security or WebSocketSecuritySettings.from_environment(
         os.environ
+    )
+    expected_rest_operator_token = (
+        rest_operator_token
+        if rest_operator_token is not None
+        else os.environ.get("UPBIT_GATEWAY_OPERATOR_TOKEN", "")
     )
     app = FastAPI(title="goodmoneying 업비트 API 게이트웨이", version="0.1.0")
     websocket_connect_limit = catalog["rate_limits"]["websocket-connect"]
@@ -187,6 +203,38 @@ def create_app(
         per_second=websocket_connect_limit["requests"],
         per_minute=websocket_connect_limit["requests"] * 60,
     )
+
+    operator_token_header = APIKeyHeader(
+        name="X-Operator-Token",
+        scheme_name="OperatorToken",
+        description="같은 출처 역방향 프록시가 서버에서 주입하는 운영자 토큰",
+        auto_error=False,
+    )
+
+    async def require_rest_operator_token(
+        supplied_token: Annotated[str | None, Security(operator_token_header)],
+    ) -> None:
+        supplied_token = supplied_token or ""
+        matches = hmac.compare_digest(
+            supplied_token.encode("utf-8"),
+            expected_rest_operator_token.encode("utf-8"),
+        )
+        if not supplied_token:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "OPERATOR_TOKEN_REQUIRED",
+                    "message": "X-Operator-Token 헤더가 필요합니다.",
+                },
+            )
+        if not expected_rest_operator_token or not matches:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "OPERATOR_TOKEN_INVALID",
+                    "message": "운영자 토큰이 올바르지 않습니다.",
+                },
+            )
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(
@@ -222,6 +270,7 @@ def create_app(
         "/v1/requests",
         response_model=TraceEnvelope,
         responses=(ERROR_RESPONSES | TRACE_RESPONSES | MIXED_RESPONSES | DEFAULT_TRACE_RESPONSE),
+        dependencies=[Depends(require_rest_operator_token)],
     )
     def execute_request(payload: GatewayRequest, request: Request) -> JSONResponse:
         endpoint = rest_endpoint_by_id(catalog, payload.endpoint_id)

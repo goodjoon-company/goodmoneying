@@ -124,9 +124,38 @@ def _execute(base_url: str, endpoint_id: str, parameters: dict[str, object]) -> 
     return httpx.post(
         f"{base_url}/v1/requests",
         json={"endpoint_id": endpoint_id, "parameters": parameters},
-        headers={"Origin": "https://browser.example"},
+        headers={
+            "Origin": "https://browser.example",
+            "X-Operator-Token": E2E_OPERATOR_TOKEN,
+        },
         timeout=3,
     )
+
+
+def test_actual_gateway_process_requires_correct_rest_operator_token() -> None:
+    with _processes() as (fake_url, gateway_url, _, _):
+        payload = {"endpoint_id": "rest.list-trading-pairs", "parameters": {}}
+        calls_before = httpx.get(f"{fake_url}/__calls", timeout=3).json()
+        missing = httpx.post(f"{gateway_url}/v1/requests", json=payload, timeout=3)
+        invalid = httpx.post(
+            f"{gateway_url}/v1/requests",
+            headers={"X-Operator-Token": "wrong-token"},
+            json=payload,
+            timeout=3,
+        )
+        calls_after_rejections = httpx.get(f"{fake_url}/__calls", timeout=3).json()
+        valid = _execute(gateway_url, "rest.list-trading-pairs", {})
+
+    assert (missing.status_code, missing.json()["detail"]["code"]) == (
+        401,
+        "OPERATOR_TOKEN_REQUIRED",
+    )
+    assert (invalid.status_code, invalid.json()["detail"]["code"]) == (
+        403,
+        "OPERATOR_TOKEN_INVALID",
+    )
+    assert calls_after_rejections == calls_before
+    assert valid.status_code == 200
 
 
 def test_actual_gateway_process_uses_canonical_authenticated_query() -> None:

@@ -4,9 +4,9 @@
 
 `apps/upbit_gateway/`는 브라우저와 업비트 Open API 사이의 독립 보안·운영 경계다. 카탈로그의 `endpoint_id`만 받아 공식 경로를 선택하고, 키·JWT·Authorization 헤더·쿼리 해시(query hash)를 브라우저·응답·로그에 노출하지 않는다. 이 모듈은 REST·공개/비공개 WebSocket, JWT 인증(authentication), 그룹별 요청 제한(rate limit), `Remaining-Req`, 429·418 냉각(cooldown), 재연결과 마스킹된 추적 봉투(Trace Envelope)를 소유한다.
 
-Issue #20의 REST 실행기는 `read`와 공식 `POST /v1/orders/test`인 `test`만 상향 호출한다. `blocked`는 자격 증명 로드, 요청 제한기, HTTP 클라이언트보다 먼저 로컬 403으로 종료한다. 알 수 없는 REST 기능은 로컬 404, 계약 위반은 로컬 422, 상향 시간 초과는 로컬 504, 비 JSON 응답은 로컬 502로 구분한다. 명시한 상향 JSON 상태뿐 아니라 501·505 같은 임의 상태도 원래 상태의 추적 봉투(Trace Envelope)로 보존한다. 403·404·422·502·503·504는 로컬 오류와 상향 상태가 겹치므로 응답 본문 스키마(schema)로 구분한다.
+Issue #20의 REST 실행기는 `read`와 공식 `POST /v1/orders/test`인 `test`만 상향 호출한다. `POST /v1/requests`는 카탈로그 조회와 실행 전에 운영자 토큰을 검증해 누락은 401, 오류는 403으로 종료한다. `blocked`는 자격 증명 로드, 요청 제한기, HTTP 클라이언트보다 먼저 로컬 403으로 종료한다. 알 수 없는 REST 기능은 로컬 404, 계약 위반은 로컬 422, 상향 시간 초과는 로컬 504, 비 JSON 응답은 로컬 502로 구분한다. 명시한 상향 JSON 상태뿐 아니라 501·505 같은 임의 상태도 원래 상태의 추적 봉투(Trace Envelope)로 보존한다. 401·403·404·422·502·503·504는 로컬 오류와 상향 상태가 겹치므로 응답 본문 스키마(schema)로 구분한다.
 
-웹 정적 서버의 같은 출처 역방향 프록시(reverse proxy)는 운영자 토큰을 서버에서 주입한다. 하향 WebSocket은 운영자 토큰과 `UPBIT_GATEWAY_ALLOWED_ORIGINS`의 명시적 출처 허용 목록을 모두 만족해야 한다. 전달 `Host`·`X-Forwarded-Host`는 DNS 재바인딩(DNS rebinding)에 악용될 수 있으므로 인증 근거로 사용하지 않는다.
+웹 정적 서버의 같은 출처 역방향 프록시(reverse proxy)는 운영자 토큰을 서버에서 주입한다. REST 실행은 `UPBIT_GATEWAY_OPERATOR_TOKEN`과 `X-Operator-Token`을 상수 시간 비교(constant-time comparison)하며, health와 카탈로그는 토큰 없이 조회할 수 있다. 하향 WebSocket은 운영자 토큰과 `UPBIT_GATEWAY_ALLOWED_ORIGINS`의 명시적 출처 허용 목록을 모두 만족해야 한다. 전달 `Host`·`X-Forwarded-Host`는 DNS 재바인딩(DNS rebinding)에 악용될 수 있으므로 인증 근거로 사용하지 않는다.
 
 ## 책임이 아닌 것
 
@@ -35,8 +35,10 @@ sequenceDiagram
     G->>C: v1.6.3 계약 읽기
     C-->>G: endpoint_id·파라미터·안전 등급
     G-->>B: 키 없는 카탈로그
-    B->>G: POST /v1/requests(endpoint_id, parameters)
-    alt blocked endpoint_id
+    B->>G: POST /v1/requests + 서버 주입 운영자 토큰
+    alt 토큰 누락 또는 오류
+        G-->>B: 401 OPERATOR_TOKEN_REQUIRED 또는 403 OPERATOR_TOKEN_INVALID
+    else blocked endpoint_id
         G-->>B: 403 POLICY_BLOCKED
     else 알 수 없는 endpoint_id
         G-->>B: 404 UNKNOWN_ENDPOINT

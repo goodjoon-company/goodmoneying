@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import httpx
+import pytest
 
 from goodmoneying_upbit_gateway.live_verification import parse_key_file, run_safe_verification
+
+_CLI_PATH = Path(__file__).parents[2] / "scripts" / "verify_upbit_safe_live.py"
+_CLI_SPEC = importlib.util.spec_from_file_location("verify_upbit_safe_live", _CLI_PATH)
+assert _CLI_SPEC is not None and _CLI_SPEC.loader is not None
+verify_upbit_safe_live = importlib.util.module_from_spec(_CLI_SPEC)
+_CLI_SPEC.loader.exec_module(verify_upbit_safe_live)
 
 
 def test_parse_key_file_accepts_labeled_values_without_returning_labels(tmp_path: Path) -> None:
@@ -84,3 +93,103 @@ def test_safe_verification_calls_only_public_read_authenticated_read_and_order_t
     assert secret_key not in rendered
     assert "Authorization" not in rendered
     assert "Bearer" not in rendered
+
+
+def _safe_verification_report(
+    *,
+    public: tuple[int | None, str | None] = (200, None),
+    authenticated: tuple[int | None, str | None] = (200, None),
+    order_test: tuple[int | None, str | None] = (201, None),
+) -> dict[str, object]:
+    def result(
+        endpoint_id: str, outcome: tuple[int | None, str | None]
+    ) -> dict[str, object]:
+        status_code, error_name = outcome
+        item: dict[str, object] = {
+            "endpoint_id": endpoint_id,
+            "status_code": status_code,
+        }
+        if error_name is not None:
+            item["error_name"] = error_name
+        return item
+
+    return {
+        "allowed_results": [
+            result("rest.list-trading-pairs", public),
+            result("rest.get-balance", authenticated),
+            result("rest.order-test", order_test),
+        ],
+        "blocked_verification": {
+            "catalog_count": 14,
+            "locally_blocked": 14,
+            "upstream_calls": 0,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("authenticated", "order_test"),
+    [
+        ((200, None), (201, None)),
+        ((401, "no_authorization_ip"), (400, "under_min_total_bid")),
+        ((401, "out_of_scope"), (401, "no_authorization_ip")),
+    ],
+)
+def test_cli_returns_zero_only_for_explicitly_allowed_safe_outcomes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    authenticated: tuple[int | None, str | None],
+    order_test: tuple[int | None, str | None],
+) -> None:
+    monkeypatch.setattr(
+        verify_upbit_safe_live,
+        "run_safe_verification",
+        lambda *_args, **_kwargs: _safe_verification_report(
+            authenticated=authenticated,
+            order_test=order_test,
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["verify_upbit_safe_live.py", "--key-file", str(tmp_path / "unused-key.txt")],
+    )
+
+    assert verify_upbit_safe_live.main() == 0
+
+
+@pytest.mark.parametrize(
+    ("public", "authenticated", "order_test"),
+    [
+        ((None, "UpstreamConnectionError"), (200, None), (201, None)),
+        ((200, None), (None, "UpstreamProtocolError"), (201, None)),
+        ((200, None), (200, None), (None, "UpstreamTimeout")),
+        ((200, None), (403, "no_authorization_ip"), (201, None)),
+        ((200, None), (401, "invalid_access_key"), (201, None)),
+        ((200, None), (200, None), (400, "validation_error")),
+        ((200, None), (200, None), (200, None)),
+    ],
+)
+def test_cli_returns_nonzero_for_transport_or_unexpected_outcomes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    public: tuple[int | None, str | None],
+    authenticated: tuple[int | None, str | None],
+    order_test: tuple[int | None, str | None],
+) -> None:
+    monkeypatch.setattr(
+        verify_upbit_safe_live,
+        "run_safe_verification",
+        lambda *_args, **_kwargs: _safe_verification_report(
+            public=public,
+            authenticated=authenticated,
+            order_test=order_test,
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["verify_upbit_safe_live.py", "--key-file", str(tmp_path / "unused-key.txt")],
+    )
+
+    assert verify_upbit_safe_live.main() == 1

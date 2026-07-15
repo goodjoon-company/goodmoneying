@@ -31,6 +31,17 @@ class ClosedDownstream:
         raise RuntimeError('Cannot call "send" once a close message has been sent.')
 
 
+class ClosingDownstream(FakeDownstream):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = False
+
+    async def send_json(self, event: dict[str, Any]) -> None:
+        if self.closed:
+            raise RuntimeError('Cannot call "send" once a close message has been sent.')
+        await super().send_json(event)
+
+
 class FakeUpstream:
     def __init__(self) -> None:
         self.sent: list[str] = []
@@ -150,6 +161,58 @@ def test_downstream_disconnect_is_not_retried_as_an_error_response() -> None:
         await session.close(notify=False)
 
     asyncio.run(scenario())
+
+
+def test_downstream_disconnect_while_forwarding_frame_closes_without_reconnect() -> None:
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    async def scenario() -> tuple[ClosingDownstream, FakeConnector, asyncio.Task[None]]:
+        downstream = ClosingDownstream()
+        connector = FakeConnector()
+        session = GatewayWebSocketSession(
+            downstream=downstream,
+            catalog=load_catalog(),
+            settings=WebSocketUpstreamSettings.production(load_catalog()),
+            connector=connector,
+            sleep=sleep,
+        )
+        await session.handle(
+            {
+                "action": "connect",
+                "request_id": "connect",
+                "visibility": "public",
+                "ticket": "ticket",
+                "format": "DEFAULT",
+            }
+        )
+        await session.handle(
+            {
+                "action": "subscribe",
+                "request_id": "subscribe",
+                "endpoint_id": "websocket.ticker",
+                "parameters": {"codes": ["KRW-BTC"]},
+            }
+        )
+        reader = session._reader_task
+        assert reader is not None
+        downstream.closed = True
+        await connector.connections[0].messages.put(
+            '{"type":"ticker","code":"KRW-BTC","trade_price":100}'
+        )
+        await asyncio.wait_for(reader, timeout=1)
+        await session.close(notify=False)
+        return downstream, connector, reader
+
+    downstream, connector, reader = asyncio.run(scenario())
+
+    assert reader.exception() is None
+    assert sleeps == []
+    assert len(connector.connections) == 1
+    assert connector.connections[0].closed is True
+    assert all(event.get("state") != "reconnecting" for event in downstream.events)
 
 
 def test_private_connect_uses_server_only_authorization_and_missing_credentials_is_503() -> None:

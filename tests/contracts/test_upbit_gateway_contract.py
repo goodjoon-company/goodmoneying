@@ -120,6 +120,11 @@ def test_catalog_defines_typed_parameters_rate_limits_and_official_sources() -> 
     }
     assert by_id["rest.order-test"]["safety"] == "test"
     assert by_id["rest.order-test"]["rate_limit_group"] == "order-test"
+    assert by_id["rest.get-order"]["any_of_required"] == [["uuid"], ["identifier"]]
+    assert by_id["rest.get-deposit"]["any_of_required"] == [
+        ["uuid"],
+        ["txid", "currency"],
+    ]
 
 
 def test_catalog_blocks_every_state_changing_operation_except_order_test() -> None:
@@ -235,6 +240,12 @@ def test_gateway_openapi_accepts_endpoint_id_and_never_arbitrary_url() -> None:
         "application/json"
     ]["schema"]
     assert catalog_schema == {"$ref": "#/components/schemas/UpbitApiCatalog"}
+    trace = contract["components"]["schemas"]["TraceEnvelope"]
+    assert trace["required"] == [
+        "trace_id", "endpoint_id", "request", "response", "rate_limit", "duration_ms", "received_at"
+    ]
+    assert trace["properties"]["request"] == {"$ref": "#/components/schemas/TraceRequest"}
+    assert trace["properties"]["response"] == {"$ref": "#/components/schemas/TraceResponse"}
 
 
 def test_checked_openapi_and_fastapi_runtime_have_status_response_parity() -> None:
@@ -247,7 +258,9 @@ def test_checked_openapi_and_fastapi_runtime_have_status_response_parity() -> No
             runtime["paths"][path][method]["responses"]
         )
 
-    for status in ("403", "404", "501", "422"):
+    statuses = {"200", "201", "400", "401", "403", "404", "418", "422", "429", "502", "503", "504"}
+    assert set(checked["paths"]["/v1/requests"]["post"]["responses"]) == statuses
+    for status in statuses:
         checked_schema = checked["paths"]["/v1/requests"]["post"]["responses"][status][
             "content"
         ]["application/json"]["schema"]
@@ -270,7 +283,10 @@ def test_checked_openapi_and_fastapi_runtime_have_catalog_schema_semantic_parity
         "application/json"
     ]["schema"] == health_response
 
-    for schema_name in ("Health", "RestInventory", "CatalogEntry", "UpbitApiCatalog"):
+    for schema_name in (
+        "Health", "RestInventory", "CatalogEntry", "UpbitApiCatalog",
+        "TraceRequest", "TraceResponse", "TraceRateLimit", "TraceEnvelope",
+    ):
         assert _semantic_schema(checked["components"]["schemas"][schema_name]) == (
             _semantic_schema(runtime["components"]["schemas"][schema_name])
         )

@@ -340,7 +340,7 @@ rest_endpoints:
     parameters:
       - {name: uuid, location: query, type: string, required: false}
       - {name: identifier, location: query, type: string, required: false}
-    constraints: [uuid 또는 identifier 중 하나 필수]
+    any_of_required: [[uuid], [identifier]]
     rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/get-order.md
@@ -400,7 +400,7 @@ rest_endpoints:
     parameters:
       - {name: uuid, location: query, type: string, required: false}
       - {name: identifier, location: query, type: string, required: false}
-    constraints: [uuid 또는 identifier 중 하나 필수]
+    any_of_required: [[uuid], [identifier]]
     rate_limit_group: default
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/cancel-order.md
@@ -510,7 +510,7 @@ rest_endpoints:
       - {name: uuid, location: query, type: string, required: false}
       - {name: txid, location: query, type: string, required: false}
       - {name: currency, location: query, type: string, required: false}
-    constraints: [uuid 또는 txid 중 하나 필수]
+    any_of_required: [[uuid], [txid]]
     rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/get-withdrawal.md
@@ -611,7 +611,7 @@ rest_endpoints:
       - {name: currency, location: query, type: string, required: false}
       - {name: uuid, location: query, type: string, required: false}
       - {name: txid, location: query, type: string, required: false}
-    constraints: [uuid 또는 txid와 currency 조합 중 하나 필수]
+    any_of_required: [[uuid], [txid, currency]]
     rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/get-deposit.md

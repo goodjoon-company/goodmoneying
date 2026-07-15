@@ -25,18 +25,33 @@ paths:
   /v1/requests:
     post:
       operationId: executeCatalogRequest
-      description: endpoint_id 허용 목록과 비파괴 정책을 판정하며 Issue #19에서는 상향 호출을 수행하지 않는다.
+      description: endpoint_id 허용 목록과 비파괴 정책을 먼저 판정하고 read·test 기능만 업비트 상향 호출한다.
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: "#/components/schemas/GatewayRequest"}
       responses:
-        "501":
-          description: 알려진 endpoint_id의 상향 호출 미구현
+        "200":
+          description: 업비트 상향 성공 응답
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/ErrorResponse"}
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
+        "201":
+          description: 공식 주문 생성 테스트 성공 응답
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
+        "400":
+          description: 업비트 상향 요청 오류
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
+        "401":
+          description: 업비트 상향 인증 오류
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
         "403":
           description: 비파괴 정책에 따라 차단된 endpoint_id
           content:
@@ -51,7 +66,32 @@ paths:
           description: 요청 검증 오류
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/HTTPValidationError"}
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+        "418":
+          description: 업비트 상향 일시 차단 응답
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
+        "429":
+          description: 업비트 상향 요청 제한 초과 응답
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TraceEnvelope"}
+        "502":
+          description: 업비트 상향 비 JSON 응답
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+        "503":
+          description: 인증 설정 오류
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+        "504":
+          description: 업비트 상향 호출 시간 초과
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
 components:
   schemas:
     Health:
@@ -126,6 +166,47 @@ components:
         parameters:
           type: object
           additionalProperties: true
+    TraceRequest:
+      type: object
+      additionalProperties: false
+      required: [method, path, parameters]
+      properties:
+        method: {type: string}
+        path: {type: string}
+        parameters: {type: object, additionalProperties: true}
+    TraceResponse:
+      type: object
+      additionalProperties: false
+      required: [status_code, body]
+      properties:
+        status_code: {type: integer}
+        body: {}
+    TraceRateLimit:
+      type: object
+      additionalProperties: false
+      required: [group, remaining_sec, retry_after]
+      properties:
+        group: {type: string}
+        remaining_sec:
+          anyOf:
+            - {type: integer}
+            - {type: "null"}
+        retry_after:
+          anyOf:
+            - {type: string}
+            - {type: "null"}
+    TraceEnvelope:
+      type: object
+      additionalProperties: false
+      required: [trace_id, endpoint_id, request, response, rate_limit, duration_ms, received_at]
+      properties:
+        trace_id: {type: string, format: uuid}
+        endpoint_id: {type: string}
+        request: {$ref: "#/components/schemas/TraceRequest"}
+        response: {$ref: "#/components/schemas/TraceResponse"}
+        rate_limit: {$ref: "#/components/schemas/TraceRateLimit"}
+        duration_ms: {type: number, minimum: 0}
+        received_at: {type: string, format: date-time}
     ErrorResponse:
       type: object
       additionalProperties: false

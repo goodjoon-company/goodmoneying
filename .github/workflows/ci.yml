@@ -43,7 +43,7 @@ jobs:
         run: uv run ruff check .
 
       - name: Python type check
-        run: uv run mypy apps/api apps/worker packages/shared tests
+        run: uv run mypy apps/api apps/worker apps/upbit_gateway packages/shared tests
 
       - name: Python tests
         run: uv run pytest
@@ -65,6 +65,9 @@ jobs:
 
       - name: Docker build worker
         run: docker build -f apps/worker/Dockerfile -t goodmoneying-worker:ci .
+
+      - name: Docker build upbit gateway
+        run: docker build -f apps/upbit_gateway/Dockerfile -t goodmoneying-upbit-gateway:ci .
 
       - name: Docker build web
         run: docker build -f apps/web/Dockerfile -t goodmoneying-web:ci .

@@ -4,15 +4,34 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from goodmoneying_upbit_gateway.auth import Credentials
+from goodmoneying_upbit_gateway.executor import UpbitExecutor
+from goodmoneying_upbit_gateway.rate_limit import GroupRateLimiter
 
-def _client() -> TestClient:
+
+def _client(executor: UpbitExecutor | None = None) -> TestClient:
     module = importlib.import_module("goodmoneying_upbit_gateway.main")
     create_app = cast(Any, module.create_app)
-    app = cast(FastAPI, create_app())
+    app = cast(FastAPI, create_app(executor=executor))
     return TestClient(app)
+
+
+def _fake_executor() -> UpbitExecutor:
+    return UpbitExecutor(
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={"markets": ["KRW-BTC"]})
+            )
+        ),
+        credentials_provider=lambda: Credentials("fake-access", "s" * 64),
+        limiter=GroupRateLimiter(),
+        base_url="http://127.0.0.1:8123",
+        allow_loopback_test=True,
+    )
 
 
 def test_health_reports_service_and_catalog_version() -> None:
@@ -43,29 +62,25 @@ def test_catalog_returns_contract_without_contacting_upbit() -> None:
     assert all("source_url" in endpoint for endpoint in payload["rest_endpoints"])
 
 
-def test_execution_route_is_not_implemented_in_contract_skeleton() -> None:
-    response = _client().post(
+def test_execution_route_returns_trace_envelope_from_upstream() -> None:
+    response = _client(_fake_executor()).post(
         "/v1/requests",
         json={"endpoint_id": "rest.list-trading-pairs", "parameters": {}},
     )
 
-    assert response.status_code == 501
-    assert response.json() == {
-        "detail": {
-            "code": "UPSTREAM_NOT_IMPLEMENTED",
-            "message": "Issue #19 범위에서는 업비트 상향 호출을 수행하지 않습니다.",
-        }
-    }
+    assert response.status_code == 200
+    assert response.json()["endpoint_id"] == "rest.list-trading-pairs"
+    assert response.json()["response"]["body"] == {"markets": ["KRW-BTC"]}
 
 
-def test_execution_route_distinguishes_blocked_unimplemented_unknown_and_invalid() -> None:
-    client = _client()
+def test_execution_route_distinguishes_blocked_unknown_and_invalid() -> None:
+    client = _client(_fake_executor())
 
     blocked = client.post(
         "/v1/requests",
         json={"endpoint_id": "rest.new-order", "parameters": {}},
     )
-    unimplemented = client.post(
+    implemented = client.post(
         "/v1/requests",
         json={"endpoint_id": "rest.list-trading-pairs", "parameters": {}},
     )
@@ -79,10 +94,7 @@ def test_execution_route_distinguishes_blocked_unimplemented_unknown_and_invalid
     )
 
     assert (blocked.status_code, blocked.json()["detail"]["code"]) == (403, "POLICY_BLOCKED")
-    assert (unimplemented.status_code, unimplemented.json()["detail"]["code"]) == (
-        501,
-        "UPSTREAM_NOT_IMPLEMENTED",
-    )
+    assert implemented.status_code == 200
     assert (unknown.status_code, unknown.json()["detail"]["code"]) == (404, "UNKNOWN_ENDPOINT")
     assert invalid.status_code == 422
 

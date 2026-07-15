@@ -2,7 +2,7 @@
 
 Status: Accepted
 Date: 2026-07-16
-Related Issue: [#19](https://github.com/goodjoon-company/goodmoneying/issues/19)
+Related Issues: [#19](https://github.com/goodjoon-company/goodmoneying/issues/19), [#20](https://github.com/goodjoon-company/goodmoneying/issues/20)
 
 ## 맥락
 
@@ -16,7 +16,11 @@ Related Issue: [#19](https://github.com/goodjoon-company/goodmoneying/issues/19)
 - 공식 REST·WebSocket 기능, 파라미터, 요청 제한 그룹, 안전 등급은 카탈로그를 단일 기준(source of truth)으로 둔다.
 - 조회는 `read`, `POST /v1/orders/test`는 `test`, 실제 주문·모든 취소·자산 이전·입출금 생성·취소·트래블룰 검증은 `blocked`로 분류한다.
 - `blocked`는 로컬 미리보기와 정책 오류까지만 허용하고 업비트에는 전송하지 않는다.
-- Issue #19에서는 health·catalog와 정책 차단·기능 식별·요청 검증·상향 미구현을 구분하는 로컬 판정 경계만 만들며 인증이나 상향 네트워크 호출은 구현하지 않는다.
+- REST 실행은 안전 등급을 가장 먼저 판정하고 `read`·`test`만 허용한다. `blocked`는 자격 증명, 제한기, 네트워크보다 먼저 종료한다.
+- 프로덕션 상향 URL은 `https://api.upbit.com`으로 고정하고, 가짜 상류는 명시적 테스트 플래그가 있는 루프백(loopback) 주소만 허용한다.
+- 브라우저 `Origin`은 업비트에 전달하지 않되 시세 요청의 공식 `origin` 그룹 제한 1회/10초에는 반영한다.
+- 자격 증명은 저장소 밖 환경 변수 또는 절대 경로의 읽기 전용 일반 파일에서 지연 로드하고 두 소스를 혼용하지 않는다.
+- 429·418은 자동 재시도하지 않고 원래 상태를 마스킹된 추적 봉투(Trace Envelope)로 반환하며 그룹 냉각(cooldown)을 적용한다.
 
 ## 대안과 트레이드오프
 
@@ -30,9 +34,10 @@ Related Issue: [#19](https://github.com/goodjoon-company/goodmoneying/issues/19)
 
 - 카탈로그와 계약 테스트가 공식 문서 드리프트(drift) 및 상태 변경 안전 등급 회귀를 차단한다.
 - 운영 서버와 수집 워커는 기존 역할을 유지하고 게이트웨이 장애의 영향을 직접 받지 않는다.
-- 게이트웨이의 인증 정보 저장, 실행 제한기, 재연결, 운영 배포와 모니터링은 후속 구현이 필요하다.
+- REST 인증, 실행 제한기, 개발 런타임과 컨테이너 경계는 Issue #20에서 독립 검증한다.
+- WebSocket 재연결, 운영 배포 모니터링과 프론트엔드 시각화는 후속 구현이 필요하다.
 
 ## 후속 작업
 
-- Issue #20에서 REST 실행 엔진·JWT·요청 제한·민감 정보 마스킹과 가짜 업비트 서버 통합 테스트를 구현한다.
+- Issue #20의 가짜 상류 E2E는 실제 게이트웨이 프로세스로 공개 조회, 인증 조회, 공식 주문 테스트와 400·401·429·418을 검증한다.
 - 프론트엔드, WebSocket 중계, 실제 허용된 비파괴 연동은 분리된 후속 Issue에서 구현한다.

@@ -215,6 +215,48 @@ def test_downstream_disconnect_while_forwarding_frame_closes_without_reconnect()
     assert all(event.get("state") != "reconnecting" for event in downstream.events)
 
 
+def test_downstream_disconnect_during_upstream_error_recovery_closes_without_task_error() -> None:
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    async def scenario() -> tuple[ClosingDownstream, FakeConnector, asyncio.Task[None]]:
+        downstream = ClosingDownstream()
+        connector = FakeConnector()
+        session = GatewayWebSocketSession(
+            downstream=downstream,
+            catalog=load_catalog(),
+            settings=WebSocketUpstreamSettings.production(load_catalog()),
+            connector=connector,
+            sleep=sleep,
+        )
+        await session.handle(
+            {
+                "action": "connect",
+                "request_id": "connect",
+                "visibility": "public",
+                "ticket": "ticket",
+                "format": "DEFAULT",
+            }
+        )
+        reader = session._reader_task
+        assert reader is not None
+        downstream.closed = True
+        await connector.connections[0].messages.put(RuntimeError("upstream read failed"))
+        await asyncio.wait_for(reader, timeout=1)
+        await session.close(notify=False)
+        return downstream, connector, reader
+
+    downstream, connector, reader = asyncio.run(scenario())
+
+    assert reader.exception() is None
+    assert sleeps == []
+    assert len(connector.connections) == 1
+    assert connector.connections[0].closed is True
+    assert all(event.get("state") != "reconnecting" for event in downstream.events)
+
+
 def test_private_connect_uses_server_only_authorization_and_missing_credentials_is_503() -> None:
     def missing() -> Credentials:
         raise CredentialConfigurationError("접근 키와 비밀 키를 한 쌍으로 설정해야 합니다.")

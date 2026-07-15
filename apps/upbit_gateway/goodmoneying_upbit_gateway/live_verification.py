@@ -45,6 +45,7 @@ SAFE_LIVE_ALLOWED_OUTCOMES: Mapping[str, frozenset[tuple[int, str | None]]] = {
         }
     ),
 }
+EXPECTED_BLOCKED_ENDPOINT_COUNT = 14
 
 
 def parse_key_file(path: Path) -> Credentials:
@@ -185,7 +186,7 @@ def safe_verification_succeeded(report: Mapping[str, object]) -> bool:
     return (
         isinstance(catalog_count, int)
         and not isinstance(catalog_count, bool)
-        and catalog_count > 0
+        and catalog_count == EXPECTED_BLOCKED_ENDPOINT_COUNT
         and locally_blocked == catalog_count
         and upstream_calls == 0
     )

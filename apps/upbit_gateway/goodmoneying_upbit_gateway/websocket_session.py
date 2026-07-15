@@ -409,30 +409,33 @@ class GatewayWebSocketSession:
                 await self._auto_reconnect(generation)
 
     async def _auto_reconnect(self, generation: int) -> None:
-        delays = (0.25, 0.5, 1.0, 2.0, 5.0)
-        for delay in delays:
-            if self._closed or generation != self._generation:
-                return
-            await self._connection_event("reconnecting", None, retry_in=delay)
-            await self._sleep(delay)
-            if self._closed or generation != self._generation:
-                return
-            try:
-                await self._replace_upstream(request_id=None, resubscribe=True)
-                return
-            except DownstreamDisconnected:
-                raise
-            except Exception:
-                generation = self._generation
-        await self._error(
-            request_id=None,
-            code="UPSTREAM_CONNECTION_ERROR",
-            message="업비트 상향 웹소켓(WebSocket) 재연결에 실패했습니다.",
-            status=502,
-            recoverable=False,
-        )
-        await self._connection_event("closed", None)
-        await self.close(notify=False)
+        try:
+            delays = (0.25, 0.5, 1.0, 2.0, 5.0)
+            for delay in delays:
+                if self._closed or generation != self._generation:
+                    return
+                await self._connection_event("reconnecting", None, retry_in=delay)
+                await self._sleep(delay)
+                if self._closed or generation != self._generation:
+                    return
+                try:
+                    await self._replace_upstream(request_id=None, resubscribe=True)
+                    return
+                except DownstreamDisconnected:
+                    raise
+                except Exception:
+                    generation = self._generation
+            await self._error(
+                request_id=None,
+                code="UPSTREAM_CONNECTION_ERROR",
+                message="업비트 상향 웹소켓(WebSocket) 재연결에 실패했습니다.",
+                status=502,
+                recoverable=False,
+            )
+            await self._connection_event("closed", None)
+            await self.close(notify=False)
+        except DownstreamDisconnected:
+            await self.close(notify=False)
 
     async def _connection_event(
         self, state: str, request_id: str | None, *, retry_in: float | None = None

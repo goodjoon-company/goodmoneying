@@ -193,3 +193,27 @@ def test_cli_returns_nonzero_for_transport_or_unexpected_outcomes(
     )
 
     assert verify_upbit_safe_live.main() == 1
+
+
+def test_cli_rejects_blocked_inventory_drift_even_when_local_counts_match(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report = _safe_verification_report()
+    report["blocked_verification"] = {
+        "catalog_count": 13,
+        "locally_blocked": 13,
+        "upstream_calls": 0,
+    }
+    monkeypatch.setattr(
+        verify_upbit_safe_live,
+        "run_safe_verification",
+        lambda *_args, **_kwargs: report,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["verify_upbit_safe_live.py", "--key-file", str(tmp_path / "unused-key.txt")],
+    )
+
+    assert verify_upbit_safe_live.main() == 1

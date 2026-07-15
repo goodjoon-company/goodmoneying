@@ -42,7 +42,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set image tag
-        run: echo "IMAGE_TAG=release-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+        run: echo "IMAGE_TAG=release-${GITHUB_SHA}" >> "$GITHUB_ENV"
 
       - name: Prepare runner PATH
         run: |
@@ -137,6 +137,17 @@ jobs:
             export DOCKER_HOST='${DOCKER_HOST}'
             export DOCKER_BUILDKIT='${DOCKER_BUILDKIT}'
             '${RUNNER_DOCKER_BIN}' buildx build --platform '${BUILD_PLATFORMS}' --push --build-arg VITE_API_BASE_URL=/api -f apps/web/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG} .
+          "
+
+      - name: Build and push migrations
+        run: |
+          ssh -o BatchMode=yes "${RUNNER_LOGIN_SHELL_HOST}" "
+            set -euo pipefail
+            cd '${GITHUB_WORKSPACE}'
+            export DOCKER_CONFIG='${DOCKER_CONFIG}'
+            export DOCKER_HOST='${DOCKER_HOST}'
+            export DOCKER_BUILDKIT='${DOCKER_BUILDKIT}'
+            '${RUNNER_DOCKER_BIN}' buildx build --platform '${BUILD_PLATFORMS}' --push -f apps/migrations/Dockerfile -t ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-migrations:${IMAGE_TAG} .
           "
 
       - name: Deploy profile

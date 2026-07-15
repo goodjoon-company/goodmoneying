@@ -100,13 +100,30 @@ print_remote_compose() {
       "$base_dir" \
       "$script_name"
   done
-  printf 'ssh %s "cd '\''%s'\'' && DOCKER_CONFIG='\''%s'\'' PATH=%s docker compose --env-file '\''%s'\'' -f '\''%s'\'' pull"\n' \
-    "$host" \
-    "$base_dir" \
-    "$docker_config" \
-    "$REMOTE_DOCKER_PATH" \
-    "$remote_compose_env" \
-    "$remote_compose_file"
+  if [[ "$target_role" == "app" ]]; then
+    printf 'ssh %s "cd '\''%s'\'' && DOCKER_CONFIG='\''%s'\'' PATH=%s docker compose --env-file '\''%s'\'' -f '\''%s'\'' --profile migration pull"\n' \
+      "$host" \
+      "$base_dir" \
+      "$docker_config" \
+      "$REMOTE_DOCKER_PATH" \
+      "$remote_compose_env" \
+      "$remote_compose_file"
+    printf 'ssh %s "cd '\''%s'\'' && DOCKER_CONFIG='\''%s'\'' PATH=%s docker compose --env-file '\''%s'\'' -f '\''%s'\'' --profile migration run --rm migrate"\n' \
+      "$host" \
+      "$base_dir" \
+      "$docker_config" \
+      "$REMOTE_DOCKER_PATH" \
+      "$remote_compose_env" \
+      "$remote_compose_file"
+  else
+    printf 'ssh %s "cd '\''%s'\'' && DOCKER_CONFIG='\''%s'\'' PATH=%s docker compose --env-file '\''%s'\'' -f '\''%s'\'' pull"\n' \
+      "$host" \
+      "$base_dir" \
+      "$docker_config" \
+      "$REMOTE_DOCKER_PATH" \
+      "$remote_compose_env" \
+      "$remote_compose_file"
+  fi
   printf 'ssh %s "cd '\''%s'\'' && DOCKER_CONFIG='\''%s'\'' PATH=%s docker compose --env-file '\''%s'\'' -f '\''%s'\'' up -d"\n' \
     "$host" \
     "$base_dir" \
@@ -148,7 +165,12 @@ run_remote_compose() {
     scp "$script_path" "$host:$base_dir/$script_name"
     ssh "$host" "chmod +x '$base_dir/$script_name'"
   done
-  ssh "$host" "cd '$base_dir' && DOCKER_CONFIG='$docker_config' PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH docker compose --env-file '$remote_compose_env' -f '$remote_compose_file' pull"
+  if [[ "$target_role" == "app" ]]; then
+    ssh "$host" "cd '$base_dir' && DOCKER_CONFIG='$docker_config' PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH docker compose --env-file '$remote_compose_env' -f '$remote_compose_file' --profile migration pull"
+    ssh "$host" "cd '$base_dir' && DOCKER_CONFIG='$docker_config' PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH docker compose --env-file '$remote_compose_env' -f '$remote_compose_file' --profile migration run --rm migrate"
+  else
+    ssh "$host" "cd '$base_dir' && DOCKER_CONFIG='$docker_config' PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH docker compose --env-file '$remote_compose_env' -f '$remote_compose_file' pull"
+  fi
   ssh "$host" "cd '$base_dir' && DOCKER_CONFIG='$docker_config' PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH docker compose --env-file '$remote_compose_env' -f '$remote_compose_file' up -d"
 }
 

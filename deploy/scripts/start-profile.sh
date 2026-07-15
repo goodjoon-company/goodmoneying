@@ -29,8 +29,18 @@ print_compose_command() {
   local base_dir="$2"
   local compose_file="$3"
   local docker_config="$4"
+  local target_role="$5"
   local compose_env="$base_dir/deploy.compose.env"
 
+  if [[ "$target_role" == "app" ]]; then
+    printf 'ssh %s "cd '\''%s'\'' && DOCKER_CONFIG='\''%s'\'' PATH=%s docker compose --env-file '\''%s'\'' -f '\''%s'\'' --profile migration run --rm migrate"\n' \
+      "$host" \
+      "$base_dir" \
+      "$docker_config" \
+      "$REMOTE_DOCKER_PATH" \
+      "$compose_env" \
+      "$compose_file"
+  fi
   printf 'ssh %s "cd '\''%s'\'' && DOCKER_CONFIG='\''%s'\'' PATH=%s docker compose --env-file '\''%s'\'' -f '\''%s'\'' up -d"\n' \
     "$host" \
     "$base_dir" \
@@ -45,18 +55,22 @@ run_compose_command() {
   local base_dir="$2"
   local compose_file="$3"
   local docker_config="$4"
+  local target_role="$5"
   local compose_env="$base_dir/deploy.compose.env"
 
+  if [[ "$target_role" == "app" ]]; then
+    ssh "$host" "cd '$base_dir' && DOCKER_CONFIG='$docker_config' PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH docker compose --env-file '$compose_env' -f '$compose_file' --profile migration run --rm migrate"
+  fi
   ssh "$host" "cd '$base_dir' && DOCKER_CONFIG='$docker_config' PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH docker compose --env-file '$compose_env' -f '$compose_file' up -d"
 }
 
 if [[ "$DRY_RUN" == "1" ]]; then
-  print_compose_command "$GOODMONEYING_INFRA_HOST" "$GOODMONEYING_INFRA_BASE_DIR" "$GOODMONEYING_INFRA_COMPOSE" "$GOODMONEYING_INFRA_DOCKER_CONFIG"
-  print_compose_command "$GOODMONEYING_APP_HOST" "$GOODMONEYING_APP_BASE_DIR" "$GOODMONEYING_APP_COMPOSE" "$GOODMONEYING_APP_DOCKER_CONFIG"
-  print_compose_command "$GOODMONEYING_WEB_HOST" "$GOODMONEYING_WEB_BASE_DIR" "$GOODMONEYING_WEB_COMPOSE" "$GOODMONEYING_WEB_DOCKER_CONFIG"
+  print_compose_command "$GOODMONEYING_INFRA_HOST" "$GOODMONEYING_INFRA_BASE_DIR" "$GOODMONEYING_INFRA_COMPOSE" "$GOODMONEYING_INFRA_DOCKER_CONFIG" "infra"
+  print_compose_command "$GOODMONEYING_APP_HOST" "$GOODMONEYING_APP_BASE_DIR" "$GOODMONEYING_APP_COMPOSE" "$GOODMONEYING_APP_DOCKER_CONFIG" "app"
+  print_compose_command "$GOODMONEYING_WEB_HOST" "$GOODMONEYING_WEB_BASE_DIR" "$GOODMONEYING_WEB_COMPOSE" "$GOODMONEYING_WEB_DOCKER_CONFIG" "web"
   exit 0
 fi
 
-run_compose_command "$GOODMONEYING_INFRA_HOST" "$GOODMONEYING_INFRA_BASE_DIR" "$GOODMONEYING_INFRA_COMPOSE" "$GOODMONEYING_INFRA_DOCKER_CONFIG"
-run_compose_command "$GOODMONEYING_APP_HOST" "$GOODMONEYING_APP_BASE_DIR" "$GOODMONEYING_APP_COMPOSE" "$GOODMONEYING_APP_DOCKER_CONFIG"
-run_compose_command "$GOODMONEYING_WEB_HOST" "$GOODMONEYING_WEB_BASE_DIR" "$GOODMONEYING_WEB_COMPOSE" "$GOODMONEYING_WEB_DOCKER_CONFIG"
+run_compose_command "$GOODMONEYING_INFRA_HOST" "$GOODMONEYING_INFRA_BASE_DIR" "$GOODMONEYING_INFRA_COMPOSE" "$GOODMONEYING_INFRA_DOCKER_CONFIG" "infra"
+run_compose_command "$GOODMONEYING_APP_HOST" "$GOODMONEYING_APP_BASE_DIR" "$GOODMONEYING_APP_COMPOSE" "$GOODMONEYING_APP_DOCKER_CONFIG" "app"
+run_compose_command "$GOODMONEYING_WEB_HOST" "$GOODMONEYING_WEB_BASE_DIR" "$GOODMONEYING_WEB_COMPOSE" "$GOODMONEYING_WEB_DOCKER_CONFIG" "web"

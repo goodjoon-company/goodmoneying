@@ -6,7 +6,7 @@
 
 | 변경하려는 대상 | 먼저 읽을 파일 | 주 소비자 | 자동 검증 |
 |---|---|---|---|
-| 테이블·인덱스·제약조건 | `db/schema.sql` | API, 워커, 저장소 구현 | `tests/contracts/test_db_contract.py` |
+| 테이블·인덱스·제약조건 | `db/migrations/*.sql` | dbmate, API, 워커, 저장소 구현 | `tests/contracts/test_db_contract.py`, 마이그레이션 E2E |
 | HTTP 경로·요청·응답·오류 | `api/openapi.yaml` | 웹, FastAPI | `tests/contracts/test_api_contract.py` |
 | 코인 분석 실시간 메시지 | `api/realtime-analysis-websocket.schema.json` | 분석 화면, 운영 서버 | API·프론트엔드 메시지 테스트 |
 | 시스템 관리 실시간 메시지 | `api/realtime-system-management-websocket.md` | 시스템 관리 화면, 운영 서버 | API·프론트엔드 메시지 테스트 |
@@ -18,7 +18,7 @@
 
 | 영역 | 위치 | 예시 |
 |---|---|---|
-| DB | `docs/contracts/db/` | `schema.sql`, migration reference |
+| DB | `docs/contracts/db/` | 변경 이력 `migrations/*.sql`, 생성 스냅샷 `schema.sql` |
 | API | `docs/contracts/api/` | `openapi.yaml` |
 | Message | `docs/contracts/protobuf/` | `*.proto` |
 

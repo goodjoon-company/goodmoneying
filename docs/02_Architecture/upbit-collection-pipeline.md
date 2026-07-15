@@ -1,10 +1,10 @@
 # 업비트 수집 파이프라인 개발 사양
 
 Status: Accepted
-Last Updated: 2026-07-14
+Last Updated: 2026-07-15
 Related Product: `docs/01_Product.md`
 Related Task: `docs/Task/M1.md`
-Related DB Contract: `docs/contracts/db/schema.sql`
+Related DB Contract: `docs/contracts/db/migrations/`, `docs/contracts/db/schema.sql`
 Related API Contract: `docs/contracts/api/openapi.yaml`, `docs/contracts/api/realtime-analysis-websocket.schema.json`, `docs/contracts/api/realtime-system-management-websocket.md`
 
 ## 문서 역할
@@ -69,7 +69,7 @@ flowchart TB
 | 캔들 집계 워커(Candle Aggregation Worker) | 원천봉보다 오래된 집계 단위를 감지하고 작업 대상별 OHLCV rollup을 upsert, 진행률과 heartbeat 기록 | Python 단일 프로세스, 기본 5초 폴링 |
 | 운영 서버(Operations Server) | 화면 단위 View Model API, 원천 리소스 API, 쓰기 API, 저장된 worker 상태 조회 | FastAPI |
 | 운영 화면 | 데이터 수집관리 내비게이션, worker 현황판, 대시보드, Backfill 관리, 백필 제어, 관심종목, 코인 상세 레이어, 코인 분석 | React, 기존 대시보드/관심종목은 SSE(Server-Sent Events), 코인 분석은 WebSocket 증분 메시지, React Query HTTP 폴링(Polling) 보조 |
-| PostgreSQL | 원천 사실, 설정, 품질, 감사, 알림 이벤트 저장 | `docs/contracts/db/schema.sql` |
+| PostgreSQL | 원천 사실, 설정, 품질, 감사, 알림 이벤트 저장. API·워커 런타임은 DDL(Data Definition Language)을 실행하지 않는다. | 변경 이력 `docs/contracts/db/migrations/`, 생성 스냅샷 `docs/contracts/db/schema.sql` |
 
 ## 입력과 출력
 
@@ -205,7 +205,8 @@ flowchart TB
 
 ## 관련 계약
 
-- DB: `docs/contracts/db/schema.sql`
+- DB 변경 이력: `docs/contracts/db/migrations/`
+- DB 생성 스냅샷: `docs/contracts/db/schema.sql`
 - API: `docs/contracts/api/openapi.yaml`
 
 ## 리스크와 결정 게이트

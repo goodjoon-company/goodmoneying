@@ -15,11 +15,18 @@ def test_shared_time_helpers_use_kst() -> None:
     assert isoformat_kst(value) == "2026-01-01T00:00:00+09:00"
 
 
-def test_db_contract_declares_kst_timezone() -> None:
-    schema = Path("docs/contracts/db/schema.sql").read_text()
+def test_db_contract_declares_kst_timezone_for_current_database() -> None:
+    schema = Path(
+        "docs/contracts/db/migrations/20260715000100_initial_schema.sql"
+    ).read_text()
+    contract_readme = Path("docs/contracts/db/README.md").read_text()
 
     assert "SET TIME ZONE 'Asia/Seoul';" in schema
-    assert "ALTER DATABASE goodmoneying SET timezone TO 'Asia/Seoul';" in schema
+    assert "current_database()" in schema
+    assert "ALTER DATABASE %I SET timezone TO %L" in schema
+    assert "ALTER DATABASE goodmoneying" not in schema
+    assert "DB 소유자(database owner)" in contract_readme
+    assert "current_database()" in contract_readme
 
 
 def test_docker_runtime_uses_kst_timezone() -> None:

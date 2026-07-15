@@ -1,7 +1,7 @@
 # 아키텍처 개발 사양
 
 Status: Accepted
-Last Updated: 2026-07-14
+Last Updated: 2026-07-15
 
 ## 문서 역할과 읽는 순서
 
@@ -105,7 +105,7 @@ flowchart TB
 | 캔들 집계 워커(Candle Aggregation Worker) | 원천 워터마크와 집계 워터마크를 비교해 `5m/10m/30m/60m/1d/1w/1M` OHLCV를 생성한다. | 기본 5초 폴링, 대상별 멱등 upsert와 heartbeat를 기록한다. |
 | 운영 서버(Operations Server) | REST, SSE, WebSocket, 설정 변경, 백필 제어, 분석 조회를 제공한다. | 조회 중 무거운 수집·집계를 수행하지 않고 저장된 뷰 모델을 우선 읽는다. |
 | 운영 화면 | 관심종목, 코인 분석, 시스템 관리, 수집·Backfill 운영 기능을 렌더링한다. | 스트림 단절 시 각 화면 계약에 정의된 재연결 또는 HTTP 보조 경로를 사용한다. |
-| PostgreSQL | 원천 사실, 수집 설정·계획, 화면용 상태, 작업, 감사 기록을 보존한다. | `schema.sql`은 반복 적용 가능한 DDL(Data Definition Language)이다. |
+| PostgreSQL | 원천 사실, 수집 설정·계획, 화면용 상태, 작업, 감사 기록을 보존한다. | DB 변경의 단일 기준은 `docs/contracts/db/migrations/`이다. API·워커 런타임은 DDL(Data Definition Language)을 실행하지 않는다. |
 
 ## 핵심 데이터 흐름
 

@@ -82,10 +82,12 @@ def test_prod_home_profile_has_required_files() -> None:
     assert (profile_dir / "env-samples/web.env.sample").is_file()
     assert (profile_dir / "target/infra/compose.yml").is_file()
     assert (profile_dir / "target/app/compose.yml").is_file()
+    assert (ROOT / "apps/migrations/Dockerfile").is_file()
     assert (profile_dir / "target/web/compose.yml").is_file()
     assert (profile_dir / "target/infra/start.sh").is_file()
     assert (profile_dir / "target/infra/stop.sh").is_file()
     assert (profile_dir / "target/app/start.sh").is_file()
+    assert (profile_dir / "target/app/migrate.sh").is_file()
     assert (profile_dir / "target/app/stop.sh").is_file()
     assert (profile_dir / "target/app/start-api.sh").is_file()
     assert (profile_dir / "target/app/stop-api.sh").is_file()
@@ -122,6 +124,16 @@ def test_web_dockerfile_accepts_api_base_build_arg() -> None:
     assert "envsubst" in dockerfile
 
 
+def test_migration_dockerfile_pins_dbmate_image_digest() -> None:
+    dockerfile = (ROOT / "apps/migrations/Dockerfile").read_text()
+
+    assert (
+        "FROM ghcr.io/amacneil/dbmate:2.34.1@sha256:"
+        "3298bdfcb651af608e06d2e13ae12398c4056e5326d38ef31885973d83248d9c"
+        in dockerfile
+    )
+
+
 def test_web_nginx_proxy_preserves_websocket_upgrade_headers() -> None:
     nginx_template = (ROOT / "apps/web/nginx.conf.template").read_text()
 
@@ -137,6 +149,7 @@ def test_prod_home_compose_files_assign_expected_services() -> None:
     assert set(services(infra)) == {"postgres"}
     assert services(infra)["postgres"]["image"] == "postgres:17"
     assert set(services(app)) == {
+        "migrate",
         "api",
         "realtime-collection-worker",
         "backfill-collection-worker",
@@ -152,6 +165,7 @@ def test_prod_home_compose_uses_external_env_files() -> None:
 
     assert "${GOODMONEYING_INFRA_BASE_DIR}/env/infra.env" in infra["postgres"]["env_file"]
     assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["api"]["env_file"]
+    assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["migrate"]["env_file"]
     assert (
         "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["realtime-collection-worker"]["env_file"]
     )
@@ -260,6 +274,19 @@ def test_prod_home_compose_uses_fixed_ghcr_image_names() -> None:
     web = services(load_compose("web"))
 
     assert (
+        app["migrate"]["image"]
+        == "ghcr.io/goodjoon-company/goodmoneying-migrations:${GOODMONEYING_IMAGE_TAG}"
+    )
+    assert app["migrate"]["profiles"] == ["migration"]
+    assert app["migrate"]["restart"] == "no"
+    assert app["migrate"]["command"][-1] == "migrate"
+    assert app["migrate"]["environment"]["DBMATE_STRICT"] == "true"
+    assert "--strict" not in app["migrate"]["command"]
+    assert "--no-dump-schema" in app["migrate"]["command"]
+    assert "--wait" in app["migrate"]["command"]
+    assert "--wait-timeout" in app["migrate"]["command"]
+    assert "60s" in app["migrate"]["command"]
+    assert (
         app["api"]["image"] == "ghcr.io/goodjoon-company/goodmoneying-api:${GOODMONEYING_IMAGE_TAG}"
     )
     assert (
@@ -280,6 +307,7 @@ def test_prod_home_target_local_scripts_use_local_compose_env() -> None:
     role_scripts = {
         "infra": ["start.sh", "stop.sh"],
         "app": [
+            "migrate.sh",
             "start.sh",
             "stop.sh",
             "start-api.sh",
@@ -324,6 +352,17 @@ def test_prod_home_target_local_scripts_use_local_compose_env() -> None:
         "stop backfill-collection-worker"
         in (target_dir / "app/stop-backfill-collection-worker.sh").read_text()
     )
+    migrate_script = (target_dir / "app/migrate.sh").read_text()
+    assert "--profile migration run --rm migrate" in migrate_script
+    for script_name in (
+        "start.sh",
+        "start-api.sh",
+        "start-realtime-collection-worker.sh",
+        "start-backfill-collection-worker.sh",
+    ):
+        script = (target_dir / "app" / script_name).read_text()
+        assert '"$SCRIPT_DIR/migrate.sh"' in script
+        assert script.index('"$SCRIPT_DIR/migrate.sh"') < script.index("up -d")
 
 
 def test_deploy_script_rejects_unknown_profile() -> None:
@@ -465,6 +504,10 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
     assert "compose.web.yml" in result.stdout
     assert result.stdout.index("ssh Mac-Mini-M4.local") < result.stdout.index("ssh app-server01")
     assert result.stdout.index("ssh app-server01") < result.stdout.index("ssh bmax-ubuntu")
+    app_pull = result.stdout.index("compose.app.yml' --profile migration pull")
+    app_migrate = result.stdout.index("compose.app.yml' --profile migration run --rm migrate")
+    app_up = result.stdout.index("compose.app.yml' up -d")
+    assert app_pull < app_migrate < app_up
 
 
 def test_healthcheck_script_dry_run_prints_checks() -> None:
@@ -528,6 +571,9 @@ def test_start_script_dry_run_uses_target_compose_env_in_start_order() -> None:
     assert "compose.web.yml' up -d" in result.stdout
     assert result.stdout.index("Mac-Mini-M4.local") < result.stdout.index("app-server01")
     assert result.stdout.index("app-server01") < result.stdout.index("bmax-ubuntu")
+    app_migrate = result.stdout.index("compose.app.yml' --profile migration run --rm migrate")
+    app_up = result.stdout.index("compose.app.yml' up -d")
+    assert app_migrate < app_up
 
 
 def test_stop_script_dry_run_uses_target_compose_env_in_stop_order() -> None:

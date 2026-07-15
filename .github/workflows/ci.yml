@@ -54,6 +54,9 @@ jobs:
       - name: Web build
         run: npm run build
 
+      - name: DB migration E2E
+        run: tests/e2e/run_dbmate_migration_e2e.sh
+
       - name: Browser E2E
         run: npm run e2e
 
@@ -65,3 +68,6 @@ jobs:
 
       - name: Docker build web
         run: docker build -f apps/web/Dockerfile -t goodmoneying-web:ci .
+
+      - name: Docker build migrations
+        run: docker build -f apps/migrations/Dockerfile -t goodmoneying-migrations:ci .

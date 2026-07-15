@@ -10,5 +10,5 @@ source "$COMPOSE_ENV"
 set +a
 export DOCKER_CONFIG="${GOODMONEYING_DOCKER_CONFIG:-$HOME/.docker}"
 
-"$SCRIPT_DIR/migrate.sh"
-docker compose --env-file "$COMPOSE_ENV" -f "$COMPOSE_FILE" up -d realtime-collection-worker "$@"
+docker compose --env-file "$COMPOSE_ENV" -f "$COMPOSE_FILE" \
+  --profile migration run --rm migrate

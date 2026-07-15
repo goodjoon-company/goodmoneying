@@ -4,7 +4,6 @@ import uuid
 from calendar import monthrange
 from datetime import datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
 from typing import Any, Literal, cast
 
 import psycopg
@@ -93,12 +92,8 @@ def _format_storage_bytes(value: int) -> str:
 class PostgresOperationsRepository:
     """PostgreSQL 계약 기반 런타임 저장소."""
 
-    def __init__(
-        self, database_url: str, schema_path: str | Path = "docs/contracts/db/schema.sql"
-    ) -> None:
+    def __init__(self, database_url: str) -> None:
         self._database_url = database_url
-        self._schema_path = Path(schema_path)
-        self._apply_schema_if_empty()
 
     def _connect(self) -> psycopg.Connection[Any]:
         return psycopg.connect(
@@ -106,15 +101,6 @@ class PostgresOperationsRepository:
             row_factory=dict_row,
             options="-c timezone=Asia/Seoul",
         )
-
-    def _apply_schema_if_empty(self) -> None:
-        with self._connect() as conn:
-            conn.autocommit = True
-            conn.execute("SELECT pg_advisory_lock(hashtext('goodmoneying_schema_contract'))")
-            try:
-                conn.execute(self._schema_path.read_text())
-            finally:
-                conn.execute("SELECT pg_advisory_unlock(hashtext('goodmoneying_schema_contract'))")
 
     def upsert_instrument(self, market_code: str, display_name: str) -> Instrument:
         quote_currency, base_asset = market_code.split("-", maxsplit=1)

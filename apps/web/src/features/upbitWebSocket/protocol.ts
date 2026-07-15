@@ -1,5 +1,20 @@
 import type { CandleUnit, GatewayFrameEvent, MarketLike, Visibility, WorkbenchTab } from "./types";
 
+export const workbenchCandleUnits: CandleUnit[] = [
+  "1s", "1m", "3m", "5m", "10m", "15m", "30m", "60m", "240m"
+];
+
+export function workbenchStreamEndpointIds(): string[] {
+  return [
+    streamForTab("ticker", "1s").endpointId,
+    streamForTab("trade", "1s").endpointId,
+    streamForTab("orderbook", "1s").endpointId,
+    ...workbenchCandleUnits.map((unit) => streamForTab("candle", unit).endpointId),
+    streamForTab("asset", "1s").endpointId,
+    streamForTab("order", "1s").endpointId
+  ];
+}
+
 export function defaultGatewayWebSocketUrl(location: Pick<Location, "protocol" | "host">) {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   return `${scheme}//${location.host}/upbit-gateway/v1/websocket`;

@@ -13,7 +13,8 @@ const exchangeGateway = createHttpExchangeGateway(
 
 function ExchangeWorkbenchExtension({ context, onContextChange }: WorkbenchExtensionProps) {
   return <ExchangeWorkbench gateway={exchangeGateway} marketValue={context.market}
-    onMarketChange={(market) => onContextChange(marketContext(market))} />;
+    onMarketChange={(market) => onContextChange(marketContext(market))}
+    showMarketSelection={false} />;
 }
 
 function WebSocketWorkbenchExtension({ context, onContextChange }: WorkbenchExtensionProps) {

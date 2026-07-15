@@ -71,7 +71,10 @@ describe("업비트 웹소켓 작업대", () => {
     }));
 
     expect(screen.getByLabelText("실시간 현재가")).toHaveTextContent("123,456");
-    fireEvent.click(screen.getByRole("button", { name: "raw 추적" }));
+    const traceTrigger = screen.getByRole("button", { name: "raw 추적" });
+    expect(traceTrigger.querySelector("svg")).not.toBeNull();
+    expect(traceTrigger).toHaveTextContent("");
+    fireEvent.click(traceTrigger);
     expect(screen.getByRole("dialog", { name: "raw frame 추적" })).toHaveTextContent("trace-1");
   });
 

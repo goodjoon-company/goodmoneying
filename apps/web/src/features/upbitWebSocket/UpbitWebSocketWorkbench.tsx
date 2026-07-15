@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { appendBoundedFrame, defaultGatewayWebSocketUrl, framePayloads, isGatewayFrame, marketOptions, streamForTab } from "./protocol";
+import { FileJson } from "lucide-react";
+import { appendBoundedFrame, defaultGatewayWebSocketUrl, framePayloads, isGatewayFrame, marketOptions, streamForTab, workbenchCandleUnits } from "./protocol";
 import type { BrowserSocket, CandleUnit, GatewayEvent, GatewayFrameEvent, MarketLike, SocketFactory, UpbitFormat, Visibility, WorkbenchTab } from "./types";
 import "./styles.css";
 
@@ -11,7 +12,6 @@ const tabs: { id: WorkbenchTab; label: string }[] = [
   { id: "asset", label: "내 자산" },
   { id: "order", label: "내 주문" }
 ];
-const candleUnits: CandleUnit[] = ["1s", "1m", "3m", "5m", "10m", "15m", "30m", "60m", "240m"];
 const formats: UpbitFormat[] = ["DEFAULT", "SIMPLE", "JSON_LIST", "SIMPLE_LIST"];
 type ChannelState = {
   state: string;
@@ -238,7 +238,7 @@ export function UpbitWebSocketWorkbench({
         {displayOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select></label>}
       {tab === "candle" && <label>캔들 주기<select aria-label="캔들 주기" value={candleUnit} onChange={(event) => setCandleUnit(event.target.value as CandleUnit)}>
-        {candleUnits.map((unit) => <option key={unit}>{unit}</option>)}
+        {workbenchCandleUnits.map((unit) => <option key={unit}>{unit}</option>)}
       </select></label>}
       <label>응답 포맷<select aria-label="응답 포맷" value={format} onChange={(event) => setFormat(event.target.value as UpbitFormat)}>
         {formats.map((item) => <option key={item}>{item}</option>)}
@@ -256,7 +256,10 @@ export function UpbitWebSocketWorkbench({
       <button onClick={() => send("unsubscribe", { endpoint_id: stream.endpointId })}>구독 해제</button>
       <button onClick={disconnect}>연결 해제</button>
       <button onClick={clearFrames}>프레임 지우기</button>
-      <button ref={rawTriggerRef} aria-haspopup="dialog" onClick={() => setRawOpen(true)}>raw 추적</button>
+      <button ref={rawTriggerRef} className="trace-icon-button" type="button"
+        aria-label="raw 추적" aria-haspopup="dialog" onClick={() => setRawOpen(true)}>
+        <FileJson size={18} aria-hidden="true" />
+      </button>
     </div>
     <p className="notice" role="status">{notice}</p>
     <div role="tabpanel" id={`upbit-ws-panel-${tab}`} aria-labelledby={`upbit-ws-tab-${tab}`}>

@@ -229,6 +229,30 @@ def test_actual_gateway_process_against_fake_upstream_end_to_end() -> None:
     assert "Bearer " not in process_output
 
 
+def test_every_blocked_catalog_endpoint_returns_403_without_upstream_call() -> None:
+    with _processes() as (fake_url, gateway_url, _, _):
+        catalog = httpx.get(f"{gateway_url}/v1/catalog", timeout=3).json()
+        blocked_endpoint_ids = [
+            endpoint["endpoint_id"]
+            for endpoint in catalog["rest_endpoints"]
+            if endpoint["safety"] == "blocked"
+        ]
+        calls_before = httpx.get(f"{fake_url}/__calls", timeout=3).json()
+
+        responses = [
+            _execute(gateway_url, endpoint_id, {})
+            for endpoint_id in blocked_endpoint_ids
+        ]
+        calls_after = httpx.get(f"{fake_url}/__calls", timeout=3).json()
+
+    assert len(blocked_endpoint_ids) == 14
+    assert [response.status_code for response in responses] == [403] * 14
+    assert {
+        response.json()["detail"]["code"] for response in responses
+    } == {"POLICY_BLOCKED"}
+    assert calls_after == calls_before
+
+
 def test_actual_gateway_and_fake_upbit_websocket_process_end_to_end() -> None:
     from websockets.sync.client import connect
 

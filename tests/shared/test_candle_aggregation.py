@@ -1,6 +1,10 @@
-from collections.abc import Callable
+import threading
+import time
 from datetime import datetime, timedelta
 from decimal import Decimal
+from math import ceil
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -8,7 +12,11 @@ from goodmoneying_shared.aggregation import aggregate_candles
 from goodmoneying_shared.models import SourceCandle
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_shared.time import KST
-from goodmoneying_worker.aggregation_worker import CandleAggregationWorker
+from goodmoneying_worker.aggregation_worker import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    HEARTBEAT_THREAD_NAME,
+    CandleAggregationWorker,
+)
 
 
 def test_5분_집계는_원천_1분봉을_하나의_ohlcv_봉으로_만든다() -> None:
@@ -205,7 +213,119 @@ def test_집계_워커는_자동_작업을_완료하고_진행률을_100으로_�
     assert job.progress_percent == Decimal("100")
 
 
-def test_집계_워커는_장기_대상_처리_중에도_진행_callback으로_heartbeat를_갱신한다(
+def test_집계_워커는_첫_처리_구간이_32초_걸려도_31초_시점에_동작_중이다(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    database_path = tmp_path / "long-aggregation.sqlite3"
+    repository = SQLiteOperationsRepository.from_path(database_path)
+    observer = SQLiteOperationsRepository.from_path(database_path)
+    instrument = repository.refresh_candidate_universe(
+        [("KRW-BTC", "비트코인", "100")]
+    )[0].instrument
+    repository.ensure_default_active_targets(limit=1)
+    started_at = datetime(2026, 7, 14, 9, 0, tzinfo=KST)
+    repository.record_incremental_collection(
+        [],
+        [],
+        [
+            SourceCandle(
+                instrument_id=instrument.id,
+                candle_unit="1m",
+                candle_start_at=started_at,
+                open_price=Decimal("100"),
+                high_price=Decimal("100"),
+                low_price=Decimal("100"),
+                close_price=Decimal("100"),
+                trade_volume=Decimal("1"),
+                trade_amount=Decimal("100"),
+                collected_at=started_at,
+            )
+        ],
+    )
+    original_materialize = repository.materialize_candle_rollups
+    materialize_started = threading.Event()
+    materialize_count = 0
+
+    def delayed_materialize(*args: Any, **kwargs: Any) -> int:
+        nonlocal materialize_count
+        materialize_count += 1
+        if materialize_count == 1:
+            materialize_started.set()
+            time.sleep(32.5)
+        return original_materialize(*args, **kwargs)
+
+    monkeypatch.setattr(repository, "materialize_candle_rollups", delayed_materialize)
+    results: list[int] = []
+    errors: list[BaseException] = []
+
+    def run_worker() -> None:
+        try:
+            results.append(CandleAggregationWorker(repository).run_once())
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker_thread = threading.Thread(target=run_worker)
+    worker_thread.start()
+    assert materialize_started.wait(timeout=5)
+
+    time.sleep(31)
+    runtime = observer.collection_worker_runtime_status("candle_aggregation")
+
+    worker_thread.join(timeout=10)
+    assert runtime.status == "running"
+    assert runtime.status_label == "동작 중"
+    assert worker_thread.is_alive() is False
+    assert errors == []
+    assert results == [7]
+
+
+def test_대량_집계의_heartbeat_쓰기는_처리량이_아닌_시간에_비례한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = SQLiteOperationsRepository()
+    instrument = repository.refresh_candidate_universe(
+        [("KRW-BTC", "비트코인", "100")]
+    )[0].instrument
+    repository.ensure_default_active_targets(limit=1)
+    started_at = datetime(2026, 7, 1, 0, 0, tzinfo=KST)
+    repository.record_incremental_collection(
+        [],
+        [],
+        [
+            SourceCandle(
+                instrument_id=instrument.id,
+                candle_unit="1m",
+                candle_start_at=started_at + timedelta(minutes=index),
+                open_price=Decimal("100"),
+                high_price=Decimal("100"),
+                low_price=Decimal("100"),
+                close_price=Decimal("100"),
+                trade_volume=Decimal("1"),
+                trade_amount=Decimal("100"),
+                collected_at=started_at + timedelta(minutes=index),
+            )
+            for index in range(5_363)
+        ],
+    )
+    heartbeat_count = 0
+    count_lock = threading.Lock()
+
+    def record_heartbeat(worker_type: str, status: str, error_message: str | None = None) -> None:
+        nonlocal heartbeat_count
+        with count_lock:
+            heartbeat_count += 1
+
+    monkeypatch.setattr(repository, "record_collection_worker_heartbeat", record_heartbeat)
+    started = time.monotonic()
+
+    completed = CandleAggregationWorker(repository).run_once()
+    elapsed = time.monotonic() - started
+
+    assert completed == 7
+    assert heartbeat_count <= ceil(elapsed / HEARTBEAT_INTERVAL_SECONDS) + 1
+
+
+def test_집계_실패_후에는_heartbeat_ticker_스레드가_남지_않는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = SQLiteOperationsRepository()
@@ -232,25 +352,18 @@ def test_집계_워커는_장기_대상_처리_중에도_진행_callback으로_h
             )
         ],
     )
-    calls: list[str] = []
+    ticker_seen: list[bool] = []
 
-    def record_heartbeat(worker_type: str, status: str, error_message: str | None = None) -> None:
-        calls.append(f"heartbeat:{worker_type}:{status}")
+    def fail_materialize(*args: object, **kwargs: object) -> int:
+        ticker_seen.append(
+            any(thread.name == HEARTBEAT_THREAD_NAME for thread in threading.enumerate())
+        )
+        raise RuntimeError("집계 실패")
 
-    def materialize(
-        instrument_id: int,
-        unit: str,
-        on_progress: Callable[[], None],
-    ) -> int:
-        calls.append(f"materialize:{instrument_id}:{unit}")
-        on_progress()
-        return 1
+    monkeypatch.setattr(repository, "materialize_candle_rollups", fail_materialize)
 
-    monkeypatch.setattr(repository, "record_collection_worker_heartbeat", record_heartbeat)
-    monkeypatch.setattr(repository, "materialize_candle_rollups", materialize)
+    with pytest.raises(RuntimeError, match="집계 실패"):
+        CandleAggregationWorker(repository).run_once()
 
-    completed = CandleAggregationWorker(repository).run_once()
-
-    assert completed == 7
-    assert len([call for call in calls if call.startswith("materialize:")]) == 7
-    assert calls.count("heartbeat:candle_aggregation:running") >= 15
+    assert ticker_seen == [True]
+    assert all(thread.name != HEARTBEAT_THREAD_NAME for thread in threading.enumerate())

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import datetime
 from typing import Protocol
 
@@ -103,12 +102,7 @@ class OperationsRepository(Protocol):
         self, instrument_id: int, unit: str, start_at: datetime, end_at: datetime
     ) -> list[CandleView]: ...
 
-    def materialize_candle_rollups(
-        self,
-        instrument_id: int,
-        unit: str,
-        on_progress: Callable[[], None] | None = None,
-    ) -> int: ...
+    def materialize_candle_rollups(self, instrument_id: int, unit: str) -> int: ...
 
     def candle_rollups(
         self, instrument_id: int, unit: str, start_at: datetime, end_at: datetime

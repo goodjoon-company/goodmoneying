@@ -1,6 +1,44 @@
 from __future__ import annotations
 
+import logging
+import threading
+from collections.abc import Callable
+
 from goodmoneying_shared.repository import OperationsRepository
+
+HEARTBEAT_INTERVAL_SECONDS = 5.0
+HEARTBEAT_THREAD_NAME = "candle-aggregation-heartbeat"
+logger = logging.getLogger(__name__)
+
+
+class PeriodicHeartbeatRunner:
+    def __init__(self, heartbeat: Callable[[], None], interval_seconds: float) -> None:
+        self._heartbeat = heartbeat
+        self._interval_seconds = interval_seconds
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> PeriodicHeartbeatRunner:
+        self._heartbeat()
+        self._thread = threading.Thread(
+            target=self._run,
+            name=HEARTBEAT_THREAD_NAME,
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join()
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self._interval_seconds):
+            try:
+                self._heartbeat()
+            except Exception:
+                logger.exception("aggregation_heartbeat_failed")
 
 
 class CandleAggregationWorker:
@@ -12,30 +50,41 @@ class CandleAggregationWorker:
         job = self._repository.claim_next_candle_aggregation_job()
         if job is None:
             return 0
-        self._record_running_heartbeat()
-        completed = 0
-        for target in self._repository.candle_aggregation_job_targets(job.id):
-            self._record_running_heartbeat()
-            self._repository.mark_candle_aggregation_target(
-                job.id, target.instrument_id, target.candle_unit, "running", target.rows_written
-            )
-            try:
-                rows_written = self._repository.materialize_candle_rollups(
+        with PeriodicHeartbeatRunner(
+            self._record_running_heartbeat, HEARTBEAT_INTERVAL_SECONDS
+        ):
+            completed = 0
+            for target in self._repository.candle_aggregation_job_targets(job.id):
+                self._repository.mark_candle_aggregation_target(
+                    job.id,
                     target.instrument_id,
                     target.candle_unit,
-                    self._record_running_heartbeat,
+                    "running",
+                    target.rows_written,
                 )
-            except Exception:
+                try:
+                    rows_written = self._repository.materialize_candle_rollups(
+                        target.instrument_id,
+                        target.candle_unit,
+                    )
+                except Exception:
+                    self._repository.mark_candle_aggregation_target(
+                        job.id,
+                        target.instrument_id,
+                        target.candle_unit,
+                        "failed",
+                        target.rows_written,
+                    )
+                    raise
                 self._repository.mark_candle_aggregation_target(
-                    job.id, target.instrument_id, target.candle_unit, "failed", target.rows_written
+                    job.id,
+                    target.instrument_id,
+                    target.candle_unit,
+                    "succeeded",
+                    rows_written,
                 )
-                raise
-            self._repository.mark_candle_aggregation_target(
-                job.id, target.instrument_id, target.candle_unit, "succeeded", rows_written
-            )
-            self._record_running_heartbeat()
-            completed += 1
-        return completed
+                completed += 1
+            return completed
 
     def _record_running_heartbeat(self) -> None:
         self._repository.record_collection_worker_heartbeat(

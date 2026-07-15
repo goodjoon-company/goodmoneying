@@ -132,11 +132,14 @@ components:
     Health:
       type: object
       additionalProperties: false
-      required: [status, service, catalog_version]
+      required: [status, service, catalog_version, credentials_configured]
       properties:
         status: {type: string, const: ok}
         service: {type: string, const: upbit-gateway}
         catalog_version: {type: string, const: 1.6.3}
+        credentials_configured:
+          type: boolean
+          description: 서버에 완전한 단일 자격 증명 소스가 설정됐는지 나타내며 키 값은 포함하지 않는다.
     RestInventory:
       type: object
       additionalProperties: false

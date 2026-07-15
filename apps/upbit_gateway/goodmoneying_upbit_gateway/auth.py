@@ -29,6 +29,15 @@ class CredentialConfigurationError(ValueError):
     pass
 
 
+def credentials_are_configured(environ: Mapping[str, str]) -> bool:
+    """비밀값을 반환하지 않고 완전한 단일 자격 증명 소스 설정 여부만 판정한다."""
+    try:
+        load_credentials(environ)
+    except CredentialConfigurationError:
+        return False
+    return True
+
+
 def _read_secret_file(value: str) -> str:
     path = Path(value)
     if not path.is_absolute() or path.is_symlink() or not path.is_file():

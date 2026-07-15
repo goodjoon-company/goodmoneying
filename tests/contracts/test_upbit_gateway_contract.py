@@ -300,6 +300,9 @@ def test_gateway_openapi_accepts_endpoint_id_and_never_arbitrary_url() -> None:
     ]
     assert trace["properties"]["request"] == {"$ref": "#/components/schemas/TraceRequest"}
     assert trace["properties"]["response"] == {"$ref": "#/components/schemas/TraceResponse"}
+    health = contract["components"]["schemas"]["Health"]
+    assert "credentials_configured" in health["required"]
+    assert health["properties"]["credentials_configured"]["type"] == "boolean"
 
 
 def test_checked_openapi_and_fastapi_runtime_have_status_response_parity() -> None:

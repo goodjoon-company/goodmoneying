@@ -12,6 +12,7 @@ import { Markets } from "./Markets";
 import { Targets } from "./Targets";
 import { SystemManagement } from "./SystemManagement";
 import { UpbitApiTest } from "./UpbitApiTest";
+import type { WorkbenchModuleId } from "./upbit-api-test/types";
 
 const menuGroups: {
   title: string;
@@ -29,8 +30,13 @@ const menuGroups: {
 
 const primaryMenuItems: { id: SectionId; label: string; badge: string }[] = [
   { id: "markets", label: "관심종목", badge: "MVP" },
-  { id: "analysis", label: "코인 분석", badge: "NEW" },
-  { id: "upbit-api-test", label: "업비트 API 테스트", badge: "DEV" }
+  { id: "analysis", label: "코인 분석", badge: "NEW" }
+];
+
+const upbitWorkbenchMenuItems: { id: WorkbenchModuleId; label: string; badge: string }[] = [
+  { id: "quotation", label: "Quotation API 테스트", badge: "13" },
+  { id: "exchange", label: "Exchange API 테스트", badge: "38" },
+  { id: "websocket", label: "WebSocket API 테스트", badge: "SLOT" }
 ];
 
 const sectionMeta: Record<SectionId, { crumb: string; milestone: string; title: string; desc: string }> = {
@@ -68,13 +74,15 @@ const sectionMeta: Record<SectionId, { crumb: string; milestone: string; title: 
     crumb: "goodmoneying / 개발 도구 / 업비트 API 테스트",
     milestone: "P2 · 개발·검증 도구",
     title: "업비트 API 테스트",
-    desc: "업비트 공개 캔들 API의 OHLCV와 보조지표를 저장소 데이터와 분리해 확인합니다."
+    desc: "공식 카탈로그의 시세 조회(Quotation), 거래 및 자산 관리(Exchange), WebSocket 기능을 격리된 게이트웨이에서 시험합니다."
   }
 };
 
 export function OperationsConsole() {
   const queryClient = useQueryClient();
   const [isFavoritesOpen, setFavoritesOpen] = useState(false);
+  const [activeWorkbenchModule, setActiveWorkbenchModule] = useState<WorkbenchModuleId>("quotation");
+  const [workbenchMarket, setWorkbenchMarket] = useState("KRW-BTC");
   const {
     snapshot,
     activeSection,
@@ -138,6 +146,23 @@ export function OperationsConsole() {
               </button>
             ))}
           </div>
+          <section className="upbit-workbench-nav" aria-label="업비트 API 테스트 2레벨 메뉴">
+            <h2>업비트 API 테스트</h2>
+            {upbitWorkbenchMenuItems.map((item) => (
+              <button
+                key={item.id}
+                className={activeSection === "upbit-api-test" && activeWorkbenchModule === item.id ? "active" : ""}
+                type="button"
+                aria-label={item.label}
+                onClick={() => {
+                  setActiveWorkbenchModule(item.id);
+                  setActiveSection("upbit-api-test");
+                }}
+              >
+                <span>{item.label}</span><em>{item.badge}</em>
+              </button>
+            ))}
+          </section>
           {menuGroups.map((group) => (
             <section key={group.title}>
               <h2>{group.title}</h2>
@@ -188,7 +213,7 @@ export function OperationsConsole() {
           <div className="runtime-pills" aria-label="화면 갱신 기준">
             <span>표시 KST</span>
             <span>저장 KST</span>
-            <span>{activeSection === "analysis" || activeSection === "system" ? "WebSocket 실시간" : activeSection === "upbit-api-test" ? "업비트 REST 직접 조회" : "SSE 실시간"}</span>
+            <span>{activeSection === "analysis" || activeSection === "system" ? "WebSocket 실시간" : activeSection === "upbit-api-test" ? "게이트웨이 격리 조회" : "SSE 실시간"}</span>
             <span>마지막 갱신 {formatFreshness(snapshot.dashboard.refreshedAt)}</span>
           </div>
         </section>
@@ -210,7 +235,8 @@ export function OperationsConsole() {
           <CoinAnalysis rows={favoriteCoinRows} onOpenWatchlist={() => setActiveSection("targets")} />
         ) : null}
         {activeSection === "system" ? <SystemManagement /> : null}
-        {activeSection === "upbit-api-test" ? <UpbitApiTest /> : null}
+        {activeSection === "upbit-api-test" ? <UpbitApiTest moduleId={activeWorkbenchModule}
+          market={workbenchMarket} onMarketChange={setWorkbenchMarket} /> : null}
       </section>
 
       {isDetailOpen ? <DetailModal snapshot={snapshot} onClose={() => setDetailOpen(false)} /> : null}

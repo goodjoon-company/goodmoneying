@@ -71,6 +71,12 @@ describe("코인 분석 WebSocket 구독", () => {
       unit: "1d",
       rangeDays: 365
     });
+    act(() => {
+      socket.receive({
+        type: "analysis.session",
+        subscriptionId: "subscription-1"
+      });
+    });
 
     rerender({ instrumentId: 2, unit: "1m" });
 
@@ -83,6 +89,10 @@ describe("코인 분석 WebSocket 구독", () => {
     });
 
     act(() => {
+      socket.receive({
+        type: "analysis.session",
+        subscriptionId: "subscription-2"
+      });
       socket.receive({
         type: "analysis.instrument",
         instrument: {
@@ -121,6 +131,108 @@ describe("코인 분석 WebSocket 구독", () => {
     expect(result.current.instrument?.marketCode).toBe("KRW-GM002");
     expect(result.current.market?.tradeSummary.tradeCount).toBe(2);
     expect(result.current.connectionStatus).toBe("live");
+  });
+
+  it("같은 연결에서 BTC에서 ETH로 구독을 바꾼 직후 도착한 BTC 잔여 프레임을 버린다", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { result, rerender } = renderHook(
+      ({ instrumentId }: { instrumentId: number }) =>
+        useRealtimeAnalysis(instrumentId, "1d", 365),
+      { initialProps: { instrumentId: 1 } }
+    );
+    const socket = FakeWebSocket.instances[0];
+    act(() => {
+      socket.open();
+      socket.receive({ type: "analysis.session", subscriptionId: "btc-subscription" });
+      socket.receive({
+        type: "analysis.instrument",
+        instrument: {
+          id: 1,
+          marketCode: "KRW-BTC",
+          baseAsset: "BTC",
+          quoteCurrency: "KRW",
+          displayName: "비트코인"
+        }
+      });
+    });
+
+    rerender({ instrumentId: 2 });
+    act(() => {
+      socket.receive({
+        type: "analysis.market",
+        ticker: { tradePrice: "100", accTradePrice24h: "1000", changeRate: "0.01", collectedAt: "2026-07-16T00:00:00+09:00" },
+        orderbook: {
+          bestBidPrice: "99", bestBidSize: "1", bestAskPrice: "101", bestAskSize: "1",
+          spread: "2", bidDepth10: "10", askDepth10: "10", imbalance10: "0",
+          collectedAt: "2026-07-16T00:00:00+09:00"
+        },
+        tradeSummary: { tradeCount: 99, buyVolume: "9", sellVolume: "1", lastTradeAt: null }
+      });
+    });
+
+    expect(result.current.instrument).toBeNull();
+    expect(result.current.market).toBeNull();
+
+    act(() => {
+      socket.receive({ type: "analysis.session", subscriptionId: "eth-subscription" });
+      socket.receive({
+        type: "analysis.instrument",
+        instrument: {
+          id: 2,
+          marketCode: "KRW-ETH",
+          baseAsset: "ETH",
+          quoteCurrency: "KRW",
+          displayName: "이더리움"
+        }
+      });
+    });
+
+    expect(result.current.instrument?.marketCode).toBe("KRW-ETH");
+    expect(result.current.market).toBeNull();
+  });
+
+  it("이전 구독 승인 전에 새 구독을 보내면 세대 순서대로 session을 대응한다", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { result, rerender } = renderHook(
+      ({ instrumentId }: { instrumentId: number }) =>
+        useRealtimeAnalysis(instrumentId, "1d", 365),
+      { initialProps: { instrumentId: 1 } }
+    );
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.open());
+
+    rerender({ instrumentId: 2 });
+    act(() => {
+      socket.receive({ type: "analysis.session", subscriptionId: "btc-subscription" });
+      socket.receive({
+        type: "analysis.instrument",
+        instrument: {
+          id: 1,
+          marketCode: "KRW-BTC",
+          baseAsset: "BTC",
+          quoteCurrency: "KRW",
+          displayName: "비트코인"
+        }
+      });
+    });
+
+    expect(result.current.instrument).toBeNull();
+
+    act(() => {
+      socket.receive({ type: "analysis.session", subscriptionId: "eth-subscription" });
+      socket.receive({
+        type: "analysis.instrument",
+        instrument: {
+          id: 2,
+          marketCode: "KRW-ETH",
+          baseAsset: "ETH",
+          quoteCurrency: "KRW",
+          displayName: "이더리움"
+        }
+      });
+    });
+
+    expect(result.current.instrument?.marketCode).toBe("KRW-ETH");
   });
 
   it("open 이벤트와 선택 변경 효과가 겹쳐도 최신 구독을 한 번만 보낸다", () => {
@@ -181,5 +293,14 @@ describe("코인 분석 WebSocket 구독", () => {
 
     expect(result.current.instrument).toBeNull();
     expect(result.current.connectionStatus).toBe("offline");
+  });
+
+  it("WebSocket을 지원하지 않는 환경에서는 전역 상수를 평가하지 않고 오프라인으로 대체한다", () => {
+    vi.stubGlobal("WebSocket", undefined);
+
+    const { result } = renderHook(() => useRealtimeAnalysis(1, "1d", 365));
+
+    expect(result.current.connectionStatus).toBe("offline");
+    expect(result.current.instrument).toBeNull();
   });
 });

@@ -88,7 +88,8 @@ test("관심 코인 분석 화면이 WebSocket 메시지로 실시간 정보를 
     startIndex: number,
     unit: string,
     rangeDays: number,
-    instrumentMarketCode?: string
+    instrumentMarketCode?: string,
+    expectedSubscriptionCount?: number
   ) => {
     await expect.poll(() => {
       const frames = analysisFrames.slice(startIndex);
@@ -113,9 +114,47 @@ test("관심 코인 분석 화면이 WebSocket 메시지로 실시간 정보를 
         "analysis.indicators",
         "analysis.market"
       ].every((type) => types.has(type)) && received.some((message) =>
-        message.type === "analysis.chart" && message.unit === unit
+        message.type === "analysis.chart" &&
+        message.unit === unit &&
+        ((message.candles as unknown[] | undefined)?.length ?? 0) > 0
+      ) && received.some((message) =>
+        message.type === "analysis.indicators" &&
+        ((message.points as unknown[] | undefined)?.length ?? 0) > 0
       );
     }).toBe(true);
+
+    const frames = analysisFrames.slice(startIndex);
+    const subscriptions = frames.filter(({ direction, message }) =>
+      direction === "sent" &&
+      message.type === "analysis.subscribe" &&
+      message.unit === unit &&
+      message.rangeDays === rangeDays
+    );
+    if (expectedSubscriptionCount !== undefined) {
+      expect(subscriptions).toHaveLength(expectedSubscriptionCount);
+    }
+    const received = frames
+      .filter(({ direction }) => direction === "received")
+      .map(({ message }) => message);
+    const candles = received
+      .filter((message) => message.type === "analysis.chart" && message.unit === unit)
+      .flatMap((message) => message.candles as Array<{ startedAt: string; open: string }>);
+    const indicatorPoints = received
+      .filter((message) => message.type === "analysis.indicators")
+      .flatMap((message) => message.points as Array<{ startedAt: string; ema20: string | null }>);
+    const marketMessages = received.filter((message) => message.type === "analysis.market");
+    const marketTradePrice = String(
+      (marketMessages.at(-1)?.ticker as { tradePrice?: string } | undefined)?.tradePrice ?? ""
+    );
+
+    expect(candles.length).toBeGreaterThan(0);
+    expect(indicatorPoints).toHaveLength(candles.length);
+    expect(indicatorPoints.map((point) => point.startedAt)).toEqual(
+      candles.map((candle) => candle.startedAt)
+    );
+    expect(indicatorPoints.every((point) => point.ema20 !== null)).toBeTruthy();
+    expect(marketTradePrice).not.toBe("");
+    return { candles, indicatorPoints, marketTradePrice };
   };
 
   await page.goto("/");
@@ -143,22 +182,47 @@ test("관심 코인 분석 화면이 WebSocket 메시지로 실시간 정보를 
     ["주봉", "1w"],
     ["월봉", "1M"]
   ] as const;
+  let monthlyOneYearSnapshot: Awaited<ReturnType<typeof expectIndependentSnapshot>> | undefined;
   for (const [label, unit] of requestedUnits) {
     const startIndex = analysisFrames.length;
     await page.getByRole("button", { name: label, exact: true }).click();
-    await expectIndependentSnapshot(startIndex, unit, 365);
+    const snapshot = await expectIndependentSnapshot(startIndex, unit, 365, undefined, 1);
+    if (unit === "1M") monthlyOneYearSnapshot = snapshot;
     await expect(page.getByRole("button", { name: label, exact: true })).toHaveAttribute("aria-pressed", "true");
   }
 
   let startIndex = analysisFrames.length;
   await page.getByRole("button", { name: "3년" }).click();
-  await expectIndependentSnapshot(startIndex, "1M", 1095);
+  const monthlyThreeYearSnapshot = await expectIndependentSnapshot(
+    startIndex, "1M", 1095, "KRW-BTC", 1
+  );
+  expect(monthlyOneYearSnapshot).toBeDefined();
+  expect(monthlyThreeYearSnapshot.candles.length).toBeGreaterThan(
+    monthlyOneYearSnapshot?.candles.length ?? 0
+  );
+  expect(monthlyThreeYearSnapshot.candles).toHaveLength(3);
+  const threeYearStartedAt = monthlyThreeYearSnapshot.candles.map((candle) =>
+    new Date(candle.startedAt).getTime()
+  );
+  expect(Math.min(...threeYearStartedAt)).toBeLessThan(Date.now() - 365 * 24 * 60 * 60 * 1000);
+  expect(Math.max(...threeYearStartedAt)).toBeGreaterThan(Date.now() - 365 * 24 * 60 * 60 * 1000);
+  expect(monthlyThreeYearSnapshot.candles.every((candle) => Number(candle.open) >= 1_000_000)).toBeTruthy();
+  expect(monthlyThreeYearSnapshot.marketTradePrice).toBe("100000000.0000");
   await expect(page.getByRole("button", { name: "3년" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".analysis-chart-panel")).toContainText("3개 표시");
 
   startIndex = analysisFrames.length;
   await page.getByRole("button", { name: "ETH 분석" }).click();
-  await expectIndependentSnapshot(startIndex, "1M", 1095, "KRW-ETH");
+  const ethSnapshot = await expectIndependentSnapshot(startIndex, "1M", 1095, "KRW-ETH", 1);
+  expect(ethSnapshot.candles).toHaveLength(2);
+  expect(ethSnapshot.candles.every((candle) => {
+    const open = Number(candle.open);
+    return open >= 2_000_000 && open < 3_000_000;
+  })).toBeTruthy();
+  expect(ethSnapshot.marketTradePrice).toBe("50000000.0000");
   await expect(page.getByRole("heading", { name: "ETH / KRW" })).toBeVisible();
+  await expect(page.locator(".analysis-chart-panel")).toContainText("2개 표시");
+  await expect(page.getByLabel("현재가 호가 체결")).toContainText("₩50,000,000");
   expect(analysisSocketCount).toBe(initialAnalysisSocketCount);
   await expect(page.getByText("주식 분석")).toHaveCount(0);
   expect(runtimeIssues).toEqual([]);

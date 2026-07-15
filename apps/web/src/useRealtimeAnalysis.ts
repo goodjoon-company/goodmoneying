@@ -17,6 +17,7 @@ export function useRealtimeAnalysis(
   const [state, setState] = useState<AnalysisState>(initialAnalysisState);
   const [connectionStatus, setConnectionStatus] = useState<"connecting" | "live" | "offline">("offline");
   const socketRef = useRef<WebSocket | null>(null);
+  const lastSentSubscriptionRef = useRef<{ socket: WebSocket; key: string } | null>(null);
   const subscriptionRef = useRef({ instrumentId, unit, rangeDays });
   subscriptionRef.current = { instrumentId, unit, rangeDays };
   const hasSubscription = instrumentId !== null;
@@ -25,7 +26,11 @@ export function useRealtimeAnalysis(
     setState(initialAnalysisState);
     const socket = socketRef.current;
     if (instrumentId !== null && socket?.readyState === WebSocket.OPEN) {
-      sendSubscription(socket, { instrumentId, unit, rangeDays });
+      sendSubscriptionIfChanged(
+        socket,
+        { instrumentId, unit, rangeDays },
+        lastSentSubscriptionRef
+      );
     }
   }, [instrumentId, rangeDays, unit]);
 
@@ -44,24 +49,36 @@ export function useRealtimeAnalysis(
       activeSocket = socket;
       socketRef.current = socket;
       socket.onopen = () => {
+        if (disposed || socketRef.current !== socket) return;
         const subscription = subscriptionRef.current;
         const nextInstrumentId = subscription.instrumentId;
         if (nextInstrumentId !== null) {
-          sendSubscription(socket, { ...subscription, instrumentId: nextInstrumentId });
+          sendSubscriptionIfChanged(
+            socket,
+            { ...subscription, instrumentId: nextInstrumentId },
+            lastSentSubscriptionRef
+          );
         }
       };
       socket.onmessage = (event) => {
+        if (disposed || socketRef.current !== socket) return;
         const message = JSON.parse(String(event.data)) as AnalysisMessage;
         setConnectionStatus("live");
         setState((previous) => applyAnalysisMessage(previous, message));
       };
       socket.onclose = () => {
-        if (socketRef.current === socket) socketRef.current = null;
         if (disposed) return;
+        if (socketRef.current !== socket) return;
+        socketRef.current = null;
+        if (lastSentSubscriptionRef.current?.socket === socket) {
+          lastSentSubscriptionRef.current = null;
+        }
         setConnectionStatus("offline");
         retryTimer = setTimeout(connect, 1_000);
       };
-      socket.onerror = () => socket.close();
+      socket.onerror = () => {
+        if (!disposed && socketRef.current === socket) socket.close();
+      };
       return socket;
     };
     connect();
@@ -69,11 +86,28 @@ export function useRealtimeAnalysis(
       disposed = true;
       if (retryTimer) clearTimeout(retryTimer);
       if (socketRef.current === activeSocket) socketRef.current = null;
+      if (lastSentSubscriptionRef.current?.socket === activeSocket) {
+        lastSentSubscriptionRef.current = null;
+      }
       activeSocket?.close();
     };
   }, [hasSubscription]);
 
   return { ...state, connectionStatus };
+}
+
+function sendSubscriptionIfChanged(
+  socket: WebSocket,
+  subscription: { instrumentId: number; unit: AnalysisUnit; rangeDays: AnalysisRangeDays },
+  lastSentSubscriptionRef: {
+    current: { socket: WebSocket; key: string } | null;
+  }
+) {
+  const key = `${subscription.instrumentId}:${subscription.unit}:${subscription.rangeDays}`;
+  const lastSent = lastSentSubscriptionRef.current;
+  if (lastSent?.socket === socket && lastSent.key === key) return;
+  sendSubscription(socket, subscription);
+  lastSentSubscriptionRef.current = { socket, key };
 }
 
 function sendSubscription(

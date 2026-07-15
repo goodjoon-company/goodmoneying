@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from time import perf_counter
@@ -35,6 +35,36 @@ def candidate_entries(start: int, stop: int) -> list[tuple[str, str, str]]:
         (f"KRW-GM{index:03d}", f"굿머니코인 {index}", str(100_000 - index))
         for index in range(start, stop)
     ]
+
+
+def seed_distinct_analysis_history(
+    repository: SQLiteOperationsRepository, first_instrument_id: int, second_instrument_id: int
+) -> None:
+    day_start = now_kst().replace(hour=0, minute=0, second=0, microsecond=0)
+    candles: list[SourceCandle] = []
+    histories = (
+        (first_instrument_id, Decimal("1000000"), (1000, 300, 30)),
+        (second_instrument_id, Decimal("2000000"), (900, 20)),
+    )
+    for instrument_id, price_base, day_offsets in histories:
+        for index, day_offset in enumerate(day_offsets, start=1):
+            started_at = day_start - timedelta(days=day_offset)
+            open_price = price_base + Decimal(index)
+            candles.append(
+                SourceCandle(
+                    instrument_id=instrument_id,
+                    candle_unit="1d",
+                    candle_start_at=started_at,
+                    open_price=open_price,
+                    high_price=open_price + Decimal("10"),
+                    low_price=open_price - Decimal("10"),
+                    close_price=open_price + Decimal("5"),
+                    trade_volume=Decimal(index * 10),
+                    trade_amount=(open_price + Decimal("5")) * Decimal(index * 10),
+                    collected_at=started_at,
+                )
+            )
+    repository.record_incremental_collection([], [], candles)
 
 
 def without_relative_freshness(items: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -342,7 +372,9 @@ def test_coin_analysis_websocket_changes_watchlist_coin_and_all_units_with_indep
 ) -> None:
     repository, client = seeded_repository_and_client()
     first_instrument, second_instrument = repository.list_active_targets()[:2]
+    seed_distinct_analysis_history(repository, first_instrument.id, second_instrument.id)
     units = ["1m", "5m", "10m", "30m", "1h", "1d", "1w", "1M"]
+    one_year_candle_counts: dict[str, int] = {}
 
     with client.websocket_connect("/v1/realtime/analysis") as websocket:
         for unit in units:
@@ -367,6 +399,15 @@ def test_coin_analysis_websocket_changes_watchlist_coin_and_all_units_with_indep
                 "analysis.market",
             }
             assert messages_by_type["analysis.chart"]["unit"] == unit
+            candles = messages_by_type["analysis.chart"]["candles"]
+            indicator_points = messages_by_type["analysis.indicators"]["points"]
+            assert candles, unit
+            assert len(indicator_points) == len(candles)
+            assert [point["startedAt"] for point in indicator_points] == [
+                candle["startedAt"] for candle in candles
+            ]
+            assert all(point["ema20"] is not None for point in indicator_points)
+            one_year_candle_counts[unit] = len(candles)
             assert "candles" not in messages_by_type["analysis.market"]
 
         websocket.send_json(
@@ -374,8 +415,35 @@ def test_coin_analysis_websocket_changes_watchlist_coin_and_all_units_with_indep
                 "version": "1",
                 "type": "analysis.subscribe",
                 "sentAt": now_kst().isoformat(),
+                "instrumentId": first_instrument.id,
+                "unit": "1M",
+                "rangeDays": 1095,
+            }
+        )
+        three_year_messages = [websocket.receive_json() for _ in range(5)]
+        three_year_by_type = {message["type"]: message for message in three_year_messages}
+        three_year_candles = three_year_by_type["analysis.chart"]["candles"]
+        three_year_indicators = three_year_by_type["analysis.indicators"]["points"]
+
+        assert len(three_year_candles) > one_year_candle_counts["1M"]
+        assert datetime.fromisoformat(three_year_candles[0]["startedAt"]) < (
+            now_kst() - timedelta(days=365)
+        )
+        assert datetime.fromisoformat(three_year_candles[-1]["startedAt"]) > (
+            now_kst() - timedelta(days=365)
+        )
+        assert len(three_year_indicators) == len(three_year_candles)
+        assert three_year_indicators[-1]["ema20"] is not None
+        assert all(Decimal(candle["open"]) >= Decimal("1000000") for candle in three_year_candles)
+        assert three_year_by_type["analysis.market"]["ticker"]["tradePrice"] == "100000000.0000"
+
+        websocket.send_json(
+            {
+                "version": "1",
+                "type": "analysis.subscribe",
+                "sentAt": now_kst().isoformat(),
                 "instrumentId": second_instrument.id,
-                "unit": "1d",
+                "unit": "1M",
                 "rangeDays": 1095,
             }
         )
@@ -383,7 +451,15 @@ def test_coin_analysis_websocket_changes_watchlist_coin_and_all_units_with_indep
 
     changed_by_type = {message["type"]: message for message in changed_messages}
     assert changed_by_type["analysis.instrument"]["instrument"]["id"] == second_instrument.id
-    assert changed_by_type["analysis.chart"]["unit"] == "1d"
+    assert changed_by_type["analysis.chart"]["unit"] == "1M"
+    changed_candles = changed_by_type["analysis.chart"]["candles"]
+    changed_indicators = changed_by_type["analysis.indicators"]["points"]
+    assert len(changed_candles) == 2
+    assert all(Decimal(candle["open"]) >= Decimal("2000000") for candle in changed_candles)
+    assert all(Decimal(candle["open"]) < Decimal("3000000") for candle in changed_candles)
+    assert len(changed_indicators) == len(changed_candles)
+    assert changed_indicators[-1]["ema20"] is not None
+    assert changed_by_type["analysis.market"]["ticker"]["tradePrice"] == "50000000.0000"
     assert set(changed_by_type) == {
         "analysis.session",
         "analysis.instrument",

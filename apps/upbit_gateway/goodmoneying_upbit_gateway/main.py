@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import AnyUrl, BaseModel, ConfigDict, Field
@@ -20,6 +20,11 @@ from goodmoneying_upbit_gateway.executor import (
 )
 from goodmoneying_upbit_gateway.rate_limit import GroupRateLimiter, rate_limits_from_catalog
 from goodmoneying_upbit_gateway.safety import PolicyBlocked
+from goodmoneying_upbit_gateway.websocket_protocol import WebSocketRateLimiter
+from goodmoneying_upbit_gateway.websocket_session import (
+    GatewayWebSocketSession,
+    WebSocketUpstreamSettings,
+)
 
 
 class GatewayRequest(BaseModel):
@@ -163,6 +168,11 @@ def create_app(*, executor: UpbitExecutor | None = None) -> FastAPI:
     catalog = load_catalog()
     request_executor = executor or _default_executor(catalog)
     app = FastAPI(title="goodmoneying 업비트 API 게이트웨이", version="0.1.0")
+    websocket_connect_limit = catalog["rate_limits"]["websocket-connect"]
+    websocket_connect_limiter = WebSocketRateLimiter(
+        per_second=websocket_connect_limit["requests"],
+        per_minute=websocket_connect_limit["requests"] * 60,
+    )
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(
@@ -196,9 +206,7 @@ def create_app(*, executor: UpbitExecutor | None = None) -> FastAPI:
     @app.post(
         "/v1/requests",
         response_model=TraceEnvelope,
-        responses=(
-            ERROR_RESPONSES | TRACE_RESPONSES | MIXED_RESPONSES | DEFAULT_TRACE_RESPONSE
-        ),
+        responses=(ERROR_RESPONSES | TRACE_RESPONSES | MIXED_RESPONSES | DEFAULT_TRACE_RESPONSE),
     )
     def execute_request(payload: GatewayRequest, request: Request) -> JSONResponse:
         endpoint = rest_endpoint_by_id(catalog, payload.endpoint_id)
@@ -250,6 +258,27 @@ def create_app(*, executor: UpbitExecutor | None = None) -> FastAPI:
                 detail={"code": "UPSTREAM_CONNECTION_ERROR", "message": str(exc)},
             ) from exc
         return JSONResponse(status_code=result.status_code, content=result.envelope)
+
+    @app.websocket("/v1/websocket")
+    async def websocket_relay(websocket: WebSocket) -> None:
+        await websocket.accept()
+        session = GatewayWebSocketSession(
+            downstream=websocket,
+            catalog=catalog,
+            settings=WebSocketUpstreamSettings.from_environment(catalog, os.environ),
+            connect_limiter=websocket_connect_limiter,
+        )
+        try:
+            while True:
+                payload = await websocket.receive_json()
+                if isinstance(payload, dict):
+                    await session.handle(payload)
+                else:
+                    await session.handle({"action": "invalid", "request_id": "invalid-message"})
+        except WebSocketDisconnect:
+            pass
+        finally:
+            await session.close(notify=False)
 
     return app
 

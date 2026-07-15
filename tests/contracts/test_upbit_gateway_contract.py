@@ -14,21 +14,56 @@ OFFICIAL_SNAPSHOT_PATH = Path("tests/contracts/fixtures/upbit-v1.6.3-rest-snapsh
 EXPECTED_REST_IDS = {
     f"rest.{slug}"
     for slug in [
-        "list-trading-pairs", "list-candles-seconds", "list-candles-minutes",
-        "list-candles-days", "list-candles-weeks", "list-candles-months",
-        "list-candles-years", "list-pair-trades", "list-tickers", "list-quote-tickers",
-        "list-orderbooks", "list-orderbook-instruments", "get-pocket-information",
-        "get-pocket-api-keys", "get-sub-pocket-balance", "post-universal-transfer",
-        "get-universal-transfer", "post-transfer", "get-transfer", "get-balance",
-        "available-order-information", "new-order", "order-test", "get-order",
-        "list-orders-by-ids", "list-open-orders", "list-closed-orders", "cancel-order",
-        "cancel-orders-by-ids", "batch-cancel-orders", "cancel-and-new-order",
-        "available-withdrawal-information", "list-withdrawal-addresses", "withdraw",
-        "withdraw-krw", "get-withdrawal", "list-withdrawals", "cancel-withdrawal",
-        "available-deposit-information", "create-deposit-address", "get-deposit-address",
-        "list-deposit-addresses", "deposit-krw", "get-deposit", "list-deposits",
-        "list-travelrule-vasps", "verify-travelrule-by-uuid",
-        "verify-travelrule-by-txid", "get-service-status", "list-api-keys",
+        "list-trading-pairs",
+        "list-candles-seconds",
+        "list-candles-minutes",
+        "list-candles-days",
+        "list-candles-weeks",
+        "list-candles-months",
+        "list-candles-years",
+        "list-pair-trades",
+        "list-tickers",
+        "list-quote-tickers",
+        "list-orderbooks",
+        "list-orderbook-instruments",
+        "get-pocket-information",
+        "get-pocket-api-keys",
+        "get-sub-pocket-balance",
+        "post-universal-transfer",
+        "get-universal-transfer",
+        "post-transfer",
+        "get-transfer",
+        "get-balance",
+        "available-order-information",
+        "new-order",
+        "order-test",
+        "get-order",
+        "list-orders-by-ids",
+        "list-open-orders",
+        "list-closed-orders",
+        "cancel-order",
+        "cancel-orders-by-ids",
+        "batch-cancel-orders",
+        "cancel-and-new-order",
+        "available-withdrawal-information",
+        "list-withdrawal-addresses",
+        "withdraw",
+        "withdraw-krw",
+        "get-withdrawal",
+        "list-withdrawals",
+        "cancel-withdrawal",
+        "available-deposit-information",
+        "create-deposit-address",
+        "get-deposit-address",
+        "list-deposit-addresses",
+        "deposit-krw",
+        "get-deposit",
+        "list-deposits",
+        "list-travelrule-vasps",
+        "verify-travelrule-by-uuid",
+        "verify-travelrule-by-txid",
+        "get-service-status",
+        "list-api-keys",
         "list-orderbook-levels",
     ]
 }
@@ -36,10 +71,20 @@ EXPECTED_REST_IDS = {
 EXPECTED_BLOCKED_IDS = {
     f"rest.{slug}"
     for slug in [
-        "post-universal-transfer", "post-transfer", "new-order", "cancel-order",
-        "cancel-orders-by-ids", "batch-cancel-orders", "cancel-and-new-order", "withdraw",
-        "withdraw-krw", "cancel-withdrawal", "create-deposit-address", "deposit-krw",
-        "verify-travelrule-by-uuid", "verify-travelrule-by-txid",
+        "post-universal-transfer",
+        "post-transfer",
+        "new-order",
+        "cancel-order",
+        "cancel-orders-by-ids",
+        "batch-cancel-orders",
+        "cancel-and-new-order",
+        "withdraw",
+        "withdraw-krw",
+        "cancel-withdrawal",
+        "create-deposit-address",
+        "deposit-krw",
+        "verify-travelrule-by-uuid",
+        "verify-travelrule-by-txid",
     ]
 }
 
@@ -78,9 +123,7 @@ def test_catalog_covers_official_v1_6_3_rest_and_websocket_inventory() -> None:
         "total_count": 51,
     }
     deprecated = [endpoint for endpoint in catalog["rest_endpoints"] if endpoint.get("deprecated")]
-    assert [endpoint["endpoint_id"] for endpoint in deprecated] == [
-        "rest.list-orderbook-levels"
-    ]
+    assert [endpoint["endpoint_id"] for endpoint in deprecated] == ["rest.list-orderbook-levels"]
     assert len(catalog["rest_endpoints"]) - len(deprecated) == 50
 
 
@@ -202,10 +245,7 @@ def test_rest_catalog_matches_checked_official_v1_6_3_snapshot_exactly() -> None
     catalog = _load_yaml(CATALOG_PATH)
     snapshot = cast(dict[str, Any], json.loads(OFFICIAL_SNAPSHOT_PATH.read_text()))
     projection = [
-        {
-            key: endpoint[key]
-            for key in ("endpoint_id", "method", "path", "parameters")
-        }
+        {key: endpoint[key] for key in ("endpoint_id", "method", "path", "parameters")}
         for endpoint in catalog["rest_endpoints"]
     ]
 
@@ -220,9 +260,7 @@ def test_rest_catalog_matches_checked_official_v1_6_3_snapshot_exactly() -> None
 
 
 def test_packaged_catalog_is_an_exact_copy_of_contract_source_of_truth() -> None:
-    packaged = files("goodmoneying_upbit_gateway").joinpath(
-        "data/upbit-api-catalog.yaml"
-    )
+    packaged = files("goodmoneying_upbit_gateway").joinpath("data/upbit-api-catalog.yaml")
 
     assert packaged.read_text(encoding="utf-8") == CATALOG_PATH.read_text(encoding="utf-8")
 
@@ -236,13 +274,23 @@ def test_gateway_openapi_accepts_endpoint_id_and_never_arbitrary_url() -> None:
     assert request_schema["required"] == ["endpoint_id", "parameters"]
     assert "endpoint_id" in request_schema["properties"]
     assert "url" not in request_schema["properties"]
+    assert contract["x-websocket"] == {
+        "path": "/v1/websocket",
+        "message_schema": "./upbit-gateway-websocket.schema.json",
+    }
     catalog_schema = contract["paths"]["/v1/catalog"]["get"]["responses"]["200"]["content"][
         "application/json"
     ]["schema"]
     assert catalog_schema == {"$ref": "#/components/schemas/UpbitApiCatalog"}
     trace = contract["components"]["schemas"]["TraceEnvelope"]
     assert trace["required"] == [
-        "trace_id", "endpoint_id", "request", "response", "rate_limit", "duration_ms", "received_at"
+        "trace_id",
+        "endpoint_id",
+        "request",
+        "response",
+        "rate_limit",
+        "duration_ms",
+        "received_at",
     ]
     assert trace["properties"]["request"] == {"$ref": "#/components/schemas/TraceRequest"}
     assert trace["properties"]["response"] == {"$ref": "#/components/schemas/TraceResponse"}
@@ -259,31 +307,43 @@ def test_checked_openapi_and_fastapi_runtime_have_status_response_parity() -> No
         )
 
     statuses = {
-        "200", "201", "400", "401", "403", "404", "418", "422", "429",
-        "500", "502", "503", "504", "default",
+        "200",
+        "201",
+        "400",
+        "401",
+        "403",
+        "404",
+        "418",
+        "422",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "default",
     }
     assert set(checked["paths"]["/v1/requests"]["post"]["responses"]) == statuses
     for status in statuses:
-        checked_schema = checked["paths"]["/v1/requests"]["post"]["responses"][status][
-            "content"
-        ]["application/json"]["schema"]
-        runtime_schema = runtime["paths"]["/v1/requests"]["post"]["responses"][status][
-            "content"
-        ]["application/json"]["schema"]
+        checked_schema = checked["paths"]["/v1/requests"]["post"]["responses"][status]["content"][
+            "application/json"
+        ]["schema"]
+        runtime_schema = runtime["paths"]["/v1/requests"]["post"]["responses"][status]["content"][
+            "application/json"
+        ]["schema"]
         assert _semantic_schema(checked_schema) == _semantic_schema(runtime_schema)
 
-    mixed_422 = checked["paths"]["/v1/requests"]["post"]["responses"]["422"][
-        "content"
-    ]["application/json"]["schema"]
+    mixed_422 = checked["paths"]["/v1/requests"]["post"]["responses"]["422"]["content"][
+        "application/json"
+    ]["schema"]
     assert mixed_422 == {
         "anyOf": [
             {"$ref": "#/components/schemas/TraceEnvelope"},
             {"$ref": "#/components/schemas/ErrorResponse"},
         ]
     }
-    assert checked["paths"]["/v1/requests"]["post"]["responses"]["default"][
-        "content"
-    ]["application/json"]["schema"] == {"$ref": "#/components/schemas/TraceEnvelope"}
+    assert checked["paths"]["/v1/requests"]["post"]["responses"]["default"]["content"][
+        "application/json"
+    ]["schema"] == {"$ref": "#/components/schemas/TraceEnvelope"}
 
 
 def test_checked_openapi_and_fastapi_runtime_have_catalog_schema_semantic_parity() -> None:
@@ -292,12 +352,18 @@ def test_checked_openapi_and_fastapi_runtime_have_catalog_schema_semantic_parity
     checked = _load_yaml(OPENAPI_PATH)
     runtime = create_app().openapi()
     health_response = {"$ref": "#/components/schemas/Health"}
-    assert checked["paths"]["/health"]["get"]["responses"]["200"]["content"][
-        "application/json"
-    ]["schema"] == health_response
-    assert runtime["paths"]["/health"]["get"]["responses"]["200"]["content"][
-        "application/json"
-    ]["schema"] == health_response
+    assert (
+        checked["paths"]["/health"]["get"]["responses"]["200"]["content"]["application/json"][
+            "schema"
+        ]
+        == health_response
+    )
+    assert (
+        runtime["paths"]["/health"]["get"]["responses"]["200"]["content"]["application/json"][
+            "schema"
+        ]
+        == health_response
+    )
 
     assert set(checked["components"]["schemas"]) == set(runtime["components"]["schemas"])
     for schema_name in checked["components"]["schemas"]:
@@ -321,15 +387,37 @@ def _semantic_schema(value: Any) -> Any:
     return value
 
 
-def test_gateway_websocket_schema_is_valid_and_covers_trace_events() -> None:
+def test_gateway_websocket_schema_is_valid_and_covers_controls_and_trace_events() -> None:
     schema = cast(dict[str, Any], json.loads(WEBSOCKET_SCHEMA_PATH.read_text()))
 
     Draft202012Validator.check_schema(schema)
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
-    variants = schema["oneOf"]
+    variants = schema["$defs"]["ServerEvent"]["oneOf"]
     event_types = {
-        variant["properties"]["type"]["const"]
+        variant["properties"]["event"]["const"]
         for variant in variants
-        if "const" in variant["properties"]["type"]
+        if "const" in variant["properties"]["event"]
     }
     assert event_types == {"connection", "subscription", "frame", "error"}
+    controls = schema["$defs"]["ClientControl"]["oneOf"]
+    assert {variant["properties"]["action"]["const"] for variant in controls} == {
+        "connect",
+        "subscribe",
+        "pause",
+        "unsubscribe",
+        "reconnect",
+        "list",
+    }
+    frame = next(
+        variant for variant in variants if variant["properties"]["event"].get("const") == "frame"
+    )
+    assert {
+        "trace_id",
+        "connection_id",
+        "sequence",
+        "received_at",
+        "payload",
+        "raw",
+        "binary",
+        "provenance",
+    } <= set(frame["required"])

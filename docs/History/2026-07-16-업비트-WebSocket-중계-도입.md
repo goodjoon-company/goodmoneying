@@ -1,0 +1,30 @@
+# 2026-07-16 업비트 웹소켓(WebSocket) 중계 도입
+
+Date: 2026-07-16
+Status: Completed
+Related Issue: [#23](https://github.com/goodjoon-company/goodmoneying/issues/23)
+Related ADR: [ADR-0011](../ADR/ADR-0011-업비트-API-게이트웨이와-비파괴-테스트-경계.md)
+Verification: [검증 증적](../Test/2026-07-16-업비트-WebSocket-중계-검증.md)
+
+## 변경 요약
+
+- `/v1/websocket` 브라우저 제어 경계와 공개·비공개 Upbit 상향 세션을 추가했다.
+- 카탈로그의 14개 스트림, `LIST_SUBSCRIPTIONS`, 네 가지 포맷과 타입별 파라미터를 검증해 공식 배열 메시지로 직렬화한다.
+- 연결 초당 5회, 연결별 메시지 초당 5회·분당 100회를 카탈로그에서 구성하고 PING/PONG, 이진 JSON, 오류, 지수형 재연결과 단일 재구독을 구현했다.
+- 비공개 JWT는 서버의 `Authorization` 헤더에만 주입하고 자격 증명 부재는 복구 가능한 503 성격의 이벤트로 알린다. 연결 예외 원문, 키, JWT, 상향 URL은 브라우저·raw 추적·로그로 반사하지 않는다.
+- 최근 200개 프레임에 추적 ID, 연결 ID, 순서, 수신 시각, 가시성, 포맷, endpoint 출처와 마스킹된 raw를 제공한다.
+- `apps/web/src/features/upbitWebSocket/`에 공개 현재가·체결·호가·캔들, 비공개 내 자산·내 주문 탭과 연결·구독·일시 정지·목록·재연결·해제·raw 추적 제어를 고립된 내보내기 컴포넌트로 추가했다.
+- 상위 공통 거래쌍 모델을 `markets`로 받고 선택 값을 `marketCode`로 제어하며 `onMarketCodeChange`로 변경을 통지한다. 탭 전환과 재연결 뒤에도 같은 공통 코드를 구독에 사용한다.
+
+## 계약과 검증
+
+- `docs/contracts/api/upbit-gateway-websocket.schema.json`에 여섯 브라우저 제어와 네 서버 이벤트를 기계 검증 가능하게 정의했다.
+- `docs/contracts/api/upbit-gateway.openapi.yaml`은 웹소켓 경로와 메시지 스키마 위치만 확장 필드로 연결하고 프레임 정의를 복제하지 않는다.
+- 실제 uvicorn 게이트웨이와 가짜 Upbit 웹소켓 프로세스, 고립된 Vite·Playwright 브라우저 하네스를 각각 자동 검증했다.
+- 공용 App·사이드바·작업대와 제품·아키텍처·ADR 문서는 병렬 Issue #24 소유 범위를 지켜 수정하지 않았다.
+
+## 리스크와 후속 작업
+
+- 프로세스 메모리 연결 제한기는 단일 게이트웨이 인스턴스 경계다. 다중 복제 운영은 공유 제한 저장소와 포켓 단위 조정이 필요하다.
+- 실제 Upbit 비공개 이벤트는 계정 자산·주문 변경 때만 오므로 자동화 검증에서는 의도적으로 생성하지 않았다.
+- Issue #24는 이 내보내기 컴포넌트를 공용 작업대에 연결하고 공통 거래쌍 상태를 REST·웹소켓 기능 사이에 전달해야 한다.

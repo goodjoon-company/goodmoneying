@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
@@ -10,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
+from websockets.typing import Origin
 
 ROOT = Path(__file__).resolve().parents[2]
 FAKE_SECRET_KEY = "e" * 64
@@ -36,9 +38,7 @@ def _wait_ready(url: str, process: subprocess.Popen[str]) -> None:
 
 
 @contextmanager
-def _processes() -> Iterator[
-    tuple[str, str, subprocess.Popen[str], subprocess.Popen[str]]
-]:
+def _processes() -> Iterator[tuple[str, str, subprocess.Popen[str], subprocess.Popen[str]]]:
     fake_port = _free_port()
     gateway_port = _free_port()
     environment = os.environ.copy()
@@ -71,6 +71,8 @@ def _processes() -> Iterator[
             "PYTHONPATH": "apps/upbit_gateway",
             "UPBIT_GATEWAY_BASE_URL": f"http://127.0.0.1:{fake_port}",
             "UPBIT_GATEWAY_ALLOW_LOOPBACK_TEST": "true",
+            "UPBIT_GATEWAY_WEBSOCKET_PUBLIC_URL": f"ws://127.0.0.1:{fake_port}/websocket/public",
+            "UPBIT_GATEWAY_WEBSOCKET_PRIVATE_URL": f"ws://127.0.0.1:{fake_port}/websocket/private",
             "UPBIT_ACCESS_KEY": "fake-e2e-access",
             "UPBIT_SECRET_KEY": FAKE_SECRET_KEY,
         }
@@ -165,9 +167,7 @@ def test_actual_gateway_process_against_fake_upstream_end_to_end() -> None:
     with _processes() as (fake_url, gateway_url, fake, gateway):
         public = _execute(gateway_url, "rest.list-trading-pairs", {})
         origin_started_at = time.monotonic()
-        origin_responses = [
-            _execute(gateway_url, "rest.list-trading-pairs", {}) for _ in range(2)
-        ]
+        origin_responses = [_execute(gateway_url, "rest.list-trading-pairs", {}) for _ in range(2)]
         origin_elapsed = time.monotonic() - origin_started_at
         authenticated_read = _execute(gateway_url, "rest.get-pocket-information", {})
         unauthorized = _execute(gateway_url, "rest.get-balance", {})
@@ -224,3 +224,119 @@ def test_actual_gateway_process_against_fake_upstream_end_to_end() -> None:
         assert sensitive not in combined
         assert sensitive not in process_output
     assert "Bearer " not in process_output
+
+
+def test_actual_gateway_and_fake_upbit_websocket_process_end_to_end() -> None:
+    from websockets.sync.client import connect
+
+    with _processes() as (fake_url, gateway_url, fake, gateway):
+        websocket_url = gateway_url.replace("http://", "ws://") + "/v1/websocket"
+        with connect(websocket_url, origin=Origin("https://browser.example")) as public:
+            public.send(
+                '{"action":"connect","request_id":"c","visibility":"public",'
+                '"ticket":"ticket-public","format":"JSON_LIST"}'
+            )
+            connected = json.loads(public.recv())
+            public.send(
+                '{"action":"subscribe","request_id":"s","endpoint_id":"websocket.ticker",'
+                '"parameters":{"codes":["KRW-BTC"],"is_only_realtime":true}}'
+            )
+            subscribed = json.loads(public.recv())
+            frame = json.loads(public.recv())
+            public.send('{"action":"list","request_id":"l"}')
+            listed = [json.loads(public.recv()), json.loads(public.recv())]
+
+        with connect(websocket_url) as private:
+            private.send(
+                '{"action":"connect","request_id":"pc","visibility":"private",'
+                '"ticket":"ticket-private","format":"DEFAULT"}'
+            )
+            private_connected = json.loads(private.recv())
+            private.send(
+                '{"action":"subscribe","request_id":"ps","endpoint_id":"websocket.my-asset",'
+                '"parameters":{}}'
+            )
+            private_subscribed = json.loads(private.recv())
+            private.send('{"action":"list","request_id":"pl"}')
+            private_listed = [json.loads(private.recv()), json.loads(private.recv())]
+
+        calls = httpx.get(f"{fake_url}/__calls").json()
+
+    process_output = _process_output(fake) + _process_output(gateway)
+    assert (connected["state"], subscribed["action"]) == ("connected", "subscribed")
+    assert frame["event"] == "frame"
+    assert frame["binary"] is True
+    assert frame["payload"][0]["code"] == "KRW-BTC"
+    assert {item["event"] for item in listed} == {"subscription", "frame"}
+    assert (private_connected["state"], private_subscribed["action"]) == (
+        "connected",
+        "subscribed",
+    )
+    assert {item["event"] for item in private_listed} == {"subscription", "frame"}
+    private_frames = [item for item in private_listed if item["event"] == "frame"]
+    assert private_frames[0]["payload"]["method"] == "LIST_SUBSCRIPTIONS"
+    websocket_connections = [call for call in calls if call["method"] == "WEBSOCKET"]
+    assert websocket_connections[0]["origin"] is None
+    assert websocket_connections[0]["authorization"] is None
+    assert websocket_connections[1]["authorization"].startswith("Bearer ")
+    rendered = json.dumps(
+        [
+            connected,
+            subscribed,
+            frame,
+            listed,
+            private_connected,
+            private_subscribed,
+            private_listed,
+        ]
+    )
+    authorization = websocket_connections[1]["authorization"]
+    for secret in ("fake-e2e-access", FAKE_SECRET_KEY, authorization, authorization[7:]):
+        assert secret not in rendered
+        assert secret not in process_output
+
+
+def test_actual_websocket_malformed_error_reconnect_and_message_rate_limit() -> None:
+    from websockets.sync.client import connect
+
+    with _processes() as (_, gateway_url, _, _):
+        websocket_url = gateway_url.replace("http://", "ws://") + "/v1/websocket"
+        with connect(websocket_url) as websocket:
+            websocket.send(
+                '{"action":"connect","request_id":"c","visibility":"public",'
+                '"ticket":"ticket","format":"DEFAULT"}'
+            )
+            assert json.loads(websocket.recv())["state"] == "connected"
+            for request_id, code in (("m", "KRW-MALFORMED"), ("e", "KRW-ERROR")):
+                websocket.send(
+                    json.dumps(
+                        {
+                            "action": "subscribe",
+                            "request_id": request_id,
+                            "endpoint_id": "websocket.ticker",
+                            "parameters": {"codes": [code]},
+                        }
+                    )
+                )
+                events = [json.loads(websocket.recv()), json.loads(websocket.recv())]
+                assert {event["event"] for event in events} == {"subscription", "error"}
+            websocket.send(
+                '{"action":"subscribe","request_id":"r","endpoint_id":"websocket.ticker",'
+                '"parameters":{"codes":["KRW-RECONNECT"]}}'
+            )
+            assert json.loads(websocket.recv())["action"] == "subscribed"
+            reconnecting = json.loads(websocket.recv())
+            reconnected = json.loads(websocket.recv())
+            assert (reconnecting["state"], reconnected["state"]) == (
+                "reconnecting",
+                "connected",
+            )
+            started_at = time.monotonic()
+            for index in range(6):
+                websocket.send(json.dumps({"action": "list", "request_id": f"l{index}"}))
+            events = [json.loads(websocket.recv()) for _ in range(12)]
+            elapsed = time.monotonic() - started_at
+
+    assert elapsed >= 0.7
+    assert sum(event["event"] == "subscription" for event in events) == 6
+    assert sum(event["event"] == "frame" for event in events) == 6

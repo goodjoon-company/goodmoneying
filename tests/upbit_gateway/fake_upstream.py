@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from urllib.parse import parse_qsl
 
 import jwt
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from goodmoneying_upbit_gateway.auth import build_query_string, query_hash
@@ -12,6 +13,8 @@ from goodmoneying_upbit_gateway.auth import build_query_string, query_hash
 FAKE_ACCESS_KEY = "fake-e2e-access"
 FAKE_SECRET_KEY = "e" * 64
 calls: list[dict[str, Any]] = []
+websocket_calls: list[dict[str, Any]] = []
+reconnect_closed = False
 app = FastAPI()
 
 
@@ -39,7 +42,88 @@ def _decode(request: Request, query_string: str) -> dict[str, Any]:
 
 @app.get("/__calls")
 def get_calls() -> list[dict[str, Any]]:
-    return calls
+    return calls + websocket_calls
+
+
+@app.websocket("/websocket/public")
+async def public_websocket(websocket: WebSocket) -> None:
+    await _serve_websocket(websocket, visibility="public")
+
+
+@app.websocket("/websocket/private")
+async def private_websocket(websocket: WebSocket) -> None:
+    await _serve_websocket(websocket, visibility="private")
+
+
+async def _serve_websocket(websocket: WebSocket, *, visibility: str) -> None:
+    global reconnect_closed
+    await websocket.accept()
+    authorization = websocket.headers.get("Authorization")
+    websocket_calls.append(
+        {
+            "method": "WEBSOCKET",
+            "path": websocket.url.path,
+            "origin": websocket.headers.get("Origin"),
+            "authorization": authorization,
+        }
+    )
+    if visibility == "private":
+        if authorization is None or not authorization.startswith("Bearer "):
+            await websocket.send_json(
+                {"error": {"name": "INVALID_AUTH", "message": "인증 정보가 없습니다."}}
+            )
+            await websocket.close()
+            return
+        payload = jwt.decode(
+            authorization.removeprefix("Bearer "), FAKE_SECRET_KEY, algorithms=["HS512"]
+        )
+        assert payload["access_key"] == FAKE_ACCESS_KEY
+    try:
+        while True:
+            request = await websocket.receive_json()
+            websocket_calls.append(
+                {
+                    "method": "WEBSOCKET_MESSAGE",
+                    "path": websocket.url.path,
+                    "origin": websocket.headers.get("Origin"),
+                    "authorization": None,
+                    "body": request,
+                }
+            )
+            ticket = request[0]["ticket"]
+            format_name = request[-1].get("format", "DEFAULT")
+            operation = request[1]
+            if operation.get("method") == "LIST_SUBSCRIPTIONS":
+                await websocket.send_json(
+                    {"method": "LIST_SUBSCRIPTIONS", "result": [], "ticket": ticket}
+                )
+                continue
+            code = next(
+                (code for item in request[1:-1] for code in item.get("codes", [])), None
+            )
+            if code == "KRW-MALFORMED":
+                await websocket.send_bytes(b"not-json")
+            elif code == "KRW-ERROR":
+                await websocket.send_json(
+                    {"error": {"name": "WRONG_FORMAT", "message": "잘못된 요청"}}
+                )
+            elif code == "KRW-RECONNECT" and not reconnect_closed:
+                reconnect_closed = True
+                await websocket.close(code=1012)
+                return
+            elif visibility == "public":
+                payload = {
+                    "type": operation["type"],
+                    "code": code,
+                    "trade_price": 100,
+                    "timestamp": 1,
+                    "stream_type": "REALTIME",
+                }
+                encoded: Any = [payload] if format_name.endswith("LIST") else payload
+                await websocket.send_bytes(json.dumps(encoded).encode())
+            # private 구독은 실제 자산·주문 이벤트를 의도적으로 만들지 않는다.
+    except WebSocketDisconnect:
+        return
 
 
 @app.get("/v1/market/all")

@@ -1,4 +1,7 @@
 openapi: 3.1.0
+x-websocket:
+  path: /v1/websocket
+  message_schema: ./upbit-gateway-websocket.schema.json
 info:
   title: goodmoneying 업비트 API 게이트웨이
   version: 0.1.0

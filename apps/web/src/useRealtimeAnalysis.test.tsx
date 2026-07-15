@@ -170,7 +170,7 @@ describe("코인 분석 WebSocket 구독", () => {
       });
     });
 
-    expect(result.current.instrument).toBeNull();
+    expect(result.current.instrument?.marketCode).toBe("KRW-BTC");
     expect(result.current.market).toBeNull();
 
     act(() => {
@@ -189,6 +189,107 @@ describe("코인 분석 WebSocket 구독", () => {
 
     expect(result.current.instrument?.marketCode).toBe("KRW-ETH");
     expect(result.current.market).toBeNull();
+  });
+
+  it("유효 구독 뒤 실패한 구독은 성공 화면과 오류를 유지하고 다음 승인에서만 교체한다", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { result, rerender } = renderHook(
+      ({ instrumentId }: { instrumentId: number }) =>
+        useRealtimeAnalysis(instrumentId, "1d", 365),
+      { initialProps: { instrumentId: 1 } }
+    );
+    const socket = FakeWebSocket.instances[0];
+    act(() => {
+      socket.open();
+      socket.receive({ type: "analysis.session", subscriptionId: "btc-subscription" });
+      socket.receive({
+        type: "analysis.instrument",
+        instrument: {
+          id: 1,
+          marketCode: "KRW-BTC",
+          baseAsset: "BTC",
+          quoteCurrency: "KRW",
+          displayName: "비트코인"
+        }
+      });
+      socket.receive({
+        type: "analysis.chart",
+        unit: "1d",
+        chunkIndex: 0,
+        chunkCount: 1,
+        candles: [{
+          startedAt: "2026-07-15T00:00:00+09:00",
+          open: "100", high: "110", low: "90", close: "105",
+          volume: "10", tradeAmount: "1050", completeness: "complete"
+        }]
+      });
+    });
+
+    rerender({ instrumentId: 999 });
+
+    expect(result.current.instrument?.marketCode).toBe("KRW-BTC");
+    expect(result.current.candles).toHaveLength(1);
+    expect(result.current.error).toBeNull();
+
+    act(() => {
+      socket.receive({
+        type: "analysis.instrument",
+        instrument: {
+          id: 98,
+          marketCode: "KRW-STALE",
+          baseAsset: "STALE",
+          quoteCurrency: "KRW",
+          displayName: "지연 프레임"
+        }
+      });
+      socket.receive({
+        type: "analysis.error",
+        code: "NOT_WATCHLISTED",
+        message: "관심목록에 포함된 코인만 분석할 수 있습니다."
+      });
+      socket.receive({
+        type: "analysis.instrument",
+        instrument: {
+          id: 97,
+          marketCode: "KRW-STALE-AFTER-ERROR",
+          baseAsset: "STALE",
+          quoteCurrency: "KRW",
+          displayName: "오류 뒤 지연 프레임"
+        }
+      });
+    });
+
+    expect(result.current.instrument?.marketCode).toBe("KRW-BTC");
+    expect(result.current.candles).toHaveLength(1);
+    expect(result.current.error).toBe("관심목록에 포함된 코인만 분석할 수 있습니다.");
+
+    rerender({ instrumentId: 2 });
+
+    expect(result.current.instrument?.marketCode).toBe("KRW-BTC");
+    expect(result.current.error).toBe("관심목록에 포함된 코인만 분석할 수 있습니다.");
+
+    act(() => {
+      socket.receive({ type: "analysis.session", subscriptionId: "eth-subscription" });
+    });
+
+    expect(result.current.instrument).toBeNull();
+    expect(result.current.candles).toEqual([]);
+    expect(result.current.error).toBeNull();
+
+    act(() => {
+      socket.receive({
+        type: "analysis.instrument",
+        instrument: {
+          id: 2,
+          marketCode: "KRW-ETH",
+          baseAsset: "ETH",
+          quoteCurrency: "KRW",
+          displayName: "이더리움"
+        }
+      });
+    });
+
+    expect(result.current.instrument?.marketCode).toBe("KRW-ETH");
   });
 
   it("이전 구독 승인 전에 새 구독을 보내면 세대 순서대로 session을 대응한다", () => {

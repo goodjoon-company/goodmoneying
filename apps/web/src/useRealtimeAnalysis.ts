@@ -32,7 +32,7 @@ export function useRealtimeAnalysis(
   const hasSubscription = instrumentId !== null;
 
   useEffect(() => {
-    setState(initialAnalysisState);
+    if (instrumentId === null) setState(initialAnalysisState);
     const socket = socketRef.current;
     if (instrumentId !== null && isWebSocketOpen(socket)) {
       const sent = sendSubscriptionIfChanged(
@@ -77,12 +77,13 @@ export function useRealtimeAnalysis(
         const message = JSON.parse(String(event.data)) as AnalysisMessage;
         if (message.type === "analysis.session") {
           if (acceptSubscriptionGeneration(socket, subscriptionGateRef)) {
+            setState(initialAnalysisState);
             setConnectionStatus("live");
           }
           return;
         }
         if (message.type === "analysis.error" && hasPendingGeneration(socket, subscriptionGateRef)) {
-          if (!acceptSubscriptionGeneration(socket, subscriptionGateRef)) return;
+          if (!rejectSubscriptionGeneration(socket, subscriptionGateRef)) return;
         } else if (!isCurrentGenerationAccepted(socket, subscriptionGateRef)) {
           return;
         }
@@ -184,6 +185,16 @@ function hasPendingGeneration(
 ): boolean {
   const gate = subscriptionGateRef.current;
   return gate?.socket === socket && gate.pendingGenerations.length > 0;
+}
+
+function rejectSubscriptionGeneration(
+  socket: WebSocket,
+  subscriptionGateRef: { current: SubscriptionGate | null }
+): boolean {
+  const gate = subscriptionGateRef.current;
+  if (gate?.socket !== socket) return false;
+  const generation = gate.pendingGenerations.shift();
+  return generation !== undefined && generation === gate.currentGeneration;
 }
 
 function isCurrentGenerationAccepted(

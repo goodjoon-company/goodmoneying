@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import threading
 from collections.abc import Callable
+from decimal import Decimal
 from functools import wraps
 from typing import Any, cast
 
@@ -10,8 +11,10 @@ import uvicorn
 from fastapi import FastAPI
 
 from goodmoneying_api.main import create_app
+from goodmoneying_shared.models import SourceCandle
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
+from goodmoneying_shared.time import now_kst
 from goodmoneying_worker.collector import seed_repository
 from goodmoneying_worker.upbit_client import FixtureUpbitClient
 
@@ -39,6 +42,28 @@ class _SerializedOperationsRepository:
 def create_seeded_e2e_app() -> FastAPI:
     repository = SQLiteOperationsRepository()
     seed_repository(repository, FixtureUpbitClient())
+    target = repository.list_active_targets()[0]
+    repository.record_collection_worker_heartbeat("realtime_collection", "running")
+    repository.record_collection_worker_heartbeat("backfill_collection", "running")
+    repository.record_incremental_collection(
+        [],
+        [],
+        [
+            SourceCandle(
+                instrument_id=target.id,
+                candle_unit="1m",
+                candle_start_at=now_kst(),
+                open_price=Decimal("1"),
+                high_price=Decimal("1"),
+                low_price=Decimal("1"),
+                close_price=Decimal("1"),
+                trade_volume=Decimal("1"),
+                trade_amount=Decimal("1"),
+                collected_at=now_kst(),
+            )
+        ],
+    )
+    repository.schedule_candle_aggregation()
     serialized_repository = cast(
         OperationsRepository,
         _SerializedOperationsRepository(repository),

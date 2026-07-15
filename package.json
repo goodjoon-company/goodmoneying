@@ -12,6 +12,7 @@
     "e2e": "playwright test && node tests/e2e/assert_servers_stopped.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.57.0"
+    "@playwright/test": "^1.57.0",
+    "dbmate": "2.34.1"
   }
 }

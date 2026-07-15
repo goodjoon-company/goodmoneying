@@ -1,4 +1,23 @@
 services:
+  migrate:
+    image: ghcr.io/goodjoon-company/goodmoneying-migrations:${GOODMONEYING_IMAGE_TAG}
+    profiles: ["migration"]
+    restart: "no"
+    env_file:
+      - ${GOODMONEYING_APP_BASE_DIR}/env/app.env
+    environment:
+      DBMATE_STRICT: "true"
+    command:
+      - --env
+      - GOODMONEYING_DATABASE_URL
+      - --migrations-dir
+      - /db/migrations
+      - --wait
+      - --wait-timeout
+      - 60s
+      - --no-dump-schema
+      - migrate
+
   api:
     image: ghcr.io/goodjoon-company/goodmoneying-api:${GOODMONEYING_IMAGE_TAG}
     container_name: goodmoneying-api

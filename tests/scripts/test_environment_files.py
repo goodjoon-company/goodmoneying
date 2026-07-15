@@ -111,3 +111,17 @@ def test_prod_home_env_samples_list_server_runtime_keys() -> None:
         "GOODMONEYING_API_INTERNAL_URL",
         "GOODMONEYING_OPERATOR_TOKEN",
     }.issubset(web_keys)
+
+
+def test_postgres_urls_explicitly_disable_tls_for_tailscale_and_local_networks() -> None:
+    local_sample = (ROOT / ".env.sample").read_text()
+    app_sample = (
+        ROOT / "deploy/profiles/prod-home/env-samples/app.env.sample"
+    ).read_text()
+    dev_script = (ROOT / "dev.sh").read_text()
+
+    assert "GOODMONEYING_DATABASE_URL=postgresql://" in local_sample
+    assert "?sslmode=disable" in local_sample
+    assert "GOODMONEYING_DATABASE_URL=postgresql://" in app_sample
+    assert "?sslmode=disable" in app_sample
+    assert "/goodmoneying?sslmode=disable" in dev_script

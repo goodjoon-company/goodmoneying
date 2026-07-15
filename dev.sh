@@ -50,7 +50,7 @@ WEB_HOST="${GOODMONEYING_WEB_HOST:-127.0.0.1}"
 WEB_PORT="${GOODMONEYING_WEB_PORT:-5173}"
 POSTGRES_PORT="${GOODMONEYING_POSTGRES_PORT:-5432}"
 OPERATOR_TOKEN="${GOODMONEYING_OPERATOR_TOKEN:-local-dev-token}"
-DATABASE_URL="${GOODMONEYING_DATABASE_URL:-postgresql://goodmoneying:goodmoneying@127.0.0.1:${POSTGRES_PORT}/goodmoneying}"
+DATABASE_URL="${GOODMONEYING_DATABASE_URL:-postgresql://goodmoneying:goodmoneying@127.0.0.1:${POSTGRES_PORT}/goodmoneying?sslmode=disable}"
 APP_TIMEZONE="${GOODMONEYING_TIMEZONE:-Asia/Seoul}"
 REALTIME_COLLECTION_INTERVAL_SECONDS="${GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS:-60}"
 BACKFILL_POLL_SECONDS="${GOODMONEYING_BACKFILL_POLL_SECONDS:-10}"
@@ -58,6 +58,12 @@ BACKFILL_BATCH_SIZE="${GOODMONEYING_BACKFILL_BATCH_SIZE:-3000}"
 AGGREGATION_POLL_SECONDS="${GOODMONEYING_AGGREGATION_POLL_SECONDS:-5}"
 LOG_LEVEL="${GOODMONEYING_LOG_LEVEL:-INFO}"
 PYTHON_BIN="${GOODMONEYING_PYTHON_BIN:-"$ROOT_DIR/.venv/bin/python"}"
+DBMATE_BIN="${GOODMONEYING_DBMATE_BIN:-"$ROOT_DIR/node_modules/.bin/dbmate"}"
+DB_MIGRATIONS_DIR="$ROOT_DIR/docs/contracts/db/migrations"
+DB_SCHEMA_FILE="${GOODMONEYING_DB_SCHEMA_FILE:-"$ROOT_DIR/docs/contracts/db/schema.sql"}"
+DBMATE_DOCKER_IMAGE="ghcr.io/amacneil/dbmate:2.34.1"
+DBMATE_DOCKER_CONFIG="${GOODMONEYING_DBMATE_DOCKER_CONFIG:-"$RUNTIME_DIR/docker-dbmate"}"
+DB_BASELINE_VERSION="20260715000100"
 export TZ="$APP_TIMEZONE"
 export PGTZ="$APP_TIMEZONE"
 
@@ -72,6 +78,12 @@ usage() {
   ./dev.sh infra restart [postgres|all]
   ./dev.sh infra status [postgres|all]
 
+  ./dev.sh db new <설명>
+  ./dev.sh db migrate
+  ./dev.sh db status
+  ./dev.sh db dump
+  ./dev.sh db rollback
+
   ./dev.sh app start [api|web|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
   ./dev.sh app stop [api|web|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
   ./dev.sh app restart [api|web|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
@@ -81,7 +93,9 @@ usage() {
 
 설명:
   infra 는 Podman Compose 로 PostgreSQL 을 관리한다.
+  db 는 dbmate 로 버전 DB 마이그레이션을 관리한다.
   app 은 로컬 개발 프로세스로 실행한다. API 는 기본적으로 PostgreSQL 을 바라본다.
+  app start 와 app restart 는 DB 마이그레이션 성공 후 앱을 시작한다.
   루트 .env 파일이 있으면 자동으로 읽는다. 셸 환경변수는 .env 값보다 우선한다.
 
 기본 endpoint:
@@ -101,6 +115,7 @@ usage() {
   GOODMONEYING_AGGREGATION_POLL_SECONDS
   GOODMONEYING_LOG_LEVEL
   GOODMONEYING_PYTHON_BIN
+  GOODMONEYING_DBMATE_BIN
 USAGE
 }
 
@@ -110,6 +125,156 @@ ensure_runtime_dirs() {
 
 print_error() {
   printf '오류: %s\n' "$*" >&2
+}
+
+require_dbmate() {
+  if [[ ! -x "$DBMATE_BIN" ]]; then
+    print_error "dbmate 실행 파일을 찾을 수 없습니다. 프로젝트 루트에서 'npm install'을 실행하세요."
+    return 1
+  fi
+}
+
+run_dbmate() {
+  require_dbmate
+  GOODMONEYING_DATABASE_URL="$DATABASE_URL" DBMATE_STRICT=true "$DBMATE_BIN" \
+    --env GOODMONEYING_DATABASE_URL \
+    --migrations-dir "$DB_MIGRATIONS_DIR" \
+    --schema-file "$DB_SCHEMA_FILE" \
+    "$@"
+}
+
+require_schema_dumper() {
+  if [[ -n "${GOODMONEYING_DBMATE_BIN:-}" ]] \
+    || { [[ "${GOODMONEYING_FORCE_DOCKER_DB_DUMP:-0}" != "1" ]] \
+      && command -v pg_dump >/dev/null 2>&1; }; then
+    return 0
+  fi
+  mkdir -p "$DBMATE_DOCKER_CONFIG"
+  if ! command -v docker >/dev/null 2>&1 \
+    || ! DOCKER_CONFIG="$DBMATE_DOCKER_CONFIG" docker info >/dev/null 2>&1; then
+    print_error "스키마 덤프에 필요한 pg_dump 또는 실행 중인 Docker를 찾을 수 없습니다."
+    return 1
+  fi
+  if ! DOCKER_CONFIG="$DBMATE_DOCKER_CONFIG" docker image inspect "$DBMATE_DOCKER_IMAGE" >/dev/null 2>&1; then
+    DOCKER_CONFIG="$DBMATE_DOCKER_CONFIG" docker pull "$DBMATE_DOCKER_IMAGE"
+  fi
+}
+
+normalize_schema_snapshot() {
+  local snapshot="$1"
+  local normalized="${snapshot}.normalized"
+  awk '
+    /^-- Dumped from database version / {
+      print "-- Dumped from database version (normalized)"
+      next
+    }
+    /^-- Dumped by pg_dump version / {
+      print "-- Dumped by pg_dump version (normalized)"
+      next
+    }
+    { print }
+  ' "$snapshot" >"$normalized"
+  mv "$normalized" "$snapshot"
+}
+
+database_url_for_docker() {
+  local url="$DATABASE_URL"
+  url="${url//@127.0.0.1:/@host.docker.internal:}"
+  url="${url//\/\/127.0.0.1:/\/\/host.docker.internal:}"
+  url="${url//@127.0.0.1\//@host.docker.internal\/}"
+  url="${url//\/\/127.0.0.1\//\/\/host.docker.internal\/}"
+  url="${url//@localhost:/@host.docker.internal:}"
+  url="${url//\/\/localhost:/\/\/host.docker.internal:}"
+  url="${url//@localhost\//@host.docker.internal\/}"
+  url="${url//\/\/localhost\//\/\/host.docker.internal\/}"
+  url="${url//@\[::1\]:/@host.docker.internal:}"
+  url="${url//\/\/\[::1\]:/\/\/host.docker.internal:}"
+  url="${url//@\[::1\]\//@host.docker.internal\/}"
+  url="${url//\/\/\[::1\]\//\/\/host.docker.internal\/}"
+  printf '%s\n' "$url"
+}
+
+dump_schema() {
+  local schema_dir schema_name docker_database_url docker_operating_system docker_os_type
+  local -a docker_network_args
+  require_schema_dumper
+  if [[ -n "${GOODMONEYING_DBMATE_BIN:-}" ]] \
+    || { [[ "${GOODMONEYING_FORCE_DOCKER_DB_DUMP:-0}" != "1" ]] \
+      && command -v pg_dump >/dev/null 2>&1; }; then
+    run_dbmate dump
+    [[ -f "$DB_SCHEMA_FILE" ]] && normalize_schema_snapshot "$DB_SCHEMA_FILE"
+    return
+  fi
+
+  schema_dir="$(cd "$(dirname "$DB_SCHEMA_FILE")" && pwd)"
+  schema_name="$(basename "$DB_SCHEMA_FILE")"
+  docker_operating_system="$(
+    DOCKER_CONFIG="$DBMATE_DOCKER_CONFIG" docker info --format '{{.OperatingSystem}}'
+  )"
+  docker_os_type="$(
+    DOCKER_CONFIG="$DBMATE_DOCKER_CONFIG" docker info --format '{{.OSType}}'
+  )"
+  if [[ "$docker_operating_system" == "Docker Desktop" ]]; then
+    docker_database_url="$(database_url_for_docker)"
+    docker_network_args=(--add-host host.docker.internal:host-gateway)
+  elif [[ "$docker_os_type" == "linux" ]]; then
+    docker_database_url="$DATABASE_URL"
+    docker_network_args=(--network host)
+  else
+    print_error "지원하지 않는 Docker 운영체제입니다: ${docker_operating_system} (${docker_os_type})"
+    return 1
+  fi
+  GOODMONEYING_DATABASE_URL="$docker_database_url" DBMATE_STRICT=true \
+    DOCKER_CONFIG="$DBMATE_DOCKER_CONFIG" docker run --rm \
+    "${docker_network_args[@]}" \
+    -e GOODMONEYING_DATABASE_URL \
+    -e DBMATE_STRICT \
+    -v "$schema_dir:/output" \
+    "$DBMATE_DOCKER_IMAGE" \
+    --env GOODMONEYING_DATABASE_URL \
+    --migrations-dir /db/migrations \
+    --schema-file "/output/$schema_name" \
+    dump
+  normalize_schema_snapshot "$DB_SCHEMA_FILE"
+}
+
+reject_baseline_rollback() {
+  local status latest_version
+  status="$(run_dbmate status)"
+  latest_version="$(printf '%s\n' "$status" | sed -n 's/^\[X\] \([0-9][0-9]*\).*/\1/p' | tail -1)"
+  if [[ "$latest_version" == "$DB_BASELINE_VERSION" ]]; then
+    print_error "기준선 마이그레이션은 rollback할 수 없습니다. 새 순방향 마이그레이션을 작성하세요."
+    return 1
+  fi
+}
+
+db_command() {
+  local action="${1:-status}"
+  shift || true
+
+  case "$action" in
+    new)
+      if [[ $# -eq 0 ]]; then
+        print_error "새 마이그레이션 설명이 필요합니다. 예: './dev.sh db new add_user_preferences'"
+        return 2
+      fi
+      run_dbmate new "$*"
+      ;;
+    migrate)
+      require_schema_dumper
+      run_dbmate --no-dump-schema migrate
+      dump_schema
+      ;;
+    status) run_dbmate status ;;
+    dump) dump_schema ;;
+    rollback)
+      reject_baseline_rollback
+      require_schema_dumper
+      run_dbmate --no-dump-schema rollback
+      dump_schema
+      ;;
+    *) print_error "알 수 없는 db 명령: $action"; usage; return 2 ;;
+  esac
 }
 
 podman_compose() {
@@ -489,6 +654,8 @@ app_status() {
 app_start() {
   local target="${1:-all}"
   local unit
+  service_list "$target" >/dev/null
+  run_dbmate --no-dump-schema migrate
   for unit in $(service_list "$target"); do
     start_app_unit "$unit"
   done
@@ -539,6 +706,9 @@ main() {
         status) infra_status "$target" ;;
         *) print_error "알 수 없는 infra 명령: $action"; usage; return 2 ;;
       esac
+      ;;
+    db)
+      db_command "$@"
       ;;
     app)
       local action="${1:-status}"

@@ -56,9 +56,15 @@ def test_ci_workflow_has_required_quality_commands() -> None:
     assert "uv run pytest" in runs
     assert "npm test" in runs
     assert "npm run build" in runs
+    assert "tests/e2e/run_dbmate_migration_e2e.sh" in runs
     assert "docker build -f apps/api/Dockerfile -t goodmoneying-api:ci ." in runs
     assert "docker build -f apps/worker/Dockerfile -t goodmoneying-worker:ci ." in runs
     assert "docker build -f apps/web/Dockerfile -t goodmoneying-web:ci ." in runs
+    assert (
+        "docker build -f apps/migrations/Dockerfile -t goodmoneying-migrations:ci ."
+        in runs
+    )
+
 
 
 def test_ci_workflow_runs_isolated_e2e() -> None:
@@ -132,7 +138,7 @@ def test_deploy_workflow_pushes_ghcr_and_runs_profile_scripts() -> None:
         'echo "/Applications/Docker.app/Contents/Resources/bin" >> "$GITHUB_PATH"'
         in workflow_text
     )
-    assert 'echo "IMAGE_TAG=release-${GITHUB_SHA::7}" >> "$GITHUB_ENV"' in runs
+    assert 'echo "IMAGE_TAG=release-${GITHUB_SHA}" >> "$GITHUB_ENV"' in runs
     assert "python3 --version\nuv --version\nnode --version\nnpm --version\n" in runs
     assert "npx playwright install chromium" in runs
     assert "Prepare runner Docker CLI plugins" in workflow_text
@@ -146,6 +152,7 @@ def test_deploy_workflow_pushes_ghcr_and_runs_profile_scripts() -> None:
     assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-api:${IMAGE_TAG}" in workflow_text
     assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-worker:${IMAGE_TAG}" in workflow_text
     assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-web:${IMAGE_TAG}" in workflow_text
+    assert "ghcr.io/${IMAGE_NAMESPACE}/goodmoneying-migrations:${IMAGE_TAG}" in workflow_text
     assert "cd '${GITHUB_WORKSPACE}'" in workflow_text
     assert (
         "'${RUNNER_DOCKER_BIN}' buildx build --platform '${BUILD_PLATFORMS}' "
@@ -155,6 +162,11 @@ def test_deploy_workflow_pushes_ghcr_and_runs_profile_scripts() -> None:
     assert (
         "'${RUNNER_DOCKER_BIN}' buildx build --platform '${BUILD_PLATFORMS}' "
         "--push --build-arg VITE_API_BASE_URL=/api"
+        in workflow_text
+    )
+    assert (
+        "'${RUNNER_DOCKER_BIN}' buildx build --platform '${BUILD_PLATFORMS}' "
+        "--push -f apps/migrations/Dockerfile"
         in workflow_text
     )
 

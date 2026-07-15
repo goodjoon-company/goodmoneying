@@ -106,11 +106,13 @@ services:
     environment:
       TZ: Asia/Seoul
       GOODMONEYING_API_INTERNAL_URL: http://api:8000
+      GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL: http://upbit-gateway:8001
       GOODMONEYING_OPERATOR_TOKEN: local-dev-token
     ports:
       - "5173:80"
     depends_on:
       - api
+      - upbit-gateway
 
 volumes:
   postgres-data:

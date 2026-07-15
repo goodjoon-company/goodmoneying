@@ -365,13 +365,24 @@ def test_exhausted_automatic_reconnect_reports_masked_error_and_closed_state() -
             await asyncio.sleep(0)
             if downstream.events[-1].get("state") == "closed":
                 break
+        attempts_before_terminal_control = attempts
+        await session.handle(
+            {
+                "action": "connect",
+                "request_id": "terminal-connect",
+                "visibility": "public",
+                "ticket": "new-ticket",
+                "format": "DEFAULT",
+            }
+        )
+        assert attempts == attempts_before_terminal_control
         await session.close(notify=False)
 
     asyncio.run(scenario())
 
     assert sleeps == [0.25, 0.5, 1.0, 2.0, 5.0]
     assert attempts == 6
-    assert downstream.events[-2:] == [
+    assert downstream.events[-3:-1] == [
         {
             "event": "error",
             "request_id": None,
@@ -389,6 +400,14 @@ def test_exhausted_automatic_reconnect_reports_masked_error_and_closed_state() -
             "format": "DEFAULT",
         },
     ]
+    assert downstream.events[-1] == {
+        "event": "error",
+        "request_id": "terminal-connect",
+        "code": "SESSION_CLOSED",
+        "message": "웹소켓(WebSocket) 세션이 종료되었습니다. 새 연결을 여세요.",
+        "status": 409,
+        "recoverable": False,
+    }
     assert "leaked-token" not in json.dumps(downstream.events)
     assert "api.upbit.com" not in json.dumps(downstream.events)
 

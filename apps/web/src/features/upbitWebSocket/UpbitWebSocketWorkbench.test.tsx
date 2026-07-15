@@ -132,7 +132,7 @@ describe("업비트 웹소켓 작업대", () => {
     act(() => sockets[1].message({ event: "connection", state: "connected", visibility: "private", format: "DEFAULT" }));
 
     expect(sockets[0].closed).toBe(false);
-    expect(screen.getByText("connected", { selector: ".status" })).toBeInTheDocument();
+    expect(screen.getByLabelText("비공개 연결 상태")).toHaveTextContent("connected");
     fireEvent.click(screen.getByRole("button", { name: "연결 해제" }));
     expect(sockets[1].closed).toBe(true);
     expect(sockets[0].closed).toBe(false);
@@ -140,6 +140,31 @@ describe("업비트 웹소켓 작업대", () => {
     expect(screen.getByLabelText("실시간 현재가")).toHaveTextContent("100");
     fireEvent.click(screen.getByRole("button", { name: "프레임 지우기" }));
     expect(screen.queryByLabelText("실시간 현재가")).not.toBeInTheDocument();
+  });
+
+  it("헤더에서 공개·비공개 연결 상태를 동시에 독립적으로 표시한다", () => {
+    const sockets: FakeSocket[] = [];
+    render(<UpbitWebSocketWorkbench socketFactory={() => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      return socket;
+    }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^연결$/ }));
+    act(() => sockets[0].open());
+    act(() => sockets[0].message({ event: "connection", state: "connected", visibility: "public", format: "DEFAULT" }));
+    expect(screen.getByLabelText("공개 연결 상태")).toHaveTextContent("connected");
+    expect(screen.getByLabelText("비공개 연결 상태")).toHaveTextContent("closed");
+
+    fireEvent.click(screen.getByRole("tab", { name: "내 자산" }));
+    fireEvent.click(screen.getByRole("button", { name: /^연결$/ }));
+    act(() => sockets[1].open());
+    act(() => sockets[1].message({ event: "connection", state: "connected", visibility: "private", format: "DEFAULT" }));
+    fireEvent.click(screen.getByRole("tab", { name: "현재가" }));
+    act(() => sockets[0].message({ event: "connection", state: "paused", visibility: "public", format: "DEFAULT" }));
+
+    expect(screen.getByLabelText("공개 연결 상태")).toHaveTextContent("paused");
+    expect(screen.getByLabelText("비공개 연결 상태")).toHaveTextContent("connected");
   });
 
   it("raw 출처와 비공개 자산·주문 목록을 구조화해 표시한다", () => {
@@ -181,6 +206,27 @@ describe("업비트 웹소켓 작업대", () => {
     const trade = screen.getByRole("tab", { name: "체결" });
     expect(trade).toHaveAttribute("aria-selected", "true");
     expect(trade).toHaveFocus();
+  });
+
+  it("raw 대화상자의 첫·마지막 초점 요소에서 Tab과 Shift+Tab을 순환한다", () => {
+    const socket = new FakeSocket();
+    render(<UpbitWebSocketWorkbench socketFactory={() => socket} />);
+    fireEvent.click(screen.getByRole("button", { name: /^연결$/ }));
+    act(() => socket.open());
+    act(() => socket.message(frameEvent("focus-trace", "public", {
+      type: "ticker", code: "KRW-BTC", trade_price: 100
+    })));
+    fireEvent.click(screen.getByRole("button", { name: "raw 추적" }));
+
+    const close = screen.getByRole("button", { name: "닫기" });
+    const rawFrame = screen.getByLabelText("raw frame 1");
+    rawFrame.focus();
+    fireEvent.keyDown(rawFrame, { key: "Tab" });
+    expect(close).toHaveFocus();
+
+    close.focus();
+    fireEvent.keyDown(close, { key: "Tab", shiftKey: true });
+    expect(rawFrame).toHaveFocus();
   });
 
   it("상위 공통 페어 선택을 사용하고 변경을 통지하며 탭·재연결 뒤에도 유지한다", () => {

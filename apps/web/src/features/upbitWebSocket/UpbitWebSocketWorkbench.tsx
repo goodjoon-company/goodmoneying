@@ -60,7 +60,7 @@ export function UpbitWebSocketWorkbench({
     : [{ value: market, label: market }, ...options];
   const stream = streamForTab(tab, candleUnit);
   const activeChannel = channels[stream.visibility];
-  const { state, paused, frames, notice } = activeChannel;
+  const { paused, frames, notice } = activeChannel;
 
   useEffect(() => () => {
     socketRefs.current.public?.close();
@@ -108,6 +108,27 @@ export function UpbitWebSocketWorkbench({
   function closeRaw() {
     rawTriggerRef.current?.focus();
     setRawOpen(false);
+  }
+
+  function handleRawDialogKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      closeRaw();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    ));
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) return;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 
   function websocketUrl() {
@@ -199,7 +220,10 @@ export function UpbitWebSocketWorkbench({
   return <section className="upbit-ws" aria-label="업비트 웹소켓 작업대">
     <header>
       <div><p className="eyebrow">UPBIT WEBSOCKET GATEWAY</p><h1>실시간 API 작업대</h1></div>
-      <span className={`status status-${state}`}>{state}</span>
+      <div className="status-group" aria-label="웹소켓 연결 상태">
+        <span><small>공개</small><b className={`status status-${channels.public.state}`} aria-label="공개 연결 상태">{channels.public.state}</b></span>
+        <span><small>비공개</small><b className={`status status-${channels.private.state}`} aria-label="비공개 연결 상태">{channels.private.state}</b></span>
+      </div>
     </header>
     <nav role="tablist" aria-label="웹소켓 데이터 그룹">
       {tabs.map((item) => <button key={item.id} id={`upbit-ws-tab-${item.id}`} role="tab" aria-controls={`upbit-ws-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1} aria-selected={tab === item.id} onKeyDown={(event) => moveTab(event, item.id)} onClick={() => selectTab(item.id)}>{item.label}</button>)}
@@ -236,10 +260,10 @@ export function UpbitWebSocketWorkbench({
     <div role="tabpanel" id={`upbit-ws-panel-${tab}`} aria-labelledby={`upbit-ws-tab-${tab}`}>
       <LiveVisualization tab={tab} payload={lastPayload} payloads={payloads} />
     </div>
-    {rawOpen && <div className="raw-dialog" role="dialog" aria-label="raw frame 추적" aria-modal="true" tabIndex={-1} onKeyDown={(event) => { if (event.key === "Escape") closeRaw(); }}>
+    {rawOpen && <div className="raw-dialog" role="dialog" aria-label="raw frame 추적" aria-modal="true" tabIndex={-1} onKeyDown={handleRawDialogKeyDown}>
       <div className="raw-dialog-head"><h2>최근 raw frame ({frames.length}/200)</h2><button autoFocus onClick={closeRaw}>닫기</button></div>
       <ol>{frames.slice().reverse().map((frame) => <li key={`${frame.connection_id}-${frame.sequence}`}>
-        <strong>#{frame.sequence} · {frame.trace_id}</strong><small>{frame.received_at} · {frame.binary ? "binary" : "text"}</small><small>{frame.provenance.visibility} · {frame.provenance.format} · {frame.provenance.endpoint_ids.join(", ")}</small><pre>{frame.raw}</pre>
+        <strong>#{frame.sequence} · {frame.trace_id}</strong><small>{frame.received_at} · {frame.binary ? "binary" : "text"}</small><small>{frame.provenance.visibility} · {frame.provenance.format} · {frame.provenance.endpoint_ids.join(", ")}</small><pre tabIndex={0} aria-label={`raw frame ${frame.sequence}`}>{frame.raw}</pre>
       </li>)}</ol>
     </div>}
   </section>;

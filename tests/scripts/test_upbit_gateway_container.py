@@ -46,6 +46,8 @@ def test_web_proxies_gateway_upgrade_and_injects_operator_token_server_side() ->
         gateway_location
     )
     assert "proxy_set_header X-Forwarded-Host $http_host;" in gateway_location
+    assert "proxy_read_timeout 3600s;" in gateway_location
+    assert "proxy_send_timeout 3600s;" in gateway_location
     assert '"/upbit-gateway"' in vite
     assert "ws: true" in vite
     assert '"X-Operator-Token": operatorToken' in vite

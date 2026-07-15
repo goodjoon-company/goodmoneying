@@ -147,6 +147,15 @@ class GatewayWebSocketSession:
 
     async def handle(self, control: Mapping[str, Any]) -> None:
         request_id = control.get("request_id")
+        if self._closed:
+            await self._error(
+                request_id=request_id if isinstance(request_id, str) else None,
+                code="SESSION_CLOSED",
+                message="웹소켓(WebSocket) 세션이 종료되었습니다. 새 연결을 여세요.",
+                status=409,
+                recoverable=False,
+            )
+            return
         try:
             validate_control_message(control)
             action = control.get("action")
@@ -413,6 +422,7 @@ class GatewayWebSocketSession:
             recoverable=False,
         )
         await self._connection_event("closed", None)
+        await self.close(notify=False)
 
     async def _connection_event(
         self, state: str, request_id: str | None, *, retry_in: float | None = None

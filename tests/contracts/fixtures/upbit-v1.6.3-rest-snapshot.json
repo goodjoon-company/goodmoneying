@@ -39,15 +39,20 @@
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "date-time",
+          "timezone": "Asia/Seoul",
+          "step": 1
         },
         {
           "name": "count",
           "location": "query",
           "type": "integer",
           "required": false,
+          "default": 1,
           "minimum": 1,
-          "maximum": 200
+          "maximum": 200,
+          "step": 1,
+          "unit": "개"
         }
       ]
     },
@@ -83,15 +88,20 @@
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "date-time",
+          "timezone": "Asia/Seoul",
+          "step": 1
         },
         {
           "name": "count",
           "location": "query",
           "type": "integer",
           "required": false,
+          "default": 1,
           "minimum": 1,
-          "maximum": 200
+          "maximum": 200,
+          "step": 1,
+          "unit": "개"
         }
       ]
     },
@@ -111,15 +121,20 @@
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "date-time",
+          "timezone": "Asia/Seoul",
+          "step": 1
         },
         {
           "name": "count",
           "location": "query",
           "type": "integer",
           "required": false,
+          "default": 1,
           "minimum": 1,
-          "maximum": 200
+          "maximum": 200,
+          "step": 1,
+          "unit": "개"
         },
         {
           "name": "converting_price_unit",
@@ -145,15 +160,20 @@
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "date-time",
+          "timezone": "Asia/Seoul",
+          "step": 1
         },
         {
           "name": "count",
           "location": "query",
           "type": "integer",
           "required": false,
+          "default": 1,
           "minimum": 1,
-          "maximum": 200
+          "maximum": 200,
+          "step": 1,
+          "unit": "개"
         }
       ]
     },
@@ -173,15 +193,20 @@
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "date-time",
+          "timezone": "Asia/Seoul",
+          "step": 1
         },
         {
           "name": "count",
           "location": "query",
           "type": "integer",
           "required": false,
+          "default": 1,
           "minimum": 1,
-          "maximum": 200
+          "maximum": 200,
+          "step": 1,
+          "unit": "개"
         }
       ]
     },
@@ -201,15 +226,20 @@
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "date-time",
+          "timezone": "Asia/Seoul",
+          "step": 1
         },
         {
           "name": "count",
           "location": "query",
           "type": "integer",
           "required": false,
+          "default": 1,
           "minimum": 1,
-          "maximum": 200
+          "maximum": 200,
+          "step": 1,
+          "unit": "개"
         }
       ]
     },
@@ -228,15 +258,21 @@
           "name": "to",
           "location": "query",
           "type": "string",
-          "required": false
+          "required": false,
+          "format": "time",
+          "timezone": "UTC",
+          "step": 1
         },
         {
           "name": "count",
           "location": "query",
           "type": "integer",
           "required": false,
+          "default": 1,
           "minimum": 1,
-          "maximum": 500
+          "maximum": 500,
+          "step": 1,
+          "unit": "개"
         },
         {
           "name": "cursor",
@@ -248,7 +284,12 @@
           "name": "days_ago",
           "location": "query",
           "type": "integer",
-          "required": false
+          "required": false,
+          "default": 1,
+          "minimum": 1,
+          "maximum": 7,
+          "step": 1,
+          "unit": "일"
         }
       ]
     },
@@ -293,19 +334,21 @@
           "name": "level",
           "location": "query",
           "type": "string",
-          "required": false
+          "required": false,
+          "format": "decimal-string",
+          "default": "0",
+          "dynamic_constraint_source": "rest.list-orderbook-instruments"
         },
         {
           "name": "count",
           "location": "query",
           "type": "integer",
           "required": false,
-          "enum": [
-            1,
-            5,
-            15,
-            30
-          ]
+          "default": 30,
+          "minimum": 1,
+          "maximum": 30,
+          "step": 1,
+          "unit": "호가 쌍"
         }
       ]
     },
@@ -401,7 +444,8 @@
           "name": "amount",
           "location": "body",
           "type": "string",
-          "required": true
+          "required": true,
+          "format": "decimal-string"
         },
         {
           "name": "identifier",
@@ -440,28 +484,40 @@
           "location": "query",
           "type": "array",
           "items": "string",
-          "required": false
+          "required": false,
+          "max_items": 20,
+          "unique_items": true
         },
         {
           "name": "identifiers[]",
           "location": "query",
           "type": "array",
           "items": "string",
-          "required": false
+          "required": false,
+          "max_items": 20,
+          "unique_items": true
         },
         {
           "name": "start_time",
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "date-time",
+          "timezone": "Asia/Seoul",
+          "step": 1,
+          "range_with": "end_time",
+          "range_max_seconds": 604800
         },
         {
           "name": "end_time",
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "date-time",
+          "timezone": "Asia/Seoul",
+          "step": 1,
+          "range_with": "start_time",
+          "range_max_seconds": 604800
         },
         {
           "name": "currency",
@@ -473,7 +529,12 @@
           "name": "limit",
           "location": "query",
           "type": "string",
-          "required": false
+          "required": false,
+          "format": "integer-string",
+          "default": "20",
+          "maximum": 100,
+          "step": 1,
+          "unit": "개"
         },
         {
           "name": "order_by",
@@ -508,7 +569,8 @@
           "name": "amount",
           "location": "body",
           "type": "string",
-          "required": true
+          "required": true,
+          "format": "decimal-string"
         },
         {
           "name": "identifier",
@@ -551,28 +613,40 @@
           "location": "query",
           "type": "array",
           "items": "string",
-          "required": false
+          "required": false,
+          "max_items": 20,
+          "unique_items": true
         },
         {
           "name": "identifiers[]",
           "location": "query",
           "type": "array",
           "items": "string",
-          "required": false
+          "required": false,
+          "max_items": 20,
+          "unique_items": true
         },
         {
           "name": "start_time",
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "date-time",
+          "timezone": "Asia/Seoul",
+          "step": 1,
+          "range_with": "end_time",
+          "range_max_seconds": 604800
         },
         {
           "name": "end_time",
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "date-time",
+          "timezone": "Asia/Seoul",
+          "step": 1,
+          "range_with": "start_time",
+          "range_max_seconds": 604800
         },
         {
           "name": "currency",
@@ -584,7 +658,12 @@
           "name": "limit",
           "location": "query",
           "type": "string",
-          "required": false
+          "required": false,
+          "format": "integer-string",
+          "default": "20",
+          "maximum": 100,
+          "step": 1,
+          "unit": "개"
         },
         {
           "name": "order_by",
@@ -642,13 +721,17 @@
           "name": "volume",
           "location": "body",
           "type": "string",
-          "required": false
+          "required": false,
+          "format": "decimal-string",
+          "dynamic_constraint_source": "rest.available-order-information"
         },
         {
           "name": "price",
           "location": "body",
           "type": "string",
-          "required": false
+          "required": false,
+          "format": "decimal-string",
+          "dynamic_constraint_source": "rest.list-orderbook-instruments"
         },
         {
           "name": "ord_type",
@@ -717,13 +800,17 @@
           "name": "volume",
           "location": "body",
           "type": "string",
-          "required": false
+          "required": false,
+          "format": "decimal-string",
+          "dynamic_constraint_source": "rest.available-order-information"
         },
         {
           "name": "price",
           "location": "body",
           "type": "string",
-          "required": false
+          "required": false,
+          "format": "decimal-string",
+          "dynamic_constraint_source": "rest.list-orderbook-instruments"
         },
         {
           "name": "ord_type",
@@ -802,14 +889,18 @@
           "location": "query",
           "type": "array",
           "items": "string",
-          "required": false
+          "required": false,
+          "max_items": 100,
+          "unique_items": true
         },
         {
           "name": "identifiers[]",
           "location": "query",
           "type": "array",
           "items": "string",
-          "required": false
+          "required": false,
+          "max_items": 100,
+          "unique_items": true
         },
         {
           "name": "order_by",
@@ -851,13 +942,21 @@
           "name": "page",
           "location": "query",
           "type": "integer",
-          "required": false
+          "required": false,
+          "default": 1,
+          "minimum": 1,
+          "step": 1,
+          "unit": "페이지"
         },
         {
           "name": "limit",
           "location": "query",
           "type": "integer",
-          "required": false
+          "required": false,
+          "default": 100,
+          "maximum": 100,
+          "step": 1,
+          "unit": "개"
         },
         {
           "name": "order_by",
@@ -900,20 +999,32 @@
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "date-time",
+          "timezone": "Asia/Seoul",
+          "step": 1,
+          "range_with": "end_time",
+          "range_max_seconds": 604800
         },
         {
           "name": "end_time",
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "date-time",
+          "timezone": "Asia/Seoul",
+          "step": 1,
+          "range_with": "start_time",
+          "range_max_seconds": 604800
         },
         {
           "name": "limit",
           "location": "query",
           "type": "integer",
-          "required": false
+          "required": false,
+          "default": 100,
+          "maximum": 1000,
+          "step": 1,
+          "unit": "개"
         },
         {
           "name": "order_by",
@@ -956,14 +1067,18 @@
           "location": "query",
           "type": "array",
           "items": "string",
-          "required": false
+          "required": false,
+          "max_items": 20,
+          "unique_items": true
         },
         {
           "name": "identifiers[]",
           "location": "query",
           "type": "array",
           "items": "string",
-          "required": false
+          "required": false,
+          "max_items": 20,
+          "unique_items": true
         }
       ]
     },
@@ -994,7 +1109,10 @@
           "location": "query",
           "type": "integer",
           "required": false,
-          "maximum": 300
+          "default": 20,
+          "maximum": 300,
+          "step": 1,
+          "unit": "개"
         },
         {
           "name": "order_by",
@@ -1010,13 +1128,19 @@
           "name": "pairs",
           "location": "query",
           "type": "string",
-          "required": false
+          "required": false,
+          "format": "csv",
+          "max_items": 20,
+          "unique_items": true
         },
         {
           "name": "exclude_pairs",
           "location": "query",
           "type": "string",
-          "required": false
+          "required": false,
+          "format": "csv",
+          "max_items": 20,
+          "unique_items": true
         }
       ]
     },
@@ -1137,7 +1261,9 @@
           "name": "amount",
           "location": "body",
           "type": "string",
-          "required": true
+          "required": true,
+          "format": "decimal-string",
+          "dynamic_constraint_source": "rest.available-withdrawal-information"
         },
         {
           "name": "address",
@@ -1172,7 +1298,8 @@
           "name": "amount",
           "location": "body",
           "type": "string",
-          "required": true
+          "required": true,
+          "format": "decimal-string"
         },
         {
           "name": "two_factor_type",
@@ -1229,26 +1356,38 @@
           "location": "query",
           "type": "array",
           "items": "string",
-          "required": false
+          "required": false,
+          "max_items": 100,
+          "unique_items": true
         },
         {
           "name": "txids[]",
           "location": "query",
           "type": "array",
           "items": "string",
-          "required": false
+          "required": false,
+          "max_items": 100,
+          "unique_items": true
         },
         {
           "name": "limit",
           "location": "query",
           "type": "integer",
-          "required": false
+          "required": false,
+          "default": 100,
+          "maximum": 100,
+          "step": 1,
+          "unit": "개"
         },
         {
           "name": "page",
           "location": "query",
           "type": "integer",
-          "required": false
+          "required": false,
+          "default": 1,
+          "minimum": 1,
+          "step": 1,
+          "unit": "페이지"
         },
         {
           "name": "order_by",
@@ -1265,14 +1404,14 @@
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "cursor"
         },
         {
           "name": "to",
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "cursor"
         }
       ]
     },
@@ -1361,7 +1500,8 @@
           "name": "amount",
           "location": "body",
           "type": "string",
-          "required": true
+          "required": true,
+          "format": "decimal-string"
         },
         {
           "name": "two_factor_type",
@@ -1418,26 +1558,38 @@
           "location": "query",
           "type": "array",
           "items": "string",
-          "required": false
+          "required": false,
+          "max_items": 100,
+          "unique_items": true
         },
         {
           "name": "txids[]",
           "location": "query",
           "type": "array",
           "items": "string",
-          "required": false
+          "required": false,
+          "max_items": 100,
+          "unique_items": true
         },
         {
           "name": "limit",
           "location": "query",
           "type": "integer",
-          "required": false
+          "required": false,
+          "default": 100,
+          "maximum": 100,
+          "step": 1,
+          "unit": "개"
         },
         {
           "name": "page",
           "location": "query",
           "type": "integer",
-          "required": false
+          "required": false,
+          "default": 1,
+          "minimum": 1,
+          "step": 1,
+          "unit": "페이지"
         },
         {
           "name": "order_by",
@@ -1454,14 +1606,14 @@
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "cursor"
         },
         {
           "name": "to",
           "location": "query",
           "type": "string",
           "required": false,
-          "format": "date-time"
+          "format": "cursor"
         }
       ]
     },

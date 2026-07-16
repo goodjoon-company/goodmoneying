@@ -29,6 +29,7 @@ import {
   dateTimeLocalToKstIso,
   formatFreshness
 } from "../operationsDisplay";
+import { formatKstDateTime, formatMoney } from "../displayFormat";
 import {
   canCreateBackfillPlan,
   canSaveTargets,
@@ -195,7 +196,7 @@ export function Targets({
                 />
               </span>
               <InstrumentName instrument={entry.instrument} />
-              <strong>{entry.accTradePrice24hDisplay}</strong>
+              <strong>{formatMoney(entry.accTradePrice24h, entry.instrument.quoteCurrency)}</strong>
               <span>{formatCollectionBoundary(entry.collectedStartAt)}</span>
               <span className="collection-end-cell">
                 {formatCollectionBoundary(entry.collectedEndAt)}
@@ -438,25 +439,7 @@ function backfillTargetProgressLabel(job: BackfillJob): string {
 }
 
 function formatBackfillJobRange(startAt: string, endAt: string): string {
-  return `${formatKstDateTimeMinute(startAt)} ~ ${formatKstDateTimeMinute(endAt)}`;
-}
-
-function formatKstDateTimeMinute(value: string): string {
-  const date = new Date(value);
-  const parts = new Intl.DateTimeFormat("ko-KR", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23"
-  }).formatToParts(date);
-  const part = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((item) => item.type === type)?.value ?? "";
-  return `${part("year")}년 ${part("month")}월 ${part("day")}일 ${part("hour")}:${part(
-    "minute"
-  )}`;
+  return `${formatKstDateTime(startAt)} ~ ${formatKstDateTime(endAt)}`;
 }
 
 function canStopBackfillJob(job: BackfillJob): boolean {
@@ -482,21 +465,7 @@ function backfillProgressWidth(value: string): number {
 }
 
 function formatCollectionBoundary(value: string | null): string {
-  if (value === null) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  const parts = new Intl.DateTimeFormat("ko-KR", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23"
-  }).formatToParts(date);
-  const part = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((item) => item.type === type)?.value ?? "";
-  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")} KST`;
+  return value === null ? "-" : formatKstDateTime(value);
 }
 
 function BackfillPlanDialog({

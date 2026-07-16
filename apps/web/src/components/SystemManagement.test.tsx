@@ -41,7 +41,8 @@ describe("시스템 관리 집계 워커", () => {
     expect(within(card).getByRole("heading", { name: "캔들 집계" })).toBeInTheDocument();
     expect(within(card).getByText("집계 워커")).toBeInTheDocument();
     expect(within(card).getByText("동작 중", { selector: "strong" })).toBeInTheDocument();
-    expect(within(card).getByText(/마지막 heartbeat/)).toHaveTextContent("07. 16.");
+    expect(within(card).getByText(/마지막 heartbeat/))
+      .toHaveTextContent("2026.07.16 08:59:55 KST");
     expect(within(card).getByText(/완료 5/)).toHaveTextContent("실행 1");
     expect(within(card).getByText(/대기 13/)).toHaveTextContent("실패 1");
   });

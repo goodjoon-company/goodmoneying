@@ -155,6 +155,35 @@ def test_catalog_parameter_validation_enforces_required_alternative_groups() -> 
         incoming_headers={},
     )
     assert "identifier=fake-identifier" in str(request.url)
+    validate_parameters(
+        _endpoint("rest.get-order"),
+        {"uuid": "fake-uuid", "identifier": "fake-identifier"},
+    )
+    cancel_request = build_upstream_request(
+        _endpoint("rest.cancel-order"),
+        {"uuid": "fake-uuid", "identifier": "fake-identifier"},
+        base_url="https://api.upbit.com",
+        credentials=Credentials("fake-access", "s" * 64),
+        incoming_headers={},
+    )
+    assert "uuid=fake-uuid" in str(cancel_request.url)
+    assert "identifier=fake-identifier" in str(cancel_request.url)
+    for endpoint_id in ("rest.list-orders-by-ids", "rest.cancel-orders-by-ids"):
+        with pytest.raises(InvalidParameters, match="조합"):
+            validate_parameters(_endpoint(endpoint_id), {})
+        with pytest.raises(InvalidParameters, match="조합"):
+            validate_parameters(_endpoint(endpoint_id), {"uuids[]": []})
+        with pytest.raises(InvalidParameters, match="동시에"):
+            validate_parameters(
+                _endpoint(endpoint_id),
+                {"uuids[]": ["fake-uuid"], "identifiers[]": ["fake-identifier"]},
+            )
+    for endpoint_id in ("rest.list-open-orders", "rest.list-closed-orders"):
+        with pytest.raises(InvalidParameters, match="동시에"):
+            validate_parameters(
+                _endpoint(endpoint_id),
+                {"state": "wait", "states[]": ["watch"]},
+            )
     with pytest.raises(InvalidParameters):
         build_upstream_request(
             _endpoint("rest.list-trading-pairs"),
@@ -217,3 +246,120 @@ def test_scalar_enum_range_and_numeric_finiteness_follow_catalog_schema() -> Non
                 synthetic_endpoint,
                 {numeric_parameter["name"]: invalid_number},
             )
+
+
+def test_array_size_uniqueness_and_numeric_string_constraints_follow_catalog_schema() -> None:
+    endpoint = {
+        "parameters": [
+            {
+                "name": "ids[]",
+                "location": "query",
+                "type": "array",
+                "items": "string",
+                "required": False,
+                "max_items": 2,
+                "unique_items": True,
+            },
+            {
+                "name": "limit",
+                "location": "query",
+                "type": "string",
+                "format": "integer-string",
+                "required": False,
+                "maximum": 100,
+            },
+            {
+                "name": "price",
+                "location": "body",
+                "type": "string",
+                "format": "decimal-string",
+                "required": False,
+            },
+            {
+                "name": "pairs",
+                "location": "query",
+                "type": "string",
+                "format": "csv",
+                "required": False,
+                "max_items": 2,
+                "unique_items": True,
+            },
+        ]
+    }
+
+    validate_parameters(
+        endpoint,
+        {"ids[]": ["a", "b"], "limit": "100", "price": "0.01", "pairs": "KRW-BTC,KRW-ETH"},
+    )
+    for invalid in (
+        {"ids[]": ["a", "b", "c"]},
+        {"ids[]": ["a", "a"]},
+        {"ids[]": ["a", ""]},
+        {"limit": "101"},
+        {"limit": "1.5"},
+        {"price": "NaN"},
+        {"pairs": "KRW-BTC,KRW-ETH,KRW-XRP"},
+        {"pairs": "KRW-BTC,KRW-BTC"},
+        {"pairs": "KRW-BTC,,KRW-ETH"},
+    ):
+        with pytest.raises(InvalidParameters):
+            validate_parameters(endpoint, invalid)
+
+
+def test_date_time_and_time_formats_and_maximum_range_follow_catalog_schema() -> None:
+    endpoint = {
+        "parameters": [
+            {
+                "name": "start_time",
+                "location": "query",
+                "type": "string",
+                "format": "date-time",
+                "required": False,
+                "range_with": "end_time",
+                "range_max_seconds": 604800,
+            },
+            {
+                "name": "end_time",
+                "location": "query",
+                "type": "string",
+                "format": "date-time",
+                "required": False,
+                "range_with": "start_time",
+                "range_max_seconds": 604800,
+            },
+            {
+                "name": "at",
+                "location": "query",
+                "type": "string",
+                "format": "time",
+                "required": False,
+            },
+        ]
+    }
+
+    validate_parameters(
+        endpoint,
+        {
+            "start_time": "2026-07-01T00:00:00+09:00",
+            "end_time": "2026-07-08T00:00:00+09:00",
+            "at": "12:34:56",
+        },
+    )
+    validate_parameters(
+        endpoint,
+        {"start_time": "1784041200000", "end_time": "1784646000000"},
+    )
+    for invalid in (
+        {"start_time": "not-a-date"},
+        {"at": "25:00:00"},
+        {
+            "start_time": "2026-07-01T00:00:00+09:00",
+            "end_time": "2026-07-08T00:00:01+09:00",
+        },
+        {
+            "start_time": "2026-07-08T00:00:00+09:00",
+            "end_time": "2026-07-01T00:00:00+09:00",
+        },
+    ):
+        with pytest.raises(InvalidParameters):
+            validate_parameters(endpoint, invalid)

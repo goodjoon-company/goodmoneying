@@ -62,7 +62,10 @@ flowchart TB
         console["OperationsConsole<br/>화면·메뉴"]
         client["api.ts · 스트림 훅(Hook)<br/>HTTP / SSE / WebSocket 클라이언트"]
         analysisUi["CoinAnalysis · SystemManagement<br/>UpbitApiTest"]
+        displayPolicy["displayFormat.ts<br/>KST · 화폐 · 자산 표시 정책"]
         console --> analysisUi
+        displayPolicy --> console
+        displayPolicy --> analysisUi
         analysisUi --> client
     end
 
@@ -107,6 +110,8 @@ flowchart TB
     bf --> repo
     ag --> repo
 ```
+
+`apps/web/src/displayFormat.ts`는 사용자에게 보이는 날짜·시간·화폐·자산 수량의 공통 표시 정책을 소유한다. 모든 사용자용 날짜·시간은 KST 24시간제 `YYYY.MM.DD HH:mm:ss KST`를 사용하고, 화폐·자산 단위는 3자리 구분자와 함께 값 뒤에 표시한다. 이 모듈은 화면 표시만 바꾸며 API 요청·응답 원문, 추적 JSON과 저장 계약은 변경하지 않는다.
 
 `packages/shared`의 저장소 포트(Repository Port)는 API와 세 워커의 공통 경계다. SQLite는 격리 테스트용이며, 실제 개발·운영은 PostgreSQL 구현을 사용한다.
 
@@ -169,7 +174,7 @@ sequenceDiagram
 
 | 모듈 | 코드 위치 | 책임 | 기준 문서 |
 |---|---|---|---|
-| 운영 화면 | `apps/web/` | 화면 상태, HTTP·SSE·WebSocket 소비 | [사용 안내](사용설명서-M1-업비트-수집-운영-mvp.md) |
+| 운영 화면 | `apps/web/` | 화면 상태, HTTP·SSE·WebSocket 소비, 공통 KST·화폐·자산 표시 정책 | [사용 안내](사용설명서-M1-업비트-수집-운영-mvp.md) |
 | 운영 서버 | `apps/api/goodmoneying_api/` | API 경계, 화면용 조회, 분석 조합 | [HTTP·실시간 계약](contracts/api/README.md) |
 | 업비트 API 게이트웨이 | `apps/upbit_gateway/goodmoneying_upbit_gateway/` | 공식 기능 카탈로그 제공, 키·요청 제한·안전 정책 경계 | [게이트웨이 설계](02_Architecture/upbit-api-gateway.md) |
 | 수집·집계 워커 | `apps/worker/goodmoneying_worker/` | 실시간 수집, Backfill, 집계 작업 | [업비트 수집 파이프라인](02_Architecture/upbit-collection-pipeline.md) |

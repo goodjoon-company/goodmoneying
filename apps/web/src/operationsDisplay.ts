@@ -5,16 +5,19 @@ import type {
   OperationsTrendPoint,
   StorageBreakdownItem
 } from "./api";
+import {
+  formatKstDate,
+  formatKstDateTime,
+  formatMoney,
+  formatNumber as formatDisplayNumber
+} from "./displayFormat";
 
 export function formatNumber(value: string): string {
-  return Number(value).toLocaleString("ko-KR", { maximumFractionDigits: 4 });
+  return formatDisplayNumber(value);
 }
 
 export function formatCurrencyAmount(value: string, currency: string): string {
-  if (currency === "KRW") {
-    return Math.trunc(Number(value)).toLocaleString("ko-KR", { maximumFractionDigits: 0 });
-  }
-  return formatNumber(value);
+  return formatMoney(value, currency);
 }
 
 export function formatCompactCount(value: number): string {
@@ -134,21 +137,11 @@ export function formatDateTimeRange(startAt: string, endAt: string): string {
 }
 
 export function formatShortDay(value: string): string {
-  return new Date(value).toLocaleDateString("ko-KR", {
-    timeZone: "Asia/Seoul",
-    month: "2-digit",
-    day: "2-digit"
-  });
+  return formatKstDate(value);
 }
 
 export function formatShortDateTime(value: string): string {
-  return new Date(value).toLocaleString("ko-KR", {
-    timeZone: "Asia/Seoul",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
+  return formatKstDateTime(value);
 }
 
 export function formatPercent(value: string): string {
@@ -158,11 +151,5 @@ export function formatPercent(value: string): string {
 }
 
 export function formatFreshness(value: string): string {
-  return new Date(value).toLocaleString("ko-KR", {
-    timeZone: "Asia/Seoul",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
+  return formatKstDateTime(value);
 }

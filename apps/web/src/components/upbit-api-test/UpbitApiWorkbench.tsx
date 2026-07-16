@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileJson, X } from "lucide-react";
+import { formatAssetAmount, formatKstDate, formatKstDateTime, formatMoney, formatNumber } from "../../displayFormat";
 
 import { UpbitCandleChart } from "../UpbitCandleChart";
+import { CatalogParameterField } from "./CatalogParameterField";
 import { createUpbitGatewayClient, type UpbitGatewayClient } from "./client";
 import { mergeCandleRows, nextCandleParameters, parseCandleRows, type CandleGranularity } from "./pagination";
 import { describeTraceResponse } from "./trace";
 import type {
   CandleRow,
   CatalogEndpoint,
-  CatalogParameter,
   ParameterValue,
   RequestParameters,
   TraceEnvelope,
@@ -16,10 +17,10 @@ import type {
   WorkbenchModuleExtension,
   WorkbenchModuleId
 } from "./types";
+import { validateParameterValues } from "./parameterInput";
 import {
   buildInitialParameters,
   coerceParameterValue,
-  formatParameterValue,
   isCommonParameter,
   quotationGroups,
   selectQuotationEndpoints,
@@ -77,6 +78,7 @@ function QuotationWorkbench({ client, context, onContextChange }: {
   const [group, setGroup] = useState<QuotationGroupId>("pair");
   const [endpointId, setEndpointId] = useState("");
   const [values, setValues] = useState<Record<string, ParameterValue | undefined>>({});
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [trace, setTrace] = useState<TraceEnvelope | null>(null);
   const [candles, setCandles] = useState<CandleRow[]>([]);
   const [marketOptions, setMarketOptions] = useState<string[]>(["KRW-BTC"]);
@@ -113,6 +115,7 @@ function QuotationWorkbench({ client, context, onContextChange }: {
   useEffect(() => {
     if (!endpoint) return;
     setValues(buildInitialParameters(endpoint, context));
+    setFieldErrors({});
     setTrace(null);
     setCandles([]);
     setCandleHasMore({ past: false, future: false });
@@ -131,6 +134,16 @@ function QuotationWorkbench({ client, context, onContextChange }: {
   const execute = async (parameters?: RequestParameters, appendDirection?: "past" | "future") => {
     if (!endpoint || isLoading || Date.now() < cooldownUntil) return;
     const requestParameters = serializeParameters(endpoint, parameters ?? values, context);
+    const validationErrors = validateParameterValues(endpoint.parameters, requestParameters);
+    if (Object.keys(validationErrors).length > 0) {
+      setFieldErrors(validationErrors);
+      setError(`입력값을 확인해 주세요: ${Object.values(validationErrors)[0]}`);
+      window.setTimeout(() => document.getElementById(
+        `quotation-param-${Object.keys(validationErrors)[0].replaceAll(/[^a-zA-Z0-9_-]/g, "-")}`
+      )?.focus(), 0);
+      return;
+    }
+    setFieldErrors({});
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -204,7 +217,7 @@ function QuotationWorkbench({ client, context, onContextChange }: {
     <section className="upbit-workbench" aria-label="Quotation API 작업대">
       <header className="upbit-workbench-intro panel">
         <div>
-          <p className="eyebrow">공식 카탈로그 {catalog.catalog_version} · {catalog.verified_at}</p>
+          <p className="eyebrow">공식 카탈로그 {catalog.catalog_version} · {formatKstDate(catalog.verified_at)}</p>
           <h2>Quotation REST API 작업대</h2>
           <p>키와 임의 URL 없이 별도 게이트웨이를 통해 조회하고 마스킹된 추적만 표시합니다.</p>
         </div>
@@ -241,8 +254,20 @@ function QuotationWorkbench({ client, context, onContextChange }: {
           <WorkbenchCommonSelection context={context} marketOptions={marketOptions} onChange={onContextChange} />
           <div className="upbit-dynamic-fields">
             {endpoint.parameters.filter((parameter) => !isCommonParameter(parameter.name)).map((parameter) => (
-              <ParameterField key={parameter.name} parameter={parameter} value={values[parameter.name]}
-                onChange={(value) => setValues((current) => ({ ...current, [parameter.name]: value }))} />
+              <CatalogParameterField key={parameter.name} idPrefix="quotation-param"
+                parameter={parameter} value={values[parameter.name]} error={fieldErrors[parameter.name]}
+                endpointId={endpoint.endpoint_id}
+                screenInitialMaximum={endpoint.safety === "read" && parameter.name === "count"}
+                onChange={(rawValue) => {
+                  setError(null);
+                  setFieldErrors((current) => ({ ...current, [parameter.name]: "" }));
+                  setValues((current) => ({
+                    ...current,
+                    [parameter.name]: rawValue === undefined
+                      ? undefined
+                      : coerceParameterValue(parameter, rawValue)
+                  }));
+                }} />
             ))}
           </div>
           <button className="upbit-execute-button" type="button" disabled={isLoading || Date.now() < cooldownUntil}
@@ -264,7 +289,7 @@ function QuotationWorkbench({ client, context, onContextChange }: {
               ) : (
                 <ResultRenderer endpoint={endpoint} body={trace.response.body} candles={candles}
                   edgeVersion={edgeVersion} hasMore={candleHasMore} isLoading={isLoading}
-                  onRequestEdge={requestCandleEdge} />
+                  onRequestEdge={requestCandleEdge} quoteCurrency={context.quote} />
               )}
             </>
           ) : <p className="upbit-empty-result">왼쪽 조건을 확인한 뒤 요청을 실행하세요.</p>}
@@ -281,30 +306,12 @@ export function WorkbenchCommonSelection({ context, marketOptions, onChange }: {
   onChange: (context: WorkbenchContext) => void;
 }) {
   return <fieldset className="upbit-common-selection"><legend>공통 조회 기준</legend>
-    <label>거래쌍
-      <input list="upbit-market-options" value={context.market} onChange={(event) => onChange(marketContext(event.target.value))} />
-      <datalist id="upbit-market-options">{marketOptions.map((market) => <option key={market}>{market}</option>)}</datalist>
-    </label>
-    <label>마켓(Quote)<input value={context.quote} onChange={(event) => onChange({ ...context, quote: event.target.value.toUpperCase(), market: `${event.target.value.toUpperCase()}-${context.base}` })} /></label>
+    <label>마켓<select aria-label="마켓" value={context.quote} onChange={(event) => onChange({ ...context, quote: event.target.value, market: `${event.target.value}-${context.base}` })}>
+      {["KRW", "BTC", "USDT"].map((quote) => <option key={quote} value={quote}>{quote}</option>)}
+    </select></label>
     <label>기준 자산(Base)<input value={context.base} onChange={(event) => onChange({ ...context, base: event.target.value.toUpperCase(), market: `${context.quote}-${event.target.value.toUpperCase()}` })} /></label>
+    <label>거래쌍<input value={context.market} readOnly /></label>
   </fieldset>;
-}
-
-function ParameterField({ parameter, value, onChange }: {
-  parameter: CatalogParameter;
-  value: ParameterValue | undefined;
-  onChange: (value: ParameterValue | undefined) => void;
-}) {
-  const title = <span>{parameter.name} <em>{parameter.required ? "필수" : "선택"}</em></span>;
-  if (parameter.type === "boolean") return <label className="upbit-boolean-field">{title}<input aria-label={parameter.name === "is_details" ? "상세 정보 포함" : parameter.name} type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} /></label>;
-  if (parameter.enum) return <label>{title}<select aria-label={parameter.name} value={String(value ?? "")} onChange={(event) => onChange(coerceParameterValue(parameter, event.target.value))}>{!parameter.required ? <option value="">지정 안 함</option> : null}{parameter.enum.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>;
-  if (parameter.type === "array") return <label>{title}<textarea aria-label={parameter.name}
-    value={formatParameterValue(parameter, value)} rows={3}
-    onChange={(event) => onChange(event.target.value === "" ? undefined : coerceParameterValue(parameter, event.target.value))} /></label>;
-  const type = parameter.format === "date-time" ? "datetime-local" : parameter.type === "integer" || parameter.type === "number" ? "number" : "text";
-  return <label>{title}<input aria-label={parameter.name} type={type} required={parameter.required}
-    min={parameter.minimum} max={parameter.maximum} value={formatParameterValue(parameter, value)}
-    onChange={(event) => onChange(event.target.value === "" ? undefined : coerceParameterValue(parameter, event.target.value))} /></label>;
 }
 
 function TraceSummary({ trace }: { trace: TraceEnvelope }) {
@@ -314,7 +321,7 @@ function TraceSummary({ trace }: { trace: TraceEnvelope }) {
   </div>;
 }
 
-function ResultRenderer({ endpoint, body, candles, edgeVersion, hasMore, isLoading, onRequestEdge }: {
+function ResultRenderer({ endpoint, body, candles, edgeVersion, hasMore, isLoading, onRequestEdge, quoteCurrency }: {
   endpoint: CatalogEndpoint;
   body: unknown;
   candles: CandleRow[];
@@ -322,9 +329,10 @@ function ResultRenderer({ endpoint, body, candles, edgeVersion, hasMore, isLoadi
   hasMore: { past: boolean; future: boolean };
   isLoading: boolean;
   onRequestEdge: (direction: "past" | "future") => void;
+  quoteCurrency: string;
 }) {
   if (endpoint.functional_group === "candle") return <div className="upbit-candle-result">
-    <UpbitCandleChart candles={candles} indicators={[]} edgeRequestVersion={edgeVersion} onRequestEdge={onRequestEdge} />
+    <UpbitCandleChart candles={candles} indicators={[]} edgeRequestVersion={edgeVersion} onRequestEdge={onRequestEdge} quoteCurrency={quoteCurrency} />
     <p>{candles.length.toLocaleString("ko-KR")}개 캔들 · 가장자리 이동 시 연속 조회</p>
     <div className="upbit-candle-pagination" aria-label="캔들 연속 조회">
       <button type="button" disabled={isLoading || !hasMore.past} onClick={() => onRequestEdge("past")}>과거 데이터 조회</button>
@@ -332,18 +340,18 @@ function ResultRenderer({ endpoint, body, candles, edgeVersion, hasMore, isLoadi
       <button type="button" disabled={isLoading || !hasMore.future} onClick={() => onRequestEdge("future")}>미래 데이터 조회</button>
       {!hasMore.future ? <span>최신 데이터 끝</span> : null}
     </div>
-    <RecordTable rows={candles.slice(-10).map((item) => ({ started_at: item.startedAt, open: item.open, high: item.high, low: item.low, close: item.close, volume: item.volume }))} />
+    <RecordTable rows={candles.slice(-10).map((item) => ({ started_at: item.startedAt, open: item.open, high: item.high, low: item.low, close: item.close, volume: item.volume }))} quoteCurrency={quoteCurrency} />
   </div>;
   const rows = records(body);
-  if (endpoint.functional_group === "ticker") return <div className="upbit-ticker-cards">{rows.map((row, index) => <article key={`${String(row.market ?? row.code ?? "ticker")}-${index}`}><strong>{String(row.market ?? row.code ?? "현재가")}</strong><b>{formatValue(row.trade_price)}</b><span>24H {formatValue(row.acc_trade_price_24h)}</span></article>)}</div>;
-  if (endpoint.functional_group === "orderbook" && rows.some((row) => Array.isArray(row.orderbook_units))) return <div className="upbit-orderbook-ladder">{rows.flatMap((row) => Array.isArray(row.orderbook_units) ? row.orderbook_units : []).map((unit, index) => isRecord(unit) ? <div key={index}><span>{formatValue(unit.ask_price)} / {formatValue(unit.ask_size)}</span><strong>{index + 1}</strong><span>{formatValue(unit.bid_price)} / {formatValue(unit.bid_size)}</span></div> : null)}</div>;
-  return <RecordTable rows={rows} />;
+  if (endpoint.functional_group === "ticker") return <div className="upbit-ticker-cards">{rows.map((row, index) => { const assets = rowMarketAssets(row, quoteCurrency); return <article key={`${String(row.market ?? row.code ?? "ticker")}-${index}`}><strong>{String(row.market ?? row.code ?? "현재가")}</strong><b>{formatMoneyValue(row.trade_price, assets.quote)}</b><span>24H {formatMoneyValue(row.acc_trade_price_24h, assets.quote)}</span></article>; })}</div>;
+  if (endpoint.functional_group === "orderbook" && rows.some((row) => Array.isArray(row.orderbook_units))) return <div className="upbit-orderbook-ladder">{rows.flatMap((row, rowIndex) => { const assets = rowMarketAssets(row, quoteCurrency); return (Array.isArray(row.orderbook_units) ? row.orderbook_units : []).map((unit, unitIndex) => isRecord(unit) ? <div key={`${rowIndex}-${unitIndex}`}><span>{formatMoneyValue(unit.ask_price, assets.quote)} / {formatAssetValue(unit.ask_size, assets.base)}</span><strong>{unitIndex + 1}</strong><span>{formatMoneyValue(unit.bid_price, assets.quote)} / {formatAssetValue(unit.bid_size, assets.base)}</span></div> : null); })}</div>;
+  return <RecordTable rows={rows} quoteCurrency={quoteCurrency} />;
 }
 
-function RecordTable({ rows }: { rows: Record<string, unknown>[] }) {
+function RecordTable({ rows, quoteCurrency, baseAsset = "" }: { rows: Record<string, unknown>[]; quoteCurrency?: string; baseAsset?: string }) {
   if (!rows.length) return <pre className="upbit-json-fallback">응답 데이터가 없습니다.</pre>;
   const keys = [...new Set(rows.flatMap((row) => Object.keys(row)))].slice(0, 8);
-  return <div className="upbit-record-table"><table><thead><tr>{keys.map((key) => <th key={key}>{key}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{keys.map((key) => <td key={key}>{formatValue(row[key])}</td>)}</tr>)}</tbody></table></div>;
+  return <div className="upbit-record-table"><table><thead><tr>{keys.map((key) => <th key={key}>{key}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{keys.map((key) => <td key={key}>{formatRecordValue(row, key, quoteCurrency, baseAsset)}</td>)}</tr>)}</tbody></table></div>;
 }
 
 function TraceDialog({ trace, endpoint, onClose }: { trace: TraceEnvelope; endpoint: CatalogEndpoint; onClose: () => void }) {
@@ -372,7 +380,7 @@ function TraceDialog({ trace, endpoint, onClose }: { trace: TraceEnvelope; endpo
     <button className="icon-button close-button" type="button" aria-label="닫기" onClick={onClose}><X size={18} /></button>
     <h2>API 요청 추적</h2><p>trace {trace.trace_id}</p>
     <a href={endpoint.source_url} target="_blank" rel="noreferrer">Upbit 공식 문서</a>
-    <dl><dt>엔드포인트</dt><dd>{endpoint.endpoint_id}</dd><dt>수신 시각</dt><dd>{trace.received_at}</dd></dl>
+    <dl><dt>엔드포인트</dt><dd>{endpoint.endpoint_id}</dd><dt>수신 시각</dt><dd>{formatKstDateTime(trace.received_at)}</dd></dl>
     <h3>요청·원본 응답·요청 제한</h3>
     <pre>{JSON.stringify({ request: trace.request, response: trace.response, rate_limit: trace.rate_limit }, null, 2)}</pre>
   </section></div>;
@@ -392,11 +400,63 @@ function marketContext(market: string): WorkbenchContext {
   return { market: market.toUpperCase(), quote, base };
 }
 
-function formatValue(value: unknown): string {
-  if (typeof value === "number") return value.toLocaleString("ko-KR");
-  if (typeof value === "string") return value;
+function rowMarketAssets(row: Record<string, unknown>, fallbackQuote = ""): { quote: string; base: string } {
+  const [quote = fallbackQuote, base = ""] = String(row.market ?? row.code ?? "").toUpperCase().split("-");
+  return { quote: quote || fallbackQuote, base };
+}
+
+function numeric(value: unknown): string | number | null {
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return value;
+  return null;
+}
+
+function formatMoneyValue(value: unknown, currency: string): string {
+  const number = numeric(value);
+  return number === null ? String(value ?? "-") : formatMoney(number, currency);
+}
+
+function formatAssetValue(value: unknown, asset: string): string {
+  const number = numeric(value);
+  return number === null ? String(value ?? "-") : formatAssetAmount(number, asset);
+}
+
+function formatRecordValue(row: Record<string, unknown>, key: string, fallbackQuote = "", fallbackBase = ""): string {
+  const value = row[key];
   if (value === null || value === undefined) return "-";
-  return JSON.stringify(value);
+  if (typeof value === "object") return JSON.stringify(value);
+  const raw = String(value);
+  const dateTime = recordDateTime(row, key, value);
+  if (dateTime) return dateTime;
+  const assets = rowMarketAssets(row, fallbackQuote);
+  const quote = assets.quote || fallbackQuote;
+  const base = assets.base || fallbackBase;
+  if (/(?:price|open|high|low|close)$/.test(key)) return formatMoneyValue(value, quote);
+  if (/(?:volume|size|amount)$/.test(key)) return formatAssetValue(value, base);
+  const number = numeric(value);
+  return number === null ? raw : formatNumber(number);
+}
+
+function recordDateTime(row: Record<string, unknown>, key: string, value: unknown): string | null {
+  if (key === "trade_date_utc" || key === "trade_time_utc") {
+    const date = String(row.trade_date_utc ?? "");
+    const time = String(row.trade_time_utc ?? "");
+    if (/^\d{8}$/.test(date) && /^\d{6}$/.test(time)) {
+      return formatKstDateTime(
+        `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`
+        + `T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}Z`
+      );
+    }
+  }
+  if (/timestamp$/.test(key)) {
+    const milliseconds = Number(value);
+    if (Number.isFinite(milliseconds)) return formatKstDateTime(milliseconds);
+  }
+  const raw = String(value);
+  if (/(?:date_time|started_at|created_at|updated_at|received_at)$/.test(key) && !Number.isNaN(Date.parse(raw))) {
+    return formatKstDateTime(raw.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(raw) ? raw : `${raw}Z`);
+  }
+  return null;
 }
 
 function candleInterval(endpoint: CatalogEndpoint, parameters: RequestParameters): { granularity: CandleGranularity; unit: number } {

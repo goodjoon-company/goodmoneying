@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { FileJson } from "lucide-react";
+import { formatAssetAmount, formatKstDateTime, formatMoney, formatNumber } from "../../displayFormat";
+import { CatalogParameterField } from "../../components/upbit-api-test/CatalogParameterField";
+import {
+  coerceParameterInputValue,
+  initialParameterInputValues,
+  validateParameterValues
+} from "../../components/upbit-api-test/parameterInput";
 import { friendlyGatewayError } from "./gateway";
 import type {
   CatalogParameter,
@@ -24,7 +31,7 @@ const groups: Array<{ id: ExchangeFunctionalGroup; label: string }> = [
 const defaultMarketAdapter: ExchangeMarketConceptAdapter = {
   normalize: (value) => value.trim().toUpperCase(),
   suggestions: ["KRW-BTC", "KRW-ETH"],
-  inputLabel: "market"
+  inputLabel: "거래쌍(market)"
 };
 
 export type ExchangeWorkbenchProps = {
@@ -56,6 +63,7 @@ export function ExchangeWorkbench({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [credentialConfigured, setCredentialConfigured] = useState<boolean | null>(null);
   const [values, setValues] = useState<Record<string, string | boolean>>({});
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [sharedMarket, setSharedMarket] = useState(() => marketAdapter.normalize(marketValue));
   const [trace, setTrace] = useState<TraceEnvelope | null>(null);
   const [traceOpen, setTraceOpen] = useState(false);
@@ -76,10 +84,11 @@ export function ExchangeWorkbench({
         );
         setCredentialConfigured(health.credentials_configured);
         setEndpoints(exchangeEndpoints);
-        setSelectedId(
-          exchangeEndpoints.find((endpoint) => endpoint.functional_group === initialGroup)
-            ?.endpoint_id ?? null
+        const initialEndpoint = exchangeEndpoints.find(
+          (endpoint) => endpoint.functional_group === initialGroup
         );
+        setSelectedId(initialEndpoint?.endpoint_id ?? null);
+        setValues(initialParameterInputValues(initialEndpoint?.parameters ?? []));
         setLoading(false);
       },
       (caught: unknown) => {
@@ -116,13 +125,14 @@ export function ExchangeWorkbench({
   const selected = endpoints.find((endpoint) => endpoint.endpoint_id === selectedId) ?? null;
 
   const chooseGroup = (group: ExchangeFunctionalGroup) => {
+    const next = endpoints.find((endpoint) => endpoint.functional_group === group);
     setActiveGroup(group);
-    setSelectedId(endpoints.find((endpoint) => endpoint.functional_group === group)?.endpoint_id ?? null);
-    resetRequestState();
+    setSelectedId(next?.endpoint_id ?? null);
+    resetRequestState(next?.parameters);
   };
   const chooseEndpoint = (endpoint: ExchangeCatalogEndpoint) => {
     setSelectedId(endpoint.endpoint_id);
-    resetRequestState();
+    resetRequestState(endpoint.parameters);
   };
   const handleTabKeyDown = (
     event: ReactKeyboardEvent<HTMLButtonElement>,
@@ -140,9 +150,10 @@ export function ExchangeWorkbench({
     const tabs = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
     tabs?.[nextIndex]?.focus();
   };
-  const resetRequestState = () => {
+  const resetRequestState = (parameters: CatalogParameter[] = []) => {
     requestGenerationRef.current += 1;
-    setValues({});
+    setValues(initialParameterInputValues(parameters));
+    setFieldErrors({});
     setTrace(null);
     setTraceOpen(false);
     setError(null);
@@ -156,9 +167,36 @@ export function ExchangeWorkbench({
       { ...values, market: sharedMarket },
       marketAdapter
     );
+    const validationErrors = validateParameterValues(selected.parameters, parameters);
+    if (Object.keys(validationErrors).length > 0) {
+      setTrace(null);
+      setFieldErrors(validationErrors);
+      setError(`입력값을 확인해 주세요: ${Object.values(validationErrors)[0]}`);
+      window.setTimeout(() => document.getElementById(
+        `exchange-param-${Object.keys(validationErrors)[0].replaceAll(/[^a-zA-Z0-9_-]/g, "-")}`
+      )?.focus(), 0);
+      return;
+    }
+    setFieldErrors({});
     if (!hasRequiredAlternative(selected.any_of_required, parameters)) {
       setTrace(null);
       setError(`필수 입력 조합을 입력해 주세요: ${formatRequiredAlternatives(selected.any_of_required)}`);
+      return;
+    }
+    const conflictingParameters = findMutuallyExclusiveGroup(
+      selected.mutually_exclusive,
+      parameters
+    );
+    if (conflictingParameters) {
+      const message = `파라미터를 동시에 사용할 수 없습니다: ${conflictingParameters.join(", ")}`;
+      setTrace(null);
+      setFieldErrors(Object.fromEntries(
+        conflictingParameters.map((name) => [name, "다른 상호 배타 파라미터와 함께 입력할 수 없습니다."])
+      ));
+      setError(message);
+      window.setTimeout(() => document.getElementById(
+        `exchange-param-${conflictingParameters[0].replaceAll(/[^a-zA-Z0-9_-]/g, "-")}`
+      )?.focus(), 0);
       return;
     }
     const requestGeneration = ++requestGenerationRef.current;
@@ -309,19 +347,31 @@ export function ExchangeWorkbench({
                 {selected.parameters.filter((parameter) =>
                   showMarketSelection || parameter.name !== "market"
                 ).map((parameter) => (
-                  <ParameterInput
+                  <CatalogParameterField
                     key={parameter.name}
+                    idPrefix="exchange-param"
+                    endpointId={selected.endpoint_id}
                     parameter={parameter}
                     value={parameter.name === "market" ? sharedMarket : values[parameter.name]}
-                    marketAdapter={marketAdapter}
+                    label={parameter.name === "market" ? marketAdapter.inputLabel : undefined}
+                    inputLabel={parameter.name === "market" ? marketAdapter.inputLabel : undefined}
+                    suggestions={parameter.name === "market" ? marketAdapter.suggestions : undefined}
+                    error={fieldErrors[parameter.name]}
                     onChange={(value) => {
+                      setError(null);
+                      setFieldErrors((current) => ({ ...current, [parameter.name]: "" }));
                       if (parameter.name === "market" && typeof value === "string") {
                         const normalized = marketAdapter.normalize(value);
                         setSharedMarket(normalized);
                         onMarketChange?.(normalized);
                         return;
                       }
-                      setValues((current) => ({ ...current, [parameter.name]: value }));
+                      setValues((current) => {
+                        const next = { ...current };
+                        if (value === undefined) delete next[parameter.name];
+                        else next[parameter.name] = value;
+                        return next;
+                      });
                     }}
                   />
                 ))}
@@ -388,51 +438,6 @@ export function ExchangeWorkbench({
   );
 }
 
-function ParameterInput({
-  parameter,
-  value,
-  marketAdapter,
-  onChange
-}: {
-  parameter: CatalogParameter;
-  value: string | boolean | undefined;
-  marketAdapter: ExchangeMarketConceptAdapter;
-  onChange: (value: string | boolean) => void;
-}) {
-  const label = parameter.name === "market" ? marketAdapter.inputLabel : parameter.name;
-  const common = { id: `exchange-param-${parameter.name}`, required: parameter.required };
-  return (
-    <label className="parameter-field" htmlFor={common.id}>
-      <span>{label}{parameter.required ? " *" : ""}</span>
-      {parameter.type === "boolean" ? (
-        <input {...common} aria-label={label} type="checkbox" checked={value === true} onChange={(event) => onChange(event.target.checked)} />
-      ) : parameter.enum ? (
-        <select {...common} aria-label={label} value={typeof value === "string" ? value : ""} onChange={(event) => onChange(event.target.value)}>
-          <option value="">선택</option>
-          {parameter.enum.map((item) => <option key={String(item)} value={String(item)}>{String(item)}</option>)}
-        </select>
-      ) : (
-        <input
-          {...common}
-          aria-label={label}
-          type={parameter.format === "date-time" ? "datetime-local" : parameter.type === "integer" || parameter.type === "number" ? "number" : "text"}
-          min={parameter.minimum}
-          max={parameter.maximum}
-          list={parameter.name === "market" ? "exchange-market-suggestions" : undefined}
-          placeholder={parameter.type === "array" ? "쉼표로 여러 값을 구분" : undefined}
-          value={typeof value === "string" ? value : ""}
-          onChange={(event) => onChange(event.target.value)}
-        />
-      )}
-      {parameter.name === "market" ? (
-        <datalist id="exchange-market-suggestions">
-          {marketAdapter.suggestions.map((market) => <option key={market} value={market} />)}
-        </datalist>
-      ) : null}
-    </label>
-  );
-}
-
 function ResultView({ endpoint, trace }: { endpoint: ExchangeCatalogEndpoint; trace: TraceEnvelope }) {
   const body = trace.response.body;
   const rows = Array.isArray(body) ? body.filter(isRecord) : isRecord(body) ? [body] : [];
@@ -442,7 +447,7 @@ function ResultView({ endpoint, trace }: { endpoint: ExchangeCatalogEndpoint; tr
     return <DataTable label="입출금 결과" rows={rows} />;
   }
   if (endpoint.functional_group === "service") {
-    return <div className="status-cards" aria-label="서비스 상태 결과">{rows.map((row, index) => <article key={index}>{Object.entries(row).map(([key, value]) => <p key={key}><span>{key}</span><strong>{display(value)}</strong></p>)}</article>)}</div>;
+    return <div className="status-cards" aria-label="서비스 상태 결과">{rows.map((row, index) => <article key={index}>{Object.entries(row).map(([key, value]) => <p key={key}><span>{key}</span><strong>{displayCell(row, key, value)}</strong></p>)}</article>)}</div>;
   }
   return rows.length > 0 ? <DataTable label="API 결과" rows={rows} /> : <pre>{JSON.stringify(body, null, 2)}</pre>;
 }
@@ -454,7 +459,7 @@ function DataTable({ label, rows }: { label: string; rows: Record<string, unknow
     <div className="result-table-scroll">
       <table aria-label={label}>
         <thead><tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
-        <tbody>{rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column}>{display(row[column])}</td>)}</tr>)}</tbody>
+        <tbody>{rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column}>{displayCell(row, column, row[column])}</td>)}</tr>)}</tbody>
       </table>
     </div>
   );
@@ -471,12 +476,8 @@ function toGatewayParameters(
     if (value === undefined || value === "") continue;
     if (parameter.name === "market" && typeof value === "string") {
       parameters[parameter.name] = marketAdapter.normalize(value);
-    } else if (parameter.type === "array" && typeof value === "string") {
-      parameters[parameter.name] = value.split(",").map((item) => item.trim()).filter(Boolean);
-    } else if ((parameter.type === "integer" || parameter.type === "number") && typeof value === "string") {
-      parameters[parameter.name] = Number(value);
     } else {
-      parameters[parameter.name] = value;
+      parameters[parameter.name] = coerceParameterInputValue(parameter, value);
     }
   }
   return parameters;
@@ -496,6 +497,15 @@ function hasRequiredAlternative(
 ): boolean {
   if (!alternatives?.length) return true;
   return alternatives.some((alternative) => alternative.every((name) => hasParameterValue(parameters[name])));
+}
+
+function findMutuallyExclusiveGroup(
+  groups: string[][] | undefined,
+  parameters: Record<string, unknown>
+): string[] | undefined {
+  return groups?.find((group) => (
+    group.filter((name) => hasParameterValue(parameters[name])).length > 1
+  ));
 }
 
 function hasParameterValue(value: unknown): boolean {
@@ -520,7 +530,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function display(value: unknown) {
+function displayCell(row: Record<string, unknown>, column: string, value: unknown) {
   if (value === null || value === undefined) return "—";
-  return typeof value === "object" ? JSON.stringify(value) : String(value);
+  if (typeof value === "object") return JSON.stringify(value);
+  const raw = String(value);
+  if (/(?:^|_)(?:at|time|timestamp)$/.test(column) && !Number.isNaN(Date.parse(raw))) {
+    return formatKstDateTime(raw);
+  }
+  if (!Number.isFinite(Number(raw)) || raw.trim() === "") return raw;
+
+  const [quote = "", base = ""] = String(row.market ?? "").toUpperCase().split("-");
+  const currency = String(row.currency ?? row.unit_currency ?? "").toUpperCase();
+  if (/(?:balance|locked|volume|amount)$/.test(column)) {
+    return formatAssetAmount(raw, currency || base);
+  }
+  if (/(?:price|funds|fee)$/.test(column)) {
+    return formatMoney(raw, quote || String(row.unit_currency ?? currency));
+  }
+  return formatNumber(raw);
 }

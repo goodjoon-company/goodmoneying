@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { CandlestickSeries, ColorType, createChart, HistogramSeries, LineSeries, type UTCTimestamp } from "lightweight-charts";
 import type { CandleRow as UpbitCandle } from "./upbit-api-test/types";
+import { formatKstDateTime, formatMoney } from "../displayFormat";
 
 export type Indicator = {
   startedAt: string;
@@ -14,7 +15,7 @@ export type Indicator = {
 
 type PageDirection = "past" | "future";
 
-export function UpbitCandleChart({ candles, indicators, edgeRequestVersion, onRequestEdge }: { candles: UpbitCandle[]; indicators: Indicator[]; edgeRequestVersion: number; onRequestEdge: (direction: PageDirection) => void }) {
+export function UpbitCandleChart({ candles, indicators, edgeRequestVersion, onRequestEdge, quoteCurrency }: { candles: UpbitCandle[]; indicators: Indicator[]; edgeRequestVersion: number; onRequestEdge: (direction: PageDirection) => void; quoteCurrency: string }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const adapterRef = useRef<{ update: (nextCandles: UpbitCandle[], nextIndicators: Indicator[]) => void } | null>(null);
   const notifiedEdgesRef = useRef(new Set<PageDirection>());
@@ -33,8 +34,8 @@ export function UpbitCandleChart({ candles, indicators, edgeRequestVersion, onRe
   useEffect(() => {
     if (!containerRef.current || typeof ResizeObserver === "undefined") return;
     const container = containerRef.current;
-    const chart = createChart(container, { width: container.clientWidth || 900, height: 440, layout: { background: { type: ColorType.Solid, color: "#101713" }, textColor: "#8e9e94" }, grid: { vertLines: { color: "rgba(255,255,255,.05)" }, horzLines: { color: "rgba(255,255,255,.06)" } }, rightPriceScale: { borderColor: "rgba(255,255,255,.12)" }, timeScale: { borderColor: "rgba(255,255,255,.12)", timeVisible: true } });
-    const candleSeries = chart.addSeries(CandlestickSeries, { upColor: "#35dca7", downColor: "#ed6c62", borderVisible: false, wickUpColor: "#35dca7", wickDownColor: "#ed6c62" });
+    const chart = createChart(container, { width: container.clientWidth || 900, height: 440, localization: { timeFormatter: chartTimeFormatter }, layout: { background: { type: ColorType.Solid, color: "#101713" }, textColor: "#8e9e94" }, grid: { vertLines: { color: "rgba(255,255,255,.05)" }, horzLines: { color: "rgba(255,255,255,.06)" } }, rightPriceScale: { borderColor: "rgba(255,255,255,.12)" }, timeScale: { borderColor: "rgba(255,255,255,.12)", timeVisible: true, secondsVisible: true, tickMarkFormatter: chartTimeFormatter } });
+    const candleSeries = chart.addSeries(CandlestickSeries, { upColor: "#35dca7", downColor: "#ed6c62", borderVisible: false, wickUpColor: "#35dca7", wickDownColor: "#ed6c62", priceFormat: { type: "custom", minMove: 0.00000001, formatter: (price: number) => formatMoney(price, quoteCurrency) } });
     const volume = chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "volume" });
     chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
     const lines = ([
@@ -74,7 +75,7 @@ export function UpbitCandleChart({ candles, indicators, edgeRequestVersion, onRe
     const observer = new ResizeObserver(([entry]) => chart.applyOptions({ width: Math.floor(entry.contentRect.width) }));
     observer.observe(container);
     return () => { observer.disconnect(); adapterRef.current = null; chart.remove(); };
-  }, []);
+  }, [quoteCurrency]);
   useEffect(() => adapterRef.current?.update(candles, indicators), [candles, indicators]);
   return <div className="upbit-api-test-chart" ref={containerRef} aria-label="업비트 API 캔들 차트"
     onPointerDown={() => { hasUserNavigatedRef.current = true; }}
@@ -82,3 +83,7 @@ export function UpbitCandleChart({ candles, indicators, edgeRequestVersion, onRe
 }
 
 function toTime(value: string): UTCTimestamp { return Math.floor(new Date(value).getTime() / 1000) as UTCTimestamp; }
+
+function chartTimeFormatter(time: unknown): string {
+  return formatKstDateTime(Number(time) * 1000);
+}

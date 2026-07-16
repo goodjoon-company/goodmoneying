@@ -13,15 +13,15 @@ fail() {
 }
 
 if [[ -z "$PROFILE" || -z "$IMAGE_TAG" ]]; then
-  fail "사용법: deploy/scripts/deploy-profile.sh prod-home release-{short-sha}"
+  fail "사용법: deploy/scripts/deploy-profile.sh prod-home release-{40자리-sha}"
 fi
 
 if [[ "$PROFILE" != "prod-home" ]]; then
   fail "지원하지 않는 배포 프로필입니다: $PROFILE"
 fi
 
-if [[ ! "$IMAGE_TAG" =~ ^release-[0-9a-f]{7,40}$ ]]; then
-  fail "잘못된 이미지 태그입니다: $IMAGE_TAG"
+if [[ ! "$IMAGE_TAG" =~ ^release-[0-9a-f]{40}$ ]]; then
+  fail "잘못된 이미지 태그입니다. release- 뒤에 40자리 commit SHA가 필요합니다: $IMAGE_TAG"
 fi
 
 PROFILE_DIR="$ROOT_DIR/deploy/profiles/$PROFILE"

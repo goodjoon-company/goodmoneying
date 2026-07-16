@@ -1,198 +1,183 @@
-# 아키텍처 개발 사양
+# 시스템 트레이딩 플랫폼 아키텍처(Architecture)
 
-Status: Accepted
-Last Updated: 2026-07-16
+상태: 승인됨(Accepted)
 
-## 문서 역할과 읽는 순서
+최종 갱신: 2026-07-17
 
-이 문서는 goodmoneying의 **현재 시스템 경계, 런타임 구성, 모듈 책임, 데이터 흐름**의 단일 기준(source of truth)이다. 제품의 이유와 우선순위는 [제품 개발 사양](01_Product.md), 정확한 DB·HTTP·WebSocket 형식은 [계약 기준](contracts/README.md), 개별 수집 동작은 [업비트 수집 파이프라인 설계](02_Architecture/upbit-collection-pipeline.md)에서 확인한다.
+## 1. 목적과 경계
 
-이 문서는 현재 구현을 설명한다. 주식·뉴스·대규모 언어 모델(LLM, Large Language Model)·메시지 큐(Message Queue)·다중 인스턴스는 후보이며 현재 다이어그램의 구성요소가 아니다.
+이 문서는 goodmoneying의 시스템 경계, 모듈 책임, 데이터 흐름, 배포 구조를 정의하는 아키텍처 색인(Architecture Index)이다. 제품 정책은 [제품 요구사항](01_Product.md), DB·HTTP·WebSocket·상태 기계의 세부 구조는 [계약](contracts/README.md)을 단일 기준으로 사용한다. DB 변경의 단일 기준은 `docs/contracts/db/migrations/`이며 런타임(Runtime) API·worker는 DDL을 실행하지 않는다.
 
-## 설계 목표와 제약
+현재 플랫폼은 업비트 가상자산만 실행한다. 거래소 어댑터 경계는 유지하지만 주식·타 거래소 구현은 포함하지 않는다. PostgreSQL을 데이터·내구성 작업 큐의 기본 저장소로 사용하며 측정 근거 없이 별도 브로커나 데이터베이스를 도입하지 않는다.
 
-| 목표 | 현재 설계 기준 |
-|---|---|
-| 분석 가능한 신뢰 데이터 | 업비트 KRW 데이터를 원천 사실과 화면용 상태로 분리해 PostgreSQL에 보존한다. |
-| 운영 가능한 단순성 | API와 세 워커는 단일 프로세스·DB 상태 기반 제어를 사용한다. |
-| 화면별 전송 효율 | 기존 운영 화면은 SSE(Server-Sent Events)와 HTTP 폴링(Polling) 보조, 분석·시스템 관리는 WebSocket 증분 메시지를 사용한다. |
-| 재처리 가능성 | 1분·일봉 원천 캔들을 보존하고, 분석용 시간 단위는 멱등 집계 또는 원천 파생으로 제공한다. |
-| 계약 우선 | 외부·브라우저·DB 형식은 코드보다 `docs/contracts/`에서 먼저 정의하고 자동 테스트로 검증한다. |
+## 2. 아키텍처 원칙
 
-현재는 개인 단일 사용자와 로컬 신뢰 네트워크를 전제로 한다. 쓰기 API는 운영 토큰(Authentication)을 요구하며, 다중 사용자 권한(Authorization)과 고가용성(High Availability)은 범위 밖이다.
+1. **하나의 전략 의미**: 연구, 백테스트, 모의, 그림자, 라이브 준비는 같은 전략 그래프 평가기와 주문 상태 모델을 사용한다.
+2. **원천 불변성과 파생 추적성**: 원천 행은 관측 사실만 저장하고 집계·지표·채움은 버전이 있는 파생 계층에서 수행한다.
+3. **시간 인과성**: 저장은 UTC, 표시는 KST다. 각 평가 시각 이후 도착하거나 이후에 알려진 데이터 접근을 계약과 테스트로 막는다.
+4. **Decimal 전 구간**: 가격·수량·금액·수수료·손익은 DB `numeric`과 Python `Decimal`, JSON 문자열 표현을 사용한다.
+5. **멱등 명령**: 수집·백필·전략 실행·주문 의도는 자연키 또는 멱등 키로 중복 실행을 흡수한다.
+6. **기본 거부(Default Deny)**: 실거래, private 계좌 데이터, 위험 한도 변경은 명시 권한과 감사 사유 없이는 거부한다.
+7. **유실 가능한 스트림, 복구 가능한 상태**: WebSocket은 상태의 단일 기준이 아니며 시퀀스 유실 시 REST 스냅숏과 커서로 복구한다.
+8. **수직 기능 조각**: 계약, DB, 도메인, API, UI, E2E와 운영 증적을 한 사용자 결과 단위로 완성한다.
 
-## 시스템 문맥(System Context)
+## 3. 현재 준수 상태
 
-```mermaid
-flowchart LR
-    operator["개인 사용자·운영자"]
-    upbitRest["업비트 공개 REST API"]
-    upbitWs["업비트 시장 WebSocket"]
+이 문서는 승인된 목표 아키텍처다. `Accepted`는 구현 완료나 운영 강제를 의미하지 않는다. 구현 상태는 다음과 같으며 미구현 배포 gate가 하나라도 있으면 P8 승격을 차단한다.
 
-    subgraph gm["goodmoneying 단일 개발·운영 환경"]
-        web["운영 화면<br/>React + Vite"]
-        api["운영 서버<br/>FastAPI"]
-        gateway["업비트 API 게이트웨이<br/>FastAPI"]
-        realtime["실시간 수집 워커<br/>Python"]
-        backfill["백필 수집 워커<br/>Python"]
-        aggregation["캔들 집계 워커<br/>Python"]
-        db[("PostgreSQL")]
-    end
-
-    operator -->|"브라우저"| web
-    web -->|"HTTP REST · SSE · WebSocket"| api
-    web -->|"카탈로그·endpoint_id<br/>키 없음"| gateway
-    gateway -->|"허용 목록 REST<br/>Origin 제거 · 그룹 제한"| upbitRest
-    gateway -->|"공개·비공개 WebSocket<br/>JWT · 재연결 · 메시지 제한"| upbitWs
-    api <--> db
-    realtime -->|"ticker · trade · orderbook · candle.1m"| upbitWs
-    realtime <--> db
-    backfill -->|"캔들 REST 조회"| upbitRest
-    backfill <--> db
-    aggregation <--> db
-```
-
-브라우저의 업비트 API 테스트 페이지도 업비트에 직접 연결하지 않는다. 별도 게이트웨이가 키·허용 목록·요청 제한·비파괴 정책 경계를 소유하며 브라우저에는 카탈로그와 마스킹된 추적 정보만 제공한다. 수집·저장·분석의 제품 데이터 경로는 기존 서버 측 워커와 PostgreSQL을 통과한다.
-
-## 소프트웨어 아키텍처(Software Architecture)
-
-```mermaid
-flowchart TB
-    subgraph frontend["apps/web — 프론트엔드(Frontend)"]
-        console["OperationsConsole<br/>화면·메뉴"]
-        client["api.ts · 스트림 훅(Hook)<br/>HTTP / SSE / WebSocket 클라이언트"]
-        analysisUi["CoinAnalysis · SystemManagement<br/>UpbitApiTest"]
-        displayPolicy["displayFormat.ts<br/>KST · 화폐 · 자산 표시 정책"]
-        console --> analysisUi
-        displayPolicy --> console
-        displayPolicy --> analysisUi
-        analysisUi --> client
-    end
-
-    subgraph apiApp["apps/api — 운영 서버(Operations Server)"]
-        routes["main.py<br/>REST · SSE · WebSocket 경로"]
-        service["service.py · analysis.py<br/>화면용 조회와 분석 조합"]
-        schemas["schemas.py<br/>경계 DTO"]
-        routes --> schemas
-        routes --> service
-    end
-
-    subgraph upbitGateway["apps/upbit_gateway — 업비트 API 게이트웨이"]
-        gatewayRoutes["main.py<br/>health · catalog · REST · WebSocket 경계"]
-        gatewayCatalog["catalog.py<br/>계약 카탈로그 로더"]
-        gatewayRest["executor · auth · client<br/>안전 정책 · 요청 제한 · 추적"]
-        gatewayWs["websocket_protocol · security · session<br/>출처 검증 · 구독 · 재연결"]
-        gatewayRoutes --> gatewayCatalog
-        gatewayRoutes --> gatewayRest
-        gatewayRoutes --> gatewayWs
-    end
-
-    subgraph workers["apps/worker — 수집·집계 워커(Worker)"]
-        rt["realtime_collection_worker"]
-        bf["backfill_collection_worker"]
-        ag["aggregation_collection_worker"]
-    end
-
-    subgraph shared["packages/shared — 도메인·저장소"]
-        model["models.py · aggregation.py"]
-        repo["Repository Port"]
-        sqlite["SQLite 구현"]
-        postgres["PostgreSQL 구현"]
-        model --> repo
-        repo --> sqlite
-        repo --> postgres
-    end
-
-    client --> routes
-    client --> gatewayRoutes
-    service --> repo
-    rt --> repo
-    bf --> repo
-    ag --> repo
-```
-
-`apps/web/src/displayFormat.ts`는 사용자에게 보이는 날짜·시간·화폐·자산 수량의 공통 표시 정책을 소유한다. 모든 사용자용 날짜·시간은 KST 24시간제 `YYYY.MM.DD HH:mm:ss KST`를 사용하고, 화폐·자산 단위는 3자리 구분자와 함께 값 뒤에 표시한다. 이 모듈은 화면 표시만 바꾸며 API 요청·응답 원문, 추적 JSON과 저장 계약은 변경하지 않는다.
-
-`packages/shared`의 저장소 포트(Repository Port)는 API와 세 워커의 공통 경계다. SQLite는 격리 테스트용이며, 실제 개발·운영은 PostgreSQL 구현을 사용한다.
-
-## 런타임 구성요소
-
-| 런타임 | 책임 | 상태·복구 기준 |
+| 영역 | 2026-07-17 기준 | 구현 추적 |
 |---|---|---|
-| 업비트 API 게이트웨이(Upbit API Gateway) | 브라우저 대신 공식 REST·WebSocket을 연결하고 카탈로그·인증·요청 제한·안전 정책·추적을 한 경계에 둔다. | `/health`, `/v1/catalog`, `/v1/requests`, `/v1/websocket`을 제공한다. REST 실행은 운영자 토큰을 검증하고, `read`와 공식 주문 테스트만 상향 호출하며 `blocked`는 자격 증명·제한기·네트워크 전에 403으로 종료한다. 공개·비공개 WebSocket은 독립 연결·구독·재연결하며 운영자 토큰과 명시적 출처 허용 목록을 모두 검증한다. |
-| 실시간 수집 워커(Realtime Collection Worker) | 후보군, 현재가, 체결, 호가 요약, 1분 원천봉을 업비트 WebSocket에서 수집한다. | `GOODMONEYING_LIVE_UPBIT=1` live 프로필에서만 실제 수집하며 heartbeat와 수집 결과를 기록한다. |
-| 백필 수집 워커(Backfill Collection Worker) | DB의 `pending` 백필 작업을 읽어 결측 원천 캔들을 REST로 보충한다. | 기본 10초 폴링, 동시성 1, DB batch upsert 성공 뒤 진행 상태를 기록한다. |
-| 캔들 집계 워커(Candle Aggregation Worker) | 원천 워터마크와 집계 워터마크를 비교해 `5m/10m/30m/60m/1d/1w/1M` OHLCV를 생성한다. | 기본 5초 폴링, 대상별 멱등 upsert와 워커 프로세스 수명 동안 단일 5초 주기 하트비트(heartbeat)를 기록한다. PostgreSQL 연결·문장 실행은 각각 2초 제한, SQLite 잠금 대기는 2초 제한, 실행기 종료 합류(join)는 3초 유예를 적용한다. |
-| 운영 서버(Operations Server) | REST, SSE, WebSocket, 설정 변경, 백필 제어, 분석 조회를 제공한다. | 조회 중 무거운 수집·집계를 수행하지 않고 저장된 뷰 모델을 우선 읽는다. |
-| 운영 화면 | 관심종목, 코인 분석, 시스템 관리, 수집·Backfill 운영 기능을 렌더링한다. | 스트림 단절 시 각 화면 계약에 정의된 재연결 또는 HTTP 보조 경로를 사용한다. |
-| PostgreSQL | 원천 사실, 수집 설정·계획, 화면용 상태, 작업, 감사 기록을 보존한다. | DB 변경의 단일 기준은 `docs/contracts/db/migrations/`이다. API·워커 런타임은 DDL(Data Definition Language)을 실행하지 않는다. |
+| 기존 수집·백필·집계, API·Web, Upbit Lab·Gateway | 부분 구현 | Issue #28, #29, #33 |
+| 전략·백테스트·포트폴리오·봇·주문·위험 | 미구현 | Issue #30~#33 |
+| 내부 UTC와 5가지 품질 상태 | 미구현 | Issue #28 |
+| 복구 가능한 내부 WebSocket | 미구현 | Issue #29 |
+| Action commit SHA pinning·P8 exact-SHA 잠금 | P0 구현, 배포는 계속 차단 | Issue #27, #35 |
+| branch protection·prod 승인·승격 자동화 | 미구현, 배포 차단 | Issue #35 |
+| 운영 DB 백업·복원 rehearsal·forward recovery | 미구현, 배포 차단 | Issue #34, #35 |
+| 전체 worker·row delta·WebSocket·SHA health gate | 미구현, 배포 차단 | Issue #35 |
+| 감사 가능한 global `live_disabled` 권위 상태 | 미구현, live 차단 | Issue #32, #33 |
 
-## 핵심 데이터 흐름
+## 4. 목표 시스템 구성
 
-### 수집·집계·분석 흐름
-
-```mermaid
-flowchart LR
-    settings["활성 수집 대상·수집 계획"] --> rt["실시간 수집"]
-    settings --> bf["백필 수집"]
-    rt --> source["원천 데이터<br/>1분·일봉 캔들<br/>시세·호가·체결"]
-    bf --> source
-    source --> quality["커버리지·결측·최신성<br/>화면용 뷰 모델"]
-    source --> ag["집계 워커"]
-    ag --> rollup["집계 캔들<br/>5m·10m·30m·60m·1d·1w·1M"]
-    quality --> api["운영 서버"]
-    rollup --> api
-    source -.->|"집계 지연·누락 시<br/>정확성 보조 경로"| api
-    api --> ui["관심종목·코인 분석·시스템 관리"]
-```
-
-- 원천 캔들은 `(instrument_id, source, candle_unit, candle_start_at)` 자연키로 upsert한다.
-- 분석 조회는 최신 집계 캔들을 우선 사용하고, 집계가 뒤처졌을 때만 원천봉을 즉시 파생한다. 이는 정확성 보조 경로이지 장기 성능 경로가 아니다.
-- 수집 품질의 정의와 임계값은 [제품 개발 사양의 수집 품질 정의](01_Product.md#수집-품질-정의)를 따른다.
-
-### 브라우저 실시간 전송 흐름
-
-```mermaid
-sequenceDiagram
-    participant B as 브라우저
-    participant A as 운영 서버
-    participant D as PostgreSQL
-    participant W as 수집·집계 워커
-
-    B->>A: 분석 구독 또는 시스템 관리 연결
-    A->>D: 관심목록·차트·지표·워커 상태 조회
-    A-->>B: 초기 메시지 묶음
-    W->>D: 원천 데이터·집계·heartbeat 반영
-    A->>D: 변경 가능한 화면 상태 재조회
-    A-->>B: 증분 차트·지표·시장·상태 메시지
-    Note over B,A: 기존 대시보드·관심종목은 SSE와 HTTP 폴링 보조를 유지
-```
-
-분석 WebSocket은 `/v1/realtime/analysis`, 시스템 관리 WebSocket은 `/v1/realtime/system-management`를 사용한다. 메시지 종류·필드·오류 처리는 [실시간 API 계약](contracts/api/README.md#실시간-계약)에서만 정의한다.
-
-## 모듈과 계약 지도
-
-| 모듈 | 코드 위치 | 책임 | 기준 문서 |
+| 구성 요소 | 책임 | 상태 저장 | 현재 상태 |
 |---|---|---|---|
-| 운영 화면 | `apps/web/` | 화면 상태, HTTP·SSE·WebSocket 소비, 공통 KST·화폐·자산 표시 정책 | [사용 안내](사용설명서-M1-업비트-수집-운영-mvp.md) |
-| 운영 서버 | `apps/api/goodmoneying_api/` | API 경계, 화면용 조회, 분석 조합 | [HTTP·실시간 계약](contracts/api/README.md) |
-| 업비트 API 게이트웨이 | `apps/upbit_gateway/goodmoneying_upbit_gateway/` | 공식 기능 카탈로그 제공, 키·요청 제한·안전 정책 경계 | [게이트웨이 설계](02_Architecture/upbit-api-gateway.md) |
-| 수집·집계 워커 | `apps/worker/goodmoneying_worker/` | 실시간 수집, Backfill, 집계 작업 | [업비트 수집 파이프라인](02_Architecture/upbit-collection-pipeline.md) |
-| 공유 도메인·저장소 | `packages/shared/goodmoneying_shared/` | 모델, 집계 계산, 저장소 포트와 구현 | [DB 계약](contracts/db/README.md) |
-| 데이터 계약 | `docs/contracts/` | DB·HTTP·WebSocket·업비트 기능 카탈로그의 기계 검증 기준 | [계약 기준](contracts/README.md) |
+| Web | 연구·전략·백테스트·봇·위험·운영 UI, REST 부트스트랩, WebSocket 구독 | 브라우저 단기 상태만 유지 | 부분 구현 |
+| API | 권한, 명령·조회, 버전 생성, 스냅숏 복구, 내부 이벤트 발행 | PostgreSQL | 부분 구현 |
+| Upbit Gateway | 공식 REST·WebSocket, JWT, 요청 제한, SMP, 주문 테스트와 실제 주문 안전 경계 | 비밀 파일은 프로세스 외부, 추적 메타데이터만 DB | 실제 주문·SMP 제외 부분 구현 |
+| Market Sync Worker | 전체 거래쌍과 상태 이력 동기화, KRW 기본 정책 자동 편입 | PostgreSQL | 실시간 worker에 일부 결합 |
+| Realtime Worker | 체결·호가·티커·캔들 구독, 중복 제거, 원천 저장, 연결 복구 | PostgreSQL | 부분 구현 |
+| Backfill Scheduler/Worker | 커버리지 격차에서 작업 생성, 임대, 재시도, 200개 단위 역방향 백필 | PostgreSQL 큐 | 수동 흐름 부분 구현 |
+| Quality Worker | 구간 상태, 지연, 중복, 실패, 획득 불가 판정 | PostgreSQL | 미구현 |
+| Rollup Worker | 1분 원천 기반 다중 주기 증분 집계와 변경 전파 | PostgreSQL | 일부 주기 구현 |
+| Indicator Worker | 버전이 있는 지표 물질화(Materialization) | PostgreSQL | 미구현 |
+| Strategy Worker | Typed DAG 검증·평가·설명 이벤트 생성 | PostgreSQL | 미구현 |
+| Backtest Worker | 결정론적 사건 재생, 체결·비용 모델, 성과·산출물 생성 | PostgreSQL | 미구현 |
+| Paper/Shadow Worker | 모의 체결 또는 실시간 신호 관찰, 실제 주문 금지 | PostgreSQL | 미구현 |
+| Bot Worker | 승인 버전 실행, 주문 의도 생성, 상태 전이 | PostgreSQL | 미구현 |
+| Reconciliation Worker | REST·private WebSocket·잔고를 주문·체결·포지션과 대사 | PostgreSQL | 미구현 |
+| Risk Worker | 사전 주문·실시간 노출 검사, 위험 이벤트, 긴급 정지 | PostgreSQL | 미구현 |
+| Operations Worker | 하트비트, 큐·DB·요청 제한·배포 상태와 알림 | PostgreSQL | 부분 구현 |
 
-## 아키텍처 결정과 변경 규칙
+작업자는 하나의 실행 바이너리에서 역할별 프로세스로 시작할 수 있다. 배포 단위 분리는 처리량·장애 격리 측정으로 결정하며 도메인 계약은 프로세스 배치와 독립적이다.
 
-- 되돌리기 어렵거나 여러 모듈의 책임을 바꾸는 선택은 [ADR](ADR/)로 기록한다. 분석 전송은 [ADR-0008](ADR/ADR-0008-분석-화면-WebSocket-증분-메시지.md), 집계 워커는 [ADR-0009](ADR/ADR-0009-캔들-집계-테이블과-자동-워커.md)를 따른다.
-- DB·HTTP·WebSocket 형식을 바꾸면 계약 파일을 먼저 수정하고, 이 문서에는 경계와 영향만 갱신한다.
-- 모듈 책임, 워커 수, 데이터 흐름, 배포 경계가 바뀌면 이 문서와 관련 모듈 설계를 함께 갱신한다.
-- 검증 명령과 결과는 `docs/Test/`, 인계 맥락·리스크·후속 작업은 `docs/History/`, 실행 단위는 GitHub Issue에 기록한다.
+## 5. 계층과 의존 방향
 
-## 확장 결정 게이트
+```text
+apps/web
+  ↓ HTTP + WebSocket contracts
+apps/api ───────────────→ apps/upbit_gateway
+  ↓ application services          ↓ official Upbit API
+packages/shared/goodmoneying_shared/domain  # 목표 경로, Issue #28부터 생성
+  ↓ repositories + event outbox
+PostgreSQL ← worker role processes
+```
 
-| 조건 | 현재 유지 | 재검토할 선택 |
-|---|---|---|
-| 처리량·복구 목표 충족 | 단일 API, 세 단일 워커, DB 폴링 | 코인 단위 작업 분할, 메시지 큐, 분산 rate limiter |
-| 저장·조회·백업 임계값 초과 | 단일 PostgreSQL, 원천 데이터 보존 | 파티셔닝(Partitioning), 압축, 보존 정책, 복제(Replication) |
-| P3 전략 실험 승인 | 고정 기술 지표와 호가 요약 | 지표 계산·캐시·재현 계약, 호가 원천 저장 |
-| 시장 확장 승인 | 업비트 KRW 전용 | 시장 시간 정책, 공급원, 공통 거래 상품(Instrument) 모델 |
+- 도메인 모델은 FastAPI, React, Upbit SDK에 의존하지 않는다.
+- 애플리케이션 서비스는 저장소·거래소·시계 추상화에 의존한다.
+- Upbit Gateway는 공식 API 응답을 내부 거래소 계약으로 번역하지만 전략·위험 정책을 결정하지 않는다.
+- UI는 DB 구조를 직접 알지 않고 OpenAPI·WebSocket 계약만 소비한다.
+
+## 6. 데이터 계층
+
+### 6.1 원천 계층
+
+원천 계층은 시장 상태, 시세, 계좌·주문·체결처럼 외부에서 관측한 사실과 수신 provenance를 불변에 가깝게 보존한다. 목표 엔터티와 자연키는 [도메인 설계](02_Architecture/system-trading-domain.md), 구현된 컬럼·제약은 DB migration을 단일 기준으로 사용한다.
+
+### 6.2 제어·품질 계층
+
+제어·품질 계층은 어떤 데이터를 왜·언제 수집했고 무엇을 얻지 못했는지 설명하며 정책, 대상, 실행, 작업, 커버리지, 품질 사건과 요청 manifest를 분리한다. PostgreSQL 작업 큐의 목표 임대·재시도 의미는 도메인 설계가 정의하고 실제 컬럼·인덱스는 migration이 정의한다.
+
+### 6.3 집계·지표 계층
+
+집계·지표 계층은 원천 버전·계산 버전·최신성·재계산 범위를 기록한다. 원천 수정은 영향 구간만 무효화하고 증분 재계산한다.
+
+### 6.4 연구·실행 계층
+
+연구·실행 계층은 사용한 시장·구간·원천 manifest·결측 정책을 불변 버전으로 고정하고 전략부터 주문·위험까지 같은 실행 의미를 공유한다. 목표 상태와 불변 조건은 [도메인 설계](02_Architecture/system-trading-domain.md)를 따르고 각 수직 조각의 실제 DB·API·메시지 형식은 `docs/contracts/`에 기계 계약으로 추가한다.
+
+## 7. 핵심 흐름
+
+### 7.1 수집 정책 활성화
+
+1. Market Sync Worker가 공식 거래쌍을 동기화하고 상태 이력을 닫힌·열린 구간으로 기록한다.
+2. KRW 기본 정책이 신규 거래쌍을 `collection_targets`에 멱등 삽입한다.
+3. 정책 변경 트랜잭션이 커버리지 격차와 `backfill_jobs`를 만들고 실시간 구독 desired state를 갱신한다.
+4. Backfill Worker는 요청 제한 토큰을 얻고 최대 200개 캔들을 역순 수집한다.
+5. Realtime Worker는 원하는 대상 집합 변화에 따라 구독을 갱신한다.
+6. Quality Worker는 실제 캔들, 거래 이벤트, 시장 상태와 fetch manifest를 사용해 5가지 구간 상태를 판정한다.
+7. 재시작 시 DB desired state와 만료 lease를 읽어 자동 복구한다.
+
+### 7.2 전략 연구와 백테스트
+
+1. 사용자가 Data Lab에서 데이터셋 버전을 고정한다.
+2. Strategy Studio가 그래프 초안을 편집하고 서버 검증 결과를 실시간 표시한다.
+3. 게시 명령은 정규화된 그래프 해시로 불변 전략 버전을 생성한다.
+4. Backtest Worker는 평가 시계가 허용한 사건만 순서대로 재생하고 전략 신호를 주문 의도로 변환한다.
+5. 공통 주문 모델이 수수료·슬리피지·지연·부분 체결을 적용한다.
+6. 결과와 모든 가정, 엔진 버전, seed를 저장하고 UI에 진행 이벤트를 보낸다.
+
+### 7.3 봇과 주문 안전 흐름
+
+1. 봇은 승인된 전략 버전·계좌·자금·위험 정책을 참조한다.
+2. 전략 신호는 먼저 전역 멱등 키를 가진 주문 의도가 되고 Risk Worker가 같은 트랜잭션 경계에서 검사해 `risk_rejected` 또는 `approved`로 전이한다. 거부된 의도도 사유·정책 버전과 함께 감사·재현을 위해 보존한다.
+3. `paper`는 결정론적 체결기, `shadow`는 실시간 평가만 사용하고 거래소 주문을 호출하지 않는다.
+4. `live-ready`는 Upbit 주문 테스트 API와 private WebSocket·REST 대사를 검증하지만 실제 주문을 보내지 않는다.
+5. `live` 전이는 운영자 권한, 활성화 사유, 모든 승인 gate와 전역 kill switch 해제 상태를 요구한다.
+6. 주문 제출은 멱등 키와 outbox를 기록한 뒤 Upbit Gateway를 호출한다. 시간 초과는 즉시 재주문하지 않고 조회·대사 상태로 전환한다.
+7. private WebSocket 이벤트는 빠른 상태 갱신에 쓰되 REST 대사가 최종 누락을 복구한다.
+8. 전역 또는 봇 kill switch는 신규 주문 의도를 거부하고 진행 중 주문의 처리 정책을 감사 이벤트로 남긴다.
+
+## 8. WebSocket 복구 모델
+
+내부 메시지 envelope, 구독 명령, schema 호환성의 목표 의미는 [도메인 설계](02_Architecture/system-trading-domain.md#7-실시간-envelope)가 정의한다. Issue #29가 추가할 JSON Schema가 구현 시점의 필드 단일 기준이다. 연결은 구독 권한을 확인하고 현재 cursor를 회신한다. 클라이언트는 sequence gap 또는 schema 불일치를 감지하면 해당 토픽을 일시 중지하고 REST 스냅숏을 cursor와 함께 다시 받은 뒤 재구독한다.
+
+서버는 bounded queue를 사용한다. 느린 소비자는 저우선 이벤트를 합치거나 연결을 명시적 `slow_consumer` 사유로 종료하며 무제한 메모리 적재를 허용하지 않는다. 재연결은 jitter가 있는 지수 백오프를 사용한다.
+
+## 9. 시간·결측·재현성
+
+- `occurred_at`: 거래소가 사건을 발생시킨 UTC 시각
+- `received_at`: 플랫폼이 원천을 수신한 UTC 시각
+- `stored_at`: DB 커밋 UTC 시각
+- `knowledge_at`: 백테스트에서 해당 사실을 사용할 수 있게 된 UTC 시각
+
+백테스트 평가 시점 `t`는 `knowledge_at <= t`인 데이터만 볼 수 있다. 거래쌍 상태 역시 당시 유효 구간만 조회한다. 무거래 캔들은 원천에 생성하지 않고 `coverage_intervals=no_trade`로 표현한다. 분석 채움은 데이터셋·전략 버전 입력이며 원천을 변경하지 않는다.
+
+## 10. 보안 경계
+
+- 공개 시세와 private 계좌·주문 연결을 별도 세션·요청 제한 포켓으로 관리한다.
+- API Key 파일은 운영 호스트 외부 비밀 경로에서 읽고 로그·DB·브라우저로 반환하지 않는다.
+- Gateway allowlist는 호출 주체와 명령 종류를 제한한다.
+- 주문하기와 주문조회 권한은 준비 상태에서 각각 검사한다. 출금 권한은 거부한다.
+- 모든 변경 명령은 raw token이 아닌 운영자 principal ID, 요청 ID, 멱등 키, 사유와 결과를 감사 이벤트에 기록한다. token·JWT·Authorization·query hash와 secret은 기록하지 않는다.
+- `Origin` 헤더를 Upbit 서버 간 시세 요청에 임의 추가하지 않는다.
+
+## 11. 배포와 운영
+
+CI는 정적 검사, 전체 단위·계약·통합 테스트, 빈 DB와 기존 DB migration E2E, Playwright, Docker 5종 build를 통과해야 한다. `release` 승격은 같은 40자리 SHA의 성공한 `main` CI run, required status check, 직접·force push 금지, prod required reviewer와 release branch 제한을 API로 확인한 경우에만 허용한다. 확인 실패는 이미지 build 전에 배포를 중단한다. 외부 Action은 commit SHA로 고정하고 workflow는 최소 권한을 사용한다.
+
+스키마·데이터 변경 전에 PostgreSQL volume과 장애 영역이 분리된 위치에 시점 백업을 만들고 원본 DB·SHA, 완료 시각, 크기, checksum, 보관 기한, 복원 명령을 증적으로 남긴다. 최근 복원 rehearsal이 승인된 RPO·RTO를 만족하지 못하면 migration을 실행하지 않는다.
+
+배포 health gate는 API, Web, Gateway, PostgreSQL, 배포된 모든 장기 worker의 container와 DB heartbeat, 원천·집계 row delta 또는 정당한 no-data 사유, freshness, WebSocket 송수신, DB 용량, 오류 log, 서버별 이미지 SHA를 검사한다. Gateway readiness는 필수 env, key file 존재·소유자·권한, egress allowlist를 비밀값 노출 없이 확인한다. 대상 환경은 기존 prod-home과 Tailscale 인프라 `100.107.98.22`이며 운영 서버에서 수동 build·source 수정을 금지한다.
+
+DB migration 성공 뒤 app·web 배포가 실패해도 down migration을 자동 실행하지 않는다. 이전 이미지는 새 schema와 역호환되고 동일 SHA의 전체 이미지 set이 존재한다고 사전 검증한 경우만 사용한다. 그 외에는 승인된 forward-fix SHA로 복구하고 서버별 SHA 불일치가 해소될 때까지 배포를 실패 상태로 유지한다. 각 migration은 이전 app 호환 구간, forward recovery 절차와 소유자를 가진다.
+
+## 12. 성능 확장 결정 gate
+
+다음 도입은 측정과 ADR 없이는 허용하지 않는다.
+
+- 메시지 브로커: PostgreSQL queue의 지연·처리량·잠금이 목표를 지속 위반할 때
+- 시계열 DB: PostgreSQL 파티션·인덱스·집계로 목표 범위 조회를 충족하지 못할 때
+- Parquet·객체 저장소: 원천 증가량, 보존 비용, 복구 시간 목표가 계층화를 요구할 때
+- 워커 분산: 단일 역할 프로세스의 처리량 또는 장애 격리 목표가 측정으로 위반될 때
+
+## 13. 모듈 문서와 계약 색인
+
+- [수집 파이프라인](02_Architecture/upbit-collection-pipeline.md)
+- [Upbit API Gateway](02_Architecture/upbit-api-gateway.md)
+- [시스템 트레이딩 도메인 목표 설계](02_Architecture/system-trading-domain.md)
+- [계약 색인](contracts/README.md)
+- [DB 계약](contracts/db/README.md)
+- [HTTP·WebSocket 계약](contracts/api/README.md)
+- [운영](03_Operations.md)
+
+기존 모듈 문서는 현재 구현 설명으로만 유효하다. 상위 100·활성 50·KST 저장·수동 백필·실제 주문 전면 차단은 각각 Issue #28·#33이 완료되면 모듈 문서와 코드에서 함께 제거한다. 목표 설계는 구현 의도를 안내하지만 운영 형식으로 강제되지 않는다. 실행 전에는 해당 Issue의 migration·OpenAPI·JSON Schema가 존재하고 자동 검증되는지 확인한다.

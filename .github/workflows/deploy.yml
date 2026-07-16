@@ -1,9 +1,6 @@
 name: Deploy prod-home
 
 on:
-  push:
-    branches:
-      - release
   workflow_dispatch:
     inputs:
       profile:
@@ -12,12 +9,17 @@ on:
         type: choice
         options:
           - prod-home
+      approved_sha:
+        description: "승인된 40자리 release commit SHA"
+        required: true
+        type: string
 
 concurrency:
   group: deploy-prod-home-v3
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
+  checks: read
   contents: read
   packages: write
 
@@ -39,7 +41,14 @@ jobs:
       RUNNER_LOGIN_SHELL_HOST: goodjoon@Mac-Mini-M4.local
       RUNNER_DOCKER_BIN: /usr/local/bin/docker
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Verify production deployment gates
+        env:
+          APPROVED_SHA: ${{ inputs.approved_sha }}
+          DEPLOY_ENABLE_SHA: ${{ vars.GOODMONEYING_PROD_DEPLOY_ENABLE_SHA }}
+          GH_TOKEN: ${{ secrets.GOODMONEYING_DEPLOY_GITHUB_TOKEN }}
+        run: deploy/scripts/verify-prod-deploy-gates.sh
 
       - name: Set image tag
         run: echo "IMAGE_TAG=release-${GITHUB_SHA}" >> "$GITHUB_ENV"

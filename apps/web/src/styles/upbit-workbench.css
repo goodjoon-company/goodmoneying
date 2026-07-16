@@ -19,6 +19,8 @@
 .upbit-dynamic-fields .catalog-parameter-field { display: grid; grid-column: 1 / -1; align-content: start; gap: 6px; min-width: 0; }
 .upbit-dynamic-fields .catalog-parameter-field[data-parameter="to"] { grid-column: 1; }
 .upbit-dynamic-fields .catalog-parameter-field[data-parameter="count"] { grid-column: 2; }
+.upbit-dynamic-fields .catalog-parameter-field:is([data-parameter="to"], [data-parameter="count"]) { grid-row: span 5; grid-template-rows: subgrid; align-content: normal; row-gap: 6px; }
+.upbit-dynamic-fields .catalog-parameter-field:is([data-parameter="to"], [data-parameter="count"]) label { grid-row: span 2; grid-template-rows: subgrid; }
 .upbit-dynamic-fields input:is([type="datetime-local"], [type="time"]) { color-scheme: dark; }
 .upbit-dynamic-fields label > span { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .upbit-dynamic-fields em { color: #6d7d73; font-size: 10px; font-style: normal; }
@@ -92,6 +94,8 @@
   .upbit-common-selection > * { min-width: 0; }
   .upbit-common-selection, .upbit-dynamic-fields, .upbit-ticker-cards { grid-template-columns: 1fr; }
   .upbit-dynamic-fields .catalog-parameter-field[data-parameter="to"], .upbit-dynamic-fields .catalog-parameter-field[data-parameter="count"] { grid-column: 1; }
+  .upbit-dynamic-fields .catalog-parameter-field:is([data-parameter="to"], [data-parameter="count"]) { grid-row: auto; grid-template-rows: none; align-content: start; }
+  .upbit-dynamic-fields .catalog-parameter-field:is([data-parameter="to"], [data-parameter="count"]) label { grid-row: auto; grid-template-rows: none; }
   .upbit-request-builder input, .upbit-request-builder select, .upbit-execute-button, .upbit-workbench-tabs button { min-height: 44px; }
   .upbit-dynamic-fields .parameter-actions button { min-height: 36px; }
   .upbit-result-panel { min-height: 400px; padding: 12px; }

@@ -1,7 +1,7 @@
 # 운영·배포 개발 사양
 
 상태: 현재
-마지막 검증: 2026-07-16 14:02 KST
+마지막 검증: 2026-07-17 P0 기준선 감사
 배포 프로필(Deployment Profile): `prod-home`
 
 ## 문서 역할
@@ -12,7 +12,7 @@
 
 ## 현재 현황 요약
 
-| 항목 | 2026-07-16 14:02 KST 확인 결과 | 판단 |
+| 항목 | 2026-07-17 P0 감사 결과 | 판단 |
 |---|---|---|
 | 실제 운영 이미지 | `release-1db7d40`, 원본 커밋 `1db7d4070ca6ef709067b5dea21aa92dd3fa2d73` | API·Web·실시간 수집·백필(Backfill) 수집은 같은 릴리스 태그(Tag)를 사용한다. |
 | 마지막 운영 배포 | GitHub Actions `Deploy prod-home` 실행 `28409423876`, 2026-06-30 08:26~08:30 KST, 성공 | 이 실행 이후 새 운영 배포 이력이 없다. |
@@ -21,10 +21,10 @@
 | PostgreSQL 접근 | APP SERVER 01의 API 컨테이너에서 `100.107.98.22:5432` TCP 연결 성공 | 애플리케이션 경로의 DB 접근은 가능하다. 현재 점검 장비에서 Mac Mini M4 SSH가 시간 초과되어 PostgreSQL 컨테이너 자체 `pg_isready`는 직접 재검증하지 못했다. |
 | 수집 워커 상태 | 실시간·백필 heartbeat 모두 `running`, 각각 1초·0초 전 갱신 | 워커 프로세스뿐 아니라 DB heartbeat도 갱신 중이다. |
 | 최근 60초 적재 | 원천 캔들 41, 현재가 47, 호가 86, 체결 679행 | 실시간 데이터 적재가 진행 중이다. |
-| `main`과 `release` 차이 | `main` `9e5e67f`, `release` `1db7d40`; `main`이 108커밋 앞서고 `release` 선행 커밋은 0개 | 최근 기능과 배포 변경은 운영에 반영되지 않았다. |
-| 최신 `main` CI | 실행 `29451955296`, Web 테스트 1개 실패·123개 통과 | 현재 `main`은 배포 승격(Promotion) 준비 완료 상태가 아니다. |
+| `main`과 `release` 차이 | `main` `be28fe9e29ba197ec0bb5e3017ab58b36a6e91f4`, `release` `1db7d4070ca6ef709067b5dea21aa92dd3fa2d73`; `main`이 114커밋 앞서고 `release` 선행 커밋은 0개 | 최근 기능과 배포 변경은 운영에 반영되지 않았다. |
+| 최신 `main` CI | 실행 `29519912264`, Browser E2E 1개 실패·15개 통과 | 현재 `main`은 배포 승격(Promotion) 준비 완료 상태가 아니다. |
 
-최신 CI 실패는 `apps/web/src/components/upbit-api-test/workbench.test.ts`의 시간대 기대값이 실제 `2026-07-16T09:00:00.000Z`와 기대 정규식 `2026-07-16T00:00:00.000Z` 사이에서 어긋난 것이다. 이 실패를 해결하고 전체 CI를 통과시키기 전에는 `main`을 `release`로 승격하지 않는다.
+최신 CI 실패는 Linux 한글 대체 글꼴에서 `조회 개수(count)`가 줄바꿈되어 조회 종료 시각과 입력 y 좌표가 14px 어긋난 것이다. P0 작업 브랜치는 공유 서브그리드(subgrid)와 681·680px/WCAG 텍스트 간격 회귀 테스트로 수정했지만 원격 CI 성공 전에는 `main`을 `release`로 승격하지 않는다.
 
 ### 운영 반영과 최신 코드의 차이
 
@@ -89,27 +89,30 @@ flowchart LR
 ## 배포 기준과 트리거
 
 - `main` 또는 PR(Pull Request) push는 [CI 워크플로](../.github/workflows/ci.yml)만 실행한다.
-- `release` 브랜치 push가 `prod-home` 자동 배포의 기본 트리거다.
-- [Deploy prod-home 워크플로](../.github/workflows/deploy.yml)의 수동 실행(`workflow_dispatch`)도 가능하다. 수동 실행 시에도 배포할 커밋을 명확히 하기 위해 `release` 참조(Ref)를 사용한다.
-- 배포 작업은 `deploy-prod-home-v3` 동시성 그룹(Concurrency Group)으로 직렬화하며, 새 실행이 시작되면 진행 중인 이전 실행을 취소한다.
+- `release` 브랜치 push는 운영 배포를 시작하지 않는다. 보호·승인 설정이 완성되기 전 오배포를 막기 위해 자동 트리거를 제거했다.
+- [Deploy prod-home 워크플로](../.github/workflows/deploy.yml)는 보호된 `release` 참조(Ref)에서 수동 실행(`workflow_dispatch`)하고 승인된 40자리 SHA를 입력한다.
+- 이미지 build 전에 P8 exact-SHA 배포 잠금, `main`·`release` 보호, `prod` 필수 승인자·보호 브랜치 제한, 두 브랜치·입력·실행 SHA 동일성, 같은 SHA의 CI `verify` 성공을 GitHub API로 증명한다. 보호 조회용 Administration read GitHub App/PAT 환경 비밀값이 없거나 외부 상태가 불명확하면 실패한다.
+- 배포 작업은 `deploy-prod-home-v3` 동시성 그룹(Concurrency Group)으로 직렬화한다. migration·부분 배포 중인 실행을 후속 실행이 취소하지 않도록 `cancel-in-progress`는 `false`다.
 - 운영 배포는 `prod` GitHub 환경(Environment)과 Mac Mini M4의 `self-hosted`, `mac-mini-m4` 러너 라벨(Label)을 사용한다.
 
-수동 실행은 현재 `release`를 다시 배포하는 용도로 사용한다.
+수동 실행은 승인된 현재 `release`를 배포하는 유일한 경로다.
 
 ```bash
-gh workflow run deploy.yml --ref release -f profile=prod-home
+approved_sha="$(git ls-remote origin refs/heads/release | cut -f1)"
+gh workflow run deploy.yml --ref release -f profile=prod-home -f approved_sha="${approved_sha}"
 ```
 
-`main`에서 `release`로의 승격 방식은 저장소 자동화에 포함되어 있지 않다. 승격 전에는 대상 SHA, CI 성공, DB 마이그레이션 호환성, 운영 반영 범위를 사람이 확인해야 한다.
+`main`에서 `release`로의 승인 승격 자동화, 보호 설정, 백업·복원·전진 복구·확장 health gate는 Issue #34·#35 범위다. 모든 증적을 마친 P8 SHA를 저장소 변수 `GOODMONEYING_PROD_DEPLOY_ENABLE_SHA`에 설정하기 전에는 사전점검이 실패하므로 운영 배포할 수 없다.
 
-## 최신 `main` 기준 배포 실행 흐름
+## 승인 목표 배포 실행 흐름
 
-이 절은 2026-07-16 확인한 원격 `main` 커밋 `9e5e67f7e0b9de2643e21edc31114bbed4902d49`의 배포 파일을 기준으로 한다. 현재 운영 `release`와 이 문서를 작성한 작업 브랜치보다 앞선 정의이므로, 실제 배포 전 대상 `release`에서 같은 파일이 반영됐는지 다시 확인한다.
+이 절은 P0에서 적용한 실패 폐쇄형 배포 파일과 ADR-0015의 승인 목표를 기준으로 한다. 현재 원격 `main`·`release` 보호와 `prod` 필수 승인자가 없으므로 Issue #35가 외부 설정을 완료하기 전에는 사전점검에서 의도적으로 중단된다.
 
 ```mermaid
 flowchart TD
-    trigger["release push 또는<br/>수동 실행"] --> checkout["release 커밋 체크아웃"]
-    checkout --> verify["Python·Web 검증<br/>lint·type check·test·build"]
+    trigger["release 수동 실행<br/>승인 SHA 입력"] --> checkout["release 커밋 체크아웃"]
+    checkout --> gate["GitHub 보호·승인·CI·SHA<br/>실패 폐쇄형 증명"]
+    gate --> verify["Python·Web 검증<br/>lint·type check·test·build"]
     verify --> build["API·Worker·Gateway·Web·Migrations<br/>linux/amd64 + linux/arm64 빌드"]
     build --> push["private GHCR push<br/>release-{전체 SHA}"]
     push --> infra["Mac Mini M4<br/>PostgreSQL pull · up -d"]
@@ -120,7 +123,7 @@ flowchart TD
     health --> e2e["운영 URL 대상<br/>Playwright E2E"]
 ```
 
-1. 워크플로가 `release-${GITHUB_SHA}` 이미지 태그를 만든다. 최신 `main` 구현은 전체 40자리 SHA를 사용하지만 ADR-0004와 배포 프로필 설명에는 아직 `short-sha`가 남아 있어 문서 동기화가 필요하다.
+1. 워크플로가 보호·승인·CI·SHA 증명을 통과한 뒤 `release-${GITHUB_SHA}` 전체 40자리 이미지 태그를 만든다.
 2. Python 의존성·Node.js 의존성·Playwright Chromium을 준비한다.
 3. Ruff 린트(Lint), Mypy 타입 검사(Type Check), Pytest, Vitest, Web 빌드를 순서대로 실행한다. 하나라도 실패하면 이미지 빌드 전 중단한다.
 4. Mac Mini M4 로그인 셸에서 API, Worker, Upbit Gateway, Web, Migrations 이미지를 `linux/amd64`, `linux/arm64`로 빌드해 private GHCR에 push한다.
@@ -209,12 +212,11 @@ ssh bmax-ubuntu \
 
 ## 현재 남은 위험과 다음 조치
 
-1. 최신 `main` Web 테스트의 시간대 실패를 수정하고 전체 CI 성공을 확인한다.
-2. `main` 108개 커밋의 운영 변경 범위를 검토한 뒤 승인된 SHA만 `release`로 승격한다.
-3. 첫 최신 배포에서 Upbit Gateway, 캔들 집계 워커, dbmate migration을 포함한 healthcheck와 운영 E2E를 확인한다.
-4. healthcheck에 캔들 집계 워커 상태·heartbeat와 핵심 테이블 행 증가 검사를 추가한다.
-5. ADR-0004·배포 프로필의 `short-sha` 표현을 최신 전체 SHA 구현과 동기화한다.
-6. 자동 롤백 부재와 DB migration 하향 호환성 정책을 별도 실행 단위로 정한다.
+1. P0 브랜치의 전체 CI 성공과 문서·계약 리뷰를 확인한다.
+2. Issue #34에서 운영 DB 백업·복원 rehearsal, 보안·장애 주입과 migration 전진 복구를 증명한다.
+3. Issue #35에서 `main`·`release` 보호, `prod` 필수 승인자, 승인 승격, Administration read 배포 자격 증명과 확장 health gate를 구성한다.
+4. 모든 gate를 통과한 exact SHA만 P8 enable 변수에 설정하고 `release`와 동일 SHA로 수동 배포한다.
+5. 첫 최신 배포에서 Gateway·집계 worker·dbmate migration, 모든 heartbeat·row delta·WebSocket·DB 용량·오류 log·`live_disabled`와 운영 E2E를 확인한다.
 
 ## 관련 문서와 증적
 
@@ -224,4 +226,4 @@ ssh bmax-ubuntu \
 - [현재 운영 배포 흐름·현황 문서 검증](Test/2026-07-16-운영-배포-흐름과-현황-문서-검증.md)
 - [현재 운영 배포 문서화 이력](History/2026-07-16-운영-배포-흐름과-현황-문서화.md)
 - [최근 성공한 운영 배포 실행](https://github.com/goodjoon-company/goodmoneying/actions/runs/28409423876)
-- [최신 main CI 실패 실행](https://github.com/goodjoon-company/goodmoneying/actions/runs/29451955296)
+- [최신 main CI 실패 실행](https://github.com/goodjoon-company/goodmoneying/actions/runs/29519912264)

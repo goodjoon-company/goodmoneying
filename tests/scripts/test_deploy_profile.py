@@ -422,22 +422,30 @@ def test_deploy_script_rejects_invalid_image_tag() -> None:
     result = run_deploy_script("prod-home", "release-bad;rm")
 
     assert result.returncode != 0
-    assert "잘못된 이미지 태그입니다: release-bad;rm" in result.stderr
+    assert "잘못된 이미지 태그입니다." in result.stderr
+    assert "release-bad;rm" in result.stderr
+
+
+def test_deploy_script_rejects_short_sha_image_tag() -> None:
+    result = run_deploy_script("prod-home", "release-abc1234")
+
+    assert result.returncode != 0
+    assert "40자리" in result.stderr
 
 
 def test_deploy_script_dry_run_prints_prod_home_steps() -> None:
-    result = run_deploy_script("prod-home", "release-abc1234")
+    result = run_deploy_script("prod-home", f"release-{'a' * 40}")
 
     assert result.returncode == 0
     assert "profile=prod-home" in result.stdout
-    assert "tag=release-abc1234" in result.stdout
+    assert f"tag=release-{'a' * 40}" in result.stdout
     assert "infra host=Mac-Mini-M4.local compose=compose.infra.yml" in result.stdout
     assert "app host=app-server01 compose=compose.app.yml" in result.stdout
     assert "web host=bmax-ubuntu compose=compose.web.yml" in result.stdout
 
 
 def test_deploy_script_dry_run_prints_remote_commands() -> None:
-    result = run_deploy_script("prod-home", "release-def5678")
+    result = run_deploy_script("prod-home", f"release-{'d' * 40}")
 
     assert result.returncode == 0
     assert "ssh Mac-Mini-M4.local" in result.stdout
@@ -509,7 +517,7 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
     ) in result.stdout
     assert (
         'ssh Mac-Mini-M4.local "printf '
-        "'GOODMONEYING_IMAGE_TAG=%s\\n' 'release-def5678' >> "
+        f"'GOODMONEYING_IMAGE_TAG=%s\\n' 'release-{'d' * 40}' >> "
         "'/Users/goodjoon/DATA/applications/goodmoneying/deploy.compose.env'\""
     ) in result.stdout
     assert (

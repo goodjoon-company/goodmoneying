@@ -81,10 +81,39 @@ test("업비트 Quotation 전체 작업대를 가짜 게이트웨이로 탐색�
   const candleCount = page.getByLabel("조회 개수(count)", { exact: true });
   await expect(candleCount).toHaveValue("200");
   await expect(page.getByText("화면 초기 200 · API 기본 1 · 최소 1 · 최대 200 · 단위 개")).toBeVisible();
+  // CI 대체 글꼴과 WCAG 텍스트 간격에서 3줄이 되어도 공유 행이 입력 기준선을 맞춰야 한다.
+  await page.setViewportSize({ width: 681, height: 900 });
+  await page.addStyleTag({
+    content: `
+      .catalog-parameter-field:is([data-parameter="to"], [data-parameter="count"]) label > span {
+        line-height: 1.5 !important;
+        letter-spacing: .12em !important;
+        word-spacing: .16em !important;
+      }
+      .catalog-parameter-field[data-parameter="count"] label > span {
+        min-height: 4.5em !important;
+        max-width: 2.5rem;
+      }
+    `
+  });
+  const toLabelBox = await candleTo.locator("xpath=preceding-sibling::span").boundingBox();
+  const countLabelBox = await candleCount.locator("xpath=preceding-sibling::span").boundingBox();
   const toBox = await candleTo.boundingBox();
   const countBox = await candleCount.boundingBox();
+  const toRows = await candleTo.locator("xpath=ancestor::div[contains(@class, 'catalog-parameter-field')]").evaluate((element) => getComputedStyle(element).gridTemplateRows);
+  const countRows = await candleCount.locator("xpath=ancestor::div[contains(@class, 'catalog-parameter-field')]").evaluate((element) => getComputedStyle(element).gridTemplateRows);
+  expect(countLabelBox?.height ?? 0).toBeGreaterThanOrEqual(48);
+  expect(Math.abs((toLabelBox?.height ?? 0) - (countLabelBox?.height ?? 0))).toBeLessThanOrEqual(1);
+  expect(toRows).toBe(countRows);
+  expect(toRows.split(" ").length).toBeGreaterThanOrEqual(5);
   expect(Math.abs((toBox?.y ?? 0) - (countBox?.y ?? 0))).toBeLessThanOrEqual(1);
   expect(countBox?.width ?? Number.POSITIVE_INFINITY).toBeLessThan(toBox?.width ?? 0);
+  await page.setViewportSize({ width: 680, height: 900 });
+  const stackedToBox = await candleTo.boundingBox();
+  const stackedCountBox = await candleCount.boundingBox();
+  expect(stackedCountBox?.y ?? 0).toBeGreaterThan((stackedToBox?.y ?? 0) + (stackedToBox?.height ?? 0));
+  expect(Math.abs((stackedToBox?.width ?? 0) - (stackedCountBox?.width ?? 0))).toBeLessThanOrEqual(1);
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.getByRole("button", { name: "조회 종료 시각(to) 현재 시각 입력" }).click();
   await expect(candleTo).toHaveValue(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
   await page.getByRole("button", { name: "조회 종료 시각(to) 입력 지우기" }).click();

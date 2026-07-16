@@ -79,15 +79,39 @@ def test_ci_workflow_runs_isolated_e2e() -> None:
     assert "npm run e2e" in runs
 
 
-def test_deploy_workflow_runs_on_release_and_dispatch() -> None:
+def test_deploy_workflow_is_manual_and_requires_approved_sha() -> None:
     workflow = load_workflow("deploy.yml")
     triggers = workflow_on(workflow)
     dispatch = cast(dict[str, object], triggers["workflow_dispatch"])
     inputs = cast(dict[str, object], dispatch["inputs"])
     profile = cast(dict[str, object], inputs["profile"])
+    approved_sha = cast(dict[str, object], inputs["approved_sha"])
 
-    assert cast(dict[str, object], triggers["push"])["branches"] == ["release"]
+    assert "push" not in triggers
     assert profile["options"] == ["prod-home"]
+    assert approved_sha["required"] is True
+    assert approved_sha["type"] == "string"
+
+
+def test_deploy_workflow_runs_fail_closed_preflight_before_build() -> None:
+    workflow = load_workflow("deploy.yml")
+    job = workflow_job(workflow, "deploy")
+    steps = cast(list[dict[str, object]], job["steps"])
+    names = [cast(str, step.get("name", "")) for step in steps]
+    preflight_index = names.index("Verify production deployment gates")
+    image_tag_index = names.index("Set image tag")
+    preflight = steps[preflight_index]
+
+    assert preflight_index < image_tag_index
+    assert preflight["run"] == "deploy/scripts/verify-prod-deploy-gates.sh"
+    preflight_env = cast(dict[str, object], preflight["env"])
+    assert preflight_env["APPROVED_SHA"] == "${{ inputs.approved_sha }}"
+    assert preflight_env["DEPLOY_ENABLE_SHA"] == (
+        "${{ vars.GOODMONEYING_PROD_DEPLOY_ENABLE_SHA }}"
+    )
+    assert preflight_env["GH_TOKEN"] == (
+        "${{ secrets.GOODMONEYING_DEPLOY_GITHUB_TOKEN }}"
+    )
 
 
 def test_deploy_workflow_uses_self_hosted_runner_and_prod_home_concurrency() -> None:
@@ -100,7 +124,7 @@ def test_deploy_workflow_uses_self_hosted_runner_and_prod_home_concurrency() -> 
     assert job["environment"] == "prod"
     assert job["timeout-minutes"] == 60
     assert concurrency["group"] == "deploy-prod-home-v3"
-    assert concurrency["cancel-in-progress"] is True
+    assert concurrency["cancel-in-progress"] is False
 
 
 def test_deploy_workflow_has_required_permissions_and_profile_env() -> None:
@@ -109,7 +133,7 @@ def test_deploy_workflow_has_required_permissions_and_profile_env() -> None:
     job = workflow_job(workflow, "deploy")
     env = cast(dict[str, object], job["env"])
 
-    assert permissions == {"contents": "read", "packages": "write"}
+    assert permissions == {"checks": "read", "contents": "read", "packages": "write"}
     assert env["DEPLOY_PROFILE"] == "prod-home"
     assert env["REGISTRY"] == "ghcr.io"
     assert env["IMAGE_NAMESPACE"] == "goodjoon-company"
@@ -119,6 +143,23 @@ def test_deploy_workflow_has_required_permissions_and_profile_env() -> None:
     assert env["BUILD_PLATFORMS"] == "linux/amd64,linux/arm64"
     assert env["RUNNER_LOGIN_SHELL_HOST"] == "goodjoon@Mac-Mini-M4.local"
     assert env["RUNNER_DOCKER_BIN"] == "/usr/local/bin/docker"
+
+
+def test_github_actions_are_pinned_to_commit_sha() -> None:
+    allowed_actions = {
+        "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+        "actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444",
+        "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+        "astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78",
+    }
+    for name in ("ci.yml", "deploy.yml"):
+        workflow = load_workflow(name)
+        for job in cast(dict[str, dict[str, object]], workflow["jobs"]).values():
+            for step in cast(list[dict[str, object]], job["steps"]):
+                action = step.get("uses")
+                if action is None:
+                    continue
+                assert cast(str, action) in allowed_actions
 
 
 def test_deploy_workflow_pushes_ghcr_and_runs_profile_scripts() -> None:

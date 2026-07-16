@@ -9,6 +9,7 @@
 | 제품 범위와 정책                       | `docs/01_Product.md`      | 요구사항, 제품 경계, 로드맵(roadmap), 비기술 정책  |
 | 아키텍처 색인(Architecture Index)     | `docs/02_Architecture.md` | 시스템 경계, 모듈 색인, 계약 위치               |
 | 모듈 설계(Module Design)            | `docs/02_Architecture/`   | 모듈별 책임, 흐름, 의존성, 리스크               |
+| UI 흐름·사양·QA(UI Flow/Spec/QA)     | `docs/ui/`                | 정보 구조, 시각 토큰, 반응형, 접근성, UI 검증      |
 | 계약(Contracts)                   | `docs/contracts/`         | 기계 검증 가능한 DB, API, 메시지 스키마(schema) |
 | 아키텍처 결정(Architecture Decisions) | `docs/ADR/`               | 오래 유지되는 결정, 대안, 결과                 |
 | 실행 단위(Execution Tasks)          | GitHub Issue              | AI가 실행 가능한 작업 계획과 상태               |

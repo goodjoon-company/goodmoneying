@@ -41,7 +41,7 @@ jobs:
       RUNNER_LOGIN_SHELL_HOST: goodjoon@Mac-Mini-M4.local
       RUNNER_DOCKER_BIN: /usr/local/bin/docker
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Verify production deployment gates
         env:

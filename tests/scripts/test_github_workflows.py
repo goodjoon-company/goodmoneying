@@ -147,7 +147,7 @@ def test_deploy_workflow_has_required_permissions_and_profile_env() -> None:
 
 def test_github_actions_are_pinned_to_commit_sha() -> None:
     allowed_actions = {
-        "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+        "actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd",
         "actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444",
         "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
         "astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78",

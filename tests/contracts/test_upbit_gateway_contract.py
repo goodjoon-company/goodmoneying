@@ -285,8 +285,28 @@ def test_catalog_defines_parameter_input_constraints_and_defaults() -> None:
     assert parameter("rest.list-closed-orders", "start_time")["range_max_seconds"] == 604800
     assert parameter("rest.list-orders-by-ids", "uuids[]")["max_items"] == 100
     assert parameter("rest.list-orders-by-ids", "identifiers[]")["max_items"] == 100
+    assert by_id["rest.list-orders-by-ids"]["any_of_required"] == [
+        ["uuids[]"],
+        ["identifiers[]"],
+    ]
+    assert by_id["rest.list-orders-by-ids"]["mutually_exclusive"] == [
+        ["uuids[]", "identifiers[]"],
+    ]
     assert parameter("rest.cancel-orders-by-ids", "uuids[]")["max_items"] == 20
     assert parameter("rest.cancel-orders-by-ids", "identifiers[]")["max_items"] == 20
+    assert by_id["rest.cancel-orders-by-ids"]["any_of_required"] == [
+        ["uuids[]"],
+        ["identifiers[]"],
+    ]
+    assert by_id["rest.cancel-orders-by-ids"]["mutually_exclusive"] == [
+        ["uuids[]", "identifiers[]"],
+    ]
+    assert by_id["rest.list-open-orders"]["mutually_exclusive"] == [
+        ["state", "states[]"],
+    ]
+    assert by_id["rest.list-closed-orders"]["mutually_exclusive"] == [
+        ["state", "states[]"],
+    ]
     assert parameter("rest.batch-cancel-orders", "count")["default"] == 20
     assert parameter("rest.batch-cancel-orders", "count")["maximum"] == 300
     assert parameter("rest.batch-cancel-orders", "pairs")["max_items"] == 20

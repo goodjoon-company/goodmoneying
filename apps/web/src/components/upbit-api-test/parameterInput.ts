@@ -28,7 +28,7 @@ export function coerceParameterInputValue(
   if (parameter.format === "date-time") return parameterDateTimeToIso(parameter, String(value));
   if (parameter.type === "integer" || parameter.type === "number") return Number(value);
   if (parameter.type === "array") {
-    return String(value).split(",").map((item) => item.trim()).filter(Boolean);
+    return String(value).split(",").map((item) => item.trim());
   }
   return String(value);
 }
@@ -113,6 +113,10 @@ export function validateParameterValues(
       continue;
     }
     if (parameter.type === "array" && Array.isArray(value)) {
+      if (value.some((item) => typeof item === "string" && !item.trim())) {
+        errors[parameter.name] = "빈 항목을 제거해 주세요.";
+        continue;
+      }
       if (parameter.max_items !== undefined && value.length > parameter.max_items) {
         errors[parameter.name] = `최대 ${parameter.max_items}개까지 입력할 수 있습니다.`;
         continue;
@@ -123,7 +127,11 @@ export function validateParameterValues(
       }
     }
     if (parameter.format === "csv" && typeof value === "string") {
-      const items = value.split(",").map((item) => item.trim()).filter(Boolean);
+      const items = value.split(",").map((item) => item.trim());
+      if (items.some((item) => !item)) {
+        errors[parameter.name] = "빈 항목을 제거해 주세요.";
+        continue;
+      }
       if (parameter.max_items !== undefined && items.length > parameter.max_items) {
         errors[parameter.name] = `최대 ${parameter.max_items}개까지 입력할 수 있습니다.`;
         continue;

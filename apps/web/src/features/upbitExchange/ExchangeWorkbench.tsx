@@ -183,6 +183,22 @@ export function ExchangeWorkbench({
       setError(`필수 입력 조합을 입력해 주세요: ${formatRequiredAlternatives(selected.any_of_required)}`);
       return;
     }
+    const conflictingParameters = findMutuallyExclusiveGroup(
+      selected.mutually_exclusive,
+      parameters
+    );
+    if (conflictingParameters) {
+      const message = `파라미터를 동시에 사용할 수 없습니다: ${conflictingParameters.join(", ")}`;
+      setTrace(null);
+      setFieldErrors(Object.fromEntries(
+        conflictingParameters.map((name) => [name, "다른 상호 배타 파라미터와 함께 입력할 수 없습니다."])
+      ));
+      setError(message);
+      window.setTimeout(() => document.getElementById(
+        `exchange-param-${conflictingParameters[0].replaceAll(/[^a-zA-Z0-9_-]/g, "-")}`
+      )?.focus(), 0);
+      return;
+    }
     const requestGeneration = ++requestGenerationRef.current;
     const requestedEndpointId = selected.endpoint_id;
     setExecuting(true);
@@ -481,6 +497,15 @@ function hasRequiredAlternative(
 ): boolean {
   if (!alternatives?.length) return true;
   return alternatives.some((alternative) => alternative.every((name) => hasParameterValue(parameters[name])));
+}
+
+function findMutuallyExclusiveGroup(
+  groups: string[][] | undefined,
+  parameters: Record<string, unknown>
+): string[] | undefined {
+  return groups?.find((group) => (
+    group.filter((name) => hasParameterValue(parameters[name])).length > 1
+  ));
 }
 
 function hasParameterValue(value: unknown): boolean {

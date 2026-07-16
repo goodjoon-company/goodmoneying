@@ -1,18 +1,10 @@
 import { describe, expect, it } from "vitest";
+import catalogYaml from "../../../../../docs/contracts/upbit/upbit-api-catalog.yaml?raw";
 import { parameterDisplayName } from "./parameterPresentation";
 
-const currentParameterNames = [
-  "address", "amount", "cancel_side", "codes", "converting_price_unit", "count",
-  "currency", "cursor", "days_ago", "deposit_uuid", "direction", "end_time",
-  "exclude_pairs", "from", "identifier", "identifiers[]", "include_expired", "is_details",
-  "is_only_realtime", "is_only_snapshot", "level", "limit", "market", "markets", "method",
-  "net_type", "new_identifier", "new_ord_type", "new_price", "new_smp_type",
-  "new_time_in_force", "new_volume", "ord_type", "order_by", "page", "pairs",
-  "prev_order_identifier", "prev_order_uuid", "price", "quote_currencies", "secondary_address",
-  "side", "smp_type", "start_time", "state", "states[]", "time_in_force", "to",
-  "transaction_type", "two_factor_type", "txid", "txids[]", "unit", "uuid", "uuids[]",
-  "vasp_uuid", "volume"
-];
+const currentParameterNames = [...new Set(
+  [...catalogYaml.matchAll(/\{name:\s*"?([^,}"\n]+)"?/g)].map((match) => match[1])
+)];
 
 describe("업비트 파라미터 표시 이름", () => {
   it("현재 카탈로그 이름을 모두 한글 이름과 원본 이름으로 병기한다", () => {
@@ -20,6 +12,7 @@ describe("업비트 파라미터 표시 이름", () => {
       const label = parameterDisplayName("", name);
       expect(label).toMatch(new RegExp(`\\(${name.replaceAll("[", "\\[").replaceAll("]", "\\]")}\\)$`));
       expect(label).not.toBe(name);
+      expect(label).not.toBe(`파라미터(${name})`);
       expect(label.indexOf("("), name).toBeGreaterThan(0);
     }
   });

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileJson } from "lucide-react";
+import { parameterDisplayName } from "../../components/upbit-api-test/parameterPresentation";
 import { formatAssetAmount, formatKstDateTime, formatMoney } from "../../displayFormat";
 import { appendBoundedFrame, defaultGatewayWebSocketUrl, framePayloads, isGatewayFrame, marketOptions, streamForTab, workbenchCandleUnits } from "./protocol";
 import type { BrowserSocket, CandleUnit, GatewayEvent, GatewayFrameEvent, MarketLike, SocketFactory, UpbitFormat, Visibility, WorkbenchTab } from "./types";
@@ -244,9 +245,9 @@ export function UpbitWebSocketWorkbench({
       <label>응답 포맷<select aria-label="응답 포맷" value={format} onChange={(event) => setFormat(event.target.value as UpbitFormat)}>
         {formats.map((item) => <option key={item}>{item}</option>)}
       </select></label>
-      {stream.visibility === "public" && <><label className="check"><input type="checkbox" checked={snapshotOnly} onChange={(event) => { setSnapshotOnly(event.target.checked); if (event.target.checked) setRealtimeOnly(false); }} />스냅샷만</label>
-      <label className="check"><input type="checkbox" checked={realtimeOnly} onChange={(event) => { setRealtimeOnly(event.target.checked); if (event.target.checked) setSnapshotOnly(false); }} />실시간만</label></>}
-      {tab === "orderbook" && <label>호가 모아보기<input aria-label="호가 모아보기" type="number" min="0" value={orderbookLevel} onChange={(event) => setOrderbookLevel(Number(event.target.value))} /></label>}
+      {stream.visibility === "public" && <><label className="check"><input type="checkbox" checked={snapshotOnly} onChange={(event) => { setSnapshotOnly(event.target.checked); if (event.target.checked) setRealtimeOnly(false); }} />{parameterDisplayName(stream.endpointId, "is_only_snapshot")}</label>
+      <label className="check"><input type="checkbox" checked={realtimeOnly} onChange={(event) => { setRealtimeOnly(event.target.checked); if (event.target.checked) setSnapshotOnly(false); }} />{parameterDisplayName(stream.endpointId, "is_only_realtime")}</label></>}
+      {tab === "orderbook" && <label>{parameterDisplayName(stream.endpointId, "level")}<input aria-label={parameterDisplayName(stream.endpointId, "level")} type="number" min="0" value={orderbookLevel} onChange={(event) => setOrderbookLevel(Number(event.target.value))} /></label>}
     </div>
     <div className="actions">
       <button onClick={connect}>연결</button>

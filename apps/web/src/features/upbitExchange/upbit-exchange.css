@@ -50,7 +50,7 @@
 .parameter-grid .catalog-parameter-field textarea { resize: vertical; }
 .parameter-grid .catalog-parameter-field input[type="checkbox"] { width: 1.2rem; height: 1.2rem; }
 .parameter-grid .boolean-inline { width: fit-content; }
-.parameter-grid .boolean-inline label { display: inline-grid; grid-template-columns: auto 1.2rem; align-items: center; gap: .5rem; }
+.parameter-grid .boolean-inline label { display: inline-grid; grid-template-columns: auto 1.2rem; align-items: center; min-height: 44px; gap: .5rem; }
 .parameter-grid .boolean-inline label > span { gap: .4rem; justify-content: start; }
 .parameter-grid .parameter-constraint { color: #66756c; line-height: 1.4; }
 .parameter-grid .parameter-actions { display: flex; flex-wrap: wrap; gap: .3rem; }

@@ -75,15 +75,38 @@ def validate_parameters(endpoint: Mapping[str, Any], values: Mapping[str, Any]) 
             f"(누락={sorted(missing)}, 초과={sorted(unknown)})."
         )
     alternatives = cast(list[list[str]], endpoint.get("any_of_required", []))
-    if alternatives and not any(all(name in values for name in option) for option in alternatives):
+    if alternatives and not any(
+        all(_has_parameter_value(values, name) for name in option)
+        for option in alternatives
+    ):
         raise InvalidParameters(
             f"필수 파라미터 조합 중 하나가 필요합니다: {alternatives}."
         )
+    mutually_exclusive = cast(list[list[str]], endpoint.get("mutually_exclusive", []))
+    for group in mutually_exclusive:
+        present = [name for name in group if _has_parameter_value(values, name)]
+        if len(present) > 1:
+            raise InvalidParameters(
+                f"파라미터를 동시에 사용할 수 없습니다: {present}."
+            )
     for name, value in values.items():
         specification = specifications[name]
         if not _matches_parameter_schema(value, specification):
             raise InvalidParameters(f"{name} 파라미터가 카탈로그 계약과 다릅니다.")
     _validate_parameter_ranges(specifications, values)
+
+
+def _has_parameter_value(values: Mapping[str, Any], name: str) -> bool:
+    if name not in values:
+        return False
+    value = values[name]
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return bool(value)
+    return True
 
 
 def _matches_parameter_schema(value: Any, specification: Mapping[str, Any]) -> bool:
@@ -117,6 +140,8 @@ def _matches_parameter_schema(value: Any, specification: Mapping[str, Any]) -> b
     if isinstance(value, str) and not _matches_string_format(value, specification):
         return False
     if isinstance(value, list):
+        if any(isinstance(item, str) and not item.strip() for item in value):
+            return False
         maximum_items = specification.get("max_items")
         if isinstance(maximum_items, int) and len(value) > maximum_items:
             return False
@@ -147,7 +172,9 @@ def _matches_parameter_schema(value: Any, specification: Mapping[str, Any]) -> b
 def _matches_string_format(value: str, specification: Mapping[str, Any]) -> bool:
     format_name = specification.get("format")
     if format_name == "csv":
-        items = [item.strip() for item in value.split(",") if item.strip()]
+        items = [item.strip() for item in value.split(",")]
+        if any(not item for item in items):
+            return False
         maximum_items = specification.get("max_items")
         if isinstance(maximum_items, int) and len(items) > maximum_items:
             return False

@@ -44,6 +44,12 @@ describe("업비트 웹소켓 작업대", () => {
       />
     );
 
+    expect(screen.getByRole("checkbox", { name: "스냅샷 데이터만(is_only_snapshot)" })).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: "실시간 데이터만(is_only_realtime)" })).toBeVisible();
+    fireEvent.click(screen.getByRole("tab", { name: "호가" }));
+    expect(screen.getByRole("spinbutton", { name: "호가 모아보기 단위(level)" })).toBeVisible();
+    fireEvent.click(screen.getByRole("tab", { name: "현재가" }));
+
     fireEvent.click(screen.getByRole("button", { name: "연결" }));
     act(() => sockets[0].open());
     expect(JSON.parse(sockets[0].sent[0])).toMatchObject({

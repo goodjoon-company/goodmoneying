@@ -69,6 +69,19 @@ describe("Exchange 전체 REST 작업대", () => {
     }
   });
 
+  it("상호 배타 파라미터를 함께 입력하면 게이트웨이 호출 전에 차단한다", async () => {
+    const execute = vi.fn();
+    render(<ExchangeWorkbench gateway={fakeGateway({ execute })} initialGroup="order" />);
+    await userEvent.click(await screen.findByRole("button", { name: /체결 대기 주문 목록 조회 기능 선택/ }));
+
+    await userEvent.type(screen.getByLabelText("상태(state)"), "wait");
+    await userEvent.type(screen.getByLabelText("상태 목록(states[])"), "watch");
+    await userEvent.click(screen.getByRole("button", { name: "조회 실행" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("동시에 사용할 수 없습니다");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("공통 페어 어댑터를 사용하고 조회 결과를 잔고 표와 원본 추적으로 연결한다", async () => {
     const normalize = vi.fn((value: string) => value.trim().toUpperCase());
     const execute = vi.fn(async () => traceFor("rest.get-balance", [

@@ -84,6 +84,8 @@ const parametersByEndpoint: Record<string, ExchangeCatalogEndpoint["parameters"]
   "rest.cancel-order": identifierParameters("identifier"),
   "rest.list-open-orders": [
     { name: "market", location: "query", type: "string", required: false },
+    { name: "state", location: "query", type: "string", required: false },
+    { name: "states[]", location: "query", type: "array", items: "string", required: false },
     { name: "limit", location: "query", type: "integer", required: false, default: 100, minimum: 1, maximum: 100, step: 1, unit: "개" }
   ],
   "rest.get-universal-transfer": [
@@ -115,6 +117,10 @@ const anyOfRequiredByEndpoint: Record<string, string[][]> = {
   "rest.get-deposit": [["uuid"], ["txid", "currency"]]
 };
 
+const mutuallyExclusiveByEndpoint: Record<string, string[][]> = {
+  "rest.list-open-orders": [["state", "states[]"]]
+};
+
 export const exchangeCatalogFixture: ExchangeCatalog = {
   catalog_version: "1.6.3",
   verified_at: "2026-07-16",
@@ -128,6 +134,9 @@ export const exchangeCatalogFixture: ExchangeCatalog = {
     parameters: parametersByEndpoint[endpointId] ?? [],
     ...(anyOfRequiredByEndpoint[endpointId]
       ? { any_of_required: anyOfRequiredByEndpoint[endpointId] }
+      : {}),
+    ...(mutuallyExclusiveByEndpoint[endpointId]
+      ? { mutually_exclusive: mutuallyExclusiveByEndpoint[endpointId] }
       : {}),
     rate_limit_group: safety === "test" ? "order-test" : "default",
     safety,

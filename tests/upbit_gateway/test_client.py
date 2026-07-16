@@ -155,6 +155,35 @@ def test_catalog_parameter_validation_enforces_required_alternative_groups() -> 
         incoming_headers={},
     )
     assert "identifier=fake-identifier" in str(request.url)
+    validate_parameters(
+        _endpoint("rest.get-order"),
+        {"uuid": "fake-uuid", "identifier": "fake-identifier"},
+    )
+    cancel_request = build_upstream_request(
+        _endpoint("rest.cancel-order"),
+        {"uuid": "fake-uuid", "identifier": "fake-identifier"},
+        base_url="https://api.upbit.com",
+        credentials=Credentials("fake-access", "s" * 64),
+        incoming_headers={},
+    )
+    assert "uuid=fake-uuid" in str(cancel_request.url)
+    assert "identifier=fake-identifier" in str(cancel_request.url)
+    for endpoint_id in ("rest.list-orders-by-ids", "rest.cancel-orders-by-ids"):
+        with pytest.raises(InvalidParameters, match="조합"):
+            validate_parameters(_endpoint(endpoint_id), {})
+        with pytest.raises(InvalidParameters, match="조합"):
+            validate_parameters(_endpoint(endpoint_id), {"uuids[]": []})
+        with pytest.raises(InvalidParameters, match="동시에"):
+            validate_parameters(
+                _endpoint(endpoint_id),
+                {"uuids[]": ["fake-uuid"], "identifiers[]": ["fake-identifier"]},
+            )
+    for endpoint_id in ("rest.list-open-orders", "rest.list-closed-orders"):
+        with pytest.raises(InvalidParameters, match="동시에"):
+            validate_parameters(
+                _endpoint(endpoint_id),
+                {"state": "wait", "states[]": ["watch"]},
+            )
     with pytest.raises(InvalidParameters):
         build_upstream_request(
             _endpoint("rest.list-trading-pairs"),
@@ -265,11 +294,13 @@ def test_array_size_uniqueness_and_numeric_string_constraints_follow_catalog_sch
     for invalid in (
         {"ids[]": ["a", "b", "c"]},
         {"ids[]": ["a", "a"]},
+        {"ids[]": ["a", ""]},
         {"limit": "101"},
         {"limit": "1.5"},
         {"price": "NaN"},
         {"pairs": "KRW-BTC,KRW-ETH,KRW-XRP"},
         {"pairs": "KRW-BTC,KRW-BTC"},
+        {"pairs": "KRW-BTC,,KRW-ETH"},
     ):
         with pytest.raises(InvalidParameters):
             validate_parameters(endpoint, invalid)

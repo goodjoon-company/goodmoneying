@@ -15,7 +15,7 @@ import {
   parameterConstraintText,
   validateParameterValues
 } from "./parameterInput";
-import type { CatalogEndpoint } from "./types";
+import type { CatalogEndpoint, CatalogParameter } from "./types";
 
 const endpoints: CatalogEndpoint[] = [
   {
@@ -118,6 +118,15 @@ describe("카탈로그 기반 작업대", () => {
       { name: "pairs", location: "query", type: "string", format: "csv", required: false, max_items: 2, unique_items: true }
     ], { pairs: "KRW-BTC,KRW-ETH,KRW-XRP" })).toEqual({
       pairs: "최대 2개까지 입력할 수 있습니다."
+    });
+    const arrayParameter: CatalogParameter = {
+      name: "ids[]", location: "query", type: "array" as const,
+      items: "string", required: false
+    };
+    const coerced = coerceParameterValue(arrayParameter, "first,,third");
+    expect(coerced).toEqual(["first", "", "third"]);
+    expect(validateParameterValues([arrayParameter], { "ids[]": coerced })).toEqual({
+      "ids[]": "빈 항목을 제거해 주세요."
     });
   });
 

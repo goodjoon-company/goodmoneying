@@ -28,7 +28,7 @@
 .upbit-dynamic-fields .parameter-error { color: #f2aaa3; font-size: 11px; }
 .upbit-dynamic-fields .has-error input, .upbit-dynamic-fields .has-error textarea, .upbit-dynamic-fields .has-error select { border-color: #b76760; }
 .upbit-dynamic-fields .boolean-inline { width: fit-content; }
-.upbit-dynamic-fields .boolean-inline label { display: inline-grid; grid-template-columns: auto 18px; align-items: center; gap: 8px; }
+.upbit-dynamic-fields .boolean-inline label { display: inline-grid; grid-template-columns: auto 18px; align-items: center; min-height: 44px; gap: 8px; }
 .upbit-dynamic-fields .boolean-inline label > span { gap: 8px; justify-content: start; }
 .upbit-dynamic-fields .boolean-inline input[type="checkbox"] { width: 18px; min-height: 18px; padding: 0; accent-color: #55cf91; }
 .upbit-boolean-field { grid-template-columns: minmax(0, 1fr) auto; align-items: center; min-height: 42px; border: 1px solid rgb(255 255 255 / .08); border-radius: 7px; padding: 0 10px; }

@@ -57,7 +57,10 @@ const trace: TraceEnvelope = {
   request: { method: "GET", path: "/v1/market/all", parameters: { is_details: true } },
   response: {
     status_code: 200,
-    body: [{ market: "KRW-BTC", korean_name: "비트코인", english_name: "Bitcoin" }]
+    body: [{
+      market: "KRW-BTC", korean_name: "비트코인", english_name: "Bitcoin",
+      trade_date_utc: "20260716", trade_time_utc: "000000", timestamp: 1784160000000
+    }]
   },
   rate_limit: { group: "market", remaining_sec: 9, retry_after: null },
   duration_ms: 12.4,
@@ -86,6 +89,7 @@ describe("업비트 API 공통 작업대", () => {
       endpoints[0].endpoint_id, { is_details: true }, expect.any(AbortSignal)
     ));
     expect(await screen.findByRole("cell", { name: "비트코인" })).toBeInTheDocument();
+    expect(screen.getAllByRole("cell", { name: "2026.07.16 09:00:00 KST" })).toHaveLength(3);
 
     await user.click(screen.getByRole("button", { name: "원본 응답과 API 출처 보기" }));
     const dialog = screen.getByRole("dialog", { name: "API 요청 추적" });

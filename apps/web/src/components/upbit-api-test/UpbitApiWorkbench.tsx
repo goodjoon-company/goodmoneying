@@ -426,9 +426,8 @@ function formatRecordValue(row: Record<string, unknown>, key: string, fallbackQu
   if (value === null || value === undefined) return "-";
   if (typeof value === "object") return JSON.stringify(value);
   const raw = String(value);
-  if (/(?:date_time|started_at|created_at|updated_at|received_at|timestamp)$/.test(key) && !Number.isNaN(Date.parse(raw))) {
-    return formatKstDateTime(raw.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(raw) ? raw : `${raw}Z`);
-  }
+  const dateTime = recordDateTime(row, key, value);
+  if (dateTime) return dateTime;
   const assets = rowMarketAssets(row, fallbackQuote);
   const quote = assets.quote || fallbackQuote;
   const base = assets.base || fallbackBase;
@@ -436,6 +435,28 @@ function formatRecordValue(row: Record<string, unknown>, key: string, fallbackQu
   if (/(?:volume|size|amount)$/.test(key)) return formatAssetValue(value, base);
   const number = numeric(value);
   return number === null ? raw : formatNumber(number);
+}
+
+function recordDateTime(row: Record<string, unknown>, key: string, value: unknown): string | null {
+  if (key === "trade_date_utc" || key === "trade_time_utc") {
+    const date = String(row.trade_date_utc ?? "");
+    const time = String(row.trade_time_utc ?? "");
+    if (/^\d{8}$/.test(date) && /^\d{6}$/.test(time)) {
+      return formatKstDateTime(
+        `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`
+        + `T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}Z`
+      );
+    }
+  }
+  if (/timestamp$/.test(key)) {
+    const milliseconds = Number(value);
+    if (Number.isFinite(milliseconds)) return formatKstDateTime(milliseconds);
+  }
+  const raw = String(value);
+  if (/(?:date_time|started_at|created_at|updated_at|received_at)$/.test(key) && !Number.isNaN(Date.parse(raw))) {
+    return formatKstDateTime(raw.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(raw) ? raw : `${raw}Z`);
+  }
+  return null;
 }
 
 function candleInterval(endpoint: CatalogEndpoint, parameters: RequestParameters): { granularity: CandleGranularity; unit: number } {

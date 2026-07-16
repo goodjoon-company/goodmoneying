@@ -78,6 +78,8 @@ POSTGRES_PASSWORD=prod-home-example-postgres-password-rotate
 
 ```bash
 GOODMONEYING_DATABASE_URL=postgresql://goodmoneying:prod-home-example-postgres-password-rotate@100.107.98.22:5432/goodmoneying
+GOODMONEYING_RUNTIME_MODE=production
+GOODMONEYING_RELEASE_SHA=replace-with-approved-40-character-commit-sha
 GOODMONEYING_OPERATOR_TOKEN=prod-home-example-operator-token-rotate
 GOODMONEYING_DASHBOARD_REFRESH_CONFIG=/etc/goodmoneying/operations-api.yaml
 GOODMONEYING_LIVE_UPBIT=1

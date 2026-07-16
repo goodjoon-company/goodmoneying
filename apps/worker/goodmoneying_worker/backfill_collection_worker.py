@@ -53,6 +53,24 @@ def run_backfill_poll_loop(
 
     try:
         while True:
+            gate_reason = getattr(
+                worker.repository,
+                "backfill_claim_gate_reason",
+                lambda: None,
+            )()
+            if gate_reason is not None:
+                worker.repository.record_collection_worker_heartbeat(
+                    "backfill_collection",
+                    "gated",
+                    gate_reason,
+                )
+                logger.warning(
+                    "backfill_poll_gated reason=%s poll_seconds=%s",
+                    gate_reason,
+                    poll_seconds,
+                )
+                time.sleep(poll_seconds)
+                continue
             record_running_heartbeat()
             try:
                 written = worker.run_backfill_once(on_progress=record_running_heartbeat)

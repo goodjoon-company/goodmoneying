@@ -4,6 +4,7 @@ import os
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 from uuid import uuid4
 
 import psycopg
@@ -533,6 +534,185 @@ def test_failed_backfill_retries_after_delay_then_moves_to_dead_letter() -> None
         ("backfill_attempts_exhausted", "unverified", "missing")
     ]
     assert quality_events[0][3] is not None
+
+
+def test_multi_target_dead_letter_preserves_succeeded_target_evidence() -> None:
+    observed_at = datetime(2026, 7, 17, 11, 40, tzinfo=UTC)
+    database_url = _database_url()
+    market_codes = ("KRW-DEADLETTER-SUCCESS", "KRW-DEADLETTER-FAILURE")
+    PostgresDataFoundationRepository(database_url).sync_market_catalog(
+        [
+            MarketCatalogItem(code, code, code, "NONE", True)
+            for code in market_codes
+        ],
+        observed_at=observed_at,
+    )
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        targets = connection.execute(
+            """
+            SELECT instrument.market_code, instrument.id, spec.id
+            FROM instruments instrument
+            JOIN markets market ON market.legacy_instrument_id = instrument.id
+            JOIN collection_target_specs spec
+              ON spec.market_id = market.id AND spec.data_type = 'source_candle'
+            WHERE instrument.market_code = ANY(%s)
+            ORDER BY instrument.market_code
+            """,
+            (list(market_codes),),
+        ).fetchall()
+        assert len(targets) == 2
+        target_by_code = {str(row[0]): row for row in targets}
+        instrument_ids = [int(row[1]) for row in targets]
+        connection.execute(
+            """
+            UPDATE backfill_job_targets
+            SET status = 'stopped'
+            WHERE instrument_id = ANY(%s) AND status IN ('pending', 'running', 'paused')
+            """,
+            (instrument_ids,),
+        )
+        connection.execute(
+            """
+            UPDATE backfill_jobs job
+            SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL
+            WHERE EXISTS (
+              SELECT 1 FROM backfill_job_targets target
+              WHERE target.backfill_job_id = job.id AND target.instrument_id = ANY(%s)
+            ) AND job.status IN ('pending', 'running', 'retry_wait', 'paused')
+            """,
+            (instrument_ids,),
+        )
+        job = connection.execute(
+            """
+            INSERT INTO backfill_jobs (
+              status, data_type, plan, target_start_at, target_end_at,
+              estimated_request_count, estimated_row_count, estimated_storage_bytes,
+              restart_mode, created_by, approved_by, approved_at,
+              idempotency_key, priority, max_attempts
+            ) VALUES (
+              'pending', 'source_candle', %s, %s, %s,
+              2, 20, 5120, 'safe_restart', 'system', 'operator:e2e', now(),
+              'e2e:multi-deadletter-preserve', 1000, 1
+            ) RETURNING id
+            """,
+            (
+                psycopg.types.json.Jsonb({"targets": instrument_ids}),
+                observed_at - timedelta(minutes=10),
+                observed_at,
+            ),
+        ).fetchone()
+        assert job is not None
+        for _code, instrument_id, target_spec_id in targets:
+            connection.execute(
+                """
+                INSERT INTO backfill_job_targets (
+                  backfill_job_id, instrument_id, status, target_spec_id
+                ) VALUES (%s, %s, 'pending', %s)
+                """,
+                (job[0], instrument_id, target_spec_id),
+            )
+
+    repository = PostgresOperationsRepository(database_url)
+    claimed = repository.claim_next_backfill_job()
+    assert claimed is not None
+    assert claimed.id == job[0]
+    success_target = target_by_code[market_codes[0]]
+    failure_target = target_by_code[market_codes[1]]
+    success_instrument_id = int(success_target[1])
+    failure_instrument_id = int(failure_target[1])
+    candle_start = observed_at - timedelta(minutes=5)
+    evidence = FetchEvidence(
+        endpoint="/v1/candles/minutes/1",
+        request_parameters={
+            "market": market_codes[0],
+            "to": observed_at.isoformat(),
+            "count": 10,
+        },
+        requested_at=observed_at,
+        responded_at=observed_at + timedelta(milliseconds=10),
+        response_status=200,
+        response_payload=[{"market": market_codes[0], "trade_price": 100}],
+    )
+    repository.record_backfill_candles(
+        int(job[0]),
+        success_instrument_id,
+        [_evidence_candle(success_instrument_id, candle_start, 0)],
+        fetch_evidence=evidence,
+    )
+    repository.record_backfill_target_progress(
+        int(job[0]),
+        success_instrument_id,
+        processed_missing_range_count=1,
+        estimated_missing_range_count=1,
+        rows_written_count=1,
+        last_completed_at=candle_start,
+    )
+    repository.mark_backfill_target(
+        int(job[0]),
+        success_instrument_id,
+        status="succeeded",
+        last_completed_at=candle_start,
+    )
+
+    def succeeded_snapshot() -> tuple[Any, list[Any]]:
+        with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+            target = connection.execute(
+                """
+                SELECT status, processed_missing_range_count,
+                       estimated_missing_range_count, rows_written_count,
+                       last_completed_at, last_fetch_manifest_id
+                FROM backfill_job_targets
+                WHERE backfill_job_id = %s AND instrument_id = %s
+                """,
+                (job[0], success_instrument_id),
+            ).fetchone()
+            coverage = connection.execute(
+                """
+                SELECT range_start_at, range_end_at, status, fetch_manifest_id
+                FROM coverage_intervals
+                WHERE target_spec_id = %s
+                ORDER BY range_start_at, range_end_at, status
+                """,
+                (success_target[2],),
+            ).fetchall()
+        return target, coverage
+
+    before_failure = succeeded_snapshot()
+    repository.mark_backfill_target(
+        int(job[0]),
+        failure_instrument_id,
+        status="failed",
+        last_completed_at=None,
+        error_code="UPBIT_500",
+        error_message="실패 대상만 재시도 예산 소진",
+    )
+    after_failure = succeeded_snapshot()
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        failed_state = connection.execute(
+            """
+            SELECT job.status, success.status, failure.status
+            FROM backfill_jobs job
+            JOIN backfill_job_targets success
+              ON success.backfill_job_id = job.id AND success.instrument_id = %s
+            JOIN backfill_job_targets failure
+              ON failure.backfill_job_id = job.id AND failure.instrument_id = %s
+            WHERE job.id = %s
+            """,
+            (success_instrument_id, failure_instrument_id, job[0]),
+        ).fetchone()
+        failed_coverage = connection.execute(
+            """
+            SELECT DISTINCT status FROM coverage_intervals WHERE target_spec_id = %s
+            """,
+            (failure_target[2],),
+        ).fetchall()
+
+    assert before_failure == after_failure
+    assert before_failure[0] == ("succeeded", 1, 1, 1, candle_start, None)
+    assert any(row[2] == "available" and row[3] is not None for row in before_failure[1])
+    assert failed_state == ("dead_letter", "succeeded", "failed")
+    assert ("missing",) in failed_coverage
+    assert all(row[0] not in {"available", "no_trade"} for row in failed_coverage)
 
 
 def test_live_backfill_lease_blocks_duplicate_claim_and_stale_worker_write() -> None:

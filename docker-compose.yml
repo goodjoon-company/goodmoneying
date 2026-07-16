@@ -24,7 +24,9 @@ services:
       dockerfile: apps/api/Dockerfile
     environment:
       TZ: UTC
+      GOODMONEYING_RUNTIME_MODE: production
       GOODMONEYING_OPERATOR_TOKEN: local-dev-token
+      GOODMONEYING_RELEASE_SHA: ${GOODMONEYING_RELEASE_SHA:-unapproved}
       GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
     ports:
       - "8000:8000"
@@ -59,7 +61,9 @@ services:
     container_name: goodmoneying-realtime-collection-worker
     environment:
       TZ: UTC
+      GOODMONEYING_RUNTIME_MODE: production
       GOODMONEYING_OPERATOR_TOKEN: local-dev-token
+      GOODMONEYING_RELEASE_SHA: ${GOODMONEYING_RELEASE_SHA:-unapproved}
       GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
       GOODMONEYING_LIVE_UPBIT: "1"
       GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS: "60"
@@ -76,7 +80,9 @@ services:
     command: ["uv", "run", "--no-sync", "python", "-m", "goodmoneying_worker.data_foundation_worker"]
     environment:
       TZ: UTC
+      GOODMONEYING_RUNTIME_MODE: production
       GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
+      GOODMONEYING_RELEASE_SHA: ${GOODMONEYING_RELEASE_SHA:-unapproved}
       GOODMONEYING_LIVE_UPBIT: "1"
       GOODMONEYING_MARKET_SYNC_INTERVAL_SECONDS: "300"
       GOODMONEYING_LOG_LEVEL: "INFO"
@@ -92,7 +98,9 @@ services:
     command: ["uv", "run", "--no-sync", "python", "-m", "goodmoneying_worker.backfill_collection_worker"]
     environment:
       TZ: UTC
+      GOODMONEYING_RUNTIME_MODE: production
       GOODMONEYING_OPERATOR_TOKEN: local-dev-token
+      GOODMONEYING_RELEASE_SHA: ${GOODMONEYING_RELEASE_SHA:-unapproved}
       GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
       GOODMONEYING_LIVE_UPBIT: "1"
       GOODMONEYING_BACKFILL_POLL_SECONDS: "10"
@@ -110,7 +118,9 @@ services:
     command: ["uv", "run", "--no-sync", "python", "-m", "goodmoneying_worker.aggregation_collection_worker"]
     environment:
       TZ: UTC
+      GOODMONEYING_RUNTIME_MODE: production
       GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
+      GOODMONEYING_RELEASE_SHA: ${GOODMONEYING_RELEASE_SHA:-unapproved}
       GOODMONEYING_AGGREGATION_POLL_SECONDS: "5"
       GOODMONEYING_LOG_LEVEL: "INFO"
     depends_on:

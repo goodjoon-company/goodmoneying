@@ -23,6 +23,7 @@ fi
 if [[ ! "$IMAGE_TAG" =~ ^release-[0-9a-f]{40}$ ]]; then
   fail "잘못된 이미지 태그입니다. release- 뒤에 40자리 commit SHA가 필요합니다: $IMAGE_TAG"
 fi
+RELEASE_SHA="${IMAGE_TAG#release-}"
 
 PROFILE_DIR="$ROOT_DIR/deploy/profiles/$PROFILE"
 RUNNER_DIR="$PROFILE_DIR/runner"
@@ -77,6 +78,10 @@ print_remote_compose() {
   printf 'ssh %s "printf '\''GOODMONEYING_IMAGE_TAG=%%s\\n'\'' '\''%s'\'' >> '\''%s'\''"\n' \
     "$host" \
     "$IMAGE_TAG" \
+    "$remote_compose_env"
+  printf 'ssh %s "printf '\''GOODMONEYING_RELEASE_SHA=%%s\\n'\'' '\''%s'\'' >> '\''%s'\''"\n' \
+    "$host" \
+    "$RELEASE_SHA" \
     "$remote_compose_env"
   printf 'ssh %s "printf '\''GOODMONEYING_DOCKER_CONFIG=%%s\\n'\'' '\''%s'\'' >> '\''%s'\''"\n' \
     "$host" \
@@ -158,6 +163,7 @@ run_remote_compose() {
   ssh "$host" "cp '$remote_hosts_env' '$remote_compose_env'"
   ssh "$host" "mkdir -p '$docker_config/cli-plugins' && if [ -x /Applications/Docker.app/Contents/Resources/cli-plugins/docker-compose ]; then rm -f '$docker_config/cli-plugins/docker-compose' && ln -s /Applications/Docker.app/Contents/Resources/cli-plugins/docker-compose '$docker_config/cli-plugins/docker-compose'; fi"
   ssh "$host" "printf 'GOODMONEYING_IMAGE_TAG=%s\n' '$IMAGE_TAG' >> '$remote_compose_env'"
+  ssh "$host" "printf 'GOODMONEYING_RELEASE_SHA=%s\n' '$RELEASE_SHA' >> '$remote_compose_env'"
   ssh "$host" "printf 'GOODMONEYING_DOCKER_CONFIG=%s\n' '$docker_config' >> '$remote_compose_env'"
   scp "$TARGET_DIR/$source_compose_file" "$host:$base_dir/$remote_compose_file"
   for script_path in "$TARGET_DIR/$target_role"/*.sh; do

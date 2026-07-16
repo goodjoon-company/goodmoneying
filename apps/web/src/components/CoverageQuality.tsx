@@ -30,6 +30,7 @@ const COVERAGE_STATES: {
 export function CoverageQuality() {
   const queryClient = useQueryClient();
   const [notice, setNotice] = useState("");
+  const [actorId, setActorId] = useState("");
   const [editingMarket, setEditingMarket] = useState<DataFoundationMarket | null>(null);
   const query = useQuery({
     queryKey: ["data-foundation"],
@@ -41,17 +42,20 @@ export function CoverageQuality() {
       marketCode,
       state,
       label,
+      actorId,
       policy
     }: {
       marketCode: string;
       state: "active" | "paused" | "excluded";
       label: string;
+      actorId: string;
       policy?: MarketCollectionPolicy;
     }) =>
       updateMarketTargetState(
         marketCode,
         state,
         `Coverage & Quality 화면에서 ${label}`,
+        actorId,
         policy
       ),
     onSuccess: (_response, variables) => {
@@ -79,7 +83,7 @@ export function CoverageQuality() {
           <p className="eyebrow">P1 · 데이터 기반</p>
           <h2 id="coverage-quality-title">Coverage &amp; Quality</h2>
           <p>
-            모든 KRW 시장을 <strong>{formatUtcPolicyStart(query.data.policyStartAt)}</strong>
+            모든 KRW 시장을 <strong>{formatKstPolicyStart(query.data.policyStartAt)}</strong>
             부터 자동 백필하고 실시간 수집을 계속합니다.
           </p>
         </div>
@@ -112,6 +116,19 @@ export function CoverageQuality() {
           <h3>KRW 시장 정책과 품질</h3>
           <span>{krwMarkets.length.toLocaleString("ko-KR")}개 · 자동 편입</span>
         </div>
+        <label className="coverage-actor-field">
+          작업자 ID
+          <input
+            type="text"
+            value={actorId}
+            onChange={(event) => setActorId(event.target.value)}
+            placeholder="예: operator:goodjoon"
+            autoComplete="username"
+          />
+        </label>
+        {!actorId.trim() ? (
+          <p className="coverage-field-help">변경 작업 전에 작업자 ID를 입력하세요.</p>
+        ) : null}
         <div className="coverage-table-wrap">
           <table className="coverage-market-table">
             <thead>
@@ -129,8 +146,18 @@ export function CoverageQuality() {
                 <MarketRow
                   key={market.marketCode}
                   market={market}
-                  pending={mutation.isPending && mutation.variables?.marketCode === market.marketCode}
-                  onChange={(state, label) => mutation.mutate({ marketCode: market.marketCode, state, label })}
+                  pending={
+                    !actorId.trim() ||
+                    (mutation.isPending && mutation.variables?.marketCode === market.marketCode)
+                  }
+                  onChange={(state, label) =>
+                    mutation.mutate({
+                      marketCode: market.marketCode,
+                      state,
+                      label,
+                      actorId: actorId.trim()
+                    })
+                  }
                   onEdit={() => setEditingMarket(market)}
                 />
               ))}
@@ -143,11 +170,13 @@ export function CoverageQuality() {
           key={editingMarket.marketCode}
           market={editingMarket}
           pending={mutation.isPending}
+          disabled={!actorId.trim()}
           onClose={() => setEditingMarket(null)}
           onSave={(policy) => mutation.mutate({
             marketCode: editingMarket.marketCode,
             state: editingMarket.targetStatus === "not_targeted" ? "paused" : editingMarket.targetStatus,
             label: "정책 저장",
+            actorId: actorId.trim(),
             policy
           })}
         />
@@ -209,16 +238,18 @@ const POLICY_DATA_TYPES: Array<{
 function PolicyEditor({
   market,
   pending,
+  disabled,
   onClose,
   onSave
 }: {
   market: DataFoundationMarket;
   pending: boolean;
+  disabled: boolean;
   onClose: () => void;
   onSave: (policy: MarketCollectionPolicy) => void;
 }) {
   const policy = market.collectionPolicy!;
-  const [startAt, setStartAt] = useState(toUtcLocalInput(policy.startAt));
+  const [startAt, setStartAt] = useState(toKstLocalInput(policy.startAt));
   const [dataTypes, setDataTypes] = useState<CollectionPolicyDataType[]>(policy.dataTypes);
   const [retentionDays, setRetentionDays] = useState(policy.retentionDays?.toString() ?? "");
   const [priority, setPriority] = useState(policy.priority.toString());
@@ -231,7 +262,7 @@ function PolicyEditor({
       return;
     }
     onSave({
-      startAt: new Date(`${startAt}:00Z`).toISOString(),
+      startAt: new Date(`${startAt}:00+09:00`).toISOString(),
       dataTypes,
       candleUnit: "1m",
       retentionDays: retentionDays ? Number(retentionDays) : null,
@@ -248,7 +279,7 @@ function PolicyEditor({
           <button type="button" aria-label="정책 편집 닫기" onClick={onClose}><X aria-hidden="true" size={18} /></button>
         </header>
         <div className="coverage-policy-fields">
-          <label>수집 시작 UTC<input aria-label="수집 시작 UTC" type="datetime-local" value={startAt} onChange={(event) => setStartAt(event.target.value)} required /></label>
+          <label>수집 시작 KST<input aria-label="수집 시작 KST" type="datetime-local" value={startAt} onChange={(event) => setStartAt(event.target.value)} required /></label>
           <fieldset><legend>수집 데이터 유형</legend>{POLICY_DATA_TYPES.map((item) => <label key={item.value}><input type="checkbox" checked={dataTypes.includes(item.value)} onChange={(event) => setDataTypes((current) => event.target.checked ? [...current, item.value] : current.filter((value) => value !== item.value))} />{item.label}</label>)}</fieldset>
           <label>기준 주기<select aria-label="기준 주기" value="1m" disabled><option value="1m">1분</option></select></label>
           <label>보존 기간 일수<input aria-label="보존 기간 일수" type="number" min="1" max="36500" value={retentionDays} placeholder="무기한" onChange={(event) => setRetentionDays(event.target.value)} /></label>
@@ -256,14 +287,15 @@ function PolicyEditor({
           <label className="coverage-policy-continuous"><input type="checkbox" checked={continuous} onChange={(event) => setContinuous(event.target.checked)} />신규 데이터 지속 수집</label>
         </div>
         {error ? <p className="error-text" role="alert">{error}</p> : null}
-        <footer><button type="button" onClick={onClose}>취소</button><button type="button" disabled={pending || !startAt || !priority} aria-label={`${market.marketCode} 정책 저장`} onClick={submit}>정책 저장</button></footer>
+        <footer><button type="button" onClick={onClose}>취소</button><button type="button" disabled={pending || disabled || !startAt || !priority} aria-label={`${market.marketCode} 정책 저장`} onClick={submit}>정책 저장</button></footer>
       </div>
     </div>
   );
 }
 
-function toUtcLocalInput(value: string): string {
-  return new Date(value).toISOString().slice(0, 16);
+function toKstLocalInput(value: string): string {
+  const kst = new Date(new Date(value).getTime() + 9 * 60 * 60 * 1000);
+  return kst.toISOString().slice(0, 16);
 }
 
 function CoverageCountList({ counts }: { counts: CoverageCounts }) {
@@ -277,12 +309,6 @@ function CoverageIcon({ status }: { status: CoverageIntervalStatus }) {
   return <CircleDashed aria-hidden="true" />;
 }
 
-function formatUtcPolicyStart(value: string): string {
-  const date = new Date(value);
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(date.getUTCDate()).padStart(2, "0");
-  const hour = String(date.getUTCHours()).padStart(2, "0");
-  const minute = String(date.getUTCMinutes()).padStart(2, "0");
-  return `${year}-${month}-${day} ${hour}:${minute} UTC`;
+function formatKstPolicyStart(value: string): string {
+  return `${toKstLocalInput(value).replace("T", " ")} KST`;
 }

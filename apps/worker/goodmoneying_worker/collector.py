@@ -12,6 +12,7 @@ from goodmoneying_shared.models import (
     SourceCandle,
     TickerSnapshot,
 )
+from goodmoneying_shared.postgres_repository import BackfillTargetNotWritableError
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.time import KST, minute_bucket, now_kst
 from goodmoneying_worker.upbit_client import UpbitApiError, UpbitClient
@@ -161,18 +162,26 @@ class UpbitCollectionWorker:
                         "cancelled",
                     }
                     break
-                if target.status in {"succeeded", "stopped"}:
+                if target.status in {"paused", "succeeded", "stopped"}:
                     continue
                 if target_limit is not None and processed_targets >= target_limit:
                     return total_written + written
                 processed_targets += 1
                 if target.status != "running":
-                    self._repository.mark_backfill_target(
-                        job.id,
-                        target.instrument_id,
-                        status="running",
-                        last_completed_at=target.last_completed_at,
-                    )
+                    try:
+                        self._repository.mark_backfill_target(
+                            job.id,
+                            target.instrument_id,
+                            status="running",
+                            last_completed_at=target.last_completed_at,
+                        )
+                    except BackfillTargetNotWritableError:
+                        logger.info(
+                            "backfill_target_policy_stopped job_id=%s instrument_id=%s",
+                            job.id,
+                            target.instrument_id,
+                        )
+                        continue
                 if on_progress is not None:
                     on_progress()
                 instrument = self._repository.get_instrument(target.instrument_id)
@@ -390,6 +399,13 @@ class UpbitCollectionWorker:
                         should_claim_next_job = True
                         break
                 except Exception as exc:
+                    if isinstance(exc, BackfillTargetNotWritableError):
+                        logger.info(
+                            "backfill_target_policy_stopped job_id=%s instrument_id=%s",
+                            job.id,
+                            target.instrument_id,
+                        )
+                        continue
                     if isinstance(exc, UpbitApiError):
                         upbit_error_code = (
                             str(exc.status_code)
@@ -417,9 +433,7 @@ class UpbitCollectionWorker:
                         error_code=error_code,
                         error_message=str(exc),
                         retry_after_seconds=retry_after_seconds,
-                        fetch_evidence=(
-                            exc.evidence if isinstance(exc, UpbitApiError) else None
-                        ),
+                        fetch_evidence=(exc.evidence if isinstance(exc, UpbitApiError) else None),
                     )
                     if on_progress is not None:
                         on_progress()

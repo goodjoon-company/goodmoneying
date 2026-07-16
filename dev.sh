@@ -40,6 +40,8 @@ load_env_file() {
 
 load_env_file
 
+export GOODMONEYING_RUNTIME_MODE="${GOODMONEYING_RUNTIME_MODE:-development}"
+
 RUNTIME_DIR="${GOODMONEYING_DEV_DIR:-"$ROOT_DIR/.dev"}"
 PID_DIR="$RUNTIME_DIR/pids"
 LOG_DIR="$RUNTIME_DIR/logs"

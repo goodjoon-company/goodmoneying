@@ -252,7 +252,33 @@ def test_live_client_reads_detailed_market_catalog_without_ticker_filtering() ->
     assert catalog[1].market_warning == "CAUTION"
     assert not catalog[1].tradable
     assert requests[0].url.path == "/v1/market/all"
-    assert requests[0].url.params["isDetails"] == "true"
+    assert requests[0].url.params["is_details"] == "true"
+
+
+def test_market_catalog_rejects_missing_market_event_details() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "market": "KRW-BTC",
+                    "korean_name": "비트코인",
+                    "english_name": "Bitcoin",
+                    "market_warning": "NONE",
+                }
+            ],
+        )
+
+    client = LiveUpbitClient(
+        http_client=httpx.Client(
+            base_url=LiveUpbitClient.BASE_URL,
+            transport=httpx.MockTransport(handler),
+        ),
+        min_request_interval_seconds=0,
+    )
+
+    with pytest.raises(ValueError, match="market_event"):
+        client.get_market_catalog()
 
 
 def test_worker_runs_approved_backfill_job_and_records_progress() -> None:

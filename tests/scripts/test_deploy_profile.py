@@ -102,6 +102,13 @@ def test_prod_home_profile_has_required_files() -> None:
     assert (profile_dir / "README.md").is_file()
 
 
+def test_worker_container_does_not_hide_startup_failure_in_shell_restart_loop() -> None:
+    dockerfile = (ROOT / "apps/worker/Dockerfile").read_text()
+
+    assert "while true" not in dockerfile
+    assert 'CMD ["uv", "run", "--no-sync", "python", "-m"' in dockerfile
+
+
 def test_prod_home_readme_documents_required_env_files() -> None:
     readme = (ROOT / "deploy/profiles/prod-home/README.md").read_text()
 
@@ -133,8 +140,7 @@ def test_migration_dockerfile_pins_dbmate_image_digest() -> None:
 
     assert (
         "FROM ghcr.io/amacneil/dbmate:2.34.1@sha256:"
-        "3298bdfcb651af608e06d2e13ae12398c4056e5326d38ef31885973d83248d9c"
-        in dockerfile
+        "3298bdfcb651af608e06d2e13ae12398c4056e5326d38ef31885973d83248d9c" in dockerfile
     )
 
 
@@ -176,9 +182,7 @@ def test_prod_home_compose_uses_external_env_files() -> None:
     assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["api"]["env_file"]
     assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["upbit-gateway"]["env_file"]
     assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["migrate"]["env_file"]
-    assert (
-        "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["market-sync-worker"]["env_file"]
-    )
+    assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["market-sync-worker"]["env_file"]
     assert (
         "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["realtime-collection-worker"]["env_file"]
     )
@@ -186,8 +190,7 @@ def test_prod_home_compose_uses_external_env_files() -> None:
         "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["backfill-collection-worker"]["env_file"]
     )
     assert (
-        "${GOODMONEYING_APP_BASE_DIR}/env/app.env"
-        in app["candle-aggregation-worker"]["env_file"]
+        "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["candle-aggregation-worker"]["env_file"]
     )
     assert "${GOODMONEYING_WEB_BASE_DIR}/env/web.env" in web["web"]["env_file"]
 
@@ -223,6 +226,22 @@ def test_prod_home_app_workers_do_not_override_runtime_env_file_values() -> None
         environment = app[service_name].get("environment", {})
 
         assert "GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS" not in environment
+
+
+def test_prod_home_app_services_force_production_and_deployed_release_sha() -> None:
+    app = services(load_compose("app"))
+
+    for service_name in (
+        "api",
+        "upbit-gateway",
+        "market-sync-worker",
+        "realtime-collection-worker",
+        "backfill-collection-worker",
+        "candle-aggregation-worker",
+    ):
+        environment = app[service_name]["environment"]
+        assert environment["GOODMONEYING_RUNTIME_MODE"] == "production"
+        assert environment["GOODMONEYING_RELEASE_SHA"] == "${GOODMONEYING_RELEASE_SHA:?}"
         assert "GOODMONEYING_MARKET_SYNC_INTERVAL_SECONDS" not in environment
         assert "GOODMONEYING_BACKFILL_POLL_SECONDS" not in environment
         assert "GOODMONEYING_BACKFILL_BATCH_SIZE" not in environment
@@ -327,12 +346,8 @@ def test_prod_home_compose_uses_fixed_ghcr_image_names() -> None:
     assert app["upbit-gateway"]["image"] == (
         "ghcr.io/goodjoon-company/goodmoneying-upbit-gateway:${GOODMONEYING_IMAGE_TAG}"
     )
-    assert app["upbit-gateway"]["healthcheck"]["test"][-1].find(
-        "127.0.0.1:8001/health"
-    ) >= 0
-    assert "${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro" in app[
-        "upbit-gateway"
-    ]["volumes"]
+    assert app["upbit-gateway"]["healthcheck"]["test"][-1].find("127.0.0.1:8001/health") >= 0
+    assert "${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro" in app["upbit-gateway"]["volumes"]
     assert (
         app["realtime-collection-worker"]["image"]
         == "ghcr.io/goodjoon-company/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}"
@@ -382,12 +397,8 @@ def test_prod_home_target_local_scripts_use_local_compose_env() -> None:
     assert '"$@"' in (target_dir / "app/start-api.sh").read_text()
     assert "up -d api" in (target_dir / "app/start-api.sh").read_text()
     assert "stop api" in (target_dir / "app/stop-api.sh").read_text()
-    assert "up -d upbit-gateway" in (
-        target_dir / "app/start-upbit-gateway.sh"
-    ).read_text()
-    assert "stop upbit-gateway" in (
-        target_dir / "app/stop-upbit-gateway.sh"
-    ).read_text()
+    assert "up -d upbit-gateway" in (target_dir / "app/start-upbit-gateway.sh").read_text()
+    assert "stop upbit-gateway" in (target_dir / "app/stop-upbit-gateway.sh").read_text()
     assert (
         "up -d realtime-collection-worker"
         in (target_dir / "app/start-realtime-collection-worker.sh").read_text()
@@ -581,8 +592,7 @@ def test_healthcheck_script_dry_run_prints_checks() -> None:
         "retry 30 2s curl -fsS --connect-timeout 5 --max-time 10 http://100.68.208.102:8080/"
     ) in result.stdout
     assert (
-        "retry 30 2s curl -fsS --connect-timeout 5 --max-time 10 "
-        "http://100.115.38.59:8001/health"
+        "retry 30 2s curl -fsS --connect-timeout 5 --max-time 10 http://100.115.38.59:8001/health"
     ) in result.stdout
     assert "ssh -o BatchMode=yes -o ConnectTimeout=10" in result.stdout
     assert (

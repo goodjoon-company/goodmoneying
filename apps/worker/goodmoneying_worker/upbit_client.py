@@ -58,6 +58,12 @@ class UpbitApiError(RuntimeError):
         self.error_type = error_type or (evidence.error_type if evidence is not None else None)
 
 
+class UpbitResponseShapeError(ValueError):
+    def __init__(self, message: str, *, evidence: FetchEvidence) -> None:
+        super().__init__(message)
+        self.evidence = evidence
+
+
 class UpbitRateLimiter:
     def __init__(
         self,
@@ -165,26 +171,40 @@ class LiveUpbitClient:
     ) -> None:
         self._client = http_client or httpx.Client(base_url=self.BASE_URL, timeout=timeout)
         self._rate_limiter = UpbitRateLimiter(min_request_interval_seconds)
+        self.last_market_catalog_evidence: FetchEvidence | None = None
 
     def get_market_catalog(self) -> list[MarketCatalogItem]:
-        response = self._get_json("/market/all", params={"isDetails": "true"})
-        return [
-            MarketCatalogItem(
-                market_code=str(item["market"]),
-                korean_name=str(item.get("korean_name") or item["market"]),
-                english_name=str(item.get("english_name") or item["market"]),
-                market_warning=str(item.get("market_warning") or "NONE"),
-                tradable=_is_market_tradable(item),
+        response, evidence = self._get_json_with_evidence(
+            "/market/all",
+            endpoint="/v1/market/all",
+            params={"is_details": "true"},
+        )
+        self.last_market_catalog_evidence = evidence
+        if not response:
+            raise ValueError("업비트 시장 목록 성공 응답이 비어 있어 동기화를 중단한다.")
+        try:
+            return [
+                MarketCatalogItem(
+                    market_code=str(item["market"]),
+                    korean_name=str(item.get("korean_name") or item["market"]),
+                    english_name=str(item.get("english_name") or item["market"]),
+                    market_warning=str(item.get("market_warning") or "NONE"),
+                    tradable=_is_market_tradable(item),
+                )
+                for item in response
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            self.last_market_catalog_evidence = replace(
+                evidence,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
             )
-            for item in response
-        ]
+            raise
 
     def get_krw_tickers(self) -> list[dict[str, str]]:
-        markets_response = self._get_json("/market/all", params={"isDetails": "true"})
+        markets_response = self._get_json("/market/all", params={"is_details": "true"})
         market_codes = [
-            item["market"]
-            for item in markets_response
-            if str(item["market"]).startswith("KRW-")
+            item["market"] for item in markets_response if str(item["market"]).startswith("KRW-")
         ]
         ticker_response = self._get_json("/ticker", params={"markets": ",".join(market_codes)})
         by_market = {item["market"]: item for item in ticker_response}
@@ -265,10 +285,7 @@ class LiveUpbitClient:
                 rows_by_started_at[
                     datetime.fromisoformat(row["candle_start_at"]).astimezone(UTC)
                 ] = row
-        return [
-            rows_by_started_at[started_at]
-            for started_at in sorted(rows_by_started_at)
-        ]
+        return [rows_by_started_at[started_at] for started_at in sorted(rows_by_started_at)]
 
     def fetch_minute_candle_pages(
         self, market: str, start_at: datetime, end_at: datetime
@@ -367,9 +384,7 @@ class LiveUpbitClient:
         responded_at = datetime.now(UTC)
         self._rate_limiter.observe_remaining_req(response.headers.get("Remaining-Req"))
         response_payload = _raw_response_payload(response)
-        error_message = (
-            _response_error_message(response) if response.status_code >= 400 else None
-        )
+        error_message = _response_error_message(response) if response.status_code >= 400 else None
         evidence = FetchEvidence(
             endpoint=endpoint,
             request_parameters=dict(params),
@@ -382,7 +397,14 @@ class LiveUpbitClient:
         )
         if response.status_code < 400:
             if not isinstance(response_payload, list):
-                raise ValueError("업비트 목록 응답이 JSON 배열이 아니다.")
+                failed_evidence = replace(
+                    evidence,
+                    error_type="UpbitResponseShapeError",
+                    error_message="업비트 목록 응답이 JSON 배열이 아니다.",
+                )
+                raise UpbitResponseShapeError(
+                    "업비트 목록 응답이 JSON 배열이 아니다.", evidence=failed_evidence
+                )
             return list(response_payload), evidence
         retry_after_seconds = _api_retry_delay(response)
         raise UpbitApiError(
@@ -397,7 +419,9 @@ class LiveUpbitClient:
 def _is_market_tradable(item: dict[str, Any]) -> bool:
     event = item.get("market_event")
     if not isinstance(event, dict):
-        return True
+        raise ValueError("상세 시장 응답에 market_event가 없어 거래 가능 여부를 판정할 수 없다.")
+    if "trading_suspended" not in event:
+        raise ValueError("market_event.trading_suspended가 없어 거래 가능 여부를 판정할 수 없다.")
     return not bool(event.get("trading_suspended"))
 
 
@@ -448,9 +472,7 @@ def _api_retry_delay(response: httpx.Response) -> float | None:
     return None
 
 
-def _retry_delay(
-    response: httpx.Response, default_seconds: float | None
-) -> float | None:
+def _retry_delay(response: httpx.Response, default_seconds: float | None) -> float | None:
     retry_after = response.headers.get("Retry-After")
     if retry_after is not None:
         try:

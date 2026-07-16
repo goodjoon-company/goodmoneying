@@ -80,6 +80,12 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: 동일 멱등 키에 다른 payload를 사용한 충돌
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "422":
           $ref: "#/components/responses/ValidationError"
   /v1/dashboard/summary:
@@ -805,8 +811,15 @@ components:
       description: 운영자가 시장 수집 정책을 활성·일시정지·제외하는 명령.
       type: object
       additionalProperties: false
-      required: [state, reason]
+      required: [requestId, idempotencyKey, actorId, requestedAt, state, reason]
       properties:
+        requestId: { type: string, minLength: 1, maxLength: 200 }
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        actorId: { type: string, minLength: 1, maxLength: 200 }
+        requestedAt:
+          type: string
+          format: date-time
+          description: UTC RFC 3339 명령 요청 시각.
         state:
           type: string
           enum: [active, paused, excluded]
@@ -1400,7 +1413,7 @@ components:
       properties:
         status:
           type: string
-          enum: [running, stale, failed]
+          enum: [running, gated, stale, failed]
         statusLabel:
           type: string
         statusDetail:
@@ -1446,7 +1459,7 @@ components:
       properties:
         status:
           type: string
-          enum: [running, stale, failed]
+          enum: [running, gated, stale, failed]
         statusLabel:
           type: string
         statusDetail:

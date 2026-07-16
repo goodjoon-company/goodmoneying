@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from calendar import monthrange
 from dataclasses import asdict
@@ -83,6 +84,10 @@ SOURCE_EVIDENCE_SCHEMA_VERSION = "20260717000300"
 SOURCE_EVIDENCE_COLLECTOR_VERSION = "postgres-repository-v2"
 
 
+class BackfillTargetNotWritableError(RuntimeError):
+    """정책 전이로 백필 대상이 더 이상 기록 가능한 상태가 아님."""
+
+
 def _is_fixture_candidate_entry(market_code: str, display_name: str) -> bool:
     return (
         market_code.startswith("KRW-GM") and market_code.removeprefix("KRW-GM").isdigit()
@@ -118,10 +123,18 @@ class PostgresOperationsRepository:
         database_url: str,
         *,
         connect_and_statement_timeout_seconds: float | None = None,
+        enforce_backfill_safety_gate: bool | None = None,
+        release_sha: str | None = None,
     ) -> None:
         self._database_url = database_url
         self._backfill_worker_id = f"backfill:{uuid.uuid4()}"
         self._connect_and_statement_timeout_seconds = connect_and_statement_timeout_seconds
+        self._enforce_backfill_safety_gate = (
+            os.getenv("GOODMONEYING_RUNTIME_MODE") == "production"
+            if enforce_backfill_safety_gate is None
+            else enforce_backfill_safety_gate
+        )
+        self._release_sha = release_sha or os.getenv("GOODMONEYING_RELEASE_SHA", "")
 
     def _connect(self) -> psycopg.Connection[Any]:
         options = "-c timezone=UTC"
@@ -732,9 +745,7 @@ class PostgresOperationsRepository:
                         ).fetchone()
                     )["id"]
                 )
-                counts = self._upsert_orderbooks(
-                    conn, run_id, summaries, requested_at=started_at
-                )
+                counts = self._upsert_orderbooks(conn, run_id, summaries, requested_at=started_at)
                 for instrument_id, rows_written in counts.items():
                     conn.execute(
                         """
@@ -756,9 +767,7 @@ class PostgresOperationsRepository:
                 )
         return inserted_receipts
 
-    def purge_expired_source_evidence(
-        self, *, as_of: datetime | None = None
-    ) -> tuple[int, int]:
+    def purge_expired_source_evidence(self, *, as_of: datetime | None = None) -> tuple[int, int]:
         retention_as_of = as_of or now_kst()
         with self._connect() as conn:
             receipt_result = conn.execute(
@@ -1561,7 +1570,7 @@ class PostgresOperationsRepository:
             "candle_aggregation",
         }:
             raise ValueError("지원하지 않는 수집 워커 유형이다.")
-        if status not in {"running", "failed"}:
+        if status not in {"running", "gated", "failed"}:
             raise ValueError("지원하지 않는 수집 워커 상태다.")
         timestamp = now_kst()
         with self._connect() as conn:
@@ -1591,7 +1600,7 @@ class PostgresOperationsRepository:
                     ELSE collection_worker_heartbeats.last_error_at
                   END,
                   last_error_message = CASE
-                    WHEN excluded.status = 'failed'
+                    WHEN excluded.status IN ('failed', 'gated')
                     THEN excluded.last_error_message
                     ELSE collection_worker_heartbeats.last_error_message
                   END,
@@ -1773,9 +1782,7 @@ class PostgresOperationsRepository:
                     (instrument_id,),
                 ).fetchone()
                 if active_market is None:
-                    raise ValueError(
-                        "비활성 수집 시장의 수동 백필 계획은 승인할 수 없다."
-                    )
+                    raise ValueError("비활성 수집 시장의 수동 백필 계획은 승인할 수 없다.")
             row = _expect_row(
                 conn.execute(
                     """
@@ -1805,6 +1812,11 @@ class PostgresOperationsRepository:
         claimed_at = datetime.now(UTC)
         lease_expires_at = claimed_at + timedelta(seconds=BACKFILL_LEASE_SECONDS)
         with self._connect() as conn:
+            if (
+                self._enforce_backfill_safety_gate
+                and self._backfill_gate_reason(conn, claimed_at) is not None
+            ):
+                return None
             exhausted_rows = conn.execute(
                 """
                 SELECT id, last_error_code
@@ -1881,6 +1893,44 @@ class PostgresOperationsRepository:
             )
         return _backfill_job_detail(row)
 
+    def backfill_claim_gate_reason(self) -> str | None:
+        if not self._enforce_backfill_safety_gate:
+            return None
+        with self._connect() as conn:
+            return self._backfill_gate_reason(conn, datetime.now(UTC))
+
+    def _backfill_gate_reason(
+        self,
+        conn: psycopg.Connection[Any],
+        checked_at: datetime,
+    ) -> str | None:
+        if not self._release_sha:
+            return "실행 릴리스 SHA가 없어 백필 안전 게이트를 열 수 없습니다."
+        row = conn.execute(
+            """
+            SELECT enabled, backup_verified_at, free_capacity_bytes,
+                   required_capacity_bytes, approved_sha
+            FROM backfill_safety_gate
+            WHERE singleton
+            """,
+        ).fetchone()
+        if row is None or not row["enabled"]:
+            return "백필 안전 게이트가 운영 승인 전 기본 닫힘 상태입니다."
+        backup_verified_at = cast(datetime | None, row["backup_verified_at"])
+        if (
+            backup_verified_at is None
+            or backup_verified_at < checked_at - timedelta(hours=24)
+            or backup_verified_at > checked_at
+        ):
+            return "최근 24시간 이내 백업 검증 증적이 없습니다."
+        if int(row["required_capacity_bytes"]) <= 0:
+            return "백필 필요 용량이 양수 측정값으로 승인되지 않았습니다."
+        if int(row["free_capacity_bytes"]) < int(row["required_capacity_bytes"]):
+            return "백필 실행에 필요한 저장소 여유 용량이 부족합니다."
+        if row["approved_sha"] != self._release_sha:
+            return "운영 승인 SHA와 실행 릴리스 SHA가 일치하지 않습니다."
+        return None
+
     def backfill_job_targets(self, job_id: int) -> list[BackfillJobTarget]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -1906,7 +1956,7 @@ class PostgresOperationsRepository:
             raise ValueError("백필 캔들 대상 instrument_id가 작업 대상과 다르다.")
         started_at = now_kst()
         with self._connect() as conn:
-            self._assert_backfill_write_lease(conn, job_id)
+            self._assert_backfill_write_lease(conn, job_id, instrument_id)
             run_id = int(
                 _expect_row(
                     conn.execute(
@@ -1921,9 +1971,7 @@ class PostgresOperationsRepository:
                     ).fetchone()
                 )["id"]
             )
-            manifest_overrides: dict[
-                tuple[int, str], tuple[int | None, int | None, int]
-            ] = {}
+            manifest_overrides: dict[tuple[int, str], tuple[int | None, int | None, int]] = {}
             target_spec_id: int | None = None
             manifest_id: int | None = None
             if fetch_evidence is not None:
@@ -1943,9 +1991,7 @@ class PostgresOperationsRepository:
                     (instrument_id,),
                 ).fetchone()
                 market_id = cast(int | None, context["market_id"]) if context else None
-                target_spec_id = (
-                    cast(int | None, context["target_spec_id"]) if context else None
-                )
+                target_spec_id = cast(int | None, context["target_spec_id"]) if context else None
                 manifest_id = self._insert_fetch_manifest(
                     conn,
                     target_spec_id=target_spec_id,
@@ -2026,7 +2072,7 @@ class PostgresOperationsRepository:
         last_completed_at: datetime | None,
     ) -> None:
         with self._connect() as conn:
-            self._assert_backfill_write_lease(conn, job_id)
+            self._assert_backfill_write_lease(conn, job_id, instrument_id)
             conn.execute(
                 """
                 UPDATE backfill_job_targets
@@ -2063,7 +2109,7 @@ class PostgresOperationsRepository:
         if status not in {"pending", "running", "paused", "stopped", "succeeded", "failed"}:
             raise ValueError("지원하지 않는 백필 대상 상태다.")
         with self._connect() as conn:
-            self._assert_backfill_write_lease(conn, job_id)
+            self._assert_backfill_write_lease(conn, job_id, instrument_id)
             conn.execute(
                 """
                 UPDATE backfill_job_targets
@@ -2120,9 +2166,7 @@ class PostgresOperationsRepository:
                             }
                         ),
                         payload=(
-                            fetch_evidence.response_payload
-                            if fetch_evidence is not None
-                            else None
+                            fetch_evidence.response_payload if fetch_evidence is not None else None
                         ),
                         requested_at=requested_at,
                         responded_at=(
@@ -2185,19 +2229,26 @@ class PostgresOperationsRepository:
         self,
         conn: psycopg.Connection[Any],
         job_id: int,
+        instrument_id: int,
     ) -> None:
         checked_at = datetime.now(UTC)
         job = conn.execute(
             """
-            SELECT status, lease_owner, lease_expires_at
-            FROM backfill_jobs
-            WHERE id = %s
-            FOR UPDATE
+            SELECT job.status, job.lease_owner, job.lease_expires_at,
+                   target.status AS target_status
+            FROM backfill_jobs job
+            JOIN backfill_job_targets target ON target.backfill_job_id = job.id
+            WHERE job.id = %s AND target.instrument_id = %s
+            FOR UPDATE OF job, target
             """,
-            (job_id,),
+            (job_id, instrument_id),
         ).fetchone()
         if job is None:
-            raise ValueError("존재하지 않는 백필 작업이다.")
+            raise ValueError("존재하지 않는 백필 작업 대상이다.")
+        if job["target_status"] not in {"pending", "running"}:
+            raise BackfillTargetNotWritableError(
+                "백필 대상이 중지되었거나 기록 가능한 상태가 아니다."
+            )
         if (
             job["status"] != "running"
             or job["lease_owner"] != self._backfill_worker_id
@@ -2238,6 +2289,7 @@ class PostgresOperationsRepository:
             JOIN backfill_jobs job ON job.id = target.backfill_job_id
             WHERE target.backfill_job_id = %s
               AND target.target_spec_id IS NOT NULL
+              AND target.status NOT IN ('succeeded', 'stopped')
             ORDER BY target.target_spec_id
             FOR UPDATE OF target
             """,
@@ -2410,7 +2462,9 @@ class PostgresOperationsRepository:
                   running.estimated_missing_range_count,
                   running.rows_written_count AS current_target_backfill_row_count,
                   COUNT(bjt.instrument_id) AS total_target_count,
-                  COUNT(bjt.instrument_id) FILTER (WHERE bjt.status = 'succeeded')
+                  COUNT(bjt.instrument_id) FILTER (
+                    WHERE bjt.status IN ('succeeded', 'stopped')
+                  )
                     AS completed_target_count,
                   CASE
                     WHEN running.instrument_id IS NULL THEN NULL
@@ -2425,7 +2479,7 @@ class PostgresOperationsRepository:
                     ROUND(
                       100.0 * SUM(
                         CASE
-                          WHEN bjt.status = 'succeeded' THEN 1.0
+                          WHEN bjt.status IN ('succeeded', 'stopped') THEN 1.0
                           WHEN bjt.estimated_missing_range_count > 0 THEN
                             LEAST(
                               1.0,
@@ -2479,7 +2533,9 @@ class PostgresOperationsRepository:
                   running.estimated_missing_range_count,
                   running.rows_written_count AS current_target_backfill_row_count,
                   COUNT(bjt.instrument_id) AS total_target_count,
-                  COUNT(bjt.instrument_id) FILTER (WHERE bjt.status = 'succeeded')
+                  COUNT(bjt.instrument_id) FILTER (
+                    WHERE bjt.status IN ('succeeded', 'stopped')
+                  )
                     AS completed_target_count,
                   CASE
                     WHEN running.instrument_id IS NULL THEN NULL
@@ -2494,7 +2550,7 @@ class PostgresOperationsRepository:
                     ROUND(
                       100.0 * SUM(
                         CASE
-                          WHEN bjt.status = 'succeeded' THEN 1.0
+                          WHEN bjt.status IN ('succeeded', 'stopped') THEN 1.0
                           WHEN bjt.estimated_missing_range_count > 0 THEN
                             LEAST(
                               1.0,
@@ -3072,6 +3128,13 @@ class PostgresOperationsRepository:
                 "failed",
                 "오류",
                 str(row["last_error_message"] or "마지막 heartbeat가 실패 상태입니다."),
+                last_heartbeat_at,
+            )
+        if row["status"] == "gated":
+            return (
+                "gated",
+                "승인 대기",
+                str(row["last_error_message"] or "백필 안전 게이트가 닫혀 있습니다."),
                 last_heartbeat_at,
             )
         if now_kst() - last_heartbeat_at > stale_after:
@@ -4454,9 +4517,7 @@ class PostgresOperationsRepository:
         requested_at: datetime,
         expected_instrument_ids: tuple[int, ...] = (),
         request_context: dict[str, Any] | None = None,
-        manifest_overrides: dict[
-            tuple[int, str], tuple[int | None, int | None, int]
-        ] | None = None,
+        manifest_overrides: dict[tuple[int, str], tuple[int | None, int | None, int]] | None = None,
     ) -> dict[int, int]:
         counts: dict[int, int] = {}
         units = sorted({item.candle_unit for item in candles}) or ["1m"]
@@ -4680,6 +4741,9 @@ class PostgresOperationsRepository:
         ).fetchall()
         total = len(rows)
         succeeded = sum(1 for row in rows if row["status"] == "succeeded")
+        stopped = sum(1 for row in rows if row["status"] == "stopped")
+        paused = sum(1 for row in rows if row["status"] == "paused")
+        active = sum(1 for row in rows if row["status"] in {"pending", "running"})
         failed_rows = [row for row in rows if row["status"] == "failed"]
         if total == 0:
             self._move_backfill_job_to_dead_letter(
@@ -4737,7 +4801,12 @@ class PostgresOperationsRepository:
                 reason=error_message or error_code or "backfill attempt budget exhausted",
             )
             return
-        status = "succeeded" if succeeded == total else "running"
+        if active:
+            status = "running"
+        elif paused:
+            status = "paused"
+        else:
+            status = "succeeded" if succeeded + stopped == total else "running"
         conn.execute(
             """
             UPDATE backfill_jobs
@@ -4747,8 +4816,12 @@ class PostgresOperationsRepository:
                   ELSE finished_at
                 END,
                 next_retry_at = NULL,
-                lease_owner = CASE WHEN %s = 'succeeded' THEN NULL ELSE lease_owner END,
-                lease_expires_at = CASE WHEN %s = 'succeeded' THEN NULL ELSE lease_expires_at END,
+                lease_owner = CASE
+                  WHEN %s IN ('succeeded', 'paused') THEN NULL ELSE lease_owner
+                END,
+                lease_expires_at = CASE
+                  WHEN %s IN ('succeeded', 'paused') THEN NULL ELSE lease_expires_at
+                END,
                 updated_at = now()
             WHERE id = %s
             """,

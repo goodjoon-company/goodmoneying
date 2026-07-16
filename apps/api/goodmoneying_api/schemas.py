@@ -102,9 +102,20 @@ class UpdateMarketCollectionPolicyRequest(BaseModel):
 
 
 class UpdateMarketTargetStateRequest(BaseModel):
+    requestId: str = Field(min_length=1, max_length=200)
+    idempotencyKey: str = Field(min_length=1, max_length=200)
+    actorId: str = Field(min_length=1, max_length=200)
+    requestedAt: datetime
     state: Literal["active", "paused", "excluded"]
     reason: str = Field(min_length=1, max_length=500)
     policy: UpdateMarketCollectionPolicyRequest | None = None
+
+    @field_validator("requestedAt")
+    @classmethod
+    def require_utc_requested_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
+            raise ValueError("requestedAt은 UTC timezone-aware datetime이어야 한다.")
+        return value
 
 
 class UpdateMarketTargetStateResponse(BaseModel):
@@ -293,7 +304,7 @@ class CollectionWorkerDiagnosticResponse(BaseModel):
 
 
 class RealtimeWorkerStatusResponse(BaseModel):
-    status: Literal["running", "stale", "failed"]
+    status: Literal["running", "gated", "stale", "failed"]
     statusLabel: str
     statusDetail: str
     lastHeartbeatAt: datetime | None
@@ -306,7 +317,7 @@ class RealtimeWorkerStatusResponse(BaseModel):
 
 
 class BackfillWorkerStatusResponse(BaseModel):
-    status: Literal["running", "stale", "failed"]
+    status: Literal["running", "gated", "stale", "failed"]
     statusLabel: str
     statusDetail: str
     lastHeartbeatAt: datetime | None

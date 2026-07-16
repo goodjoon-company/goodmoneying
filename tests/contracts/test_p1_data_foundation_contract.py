@@ -13,6 +13,12 @@ COVERAGE_MIGRATION = Path(
 SOURCE_ORDERBOOK_MIGRATION = Path(
     "docs/contracts/db/migrations/20260717000500_source_orderbook_evidence.sql"
 )
+FETCH_MANIFEST_MIGRATION = Path(
+    "docs/contracts/db/migrations/20260717000300_fetch_manifest_raw_response.sql"
+)
+FINAL_FIXES_MIGRATION = Path(
+    "docs/contracts/db/migrations/20260717000600_p1_review_safety_contracts.sql"
+)
 
 
 def test_p1_migration_is_expand_only_and_preserves_legacy_rows() -> None:
@@ -46,6 +52,32 @@ def test_p1_migration_is_expand_only_and_preserves_legacy_rows() -> None:
     down = sql.split("-- migrate:down", maxsplit=1)[1]
     assert "DROP TABLE" not in down
     assert "DELETE FROM" not in down
+
+
+def test_quality_event_upgrade_and_evidence_down_are_lossless() -> None:
+    coverage_sql = COVERAGE_MIGRATION.read_text()
+    fetch_sql = FETCH_MANIFEST_MIGRATION.read_text()
+
+    assert "DELETE FROM data_quality_events" not in coverage_sql
+    assert "UNIQUE (target_spec_id, event_type, detected_at, fingerprint)" in coverage_sql
+    assert "DROP COLUMN" not in coverage_sql.split("-- migrate:down", maxsplit=1)[1]
+    assert "DROP COLUMN" not in fetch_sql.split("-- migrate:down", maxsplit=1)[1]
+
+
+def test_p1_final_safety_contracts_are_persistent_and_fail_closed() -> None:
+    sql = FINAL_FIXES_MIGRATION.read_text()
+
+    assert "market_status_history" in sql and "fetch_manifest_id" in sql
+    assert "command_idempotency_records" in sql
+    assert "payload_hash" in sql and "result_payload" in sql
+    assert "backfill_safety_gate" in sql
+    assert "backup_verified_at" in sql
+    assert "free_capacity_bytes" in sql
+    assert "required_capacity_bytes" in sql
+    assert "approved_sha" in sql
+    assert "enabled BOOLEAN NOT NULL DEFAULT false" in sql
+    assert "required_capacity_bytes > 0" in sql
+    assert "status IN ('running', 'gated', 'failed')" in sql
 
 
 def test_p1_contract_prevents_duplicate_status_targets_jobs_and_coverage() -> None:

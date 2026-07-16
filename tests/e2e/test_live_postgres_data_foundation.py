@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
+from psycopg.types.json import Jsonb
 
 from goodmoneying_shared.data_foundation import (
     MarketCatalogItem,
@@ -14,6 +16,7 @@ from goodmoneying_shared.data_foundation import (
 from goodmoneying_shared.data_foundation_repository import (
     PostgresDataFoundationRepository,
 )
+from goodmoneying_shared.models import FetchEvidence
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
 
 pytestmark = pytest.mark.live
@@ -216,6 +219,11 @@ def test_market_policy_update_is_idempotent_and_advances_exact_realtime_generati
     database_url = os.environ["GOODMONEYING_DATABASE_URL"]
     repository = PostgresDataFoundationRepository(database_url)
     changed_at = datetime(2026, 7, 17, 4, tzinfo=UTC)
+    market_code = "KRW-POLICY-REBALANCE"
+    repository.sync_market_catalog(
+        [_market(market_code, "정책재조정")],
+        observed_at=changed_at - timedelta(minutes=1),
+    )
     policy = MarketCollectionPolicySettings(
         start_at=datetime(2025, 1, 1, tzinfo=UTC),
         data_types=("source_candle", "trade_event"),
@@ -233,13 +241,14 @@ def test_market_policy_update_is_idempotent_and_advances_exact_realtime_generati
                 JOIN collection_subscription_desires desire
                   ON desire.target_spec_id = spec.id
                 JOIN markets market ON market.id = spec.market_id
-                WHERE market.market_code = 'KRW-BTC'
-                """
+                WHERE market.market_code = %s
+                """,
+                (market_code,),
             ).fetchall()
         )
 
     repository.set_market_target_state(
-        "KRW-BTC",
+        market_code,
         state="active",
         actor="operator:e2e",
         reason="P1 거래쌍별 정책 변경",
@@ -254,19 +263,50 @@ def test_market_policy_update_is_idempotent_and_advances_exact_realtime_generati
             JOIN collection_subscription_desires desire
               ON desire.target_spec_id = spec.id
             JOIN markets market ON market.id = spec.market_id
-            WHERE market.market_code = 'KRW-BTC'
+            WHERE market.market_code = %s
             ORDER BY spec.data_type
-            """
+            """,
+            (market_code,),
         ).fetchall()
         first_job_count = connection.execute(
             """
-            SELECT count(*) FROM backfill_jobs
-            WHERE idempotency_key LIKE 'p1:policy:%'
+            SELECT count(*)
+            FROM backfill_jobs job
+            JOIN backfill_job_targets target ON target.backfill_job_id = job.id
+            JOIN instruments instrument ON instrument.id = target.instrument_id
+            WHERE instrument.market_code = %s
+              AND job.idempotency_key LIKE 'p1:policy:%%'
+            """,
+            (market_code,),
+        ).fetchone()
+        policy_job = connection.execute(
             """
+            SELECT job.status, target.status, job.target_start_at, job.target_end_at,
+                   job.priority, job.lease_owner, job.lease_expires_at
+            FROM backfill_jobs job
+            JOIN backfill_job_targets target ON target.backfill_job_id = job.id
+            JOIN instruments instrument ON instrument.id = target.instrument_id
+            WHERE instrument.market_code = %s
+              AND job.idempotency_key LIKE 'p1:policy:%%'
+            """,
+            (market_code,),
+        ).fetchone()
+        superseded_default = connection.execute(
+            """
+            SELECT job.status, target.status, job.lease_owner, job.lease_expires_at
+            FROM backfill_jobs job
+            JOIN backfill_job_targets target ON target.backfill_job_id = job.id
+            JOIN instruments instrument ON instrument.id = target.instrument_id
+            WHERE instrument.market_code = %s
+              AND job.idempotency_key LIKE 'p1:default:%%'
+            ORDER BY job.id
+            LIMIT 1
+            """,
+            (market_code,),
         ).fetchone()
 
     repository.set_market_target_state(
-        "KRW-BTC",
+        market_code,
         state="active",
         actor="operator:e2e",
         reason="동일 정책 재요청",
@@ -274,15 +314,11 @@ def test_market_policy_update_is_idempotent_and_advances_exact_realtime_generati
         policy=policy,
     )
     repository.sync_market_catalog(
-        [
-            _market("KRW-BTC", "비트코인"),
-            _market("KRW-ETH", "이더리움"),
-            _market("USDT-BTC", "비트코인"),
-        ],
+        [_market(market_code, "정책재조정")],
         observed_at=changed_at + timedelta(minutes=2),
     )
     overview = repository.overview()
-    btc = next(item for item in overview.markets if item.market_code == "KRW-BTC")
+    btc = next(item for item in overview.markets if item.market_code == market_code)
     with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
         second_desires = connection.execute(
             """
@@ -291,24 +327,31 @@ def test_market_policy_update_is_idempotent_and_advances_exact_realtime_generati
             JOIN collection_subscription_desires desire
               ON desire.target_spec_id = spec.id
             JOIN markets market ON market.id = spec.market_id
-            WHERE market.market_code = 'KRW-BTC'
+            WHERE market.market_code = %s
             ORDER BY spec.data_type
-            """
+            """,
+            (market_code,),
         ).fetchall()
         second_job_count = connection.execute(
             """
-            SELECT count(*) FROM backfill_jobs
-            WHERE idempotency_key LIKE 'p1:policy:%'
-            """
+            SELECT count(*)
+            FROM backfill_jobs job
+            JOIN backfill_job_targets target ON target.backfill_job_id = job.id
+            JOIN instruments instrument ON instrument.id = target.instrument_id
+            WHERE instrument.market_code = %s
+              AND job.idempotency_key LIKE 'p1:policy:%%'
+            """,
+            (market_code,),
         ).fetchone()
         source_spec_count = connection.execute(
             """
             SELECT count(*)
             FROM collection_target_specs spec
             JOIN markets market ON market.id = spec.market_id
-            WHERE market.market_code = 'KRW-BTC'
+            WHERE market.market_code = %s
               AND spec.data_type = 'source_candle'
-            """
+            """,
+            (market_code,),
         ).fetchone()
 
     assert btc.collection_policy == policy
@@ -322,8 +365,18 @@ def test_market_policy_update_is_idempotent_and_advances_exact_realtime_generati
         data_type: baseline_generations[data_type] + 1 for data_type in baseline_generations
     }
     assert second_desires == first_desires
-    assert first_job_count == (0,)
+    assert first_job_count == (1,)
     assert second_job_count == first_job_count
+    assert policy_job == (
+        "pending",
+        "pending",
+        policy.start_at,
+        changed_at,
+        policy.priority,
+        None,
+        None,
+    )
+    assert superseded_default == ("cancelled", "stopped", None, None)
     assert source_spec_count == (1,)
 
 
@@ -333,9 +386,14 @@ def test_policy_without_source_candle_does_not_create_backfill_job() -> None:
     database_url = os.environ["GOODMONEYING_DATABASE_URL"]
     repository = PostgresDataFoundationRepository(database_url)
     changed_at = datetime(2026, 7, 17, 5, tzinfo=UTC)
+    market_code = "KRW-POLICY-NO-SOURCE"
+    repository.sync_market_catalog(
+        [_market(market_code, "원천캔들미선택")],
+        observed_at=changed_at - timedelta(minutes=1),
+    )
 
     repository.set_market_target_state(
-        "KRW-ETH",
+        market_code,
         state="active",
         actor="operator:e2e",
         reason="실시간 체결만 수집",
@@ -350,7 +408,7 @@ def test_policy_without_source_candle_does_not_create_backfill_job() -> None:
         ),
     )
 
-    eth = next(item for item in repository.list_markets() if item.market_code == "KRW-ETH")
+    eth = next(item for item in repository.list_markets() if item.market_code == market_code)
     with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
         policy_backfills = connection.execute(
             """
@@ -358,14 +416,537 @@ def test_policy_without_source_candle_does_not_create_backfill_job() -> None:
             FROM backfill_jobs job
             JOIN backfill_job_targets target ON target.backfill_job_id = job.id
             JOIN instruments instrument ON instrument.id = target.instrument_id
-            WHERE instrument.market_code = 'KRW-ETH'
-              AND job.idempotency_key LIKE 'p1:policy:%'
-            """
+            WHERE instrument.market_code = %s
+              AND job.idempotency_key LIKE 'p1:policy:%%'
+            """,
+            (market_code,),
         ).fetchone()
+        superseded_source_work = connection.execute(
+            """
+            SELECT job.status, target.status, job.lease_owner, job.lease_expires_at
+            FROM backfill_jobs job
+            JOIN backfill_job_targets target ON target.backfill_job_id = job.id
+            JOIN instruments instrument ON instrument.id = target.instrument_id
+            WHERE instrument.market_code = %s
+              AND job.data_type = 'source_candle'
+            ORDER BY job.id
+            """,
+            (market_code,),
+        ).fetchall()
 
     assert eth.collection_policy is not None
     assert eth.collection_policy.data_types == ("trade_event",)
     assert policy_backfills == (0,)
+    assert superseded_source_work
+    assert all(row == ("cancelled", "stopped", None, None) for row in superseded_source_work)
+
+    repository.set_market_target_state(
+        market_code,
+        state="active",
+        actor="operator:e2e",
+        reason="동일 원천 정책 재선택",
+        changed_at=changed_at + timedelta(minutes=1),
+        policy=MarketCollectionPolicySettings(
+            start_at=datetime(2025, 1, 1, tzinfo=UTC),
+            data_types=("source_candle",),
+            candle_unit="1m",
+            retention_days=30,
+            priority=200,
+            continuous=True,
+        ),
+    )
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        reselected = connection.execute(
+            """
+            SELECT job.status, target.status, job.plan ->> 'planId'
+            FROM backfill_jobs job
+            JOIN backfill_job_targets target ON target.backfill_job_id = job.id
+            WHERE target.instrument_id = (
+              SELECT id FROM instruments WHERE market_code = %s
+            ) AND job.idempotency_key LIKE 'p1:policy:%%'
+            ORDER BY job.id DESC LIMIT 1
+            """,
+            (market_code,),
+        ).fetchone()
+    assert reselected is not None
+    assert reselected[0:2] == ("pending", "pending")
+    assert str(reselected[2]).startswith("p1:policy:")
+
+
+def test_policy_rebalance_stops_manual_target_without_invalidating_other_target_lease() -> None:
+    if os.getenv("GOODMONEYING_LIVE_POSTGRES_TEST") != "1":
+        pytest.skip("실제 PostgreSQL 검증에서만 실행한다")
+    database_url = os.environ["GOODMONEYING_DATABASE_URL"]
+    repository = PostgresDataFoundationRepository(database_url)
+    operations = PostgresOperationsRepository(database_url)
+    changed_at = datetime(2026, 7, 17, 5, 4, tzinfo=UTC)
+    market_a = "KRW-POLICY-MANUAL-A"
+    market_b = "KRW-POLICY-MANUAL-B"
+    repository.sync_market_catalog(
+        [_market(market_a, "수동작업A"), _market(market_b, "수동작업B")],
+        observed_at=changed_at - timedelta(minutes=2),
+    )
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        instruments = connection.execute(
+            "SELECT id, market_code FROM instruments WHERE market_code IN (%s, %s)",
+            (market_a, market_b),
+        ).fetchall()
+        instrument_ids = {str(row[1]): int(row[0]) for row in instruments}
+        connection.execute(
+            """
+            UPDATE backfill_jobs SET status = 'cancelled'
+            WHERE EXISTS (
+              SELECT 1 FROM backfill_job_targets target
+              WHERE target.backfill_job_id = backfill_jobs.id
+                AND target.instrument_id = ANY(%s)
+            )
+            """,
+            (list(instrument_ids.values()),),
+        )
+        manual_job = connection.execute(
+            """
+            INSERT INTO backfill_jobs (
+              status, data_type, plan, target_start_at, target_end_at,
+              estimated_request_count, estimated_row_count, estimated_storage_bytes,
+              restart_mode, created_by, idempotency_key, priority
+            ) VALUES (
+              'pending', 'source_candle', %s, %s, %s, 1, 2, 512,
+              'safe_restart', 'operator:e2e', 'manual:multi-target:policy-rebalance', 10
+            ) RETURNING id
+            """,
+            (
+                Jsonb({"targets": list(instrument_ids.values())}),
+                changed_at - timedelta(days=1),
+                changed_at,
+            ),
+        ).fetchone()
+        assert manual_job is not None
+        manual_job_id = int(manual_job[0])
+        for instrument_id in instrument_ids.values():
+            connection.execute(
+                """
+                INSERT INTO backfill_job_targets (backfill_job_id, instrument_id, status)
+                VALUES (%s, %s, 'pending')
+                """,
+                (manual_job_id, instrument_id),
+            )
+
+    claimed = operations.claim_next_backfill_job()
+    assert claimed is not None and claimed.id == manual_job_id
+    repository.set_market_target_state(
+        market_a,
+        state="active",
+        actor="operator:e2e",
+        reason="정책 원자 재조정",
+        changed_at=changed_at,
+        policy=MarketCollectionPolicySettings(
+            start_at=changed_at - timedelta(hours=12),
+            data_types=("source_candle",),
+            candle_unit="1m",
+            retention_days=30,
+            priority=300,
+            continuous=True,
+        ),
+    )
+
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        states = connection.execute(
+            """
+            SELECT target.instrument_id, target.status, job.status,
+                   job.lease_owner IS NOT NULL, job.lease_expires_at IS NOT NULL
+            FROM backfill_job_targets target
+            JOIN backfill_jobs job ON job.id = target.backfill_job_id
+            WHERE job.id = %s ORDER BY target.instrument_id
+            """,
+            (manual_job_id,),
+        ).fetchall()
+        policy_job_count = connection.execute(
+            """
+            SELECT count(*) FROM backfill_jobs job
+            JOIN backfill_job_targets target ON target.backfill_job_id = job.id
+            WHERE target.instrument_id = %s AND job.idempotency_key LIKE 'p1:policy:%%'
+            """,
+            (instrument_ids[market_a],),
+        ).fetchone()
+
+    state_by_instrument = {int(row[0]): tuple(row[1:]) for row in states}
+    assert state_by_instrument[instrument_ids[market_a]] == (
+        "stopped",
+        "running",
+        True,
+        True,
+    )
+    assert state_by_instrument[instrument_ids[market_b]] == (
+        "pending",
+        "running",
+        True,
+        True,
+    )
+    assert policy_job_count == (1,)
+    with pytest.raises(RuntimeError, match="대상"):
+        operations.record_backfill_target_progress(
+            manual_job_id, instrument_ids[market_a], 1, 1, 1, changed_at
+        )
+    operations.mark_backfill_target(
+        manual_job_id,
+        instrument_ids[market_b],
+        status="succeeded",
+        last_completed_at=changed_at,
+    )
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        terminal = connection.execute(
+            """
+            SELECT status, lease_owner, lease_expires_at
+            FROM backfill_jobs WHERE id = %s
+            """,
+            (manual_job_id,),
+        ).fetchone()
+    assert terminal == ("succeeded", None, None)
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        reclaimable = connection.execute(
+            """
+            SELECT count(*) FROM backfill_jobs
+            WHERE id = %s AND status IN ('pending', 'retry_wait', 'running')
+            """,
+            (manual_job_id,),
+        ).fetchone()
+    assert reclaimable == (0,)
+
+
+def test_market_change_command_is_idempotent_under_concurrent_retries() -> None:
+    if os.getenv("GOODMONEYING_LIVE_POSTGRES_TEST") != "1":
+        pytest.skip("실제 PostgreSQL 검증에서만 실행한다")
+    database_url = os.environ["GOODMONEYING_DATABASE_URL"]
+    repository = PostgresDataFoundationRepository(database_url)
+    changed_at = datetime(2026, 7, 17, 5, 4, 30, tzinfo=UTC)
+    market_code = "KRW-CONCURRENT-IDEMPOTENCY"
+    repository.sync_market_catalog(
+        [_market(market_code, "동시멱등")], observed_at=changed_at - timedelta(minutes=1)
+    )
+
+    def update_once(_attempt: int) -> datetime:
+        return repository.set_market_target_state(
+            market_code,
+            state="paused",
+            actor="operator:e2e",
+            reason="동일 명령 동시 재전송",
+            changed_at=changed_at,
+            request_id="request-concurrent-idempotency",
+            idempotency_key="command-concurrent-idempotency",
+            requested_at=changed_at,
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(update_once, range(8)))
+
+    assert results == [changed_at] * 8
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        command_count = connection.execute(
+            """
+            SELECT count(*) FROM command_idempotency_records
+            WHERE scope = 'market_target_state'
+              AND idempotency_key = 'command-concurrent-idempotency'
+            """
+        ).fetchone()
+        audit_count = connection.execute(
+            """
+            SELECT count(*) FROM audit_logs
+            WHERE target_type = 'market' AND target_id = %s
+              AND action = 'market_target_state_changed'
+            """,
+            (market_code,),
+        ).fetchone()
+    assert command_count == (1,)
+    assert audit_count == (1,)
+
+
+def test_market_catalog_manifest_preserves_raw_response_and_status_history_link() -> None:
+    if os.getenv("GOODMONEYING_LIVE_POSTGRES_TEST") != "1":
+        pytest.skip("실제 PostgreSQL 검증에서만 실행한다")
+    database_url = os.environ["GOODMONEYING_DATABASE_URL"]
+    repository = PostgresDataFoundationRepository(database_url)
+    observed_at = datetime(2026, 7, 17, 5, 5, tzinfo=UTC)
+    raw_payload = [
+        {
+            "market": "KRW-MANIFEST-RAW",
+            "korean_name": "원문증적",
+            "english_name": "Raw Evidence",
+            "market_warning": "NONE",
+            "market_event": {
+                "trading_suspended": False,
+                "withdrawal_suspended": True,
+            },
+            "future_field": {"preserved": True},
+        }
+    ]
+    evidence = FetchEvidence(
+        endpoint="/v1/market/all",
+        request_parameters={"is_details": "true"},
+        requested_at=observed_at - timedelta(milliseconds=20),
+        responded_at=observed_at - timedelta(milliseconds=5),
+        response_status=200,
+        response_payload=raw_payload,
+    )
+
+    repository.sync_market_catalog(
+        [_market("KRW-MANIFEST-RAW", "원문증적")],
+        observed_at=observed_at,
+        fetch_evidence=evidence,
+    )
+
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        row = connection.execute(
+            """
+            SELECT manifest.endpoint, manifest.request_parameters,
+                   manifest.requested_at, manifest.responded_at,
+                   manifest.response_status, manifest.response_payload,
+                   manifest.response_checksum, manifest.collector_version,
+                   manifest.schema_version, manifest.outcome,
+                   history.fetch_manifest_id = manifest.id
+            FROM fetch_manifests manifest
+            JOIN market_status_history history
+              ON history.fetch_manifest_id = manifest.id
+            JOIN markets market ON market.id = history.market_id
+            WHERE market.market_code = 'KRW-MANIFEST-RAW'
+            """
+        ).fetchone()
+
+    assert row is not None
+    assert row[:6] == (
+        "/v1/market/all",
+        {"is_details": "true"},
+        evidence.requested_at,
+        evidence.responded_at,
+        200,
+        raw_payload,
+    )
+    assert row[6]
+    assert row[7:] == (
+        "market-sync-worker-v1",
+        "upbit-market-catalog-v1",
+        "succeeded",
+        True,
+    )
+
+    omitted_at = observed_at + timedelta(minutes=1)
+    omitted_payload = [
+        {
+            "market": "KRW-MANIFEST-KEEP",
+            "korean_name": "유지",
+            "english_name": "Keep",
+            "market_warning": "NONE",
+            "market_event": {"trading_suspended": False},
+        }
+    ]
+    repository.sync_market_catalog(
+        [_market("KRW-MANIFEST-KEEP", "유지")],
+        observed_at=omitted_at,
+        fetch_evidence=FetchEvidence(
+            endpoint="/v1/market/all",
+            request_parameters={"is_details": "true"},
+            requested_at=omitted_at - timedelta(milliseconds=20),
+            responded_at=omitted_at - timedelta(milliseconds=5),
+            response_status=200,
+            response_payload=omitted_payload,
+        ),
+    )
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        omission = connection.execute(
+            """
+            SELECT history.trading_status, manifest.response_payload
+            FROM market_status_history history
+            JOIN markets market ON market.id = history.market_id
+            JOIN fetch_manifests manifest ON manifest.id = history.fetch_manifest_id
+            WHERE market.market_code = 'KRW-MANIFEST-RAW'
+              AND history.valid_from = %s
+            """,
+            (omitted_at,),
+        ).fetchone()
+    assert omission == ("inactive", omitted_payload)
+
+
+def test_empty_market_catalog_response_records_failed_manifest_without_state_change() -> None:
+    if os.getenv("GOODMONEYING_LIVE_POSTGRES_TEST") != "1":
+        pytest.skip("실제 PostgreSQL 검증에서만 실행한다")
+    database_url = os.environ["GOODMONEYING_DATABASE_URL"]
+    repository = PostgresDataFoundationRepository(database_url)
+    requested_at = datetime(2026, 7, 17, 5, 6, tzinfo=UTC)
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        before = connection.execute("SELECT count(*) FROM market_status_history").fetchone()
+    assert before is not None
+
+    repository.record_market_catalog_fetch_failure(
+        FetchEvidence(
+            endpoint="/v1/market/all",
+            request_parameters={"is_details": "true"},
+            requested_at=requested_at,
+            responded_at=requested_at + timedelta(milliseconds=10),
+            response_status=200,
+            response_payload=[],
+        )
+    )
+
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        after = connection.execute("SELECT count(*) FROM market_status_history").fetchone()
+        manifest = connection.execute(
+            """
+            SELECT response_status, response_payload, outcome, error_code, error_message
+            FROM fetch_manifests
+            WHERE endpoint = '/v1/market/all' AND requested_at = %s
+            """,
+            (requested_at,),
+        ).fetchone()
+
+    assert after == before
+    assert manifest == (
+        200,
+        [],
+        "failed",
+        "EMPTY_RESPONSE",
+        "업비트 시장 목록 성공 응답이 비어 있다.",
+    )
+
+
+def test_backfill_safety_gate_is_fail_closed_for_every_required_condition() -> None:
+    if os.getenv("GOODMONEYING_LIVE_POSTGRES_TEST") != "1":
+        pytest.skip("실제 PostgreSQL 검증에서만 실행한다")
+    database_url = os.environ["GOODMONEYING_DATABASE_URL"]
+    instrument_id = _insert_bare_instrument(database_url, "KRW-SAFETY-GATE")
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        connection.execute(
+            """
+            UPDATE backfill_jobs
+            SET status = 'paused', lease_owner = NULL, lease_expires_at = NULL
+            WHERE status IN ('pending', 'leased', 'running', 'retry_wait')
+            """
+        )
+        job = connection.execute(
+            """
+            INSERT INTO backfill_jobs (
+              status, data_type, plan, target_start_at, target_end_at,
+              estimated_request_count, estimated_row_count, estimated_storage_bytes,
+              restart_mode, created_by, approved_by, approved_at,
+              idempotency_key, priority
+            ) VALUES (
+              'pending', 'source_candle', %s, now() - interval '1 hour', now(),
+              1, 60, 15360, 'safe_restart', 'system', 'operator:e2e', now(),
+              'e2e:safety-gate', 1000
+            ) RETURNING id
+            """,
+            (psycopg.types.json.Jsonb({"targets": [instrument_id]}),),
+        ).fetchone()
+        assert job is not None
+        connection.execute(
+            """
+            INSERT INTO backfill_job_targets (backfill_job_id, instrument_id, status)
+            VALUES (%s, %s, 'pending')
+            """,
+            (job[0], instrument_id),
+        )
+        connection.execute(
+            """
+            UPDATE backfill_safety_gate
+            SET enabled = false, backup_verified_at = NULL,
+                free_capacity_bytes = 0, required_capacity_bytes = 0,
+                approved_sha = NULL, approved_by = NULL, approved_at = NULL
+            WHERE singleton
+            """
+        )
+
+    repository = PostgresOperationsRepository(
+        database_url,
+        enforce_backfill_safety_gate=True,
+        release_sha="release-exact",
+    )
+
+    def assert_gate_closed(expected_reason: str) -> str:
+        reason = repository.backfill_claim_gate_reason()
+        assert reason is not None
+        assert expected_reason in reason
+        assert repository.claim_next_backfill_job() is None
+        with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+            state = connection.execute(
+                """
+                SELECT job.status, job.attempt_count, job.lease_owner,
+                       job.lease_expires_at, target.status
+                FROM backfill_jobs job
+                JOIN backfill_job_targets target ON target.backfill_job_id = job.id
+                WHERE job.id = %s
+                """,
+                (job[0],),
+            ).fetchone()
+        assert state == ("pending", 0, None, None, "pending")
+        return reason
+
+    default_reason = assert_gate_closed("기본 닫힘")
+    repository.record_collection_worker_heartbeat("backfill_collection", "gated", default_reason)
+    runtime = repository.collection_worker_runtime_status("backfill_collection")
+    assert runtime.status == "gated"
+    assert runtime.status_label == "승인 대기"
+    assert runtime.status_detail == default_reason
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        connection.execute(
+            """
+            UPDATE backfill_safety_gate
+            SET enabled = true, backup_verified_at = now() - interval '25 hours',
+                free_capacity_bytes = 200, required_capacity_bytes = 100,
+                approved_sha = 'release-exact', approved_by = 'operator:e2e',
+                approved_at = now()
+            WHERE singleton
+            """
+        )
+    assert_gate_closed("백업 검증")
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        connection.execute(
+            """
+            UPDATE backfill_safety_gate
+            SET backup_verified_at = now() + interval '1 hour'
+            WHERE singleton
+            """
+        )
+    assert_gate_closed("백업 검증")
+    with (
+        pytest.raises(psycopg.errors.CheckViolation),
+        psycopg.connect(database_url, options="-c timezone=UTC") as connection,
+    ):
+        connection.execute(
+            """
+            UPDATE backfill_safety_gate
+            SET backup_verified_at = now(), free_capacity_bytes = 0,
+                required_capacity_bytes = 0
+            WHERE singleton
+            """
+        )
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        connection.execute(
+            """
+            UPDATE backfill_safety_gate
+            SET backup_verified_at = now(), free_capacity_bytes = 99
+            WHERE singleton
+            """
+        )
+    assert_gate_closed("여유 용량")
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        connection.execute(
+            """
+            UPDATE backfill_safety_gate
+            SET free_capacity_bytes = 100, approved_sha = 'different-release'
+            WHERE singleton
+            """
+        )
+    assert_gate_closed("승인 SHA")
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        connection.execute(
+            """
+            UPDATE backfill_safety_gate
+            SET approved_sha = 'release-exact'
+            WHERE singleton
+            """
+        )
+
+    claimed = repository.claim_next_backfill_job()
+    assert claimed is not None
+    assert claimed.id == job[0]
 
 
 def test_market_state_transition_updates_backfill_jobs_targets_and_leases_atomically() -> None:
@@ -747,7 +1328,7 @@ def test_catalog_omission_pauses_backfill_targets_and_clears_lease_atomically() 
     assert restored == ("pending", "pending")
 
 
-def test_multi_target_job_stops_all_targets_and_resumes_only_when_all_are_ready() -> None:
+def test_multi_target_job_changes_only_the_affected_market_target() -> None:
     if os.getenv("GOODMONEYING_LIVE_POSTGRES_TEST") != "1":
         pytest.skip("실제 PostgreSQL 검증에서만 실행한다")
     database_url = os.environ["GOODMONEYING_DATABASE_URL"]
@@ -790,9 +1371,9 @@ def test_multi_target_job_stops_all_targets_and_resumes_only_when_all_are_ready(
         changed_at=observed_at + timedelta(seconds=1),
     )
     assert _job_target_states(database_url, job.id) == (
-        "paused",
-        [("KRW-MULTI-A", "paused"), ("KRW-MULTI-B", "paused")],
-        None,
+        "running",
+        [("KRW-MULTI-A", "paused"), ("KRW-MULTI-B", "running")],
+        "multi-worker",
     )
 
     repository.set_market_target_state(
@@ -811,8 +1392,8 @@ def test_multi_target_job_stops_all_targets_and_resumes_only_when_all_are_ready(
         changed_at=observed_at + timedelta(seconds=3),
     )
     assert _job_target_states(database_url, job.id) == (
-        "paused",
-        [("KRW-MULTI-A", "paused"), ("KRW-MULTI-B", "paused")],
+        "pending",
+        [("KRW-MULTI-A", "pending"), ("KRW-MULTI-B", "paused")],
         None,
     )
 
@@ -831,8 +1412,12 @@ def test_multi_target_job_stops_all_targets_and_resumes_only_when_all_are_ready(
 
     with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
         connection.execute(
-            "UPDATE backfill_jobs SET status = 'running' WHERE id = %s",
-            (job.id,),
+            """
+            UPDATE backfill_jobs
+            SET status = 'running', lease_owner = 'multi-worker', lease_expires_at = %s
+            WHERE id = %s
+            """,
+            (observed_at + timedelta(minutes=10), job.id),
         )
         connection.execute(
             "UPDATE backfill_job_targets SET status = 'running' WHERE backfill_job_id = %s",
@@ -846,9 +1431,9 @@ def test_multi_target_job_stops_all_targets_and_resumes_only_when_all_are_ready(
         changed_at=observed_at + timedelta(seconds=5),
     )
     assert _job_target_states(database_url, job.id) == (
-        "cancelled",
-        [("KRW-MULTI-A", "stopped"), ("KRW-MULTI-B", "stopped")],
-        None,
+        "running",
+        [("KRW-MULTI-A", "stopped"), ("KRW-MULTI-B", "running")],
+        "multi-worker",
     )
 
 
@@ -1077,9 +1662,7 @@ def test_explicit_market_inactive_creates_unavailable_coverage() -> None:
     active_at = datetime(2026, 7, 17, 6, 10, tzinfo=UTC)
     inactive_at = active_at + timedelta(minutes=1)
     market_code = "KRW-COVERAGE-INACTIVE"
-    repository.sync_market_catalog(
-        [_market(market_code, "거래종료")], observed_at=active_at
-    )
+    repository.sync_market_catalog([_market(market_code, "거래종료")], observed_at=active_at)
 
     repository.sync_market_catalog(
         [
@@ -1348,9 +1931,7 @@ def _target_spec_states(
             """,
             (market_code,),
         ).fetchall()
-    return [
-        (str(row[0]), str(row[1]), bool(row[2]), row[3], str(row[4])) for row in rows
-    ]
+    return [(str(row[0]), str(row[1]), bool(row[2]), row[3], str(row[4])) for row in rows]
 
 
 def _expected_target_spec_states(

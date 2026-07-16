@@ -47,7 +47,7 @@ CREATE TABLE public.audit_logs (
     before_data jsonb,
     after_data jsonb,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT audit_logs_actor_ck CHECK ((actor = ANY (ARRAY['system'::text, 'local_user'::text])))
+    CONSTRAINT audit_logs_actor_ck CHECK ((btrim(actor) <> ''::text))
 );
 
 
@@ -137,6 +137,27 @@ ALTER TABLE public.backfill_jobs ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTIT
     NO MINVALUE
     NO MAXVALUE
     CACHE 1
+);
+
+
+--
+-- Name: backfill_safety_gate; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.backfill_safety_gate (
+    singleton boolean DEFAULT true NOT NULL,
+    enabled boolean DEFAULT false NOT NULL,
+    backup_verified_at timestamp with time zone,
+    free_capacity_bytes bigint DEFAULT 0 NOT NULL,
+    required_capacity_bytes bigint DEFAULT 0 NOT NULL,
+    approved_sha text,
+    approved_by text,
+    approved_at timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT backfill_safety_gate_approval_ck CHECK (((NOT enabled) OR ((backup_verified_at IS NOT NULL) AND (free_capacity_bytes > 0) AND (required_capacity_bytes > 0) AND (approved_sha IS NOT NULL) AND (approved_by IS NOT NULL) AND (approved_at IS NOT NULL)))),
+    CONSTRAINT backfill_safety_gate_free_capacity_bytes_check CHECK ((free_capacity_bytes >= 0)),
+    CONSTRAINT backfill_safety_gate_required_capacity_bytes_check CHECK ((required_capacity_bytes >= 0)),
+    CONSTRAINT backfill_safety_gate_singleton_check CHECK (singleton)
 );
 
 
@@ -597,8 +618,40 @@ CREATE TABLE public.collection_worker_heartbeats (
     last_error_at timestamp with time zone,
     last_error_message text,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT collection_worker_heartbeats_status_ck CHECK ((status = ANY (ARRAY['running'::text, 'failed'::text]))),
+    CONSTRAINT collection_worker_heartbeats_status_ck CHECK ((status = ANY (ARRAY['running'::text, 'gated'::text, 'failed'::text]))),
     CONSTRAINT collection_worker_heartbeats_worker_type_ck CHECK ((worker_type = ANY (ARRAY['realtime_collection'::text, 'backfill_collection'::text, 'candle_aggregation'::text])))
+);
+
+
+--
+-- Name: command_idempotency_records; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.command_idempotency_records (
+    id bigint NOT NULL,
+    scope text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_id text NOT NULL,
+    actor_id text NOT NULL,
+    requested_at timestamp with time zone NOT NULL,
+    payload_hash text NOT NULL,
+    result_payload jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    completed_at timestamp with time zone
+);
+
+
+--
+-- Name: command_idempotency_records_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.command_idempotency_records ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.command_idempotency_records_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
 );
 
 
@@ -761,6 +814,7 @@ CREATE TABLE public.market_status_history (
     valid_to timestamp with time zone,
     observed_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    fetch_manifest_id bigint,
     CONSTRAINT market_status_history_range_ck CHECK (((valid_to IS NULL) OR (valid_from < valid_to))),
     CONSTRAINT market_status_history_status_ck CHECK ((trading_status = ANY (ARRAY['active'::text, 'inactive'::text, 'delisted'::text, 'unknown'::text])))
 );
@@ -1280,6 +1334,14 @@ ALTER TABLE ONLY public.backfill_jobs
 
 
 --
+-- Name: backfill_safety_gate backfill_safety_gate_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backfill_safety_gate
+    ADD CONSTRAINT backfill_safety_gate_pkey PRIMARY KEY (singleton);
+
+
+--
 -- Name: candidate_universe_entries candidate_universe_entries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1448,6 +1510,22 @@ ALTER TABLE ONLY public.collection_worker_heartbeats
 
 
 --
+-- Name: command_idempotency_records command_idempotency_records_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.command_idempotency_records
+    ADD CONSTRAINT command_idempotency_records_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: command_idempotency_records command_idempotency_records_scope_key_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.command_idempotency_records
+    ADD CONSTRAINT command_idempotency_records_scope_key_uk UNIQUE (scope, idempotency_key);
+
+
+--
 -- Name: coverage_intervals coverage_intervals_natural_uk; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1476,7 +1554,7 @@ ALTER TABLE ONLY public.coverage_intervals
 --
 
 ALTER TABLE ONLY public.data_quality_events
-    ADD CONSTRAINT data_quality_events_fingerprint_uk UNIQUE (target_spec_id, fingerprint);
+    ADD CONSTRAINT data_quality_events_fingerprint_uk UNIQUE (target_spec_id, event_type, detected_at, fingerprint);
 
 
 --
@@ -2108,6 +2186,14 @@ ALTER TABLE ONLY public.fetch_manifests
 
 
 --
+-- Name: market_status_history market_status_history_fetch_manifest_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_status_history
+    ADD CONSTRAINT market_status_history_fetch_manifest_id_fkey FOREIGN KEY (fetch_manifest_id) REFERENCES public.fetch_manifests(id);
+
+
+--
 -- Name: market_status_history market_status_history_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2348,4 +2434,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260717000200'),
     ('20260717000300'),
     ('20260717000400'),
-    ('20260717000500');
+    ('20260717000500'),
+    ('20260717000600');

@@ -4,10 +4,8 @@ import argparse
 import os
 import time
 
-from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
-from goodmoneying_shared.repository import OperationsRepository
-from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_worker.collector import UpbitCollectionWorker
+from goodmoneying_worker.runtime import create_repository_from_environment
 from goodmoneying_worker.upbit_client import LiveUpbitClient, UpbitClient
 
 
@@ -46,12 +44,7 @@ def main() -> None:
     parser.add_argument("--backfill-poll-seconds", type=float, default=5.0)
     args = parser.parse_args()
 
-    database_url = os.getenv("GOODMONEYING_DATABASE_URL")
-    repository: OperationsRepository
-    if database_url and database_url.startswith(("postgres://", "postgresql://")):
-        repository = PostgresOperationsRepository(database_url)
-    else:
-        repository = SQLiteOperationsRepository(args.database)
+    repository = create_repository_from_environment(args.database)
     worker = UpbitCollectionWorker(repository, create_upbit_client_from_environment())
     if args.run_backfill_once:
         written = worker.run_backfill_once()

@@ -81,7 +81,14 @@ def test_market_policy_state_change_requires_operator_token_and_reason() -> None
     accepted = client.patch(
         "/v1/data-foundation/markets/KRW-BTC",
         headers={"X-Operator-Token": "local-dev-token"},
-        json={"state": "excluded", "reason": "운영자 제외"},
+        json={
+            "requestId": "req-001",
+            "idempotencyKey": "market-KRW-BTC-001",
+            "actorId": "operator:goodjoon",
+            "requestedAt": "2026-07-17T00:00:00Z",
+            "state": "excluded",
+            "reason": "운영자 제외",
+        },
     )
 
     assert unauthorized.status_code == 401
@@ -90,6 +97,29 @@ def test_market_policy_state_change_requires_operator_token_and_reason() -> None
     assert accepted.json()["marketCode"] == "KRW-BTC"
     assert accepted.json()["state"] == "excluded"
     assert repository.change == ("KRW-BTC", "excluded", "운영자 제외")
+    assert repository.command == {
+        "request_id": "req-001",
+        "idempotency_key": "market-KRW-BTC-001",
+        "actor": "operator:goodjoon",
+        "requested_at": datetime(2026, 7, 17, tzinfo=UTC),
+    }
+
+
+def test_market_change_requires_command_envelope() -> None:
+    client = TestClient(
+        create_app(
+            SQLiteOperationsRepository(),
+            data_foundation_repository=FakeDataFoundationRepository(),
+        )
+    )
+
+    response = client.patch(
+        "/v1/data-foundation/markets/KRW-BTC",
+        headers={"X-Operator-Token": "local-dev-token"},
+        json={"state": "paused", "reason": "운영 중지"},
+    )
+
+    assert response.status_code == 422
 
 
 def test_market_policy_can_be_updated_with_state_and_rejects_non_utc_start() -> None:
@@ -106,6 +136,10 @@ def test_market_policy_can_be_updated_with_state_and_rejects_non_utc_start() -> 
         "/v1/data-foundation/markets/KRW-BTC",
         headers=headers,
         json={
+            "requestId": "req-policy-invalid",
+            "idempotencyKey": "policy-KRW-BTC-invalid",
+            "actorId": "operator:goodjoon",
+            "requestedAt": "2026-07-17T00:00:00Z",
             "state": "active",
             "reason": "정책 변경",
             "policy": {
@@ -122,6 +156,10 @@ def test_market_policy_can_be_updated_with_state_and_rejects_non_utc_start() -> 
         "/v1/data-foundation/markets/KRW-BTC",
         headers=headers,
         json={
+            "requestId": "req-policy-accepted",
+            "idempotencyKey": "policy-KRW-BTC-accepted",
+            "actorId": "operator:goodjoon",
+            "requestedAt": "2026-07-17T00:00:00Z",
             "state": "active",
             "reason": "정책 변경",
             "policy": {
@@ -195,6 +233,7 @@ def test_market_policy_requires_at_least_one_supported_data_type() -> None:
 class FakeDataFoundationRepository:
     change: tuple[str, str, str] | None = None
     policy_change: dict[str, object] | None = None
+    command: dict[str, object] | None = None
 
     def overview(self) -> DataFoundationOverview:
         counts = {
@@ -262,11 +301,20 @@ class FakeDataFoundationRepository:
         actor: str,
         reason: str,
         changed_at: datetime,
+        request_id: str,
+        idempotency_key: str,
+        requested_at: datetime,
         policy: MarketCollectionPolicySettings | None = None,
-    ) -> None:
-        assert actor == "operator:local"
+    ) -> datetime:
+        assert actor
         assert changed_at.tzinfo == UTC
         self.change = (market_code, state, reason)
+        self.command = {
+            "request_id": request_id,
+            "idempotency_key": idempotency_key,
+            "actor": actor,
+            "requested_at": requested_at,
+        }
         if policy is not None:
             self.policy_change = {
                 "start_at": policy.start_at,
@@ -276,3 +324,4 @@ class FakeDataFoundationRepository:
                 "priority": policy.priority,
                 "continuous": policy.continuous,
             }
+        return changed_at

@@ -79,6 +79,7 @@ export default defineConfig({
             E2E_API_PORT: apiURL.port,
             GOODMONEYING_DATABASE_URL: "",
             GOODMONEYING_DEMO_DATA: "0",
+            GOODMONEYING_RUNTIME_MODE: "test",
             GOODMONEYING_OPERATOR_TOKEN: operatorToken,
             PYTHONPATH: "apps/api:apps/worker:apps/upbit_gateway:packages/shared"
           },

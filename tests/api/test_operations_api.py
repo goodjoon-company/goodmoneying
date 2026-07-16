@@ -11,7 +11,9 @@ from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator, FormatChecker  # type: ignore[import-untyped]
 
 from goodmoneying_api.main import create_app, create_repository_from_environment
+from goodmoneying_shared.data_foundation_repository import PostgresDataFoundationRepository
 from goodmoneying_shared.models import SourceCandle
+from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_shared.time import now_kst
 from goodmoneying_worker.collector import seed_repository
@@ -90,6 +92,43 @@ def test_default_api_repository_does_not_auto_seed_fixture_data(
     assert response.json()["targets"] == []
 
 
+def test_production_repository_requires_reachable_postgresql(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOODMONEYING_RUNTIME_MODE", "production")
+    monkeypatch.delenv("GOODMONEYING_DATABASE_URL", raising=False)
+
+    with pytest.raises(RuntimeError, match="PostgreSQL"):
+        create_repository_from_environment()
+
+    monkeypatch.setenv("GOODMONEYING_DATABASE_URL", "sqlite:///tmp/goodmoneying.db")
+    with pytest.raises(RuntimeError, match="PostgreSQL"):
+        create_repository_from_environment()
+
+
+def test_repository_requires_explicit_runtime_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GOODMONEYING_RUNTIME_MODE", raising=False)
+    monkeypatch.delenv("GOODMONEYING_DATABASE_URL", raising=False)
+
+    with pytest.raises(RuntimeError, match="RUNTIME_MODE"):
+        create_repository_from_environment()
+
+
+def test_production_app_fails_when_data_foundation_contract_is_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOODMONEYING_RUNTIME_MODE", "production")
+    repository = PostgresOperationsRepository("postgresql://invalid.example/goodmoneying")
+
+    def fail_contract(_repository: PostgresDataFoundationRepository) -> None:
+        raise RuntimeError("data-foundation schema missing")
+
+    monkeypatch.setattr(PostgresDataFoundationRepository, "assert_runtime_ready", fail_contract)
+
+    with pytest.raises(RuntimeError, match="schema missing"):
+        create_app(repository)
+
+
 def test_demo_data_repository_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -128,7 +167,6 @@ def test_dashboard_candidate_market_and_detail_endpoints() -> None:
     assert totals["activeTargetLimit"] == 50
     assert totals["normalTargets"] + totals["warningTargets"] + totals["incidentTargets"] == 50
     assert totals["storageBytesToday"] > 0
-
 
     assert totals["storageBytesTodayDisplay"].endswith(("MB", "GB"))
     assert totals["storageRowsToday"] > 0
@@ -236,13 +274,22 @@ def test_시스템_관리_웹소켓은_수집대상과_집계_진행률_상태�
     repository.record_collection_worker_heartbeat("backfill_collection", "running")
     repository.record_collection_worker_heartbeat("candle_aggregation", "running")
     repository.record_incremental_collection(
-        [], [],
-        [SourceCandle(
-            instrument_id=target.id, candle_unit="1m", candle_start_at=now_kst(),
-            open_price=Decimal("1"), high_price=Decimal("1"), low_price=Decimal("1"),
-            close_price=Decimal("1"), trade_volume=Decimal("1"), trade_amount=Decimal("1"),
-            collected_at=now_kst(),
-        )],
+        [],
+        [],
+        [
+            SourceCandle(
+                instrument_id=target.id,
+                candle_unit="1m",
+                candle_start_at=now_kst(),
+                open_price=Decimal("1"),
+                high_price=Decimal("1"),
+                low_price=Decimal("1"),
+                close_price=Decimal("1"),
+                trade_volume=Decimal("1"),
+                trade_amount=Decimal("1"),
+                collected_at=now_kst(),
+            )
+        ],
     )
     repository.schedule_candle_aggregation()
 
@@ -251,7 +298,9 @@ def test_시스템_관리_웹소켓은_수집대상과_집계_진행률_상태�
 
     assert message["type"] == "system.snapshot"
     assert message["payload"]["realtime"]["items"][0]["dataTypes"] == [
-        "source_candle", "ticker_snapshot", "orderbook_summary"
+        "source_candle",
+        "ticker_snapshot",
+        "orderbook_summary",
     ]
     assert message["payload"]["aggregationWorker"]["status"] == "running"
     assert message["payload"]["aggregationWorker"]["statusLabel"] == "동작 중"

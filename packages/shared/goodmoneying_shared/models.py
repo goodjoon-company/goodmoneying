@@ -27,8 +27,8 @@ CollectionRunStatus = Literal["running", "succeeded", "partial", "failed", "canc
 CollectionDataType = Literal["source_candle", "ticker_snapshot", "orderbook_summary"]
 CollectionRowsByType = dict[CollectionDataType, int]
 CollectionWorkerType = Literal["realtime_collection", "backfill_collection", "candle_aggregation"]
-CollectionWorkerHeartbeatStatus = Literal["running", "failed"]
-CollectionWorkerStatus = Literal["running", "stale", "failed"]
+CollectionWorkerHeartbeatStatus = Literal["running", "gated", "failed"]
+CollectionWorkerStatus = Literal["running", "gated", "stale", "failed"]
 TradeDirection = Literal["ASK", "BID"]
 TradeFrequencyStatus = Literal["red", "orange", "yellow", "blue", "green"]
 

@@ -17,6 +17,7 @@ DBMATE_STRICT=true
 DOCKER_CONFIG="${GOODMONEYING_E2E_DOCKER_CONFIG:-$ROOT_DIR/.dev/docker-e2e}"
 SNAPSHOT_DIR="$ROOT_DIR/.dev/migration-e2e-${SUFFIX}"
 CANONICAL_SCHEMA="$ROOT_DIR/docs/contracts/db/schema.sql"
+EXPECTED_MIGRATION_COUNT="$(find "$ROOT_DIR/docs/contracts/db/migrations" -type f -name '*.sql' | wc -l | tr -d ' ')"
 
 export GOODMONEYING_DATABASE_URL DBMATE_STRICT DOCKER_CONFIG
 export POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB
@@ -67,6 +68,89 @@ docker run --rm \
   "$MIGRATION_IMAGE" \
   --env GOODMONEYING_DATABASE_URL --migrations-dir /db/migrations --no-dump-schema migrate
 
+UPGRADE_DB="goodmoneying_upgrade"
+UPGRADE_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DB_CONTAINER}:5432/${UPGRADE_DB}?sslmode=disable"
+PRE_004_MIGRATIONS="$SNAPSHOT_DIR/pre-004-migrations"
+mkdir -p "$PRE_004_MIGRATIONS"
+cp \
+  "$ROOT_DIR/docs/contracts/db/migrations/20260715000100_initial_schema.sql" \
+  "$ROOT_DIR/docs/contracts/db/migrations/20260717000100_system_trading_data_foundation.sql" \
+  "$ROOT_DIR/docs/contracts/db/migrations/20260717000200_collection_target_state_reason.sql" \
+  "$ROOT_DIR/docs/contracts/db/migrations/20260717000300_fetch_manifest_raw_response.sql" \
+  "$PRE_004_MIGRATIONS/"
+docker exec "$DB_CONTAINER" createdb -U "$POSTGRES_USER" "$UPGRADE_DB"
+docker run --rm \
+  --network "$NETWORK" \
+  -e GOODMONEYING_DATABASE_URL="$UPGRADE_DATABASE_URL" \
+  -e DBMATE_STRICT \
+  -v "$PRE_004_MIGRATIONS:/db/pre-004-migrations:ro" \
+  "$MIGRATION_IMAGE" \
+  --env GOODMONEYING_DATABASE_URL --migrations-dir /db/pre-004-migrations \
+  --no-dump-schema migrate
+docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 \
+  -U "$POSTGRES_USER" -d "$UPGRADE_DB" -c \
+  "WITH policy AS (
+     INSERT INTO collection_policies (
+       exchange, quote_currency, name, default_start_at, priority
+     ) VALUES ('UPBIT', 'KRW', 'upgrade-e2e', '2024-01-01T00:00:00Z', 100)
+     RETURNING id
+   ), market AS (
+     INSERT INTO markets (
+       exchange, market_code, quote_currency, base_asset,
+       korean_name, english_name, first_observed_at, last_observed_at
+     ) VALUES (
+       'UPBIT', 'KRW-UPGRADE', 'KRW', 'UPGRADE',
+       '업그레이드', 'Upgrade', '2026-07-17T00:00:00Z', '2026-07-17T00:00:00Z'
+     ) RETURNING id
+   ), spec AS (
+     INSERT INTO collection_target_specs (
+       policy_id, market_id, data_type, candle_unit, range_start_at,
+       priority, continuous, status
+     )
+     SELECT policy.id, market.id, 'source_candle', '1m',
+            '2024-01-01T00:00:00Z', 100, true, 'active'
+     FROM policy, market
+     RETURNING id
+   )
+   INSERT INTO data_quality_events (
+     target_spec_id, event_type, previous_status, new_status,
+     range_start_at, range_end_at, fingerprint, evidence, detected_at
+   )
+   SELECT id, 'first-event', 'observed', 'failed',
+          '2026-07-17T00:00:00Z'::timestamptz,
+          '2026-07-17T00:01:00Z'::timestamptz,
+          'same-fingerprint', '{}'::jsonb,
+          '2026-07-17T00:01:00Z'::timestamptz
+   FROM spec
+   UNION ALL
+   SELECT id, 'second-event', 'failed', 'observed',
+          '2026-07-17T00:01:00Z'::timestamptz,
+          '2026-07-17T00:02:00Z'::timestamptz,
+          'same-fingerprint', '{}'::jsonb,
+          '2026-07-17T00:02:00Z'::timestamptz
+   FROM spec;" >/dev/null
+docker run --rm \
+  --network "$NETWORK" \
+  -e GOODMONEYING_DATABASE_URL="$UPGRADE_DATABASE_URL" \
+  -e DBMATE_STRICT \
+  "$MIGRATION_IMAGE" \
+  --env GOODMONEYING_DATABASE_URL --migrations-dir /db/migrations --no-dump-schema migrate
+upgrade_event_count="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" \
+  -d "$UPGRADE_DB" -c \
+  "SELECT count(*) FROM data_quality_events WHERE fingerprint = 'same-fingerprint';")"
+upgrade_event_states="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" \
+  -d "$UPGRADE_DB" -c \
+  "SELECT string_agg(event_type || ':' || previous_status || '>' || new_status, ',' ORDER BY detected_at)
+   FROM data_quality_events WHERE fingerprint = 'same-fingerprint';")"
+[[ "$upgrade_event_count" == "2" ]] || {
+  printf '오류: 기존 품질 이벤트 보존 행 수=%s\n' "$upgrade_event_count" >&2
+  exit 1
+}
+[[ "$upgrade_event_states" == "first-event:available>missing,second-event:missing>available" ]] || {
+  printf '오류: 기존 품질 이벤트 상태 변환=%s\n' "$upgrade_event_states" >&2
+  exit 1
+}
+
 docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 \
   -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
   "INSERT INTO instruments (exchange, market_code, quote_currency, base_asset, display_name) VALUES ('UPBIT', 'KRW-E2E', 'KRW', 'E2E', '마이그레이션 E2E');" \
@@ -83,7 +167,10 @@ version_count="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" -d "$P
 instrument_count="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT count(*) FROM instruments WHERE market_code = 'KRW-E2E';")"
 timezone="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SHOW timezone;")"
 
-[[ "$version_count" == "6" ]] || { printf '오류: 적용 버전 수=%s\n' "$version_count" >&2; exit 1; }
+[[ "$version_count" == "$EXPECTED_MIGRATION_COUNT" ]] || {
+  printf '오류: 적용 버전 수=%s 예상=%s\n' "$version_count" "$EXPECTED_MIGRATION_COUNT" >&2
+  exit 1
+}
 [[ "$instrument_count" == "1" ]] || { printf '오류: 재적용 후 데이터 행 수=%s\n' "$instrument_count" >&2; exit 1; }
 [[ "$timezone" == "UTC" ]] || { printf '오류: DB 시간대=%s\n' "$timezone" >&2; exit 1; }
 
@@ -105,7 +192,10 @@ fi
 version_count="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT count(*) FROM schema_migrations;")"
 instrument_count="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT count(*) FROM instruments WHERE market_code = 'KRW-E2E';")"
 timezone="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SHOW timezone;")"
-[[ "$version_count" == "6" ]] || { printf '오류: 재시작 후 적용 버전 수=%s\n' "$version_count" >&2; exit 1; }
+[[ "$version_count" == "$EXPECTED_MIGRATION_COUNT" ]] || {
+  printf '오류: 재시작 후 적용 버전 수=%s 예상=%s\n' "$version_count" "$EXPECTED_MIGRATION_COUNT" >&2
+  exit 1
+}
 [[ "$instrument_count" == "1" ]] || { printf '오류: 재시작 후 데이터 행 수=%s\n' "$instrument_count" >&2; exit 1; }
 [[ "$timezone" == "UTC" ]] || { printf '오류: 재시작 후 DB 시간대=%s\n' "$timezone" >&2; exit 1; }
 
@@ -113,6 +203,7 @@ docker run -d \
   --name "$API_CONTAINER" \
   --network "$NETWORK" \
   -e GOODMONEYING_DATABASE_URL \
+  -e GOODMONEYING_RUNTIME_MODE=production \
   -e GOODMONEYING_OPERATOR_TOKEN=migration-e2e-token \
   "$API_IMAGE" >/dev/null
 

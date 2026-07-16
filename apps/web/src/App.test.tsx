@@ -142,14 +142,14 @@ describe("데이터 수집관리 화면", () => {
     expect(container.querySelector(".app-shell")).toHaveAttribute("data-theme", "dark");
   });
 
-  it("Coverage & Quality에서 2024 UTC 정책과 5단계 상태를 표시한다", async () => {
+  it("Coverage & Quality에서 2024 KST 정책과 5단계 상태를 표시한다", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(await screen.findByRole("button", { name: "Coverage & Quality" }));
 
     expect(await screen.findByRole("heading", { name: "Coverage & Quality" })).toBeInTheDocument();
-    expect(screen.getByText("2024-01-01 00:00 UTC")).toBeInTheDocument();
+    expect(screen.getByText("2024-01-01 09:00 KST")).toBeInTheDocument();
     expect(screen.getByText("available · 사용 가능")).toBeInTheDocument();
     expect(screen.getByText("missing · 복구 필요")).toBeInTheDocument();
   });

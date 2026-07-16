@@ -69,6 +69,7 @@ from goodmoneying_shared.data_foundation import (
     MarketCollectionPolicySettings,
 )
 from goodmoneying_shared.data_foundation_repository import (
+    IdempotencyConflictError,
     PostgresDataFoundationRepository,
 )
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
@@ -79,13 +80,26 @@ from goodmoneying_shared.time import now_kst
 
 def create_repository_from_environment() -> OperationsRepository:
     database_url = os.getenv("GOODMONEYING_DATABASE_URL")
+    runtime_mode = os.getenv("GOODMONEYING_RUNTIME_MODE")
+    if runtime_mode not in {"development", "test", "production"}:
+        raise RuntimeError(
+            "GOODMONEYING_RUNTIME_MODE는 development, test, production 중 하나로 명시해야 한다."
+        )
     if os.getenv("GOODMONEYING_DEMO_DATA") == "1":
         raise RuntimeError(
             "fixture demo repository는 더 이상 런타임에서 사용할 수 없다. "
             "E2E는 test-only HTTP mock helper 또는 명시적으로 주입한 테스트 저장소를 사용해야 한다."
         )
     if database_url and database_url.startswith(("postgres://", "postgresql://")):
-        return PostgresOperationsRepository(database_url)
+        repository = PostgresOperationsRepository(database_url)
+        if runtime_mode == "production":
+            with repository._connect() as connection:
+                connection.execute("SELECT 1")
+        return repository
+    if runtime_mode == "production":
+        raise RuntimeError(
+            "운영 모드는 연결 가능한 PostgreSQL GOODMONEYING_DATABASE_URL을 필요로 한다."
+        )
     return SQLiteOperationsRepository()
 
 
@@ -100,8 +114,11 @@ class DataFoundationApiRepository(Protocol):
         actor: str,
         reason: str,
         changed_at: datetime,
+        request_id: str,
+        idempotency_key: str,
+        requested_at: datetime,
         policy: MarketCollectionPolicySettings | None = None,
-    ) -> None: ...
+    ) -> datetime: ...
 
 
 class EmptyDataFoundationRepository:
@@ -133,8 +150,11 @@ class EmptyDataFoundationRepository:
         actor: str,
         reason: str,
         changed_at: datetime,
+        request_id: str,
+        idempotency_key: str,
+        requested_at: datetime,
         policy: MarketCollectionPolicySettings | None = None,
-    ) -> None:
+    ) -> datetime:
         raise ValueError("변경할 시장을 찾을 수 없다.")
 
 
@@ -149,6 +169,8 @@ def create_app(
         database_url = getattr(repo, "_database_url", None)
         if isinstance(repo, PostgresOperationsRepository) and isinstance(database_url, str):
             foundation_repository = PostgresDataFoundationRepository(database_url)
+            if os.getenv("GOODMONEYING_RUNTIME_MODE") == "production":
+                foundation_repository.assert_runtime_ready()
         else:
             foundation_repository = EmptyDataFoundationRepository()
     operator_token = os.getenv("GOODMONEYING_OPERATOR_TOKEN", "local-dev-token")
@@ -241,12 +263,15 @@ def create_app(
     ) -> UpdateMarketTargetStateResponse:
         changed_at = datetime.now(UTC)
         try:
-            foundation_repository.set_market_target_state(
+            changed_at = foundation_repository.set_market_target_state(
                 marketCode,
                 state=request.state,
-                actor="operator:local",
+                actor=request.actorId,
                 reason=request.reason,
                 changed_at=changed_at,
+                request_id=request.requestId,
+                idempotency_key=request.idempotencyKey,
+                requested_at=request.requestedAt,
                 policy=(
                     MarketCollectionPolicySettings(
                         start_at=request.policy.startAt,
@@ -260,6 +285,11 @@ def create_app(
                     else None
                 ),
             )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "IDEMPOTENCY_CONFLICT", "message": str(exc)},
+            ) from exc
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

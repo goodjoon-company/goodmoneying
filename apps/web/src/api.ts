@@ -24,6 +24,13 @@ export type MarketCollectionPolicy = {
   continuous: boolean;
 };
 
+export type ChangeCommandEnvelope = {
+  requestId: string;
+  idempotencyKey: string;
+  actorId: string;
+  requestedAt: string;
+};
+
 export type DataFoundationMarket = {
   marketCode: string;
   koreanName: string;
@@ -217,7 +224,7 @@ export type CollectionWorkerDiagnostic = {
 };
 
 export type RealtimeWorkerStatus = {
-  status: "running" | "stale" | "failed";
+  status: "running" | "gated" | "stale" | "failed";
   statusLabel: string;
   statusDetail: string;
   lastHeartbeatAt: string | null;
@@ -230,7 +237,7 @@ export type RealtimeWorkerStatus = {
 };
 
 export type BackfillWorkerStatus = {
-  status: "running" | "stale" | "failed";
+  status: "running" | "gated" | "stale" | "failed";
   statusLabel: string;
   statusDetail: string;
   lastHeartbeatAt: string | null;
@@ -664,9 +671,15 @@ export async function updateMarketTargetState(
   marketCode: string,
   state: "active" | "paused" | "excluded",
   reason: string,
+  actorId: string,
   policy?: MarketCollectionPolicy
 ): Promise<{ marketCode: string; state: string; changedAt: string }> {
+  const requestId = globalThis.crypto.randomUUID();
   return sendJson(`/v1/data-foundation/markets/${encodeURIComponent(marketCode)}`, "PATCH", {
+    requestId,
+    idempotencyKey: `market:${marketCode}:${requestId}`,
+    actorId,
+    requestedAt: new Date().toISOString(),
     state,
     reason,
     ...(policy ? { policy } : {})

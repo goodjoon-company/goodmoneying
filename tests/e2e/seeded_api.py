@@ -147,9 +147,12 @@ class _SeededDataFoundationRepository:
         actor: str,
         reason: str,
         changed_at: datetime,
+        request_id: str,
+        idempotency_key: str,
+        requested_at: datetime,
         policy: MarketCollectionPolicySettings | None = None,
-    ) -> None:
-        del actor, reason
+    ) -> datetime:
+        del actor, reason, request_id, idempotency_key, requested_at
         if changed_at.tzinfo is None or changed_at.utcoffset() != UTC.utcoffset(changed_at):
             raise ValueError("changed_at은 UTC여야 한다.")
         for index, market in enumerate(self._markets):
@@ -163,7 +166,7 @@ class _SeededDataFoundationRepository:
                 active_data_type_count=market.total_data_type_count if state == "active" else 0,
                 collection_policy=policy or market.collection_policy,
             )
-            return
+            return changed_at
         raise ValueError("변경할 시장을 찾을 수 없다.")
 
 

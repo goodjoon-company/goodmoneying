@@ -13,6 +13,15 @@ HEARTBEAT_POSTGRES_CONNECT_AND_STATEMENT_TIMEOUT_SECONDS = 2.0
 HEARTBEAT_SQLITE_BUSY_TIMEOUT_SECONDS = 2.0
 
 
+def runtime_mode_from_environment() -> str:
+    runtime_mode = os.getenv("GOODMONEYING_RUNTIME_MODE")
+    if runtime_mode not in {"development", "test", "production"}:
+        raise RuntimeError(
+            "GOODMONEYING_RUNTIME_MODE는 development, test, production 중 하나로 명시해야 한다."
+        )
+    return runtime_mode
+
+
 def log_level_from_environment() -> int:
     value = os.getenv("GOODMONEYING_LOG_LEVEL", DEFAULT_LOG_LEVEL).upper()
     level = logging.getLevelName(value)
@@ -33,8 +42,17 @@ def configure_logging_from_environment() -> None:
 
 def create_repository_from_environment(database: str = ":memory:") -> OperationsRepository:
     database_url = os.getenv("GOODMONEYING_DATABASE_URL")
+    runtime_mode = runtime_mode_from_environment()
     if database_url and database_url.startswith(("postgres://", "postgresql://")):
-        return PostgresOperationsRepository(database_url)
+        repository = PostgresOperationsRepository(database_url)
+        if runtime_mode == "production":
+            with repository._connect() as connection:
+                connection.execute("SELECT 1")
+        return repository
+    if runtime_mode == "production":
+        raise RuntimeError(
+            "운영 워커는 연결 가능한 PostgreSQL GOODMONEYING_DATABASE_URL을 필요로 한다."
+        )
     return SQLiteOperationsRepository(database)
 
 
@@ -42,12 +60,17 @@ def create_heartbeat_repository_from_environment(
     source_repository: OperationsRepository | None = None,
 ) -> OperationsRepository:
     database_url = os.getenv("GOODMONEYING_DATABASE_URL")
+    runtime_mode = runtime_mode_from_environment()
     if database_url and database_url.startswith(("postgres://", "postgresql://")):
         return PostgresOperationsRepository(
             database_url,
             connect_and_statement_timeout_seconds=(
                 HEARTBEAT_POSTGRES_CONNECT_AND_STATEMENT_TIMEOUT_SECONDS
             ),
+        )
+    if runtime_mode == "production":
+        raise RuntimeError(
+            "운영 워커 heartbeat는 PostgreSQL GOODMONEYING_DATABASE_URL을 필요로 한다."
         )
     database = ":memory:"
     if isinstance(source_repository, SQLiteOperationsRepository):

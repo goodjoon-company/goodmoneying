@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from math import ceil
 from typing import Any, cast
@@ -25,6 +26,7 @@ from goodmoneying_shared.data_foundation import (
     build_default_krw_targets,
     classify_coverage,
 )
+from goodmoneying_shared.models import FetchEvidence
 
 Row = dict[str, Any]
 DEFAULT_POLICY_NAME = "default-krw-2024"
@@ -35,6 +37,10 @@ OPERATOR_PAUSED_STATE_REASON = "operator_paused"
 OPERATOR_EXCLUDED_STATE_REASON = "operator_excluded"
 POLICY_DISABLED_STATE_REASON = "policy_data_type_disabled"
 COVERAGE_OPEN_END_AT = datetime(9999, 1, 1, tzinfo=UTC)
+
+
+class IdempotencyConflictError(ValueError):
+    """동일 멱등 키가 다른 명령 payload에 재사용됐다."""
 
 
 def _require_utc(value: datetime, name: str) -> None:
@@ -61,8 +67,20 @@ def _status_fingerprint(item: MarketCatalogItem) -> tuple[str, dict[str, object]
 class PostgresDataFoundationRepository:
     """P1 시장·정책·내구성 작업·커버리지 계약 저장소."""
 
-    def __init__(self, database_url: str) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        enforce_backfill_safety_gate: bool | None = None,
+        release_sha: str | None = None,
+    ) -> None:
         self._database_url = database_url
+        self._enforce_backfill_safety_gate = (
+            os.getenv("GOODMONEYING_RUNTIME_MODE") == "production"
+            if enforce_backfill_safety_gate is None
+            else enforce_backfill_safety_gate
+        )
+        self._release_sha = release_sha or os.getenv("GOODMONEYING_RELEASE_SHA", "")
 
     def _connect(self) -> psycopg.Connection[Any]:
         return psycopg.connect(
@@ -71,13 +89,38 @@ class PostgresDataFoundationRepository:
             options="-c timezone=UTC",
         )
 
+    def assert_runtime_ready(self) -> None:
+        try:
+            with self._connect() as connection:
+                version = connection.execute(
+                    "SELECT version FROM schema_migrations WHERE version = %s",
+                    ("20260717000600",),
+                ).fetchone()
+                if version is None:
+                    raise RuntimeError("P1 최신 DB 마이그레이션이 적용되지 않았다.")
+                for table in (
+                    "markets",
+                    "collection_target_specs",
+                    "fetch_manifests",
+                    "command_idempotency_records",
+                    "backfill_safety_gate",
+                ):
+                    connection.execute(f"SELECT 1 FROM {table} LIMIT 1")
+        except Exception as exc:
+            raise RuntimeError(
+                "데이터 기반(data-foundation) PostgreSQL 계약을 초기화할 수 없다."
+            ) from exc
+
     def sync_market_catalog(
         self,
         catalog: list[MarketCatalogItem],
         *,
         observed_at: datetime,
+        fetch_evidence: FetchEvidence | None = None,
     ) -> MarketSyncResult:
         _require_utc(observed_at, "observed_at")
+        if not catalog:
+            raise ValueError("빈 시장 카탈로그로 기존 시장 상태를 변경할 수 없다.")
         market_codes = [item.market_code for item in catalog]
         if len(market_codes) != len(set(market_codes)):
             raise ValueError("시장 카탈로그에 중복 market_code가 있다.")
@@ -86,6 +129,12 @@ class PostgresDataFoundationRepository:
         default_target_count = 0
         created_backfill_job_count = 0
         with self._connect() as connection:
+            manifest_id = self._record_market_catalog_manifest(
+                connection,
+                catalog=catalog,
+                observed_at=observed_at,
+                fetch_evidence=fetch_evidence,
+            )
             policy_id = self._ensure_default_policy(connection)
             observed_market_ids: set[int] = set()
             for item in catalog:
@@ -157,6 +206,7 @@ class PostgresDataFoundationRepository:
                     market_id,
                     item,
                     observed_at=observed_at,
+                    fetch_manifest_id=manifest_id,
                 ):
                     new_history_count += 1
 
@@ -362,6 +412,7 @@ class PostgresDataFoundationRepository:
                 connection,
                 observed_market_ids=observed_market_ids,
                 observed_at=observed_at,
+                fetch_manifest_id=manifest_id,
             )
 
         return MarketSyncResult(
@@ -370,6 +421,39 @@ class PostgresDataFoundationRepository:
             default_target_count=default_target_count,
             created_backfill_job_count=created_backfill_job_count,
         )
+
+    def record_market_catalog_fetch_failure(
+        self,
+        fetch_evidence: FetchEvidence,
+    ) -> None:
+        """상태를 바꾸지 않고 실패·빈 응답 원문만 감사 증적으로 남긴다."""
+        if fetch_evidence.response_status == 429:
+            outcome = "rate_limited"
+        elif fetch_evidence.response_status == 418:
+            outcome = "blocked"
+        else:
+            outcome = "failed"
+        empty_response = (
+            fetch_evidence.response_status is not None
+            and 200 <= fetch_evidence.response_status < 300
+            and fetch_evidence.response_payload == []
+        )
+        error_code = "EMPTY_RESPONSE" if empty_response else fetch_evidence.error_type
+        error_message = (
+            "업비트 시장 목록 성공 응답이 비어 있다."
+            if empty_response
+            else fetch_evidence.error_message
+        )
+        with self._connect() as connection:
+            self._record_market_catalog_manifest(
+                connection,
+                catalog=[],
+                observed_at=fetch_evidence.responded_at,
+                fetch_evidence=fetch_evidence,
+                outcome=outcome,
+                error_code=error_code,
+                error_message=error_message,
+            )
 
     def _ensure_initial_coverage(
         self,
@@ -481,9 +565,7 @@ class PostgresDataFoundationRepository:
             ).fetchall()
         ]
         if unavailable_reason is not None:
-            unavailable_status = classify_coverage(
-                CoverageEvidence(after_trading_end=True)
-            )
+            unavailable_status = classify_coverage(CoverageEvidence(after_trading_end=True))
             event_type = f"{unavailable_reason}_unavailable"
             for target_spec_id in target_ids:
                 replace_coverage_with_classification(
@@ -520,9 +602,7 @@ class PostgresDataFoundationRepository:
                 ),
             ).fetchall()
             for interval in market_unavailable:
-                resumed_status = classify_coverage(
-                    CoverageEvidence(market_trading_resumed=True)
-                )
+                resumed_status = classify_coverage(CoverageEvidence(market_trading_resumed=True))
                 replace_coverage_with_classification(
                     connection,
                     target_spec_id=target_spec_id,
@@ -565,6 +645,7 @@ class PostgresDataFoundationRepository:
         item: MarketCatalogItem,
         *,
         observed_at: datetime,
+        fetch_manifest_id: int | None = None,
     ) -> bool:
         trading_status, event, checksum = _status_fingerprint(item)
         current = connection.execute(
@@ -593,9 +674,9 @@ class PostgresDataFoundationRepository:
             """
             INSERT INTO market_status_history (
               market_id, trading_status, market_warning, market_event,
-              source_payload_checksum, valid_from, observed_at
+              source_payload_checksum, valid_from, observed_at, fetch_manifest_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 market_id,
@@ -605,9 +686,96 @@ class PostgresDataFoundationRepository:
                 checksum,
                 observed_at,
                 observed_at,
+                fetch_manifest_id,
             ),
         )
         return True
+
+    def _record_market_catalog_manifest(
+        self,
+        connection: psycopg.Connection[Any],
+        *,
+        catalog: list[MarketCatalogItem],
+        observed_at: datetime,
+        fetch_evidence: FetchEvidence | None,
+        outcome: str = "succeeded",
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> int:
+        payload: object = (
+            fetch_evidence.response_payload
+            if fetch_evidence is not None
+            else [
+                {
+                    "market": item.market_code,
+                    "korean_name": item.korean_name,
+                    "english_name": item.english_name,
+                    "market_warning": item.market_warning,
+                    "market_event": {"trading_suspended": not item.tradable},
+                }
+                for item in catalog
+            ]
+        )
+        parameters = (
+            fetch_evidence.request_parameters
+            if fetch_evidence is not None
+            else {"is_details": "true"}
+        )
+        endpoint = fetch_evidence.endpoint if fetch_evidence is not None else "/v1/market/all"
+        requested_at = fetch_evidence.requested_at if fetch_evidence is not None else observed_at
+        responded_at = fetch_evidence.responded_at if fetch_evidence is not None else observed_at
+        response_status = fetch_evidence.response_status if fetch_evidence is not None else 200
+        canonical_parameters = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+        request_fingerprint = hashlib.sha256(
+            f"{endpoint}:{canonical_parameters}".encode()
+        ).hexdigest()
+        canonical_payload = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+        )
+        response_checksum = hashlib.sha256(canonical_payload.encode()).hexdigest()
+        row = connection.execute(
+            """
+            INSERT INTO fetch_manifests (
+              source, endpoint, request_parameters, request_fingerprint,
+              requested_at, responded_at, response_status, response_checksum,
+              response_payload, collector_version, schema_version, outcome
+            ) VALUES (
+              'UPBIT', %s, %s, %s, %s, %s, %s, %s, %s,
+              'market-sync-worker-v1', 'upbit-market-catalog-v1', %s
+            )
+            ON CONFLICT (source, request_fingerprint, requested_at) DO UPDATE SET
+              responded_at = excluded.responded_at,
+              response_status = excluded.response_status,
+              response_checksum = excluded.response_checksum,
+              response_payload = excluded.response_payload,
+              outcome = excluded.outcome,
+              error_code = excluded.error_code,
+              error_message = excluded.error_message
+            RETURNING id
+            """,
+            (
+                endpoint,
+                Jsonb(parameters),
+                request_fingerprint,
+                requested_at,
+                responded_at,
+                response_status,
+                response_checksum,
+                Jsonb(json.loads(canonical_payload)),
+                outcome,
+            ),
+        ).fetchone()
+        if error_code is not None or error_message is not None:
+            connection.execute(
+                """
+                UPDATE fetch_manifests
+                SET error_code = %s, error_message = %s
+                WHERE id = %s
+                """,
+                (error_code, error_message, row["id"] if row is not None else None),
+            )
+        assert row is not None
+        return int(row["id"])
 
     def _mark_missing_markets_inactive(
         self,
@@ -615,6 +783,7 @@ class PostgresDataFoundationRepository:
         *,
         observed_market_ids: set[int],
         observed_at: datetime,
+        fetch_manifest_id: int,
     ) -> int:
         if observed_market_ids:
             rows = connection.execute(
@@ -646,6 +815,7 @@ class PostgresDataFoundationRepository:
                 int(row["id"]),
                 item,
                 observed_at=observed_at,
+                fetch_manifest_id=fetch_manifest_id,
             ):
                 count += 1
             connection.execute(
@@ -800,15 +970,22 @@ class PostgresDataFoundationRepository:
               'planned', 'pending', 'leased', 'running', 'retry_wait', 'paused'
             )
               AND (
-                job.plan -> 'targets' @> %s
-                OR EXISTS (
+                EXISTS (
                   SELECT 1 FROM backfill_job_targets target
                   WHERE target.backfill_job_id = job.id AND target.instrument_id = %s
+                    AND target.status IN ('pending', 'running', 'paused')
+                )
+                OR (
+                  NOT EXISTS (
+                    SELECT 1 FROM backfill_job_targets any_target
+                    WHERE any_target.backfill_job_id = job.id
+                  )
+                  AND job.plan -> 'targets' @> %s
                 )
               )
             LIMIT 1
             """,
-            (Jsonb([instrument_id]), instrument_id),
+            (instrument_id, Jsonb([instrument_id])),
         ).fetchone()
         if active_job is not None:
             return False
@@ -1075,16 +1252,78 @@ class PostgresDataFoundationRepository:
         actor: str,
         reason: str,
         changed_at: datetime,
+        request_id: str | None = None,
+        idempotency_key: str | None = None,
+        requested_at: datetime | None = None,
         policy: MarketCollectionPolicySettings | None = None,
-    ) -> None:
+    ) -> datetime:
         _require_utc(changed_at, "changed_at")
+        request_id = request_id or f"legacy:{market_code}:{changed_at.isoformat()}"
+        idempotency_key = idempotency_key or (
+            f"legacy:{market_code}:{state}:{changed_at.isoformat()}"
+        )
+        requested_at = requested_at or changed_at
+        _require_utc(requested_at, "requested_at")
         if state not in {"active", "paused", "excluded"}:
             raise ValueError("지원하지 않는 수집 대상 상태다.")
-        if not actor or not reason:
-            raise ValueError("수집 대상 변경 actor와 reason은 필수다.")
+        if not actor or not reason or not request_id or not idempotency_key:
+            raise ValueError("수집 대상 변경 envelope와 reason은 필수다.")
         if policy is not None:
             policy.validate(changed_at=changed_at)
+        command_payload = {
+            "requestId": request_id,
+            "actorId": actor,
+            "requestedAt": requested_at.isoformat(),
+            "marketCode": market_code,
+            "state": state,
+            "reason": reason,
+            "policy": (
+                {
+                    "startAt": policy.start_at.isoformat(),
+                    "dataTypes": list(policy.data_types),
+                    "candleUnit": policy.candle_unit,
+                    "retentionDays": policy.retention_days,
+                    "priority": policy.priority,
+                    "continuous": policy.continuous,
+                }
+                if policy is not None
+                else None
+            ),
+        }
+        payload_hash = hashlib.sha256(
+            json.dumps(command_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
         with self._connect() as connection:
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"market_target_state:{idempotency_key}",),
+            )
+            existing_command = connection.execute(
+                """
+                SELECT payload_hash, result_payload
+                FROM command_idempotency_records
+                WHERE scope = 'market_target_state' AND idempotency_key = %s
+                FOR UPDATE
+                """,
+                (idempotency_key,),
+            ).fetchone()
+            if existing_command is not None:
+                if existing_command["payload_hash"] != payload_hash:
+                    raise IdempotencyConflictError(
+                        "동일 idempotencyKey를 다른 payload에 재사용할 수 없다."
+                    )
+                result_payload = cast(dict[str, object] | None, existing_command["result_payload"])
+                if result_payload is None:
+                    raise RuntimeError("완료되지 않은 동일 멱등 명령이 있다.")
+                return datetime.fromisoformat(str(result_payload["changedAt"]))
+            connection.execute(
+                """
+                INSERT INTO command_idempotency_records (
+                  scope, idempotency_key, request_id, actor_id, requested_at, payload_hash
+                ) VALUES ('market_target_state', %s, %s, %s, %s, %s)
+                """,
+                (idempotency_key, request_id, actor, requested_at, payload_hash),
+            )
             market = connection.execute(
                 """
                 SELECT market.id, market.legacy_instrument_id,
@@ -1122,6 +1361,7 @@ class PostgresDataFoundationRepository:
                 }
             )
             source_specification: Row | None = None
+            source_policy_changed = False
             for specification in specifications:
                 data_type = str(specification["data_type"])
                 selected_before = specification["exclusion_reason"] != POLICY_DISABLED_REASON
@@ -1198,6 +1438,7 @@ class PostgresDataFoundationRepository:
                 )
                 if data_type == "source_candle":
                     source_specification = {**specification, "candle_unit": next_configuration[1]}
+                    source_policy_changed = policy_changed
                 next_desired_state = (
                     "subscribed"
                     if selected_after and state == "active" and bool(next_configuration[4])
@@ -1240,6 +1481,16 @@ class PostgresDataFoundationRepository:
                         ),
                     )
             if market["legacy_instrument_id"] is not None:
+                if (
+                    policy is not None
+                    and source_policy_changed
+                    and source_specification is not None
+                ):
+                    self._cancel_superseded_source_backfill(
+                        connection,
+                        instrument_id=int(market["legacy_instrument_id"]),
+                        changed_at=changed_at,
+                    )
                 self._transition_market_backfill_work(
                     connection,
                     instrument_id=int(market["legacy_instrument_id"]),
@@ -1253,9 +1504,19 @@ class PostgresDataFoundationRepository:
                 and source_specification is not None
                 and market["legacy_instrument_id"] is not None
             ):
+                source_desire = connection.execute(
+                    """
+                    SELECT generation FROM collection_subscription_desires
+                    WHERE target_spec_id = %s
+                    """,
+                    (source_specification["id"],),
+                ).fetchone()
+                if source_desire is None:
+                    raise RuntimeError("원천 캔들 구독 세대를 찾을 수 없다.")
                 policy_payload = json.dumps(
                     {
                         "targetSpecId": source_specification["id"],
+                        "policyGeneration": int(source_desire["generation"]),
                         "startAt": policy.start_at.isoformat(),
                         "candleUnit": policy.candle_unit,
                         "retentionDays": policy.retention_days,
@@ -1320,9 +1581,10 @@ class PostgresDataFoundationRepository:
                 INSERT INTO audit_logs (
                   actor, action, target_type, target_id, after_data, created_at
                 )
-                VALUES ('local_user', 'market_target_state_changed', 'market', %s, %s, %s)
+                VALUES (%s, 'market_target_state_changed', 'market', %s, %s, %s)
                 """,
                 (
+                    actor,
                     market_code,
                     Jsonb(
                         {
@@ -1346,6 +1608,96 @@ class PostgresDataFoundationRepository:
                     changed_at,
                 ),
             )
+            connection.execute(
+                """
+                UPDATE command_idempotency_records
+                SET result_payload = %s, completed_at = %s
+                WHERE scope = 'market_target_state' AND idempotency_key = %s
+                """,
+                (
+                    Jsonb(
+                        {
+                            "marketCode": market_code,
+                            "state": state,
+                            "changedAt": changed_at.isoformat(),
+                        }
+                    ),
+                    changed_at,
+                    idempotency_key,
+                ),
+            )
+        return changed_at
+
+    def _cancel_superseded_source_backfill(
+        self,
+        connection: psycopg.Connection[Any],
+        *,
+        instrument_id: int,
+        changed_at: datetime,
+    ) -> None:
+        rows = connection.execute(
+            """
+            SELECT job.id
+            FROM backfill_jobs job
+            JOIN backfill_job_targets target ON target.backfill_job_id = job.id
+            WHERE target.instrument_id = %s
+              AND job.data_type = 'source_candle'
+              AND job.status IN ('planned', 'pending', 'leased', 'running', 'retry_wait', 'paused')
+              AND target.status IN ('pending', 'running', 'paused')
+            ORDER BY job.id
+            FOR UPDATE OF job
+            """,
+            (instrument_id,),
+        ).fetchall()
+        for row in rows:
+            job_id = int(row["id"])
+            connection.execute(
+                """
+                UPDATE backfill_job_targets
+                SET status = 'stopped', updated_at = %s
+                WHERE backfill_job_id = %s AND instrument_id = %s
+                  AND status IN ('pending', 'running', 'paused')
+                """,
+                (changed_at, job_id, instrument_id),
+            )
+            runnable = connection.execute(
+                """
+                SELECT 1 FROM backfill_job_targets
+                WHERE backfill_job_id = %s AND status IN ('pending', 'running')
+                LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone()
+            if runnable is None:
+                paused = connection.execute(
+                    """
+                    SELECT 1 FROM backfill_job_targets
+                    WHERE backfill_job_id = %s AND status = 'paused'
+                    LIMIT 1
+                    """,
+                    (job_id,),
+                ).fetchone()
+                next_status = "paused" if paused is not None else "cancelled"
+                connection.execute(
+                    """
+                    UPDATE backfill_jobs
+                    SET status = %s, lease_owner = NULL, lease_expires_at = NULL,
+                        next_retry_at = NULL,
+                        finished_at = CASE
+                          WHEN %s = 'cancelled' THEN COALESCE(finished_at, %s)
+                          ELSE finished_at
+                        END,
+                        updated_at = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        next_status,
+                        next_status,
+                        changed_at,
+                        changed_at,
+                        job_id,
+                    ),
+                )
 
     def _transition_market_backfill_work(
         self,
@@ -1360,39 +1712,25 @@ class PostgresDataFoundationRepository:
                 """
                 SELECT job.id
                 FROM backfill_jobs job
-                WHERE job.status = 'paused'
+                JOIN backfill_job_targets target ON target.backfill_job_id = job.id
+                WHERE job.status IN (
+                  'planned', 'pending', 'leased', 'running', 'retry_wait', 'paused'
+                )
+                  AND target.instrument_id = %s
+                  AND target.status = 'paused'
                   AND (
-                    EXISTS (
-                      SELECT 1 FROM backfill_job_targets target
-                      WHERE target.backfill_job_id = job.id
-                        AND target.instrument_id = %s
+                    target.target_spec_id IS NULL
+                    OR EXISTS (
+                      SELECT 1 FROM collection_target_specs spec
+                      WHERE spec.id = target.target_spec_id
+                        AND spec.status = 'active'
+                        AND spec.exclusion_reason IS DISTINCT FROM %s
                     )
-                    OR job.plan -> 'targets' @> %s
-                  )
-                  AND EXISTS (
-                    SELECT 1 FROM backfill_job_targets target
-                    WHERE target.backfill_job_id = job.id
-                  )
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM backfill_job_targets paused_target
-                    WHERE paused_target.backfill_job_id = job.id
-                      AND paused_target.status = 'paused'
-                      AND NOT EXISTS (
-                        SELECT 1
-                        FROM markets market
-                        JOIN collection_target_specs spec
-                          ON spec.market_id = market.id
-                        WHERE market.legacy_instrument_id = paused_target.instrument_id
-                          AND spec.data_type = job.data_type
-                          AND spec.status = 'active'
-                          AND spec.exclusion_reason IS DISTINCT FROM %s
-                      )
                   )
                 ORDER BY job.id
                 FOR UPDATE OF job
                 """,
-                (instrument_id, Jsonb([instrument_id]), POLICY_DISABLED_REASON),
+                (instrument_id, POLICY_DISABLED_REASON),
             ).fetchall()
             eligible_job_ids = [int(row["id"]) for row in eligible_rows]
             if not eligible_job_ids:
@@ -1401,15 +1739,22 @@ class PostgresDataFoundationRepository:
                 """
                 UPDATE backfill_job_targets
                 SET status = 'pending', updated_at = %s
-                WHERE backfill_job_id = ANY(%s) AND status = 'paused'
+                WHERE backfill_job_id = ANY(%s) AND instrument_id = %s
+                  AND status = 'paused'
                 """,
-                (changed_at, eligible_job_ids),
+                (changed_at, eligible_job_ids, instrument_id),
             )
             connection.execute(
                 """
-                UPDATE backfill_jobs
-                SET status = 'pending', updated_at = %s
-                WHERE id = ANY(%s) AND status = 'paused'
+                UPDATE backfill_jobs job
+                SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL,
+                    updated_at = %s
+                WHERE job.id = ANY(%s) AND job.status = 'paused'
+                  AND EXISTS (
+                    SELECT 1 FROM backfill_job_targets target
+                    WHERE target.backfill_job_id = job.id
+                      AND target.status IN ('pending', 'running')
+                  )
                 """,
                 (changed_at, eligible_job_ids),
             )
@@ -1417,49 +1762,52 @@ class PostgresDataFoundationRepository:
 
         job_status = "paused" if state == "paused" else "cancelled"
         target_status = "paused" if state == "paused" else "stopped"
+        affected_jobs = connection.execute(
+            """
+            SELECT job.id
+            FROM backfill_jobs job
+            JOIN backfill_job_targets target ON target.backfill_job_id = job.id
+            WHERE job.status IN (
+              'planned', 'pending', 'leased', 'running', 'retry_wait', 'paused'
+            )
+              AND target.instrument_id = %s
+              AND target.status IN ('pending', 'running', 'paused')
+            ORDER BY job.id
+            FOR UPDATE OF job
+            """,
+            (instrument_id,),
+        ).fetchall()
+        affected_job_ids = [int(row["id"]) for row in affected_jobs]
+        if not affected_job_ids:
+            return
         connection.execute(
             """
-            UPDATE backfill_job_targets target
+            UPDATE backfill_job_targets
             SET status = %s, updated_at = %s
-            WHERE target.backfill_job_id IN (
-              SELECT job.id
-              FROM backfill_jobs job
-              WHERE job.status IN (
-                'pending', 'leased', 'running', 'retry_wait', 'paused'
-              )
-                AND (
-                  job.plan -> 'targets' @> %s
-                  OR EXISTS (
-                    SELECT 1 FROM backfill_job_targets affected
-                    WHERE affected.backfill_job_id = job.id
-                      AND affected.instrument_id = %s
-                  )
-                )
-            )
-              AND target.status IN ('pending', 'running', 'paused')
+            WHERE backfill_job_id = ANY(%s) AND instrument_id = %s
+              AND status IN ('pending', 'running', 'paused')
             """,
-            (target_status, changed_at, Jsonb([instrument_id]), instrument_id),
+            (target_status, changed_at, affected_job_ids, instrument_id),
         )
         connection.execute(
             """
             UPDATE backfill_jobs job
-            SET status = %s,
-                lease_owner = NULL,
-                lease_expires_at = NULL,
-                updated_at = %s
-            WHERE job.status IN (
-              'pending', 'leased', 'running', 'retry_wait', 'paused'
-            )
-              AND (
-                EXISTS (
-                  SELECT 1 FROM backfill_job_targets target
-                  WHERE target.backfill_job_id = job.id
-                    AND target.instrument_id = %s
-                )
-                OR job.plan -> 'targets' @> %s
+            SET status = CASE
+                  WHEN EXISTS (
+                    SELECT 1 FROM backfill_job_targets target
+                    WHERE target.backfill_job_id = job.id AND target.status = 'paused'
+                  ) THEN 'paused'
+                  ELSE %s
+                END,
+                lease_owner = NULL, lease_expires_at = NULL, updated_at = %s
+            WHERE job.id = ANY(%s)
+              AND NOT EXISTS (
+                SELECT 1 FROM backfill_job_targets target
+                WHERE target.backfill_job_id = job.id
+                  AND target.status IN ('pending', 'running')
               )
             """,
-            (job_status, changed_at, instrument_id, Jsonb([instrument_id])),
+            (job_status, changed_at, affected_job_ids),
         )
 
     def claim_backfill_job(
@@ -1476,6 +1824,21 @@ class PostgresDataFoundationRepository:
             raise ValueError("lease_seconds는 1 이상이어야 한다.")
         lease_expires_at = now + timedelta(seconds=lease_seconds)
         with self._connect() as connection:
+            if self._enforce_backfill_safety_gate:
+                gate = connection.execute(
+                    """
+                    SELECT 1 FROM backfill_safety_gate
+                    WHERE singleton AND enabled
+                      AND backup_verified_at >= %s - interval '24 hours'
+                      AND backup_verified_at <= %s
+                      AND required_capacity_bytes > 0
+                      AND free_capacity_bytes >= required_capacity_bytes
+                      AND approved_sha = %s
+                    """,
+                    (now, now, self._release_sha),
+                ).fetchone()
+                if not self._release_sha or gate is None:
+                    return None
             row = connection.execute(
                 """
                 SELECT *

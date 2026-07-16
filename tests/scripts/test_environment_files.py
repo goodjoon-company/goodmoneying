@@ -105,6 +105,8 @@ def test_prod_home_env_samples_list_server_runtime_keys() -> None:
     assert {"POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"}.issubset(infra_keys)
     assert {
         "GOODMONEYING_DATABASE_URL",
+        "GOODMONEYING_RUNTIME_MODE",
+        "GOODMONEYING_RELEASE_SHA",
         "GOODMONEYING_OPERATOR_TOKEN",
         "GOODMONEYING_DASHBOARD_REFRESH_CONFIG",
         "GOODMONEYING_LIVE_UPBIT",

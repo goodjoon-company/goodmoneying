@@ -391,8 +391,7 @@ class SQLiteOperationsRepository:
                 self._conn.execute("ALTER TABLE collection_targets ADD COLUMN target_order INTEGER")
             for table_name in ("ticker_snapshots", "orderbook_summaries"):
                 snapshot_columns = {
-                    row["name"]
-                    for row in self._conn.execute(f"PRAGMA table_info({table_name})")
+                    row["name"] for row in self._conn.execute(f"PRAGMA table_info({table_name})")
                 }
                 if "occurred_at" not in snapshot_columns:
                     self._conn.execute(f"ALTER TABLE {table_name} ADD COLUMN occurred_at TEXT")
@@ -693,9 +692,7 @@ class SQLiteOperationsRepository:
             self._upsert_orderbooks(summaries)
         return len(frames)
 
-    def purge_expired_source_evidence(
-        self, *, as_of: datetime | None = None
-    ) -> tuple[int, int]:
+    def purge_expired_source_evidence(self, *, as_of: datetime | None = None) -> tuple[int, int]:
         del as_of
         return (0, 0)
 
@@ -1429,7 +1426,7 @@ class SQLiteOperationsRepository:
             "candle_aggregation",
         }:
             raise ValueError("지원하지 않는 수집 워커 유형이다.")
-        if status not in {"running", "failed"}:
+        if status not in {"running", "gated", "failed"}:
             raise ValueError("지원하지 않는 수집 워커 상태다.")
         now = now_kst()
         with self._lock, self._conn:
@@ -1459,7 +1456,7 @@ class SQLiteOperationsRepository:
                     ELSE collection_worker_heartbeats.last_error_at
                   END,
                   last_error_message = CASE
-                    WHEN excluded.status = 'failed'
+                    WHEN excluded.status IN ('failed', 'gated')
                     THEN excluded.last_error_message
                     ELSE collection_worker_heartbeats.last_error_message
                   END,
@@ -2345,6 +2342,13 @@ class SQLiteOperationsRepository:
                 "failed",
                 "오류",
                 str(row["last_error_message"] or "마지막 heartbeat가 실패 상태입니다."),
+                last_heartbeat_at,
+            )
+        if row["status"] == "gated":
+            return (
+                "gated",
+                "승인 대기",
+                str(row["last_error_message"] or "백필 안전 게이트가 닫혀 있습니다."),
                 last_heartbeat_at,
             )
         if now_kst() - last_heartbeat_at > stale_after:

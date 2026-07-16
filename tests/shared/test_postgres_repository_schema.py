@@ -1,10 +1,29 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
+
+
+def test_postgres_repositories_share_one_coverage_transition_implementation() -> None:
+    operation_source = Path(
+        "packages/shared/goodmoneying_shared/postgres_repository.py"
+    ).read_text()
+    foundation_source = Path(
+        "packages/shared/goodmoneying_shared/data_foundation_repository.py"
+    ).read_text()
+    shared_import = (
+        "from goodmoneying_shared.coverage_transition import "
+        "replace_coverage_with_classification"
+    )
+
+    assert shared_import in operation_source
+    assert shared_import in foundation_source
+    assert "def _replace_coverage_with_classification" not in operation_source
+    assert "def _replace_coverage_with_classification" not in foundation_source
 
 
 def test_postgres_repository_initialization_does_not_connect_or_apply_schema(

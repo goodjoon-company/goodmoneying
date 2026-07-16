@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 import threading
 from collections.abc import Callable
-from datetime import timedelta
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from functools import wraps
 from typing import Any, cast
@@ -13,6 +14,13 @@ import uvicorn
 from fastapi import FastAPI
 
 from goodmoneying_api.main import create_app
+from goodmoneying_shared.data_foundation import (
+    DEFAULT_KRW_START_AT,
+    CoverageState,
+    DataFoundationOverview,
+    MarketCollectionPolicySettings,
+    MarketCollectionStatus,
+)
 from goodmoneying_shared.models import SourceCandle
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
@@ -40,6 +48,123 @@ class _SerializedOperationsRepository:
                 return callable_attribute(*args, **kwargs)
 
         return synchronized
+
+
+class _SeededDataFoundationRepository:
+    def __init__(self) -> None:
+        self._markets = [
+            MarketCollectionStatus(
+                market_code="KRW-BTC",
+                korean_name="비트코인",
+                english_name="Bitcoin",
+                quote_currency="KRW",
+                trading_status="active",
+                market_warning="NONE",
+                target_status="active",
+                active_data_type_count=4,
+                total_data_type_count=4,
+                coverage_counts={
+                    "available": 24,
+                    "no_trade": 3,
+                    "missing": 0,
+                    "unavailable": 2,
+                    "unverified": 1,
+                },
+                collection_policy=MarketCollectionPolicySettings(
+                    start_at=DEFAULT_KRW_START_AT,
+                    data_types=(
+                        "source_candle",
+                        "trade_event",
+                        "orderbook_snapshot",
+                        "ticker_snapshot",
+                    ),
+                    candle_unit="1m",
+                    retention_days=None,
+                    priority=100,
+                    continuous=True,
+                ),
+            ),
+            MarketCollectionStatus(
+                market_code="KRW-ETH",
+                korean_name="이더리움",
+                english_name="Ethereum",
+                quote_currency="KRW",
+                trading_status="active",
+                market_warning="CAUTION",
+                target_status="paused",
+                active_data_type_count=0,
+                total_data_type_count=4,
+                coverage_counts={
+                    "available": 18,
+                    "no_trade": 0,
+                    "missing": 1,
+                    "unavailable": 3,
+                    "unverified": 2,
+                },
+                collection_policy=MarketCollectionPolicySettings(
+                    start_at=DEFAULT_KRW_START_AT,
+                    data_types=(
+                        "source_candle",
+                        "trade_event",
+                        "orderbook_snapshot",
+                        "ticker_snapshot",
+                    ),
+                    candle_unit="1m",
+                    retention_days=None,
+                    priority=100,
+                    continuous=True,
+                ),
+            ),
+        ]
+
+    def overview(self) -> DataFoundationOverview:
+        coverage_counts: dict[CoverageState, int] = {
+            "available": 0,
+            "no_trade": 0,
+            "missing": 0,
+            "unavailable": 0,
+            "unverified": 0,
+        }
+        for market in self._markets:
+            for status in coverage_counts:
+                coverage_counts[status] += market.coverage_counts[status]
+        return DataFoundationOverview(
+            market_count=len(self._markets),
+            krw_market_count=len(self._markets),
+            active_target_count=sum(market.active_data_type_count for market in self._markets),
+            pending_backfill_job_count=1,
+            desired_subscription_count=3,
+            policy_start_at=DEFAULT_KRW_START_AT,
+            coverage_counts=coverage_counts,
+            markets=list(self._markets),
+        )
+
+    def set_market_target_state(
+        self,
+        market_code: str,
+        *,
+        state: str,
+        actor: str,
+        reason: str,
+        changed_at: datetime,
+        policy: MarketCollectionPolicySettings | None = None,
+    ) -> None:
+        del actor, reason
+        if changed_at.tzinfo is None or changed_at.utcoffset() != UTC.utcoffset(changed_at):
+            raise ValueError("changed_at은 UTC여야 한다.")
+        for index, market in enumerate(self._markets):
+            if market.market_code != market_code:
+                continue
+            if state not in {"active", "paused", "excluded"}:
+                raise ValueError("지원하지 않는 상태다.")
+            self._markets[index] = replace(
+                market,
+                target_status=state,  # type: ignore[arg-type]
+                active_data_type_count=market.total_data_type_count if state == "active" else 0,
+                collection_policy=policy or market.collection_policy,
+            )
+            return
+        raise ValueError("변경할 시장을 찾을 수 없다.")
 
 
 def _analysis_history_candles(
@@ -77,9 +202,7 @@ def _start_aggregation_heartbeat(repository: OperationsRepository) -> None:
 
     def maintain_heartbeat() -> None:
         while True:
-            repository.record_collection_worker_heartbeat(
-                "candle_aggregation", "running"
-            )
+            repository.record_collection_worker_heartbeat("candle_aggregation", "running")
             interval.wait(5)
 
     threading.Thread(
@@ -121,7 +244,10 @@ def create_seeded_e2e_app() -> FastAPI:
         _SerializedOperationsRepository(repository),
     )
     _start_aggregation_heartbeat(serialized_repository)
-    app = create_app(serialized_repository)
+    app = create_app(
+        serialized_repository,
+        data_foundation_repository=_SeededDataFoundationRepository(),
+    )
     catalog = load_catalog()
 
     @app.get("/v1/catalog")

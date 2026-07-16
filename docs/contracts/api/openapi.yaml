@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
-  title: goodmoneying M1 Operations API
-  version: 0.1.0
-  description: 업비트 수집 파이프라인 M1 운영 서버 API 계약.
+  title: goodmoneying 시스템 트레이딩 운영 API
+  version: 0.2.0
+  description: 업비트 데이터 기반(Data Foundation)과 기존 운영 기능의 HTTP API 계약.
 servers:
   - url: http://localhost:8000
 security: []
@@ -35,6 +35,53 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
+  /v1/data-foundation:
+    get:
+      tags:
+        - 수집(Collection)
+      summary: 시장·자동 수집 정책·커버리지 품질 조회
+      operationId: getDataFoundation
+      responses:
+        "200":
+          description: UTC 정책 기준, 전체 시장과 5단계 커버리지 상태
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataFoundationResponse"
+  /v1/data-foundation/markets/{marketCode}:
+    patch:
+      tags:
+        - 수집(Collection)
+      summary: 시장 수집 정책 상태 변경
+      operationId: updateMarketTargetState
+      security:
+        - OperatorToken: []
+      parameters:
+        - name: marketCode
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Z0-9]+-[A-Z0-9]+$"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMarketTargetStateRequest"
+      responses:
+        "200":
+          description: 저장된 시장 수집 정책 상태
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateMarketTargetStateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /v1/dashboard/summary:
     get:
       tags:
@@ -641,6 +688,145 @@ components:
           type: string
           enum: [ok, degraded, down]
         checkedAt:
+          type: string
+          format: date-time
+    CoverageCounts:
+      description: 증거로 분류한 5단계 커버리지 구간 수.
+      type: object
+      additionalProperties: false
+      required: [available, no_trade, missing, unavailable, unverified]
+      properties:
+        available: { type: integer, minimum: 0 }
+        no_trade: { type: integer, minimum: 0 }
+        missing: { type: integer, minimum: 0 }
+        unavailable: { type: integer, minimum: 0 }
+        unverified: { type: integer, minimum: 0 }
+    DataFoundationMarket:
+      description: 공식 시장 상태, 자동 수집 정책과 품질 구간을 합친 시장 행.
+      type: object
+      additionalProperties: false
+      required:
+        - marketCode
+        - koreanName
+        - englishName
+        - quoteCurrency
+        - tradingStatus
+        - marketWarning
+        - targetStatus
+        - activeDataTypeCount
+        - totalDataTypeCount
+        - coverageCounts
+        - collectionPolicy
+      properties:
+        marketCode: { type: string }
+        koreanName: { type: string }
+        englishName: { type: string }
+        quoteCurrency: { type: string }
+        tradingStatus:
+          type: string
+          enum: [active, inactive, delisted, unknown]
+        marketWarning: { type: string }
+        targetStatus:
+          type: string
+          enum: [active, paused, excluded, not_targeted]
+        activeDataTypeCount: { type: integer, minimum: 0 }
+        totalDataTypeCount: { type: integer, minimum: 0 }
+        coverageCounts:
+          $ref: "#/components/schemas/CoverageCounts"
+        collectionPolicy:
+          oneOf:
+            - $ref: "#/components/schemas/MarketCollectionPolicy"
+            - type: "null"
+    MarketCollectionPolicy:
+      description: 시장별 과거·실시간 자동 수집 설정 스냅숏.
+      type: object
+      additionalProperties: false
+      required: [startAt, dataTypes, candleUnit, retentionDays, priority, continuous]
+      properties:
+        startAt:
+          type: string
+          format: date-time
+          description: UTC RFC 3339 수집 시작 시각.
+        dataTypes:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            enum: [source_candle, trade_event, orderbook_snapshot, ticker_snapshot]
+        candleUnit:
+          type: string
+          const: 1m
+        retentionDays:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 36500
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        continuous:
+          type: boolean
+    DataFoundationResponse:
+      description: UTC 기본 정책과 전체 시장 데이터 기반 현황.
+      type: object
+      additionalProperties: false
+      required: [timeZone, policyStartAt, summary, markets]
+      properties:
+        timeZone:
+          type: string
+          const: UTC
+        policyStartAt:
+          type: string
+          format: date-time
+        summary:
+          type: object
+          additionalProperties: false
+          required:
+            - marketCount
+            - krwMarketCount
+            - activeTargetCount
+            - pendingBackfillJobCount
+            - desiredSubscriptionCount
+            - coverageCounts
+          properties:
+            marketCount: { type: integer, minimum: 0 }
+            krwMarketCount: { type: integer, minimum: 0 }
+            activeTargetCount: { type: integer, minimum: 0 }
+            pendingBackfillJobCount: { type: integer, minimum: 0 }
+            desiredSubscriptionCount: { type: integer, minimum: 0 }
+            coverageCounts:
+              $ref: "#/components/schemas/CoverageCounts"
+        markets:
+          type: array
+          items:
+            $ref: "#/components/schemas/DataFoundationMarket"
+    UpdateMarketTargetStateRequest:
+      description: 운영자가 시장 수집 정책을 활성·일시정지·제외하는 명령.
+      type: object
+      additionalProperties: false
+      required: [state, reason]
+      properties:
+        state:
+          type: string
+          enum: [active, paused, excluded]
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+        policy:
+          $ref: "#/components/schemas/MarketCollectionPolicy"
+    UpdateMarketTargetStateResponse:
+      description: 저장된 시장 수집 정책 변경 결과.
+      type: object
+      additionalProperties: false
+      required: [marketCode, state, changedAt]
+      properties:
+        marketCode: { type: string }
+        state:
+          type: string
+          enum: [active, paused, excluded]
+        changedAt:
           type: string
           format: date-time
     Instrument:
@@ -1923,14 +2109,14 @@ components:
     BackfillJob:
       description: 백필 작업의 상태, 데이터 유형, 진행률, 대상 범위, 대상 코인, 생성 시각 모델.
       type: object
-      required: [id, status, dataType, progressPercent, estimatedRequestCount, totalTargetCount, completedTargetCount, runningTargetIndex, currentTarget, currentTargetBackfillRowCount, processedMissingRangeCount, estimatedMissingRangeCount, targetStartAt, targetEndAt, targets, createdAt]
+      required: [id, status, dataType, progressPercent, estimatedRequestCount, totalTargetCount, completedTargetCount, runningTargetIndex, currentTarget, currentTargetBackfillRowCount, processedMissingRangeCount, estimatedMissingRangeCount, targetStartAt, targetEndAt, targets, createdAt, attemptCount, maxAttempts, nextRetryAt, lastErrorCode, deadLetterReason]
       properties:
         id:
           type: integer
           format: int64
         status:
           type: string
-          enum: [planned, pending, running, paused, stopped, succeeded, failed]
+          enum: [planned, pending, leased, running, retry_wait, paused, stopped, succeeded, failed, dead_letter, cancelled]
         dataType:
           type: string
         progressPercent:
@@ -1975,6 +2161,27 @@ components:
         createdAt:
           type: string
           format: date-time
+        attemptCount:
+          type: integer
+          minimum: 0
+          description: 현재까지 임대를 획득한 실행 시도 횟수.
+        maxAttempts:
+          type: integer
+          minimum: 1
+          description: 데드레터로 격리하기 전 최대 실행 시도 횟수.
+        nextRetryAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: 재시도 대기 상태에서 다시 임대할 수 있는 UTC 시각.
+        lastErrorCode:
+          type: string
+          nullable: true
+          description: 가장 최근 실패의 안정적인 오류 코드.
+        deadLetterReason:
+          type: string
+          nullable: true
+          description: 재시도 예산 소진으로 작업을 격리한 이유.
     NotificationEventsResponse:
       description: 운영 알림 이벤트 목록 응답.
       type: object

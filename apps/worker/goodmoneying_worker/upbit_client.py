@@ -4,11 +4,14 @@ import os
 import re
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import httpx
 
+from goodmoneying_shared.data_foundation import MarketCatalogItem
+from goodmoneying_shared.models import FetchedCandlePage, FetchEvidence
 from goodmoneying_shared.time import KST
 from goodmoneying_worker.fixtures import (
     fixture_candle_rows,
@@ -16,8 +19,12 @@ from goodmoneying_worker.fixtures import (
     fixture_ticker_rows,
 )
 
+CandlePage = FetchedCandlePage | list[dict[str, str]]
+
 
 class UpbitClient(Protocol):
+    def get_market_catalog(self) -> list[MarketCatalogItem]: ...
+
     def get_krw_tickers(self) -> list[dict[str, str]]: ...
 
     def get_orderbooks(self, markets: list[str]) -> list[dict[str, str]]: ...
@@ -30,14 +37,25 @@ class UpbitClient(Protocol):
 
     def fetch_minute_candle_pages(
         self, market: str, start_at: datetime, end_at: datetime
-    ) -> Iterable[list[dict[str, str]]]: ...
+    ) -> Iterable[CandlePage]: ...
 
 
 class UpbitApiError(RuntimeError):
-    def __init__(self, status_code: int, message: str) -> None:
+    def __init__(
+        self,
+        status_code: int | None,
+        message: str,
+        *,
+        retry_after_seconds: float | None = None,
+        evidence: FetchEvidence | None = None,
+        error_type: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.message = message
+        self.retry_after_seconds = retry_after_seconds
+        self.evidence = evidence
+        self.error_type = error_type or (evidence.error_type if evidence is not None else None)
 
 
 class UpbitRateLimiter:
@@ -77,6 +95,18 @@ class FixtureUpbitClient:
     def __init__(self, market_count: int = 100) -> None:
         self._market_count = market_count
 
+    def get_market_catalog(self) -> list[MarketCatalogItem]:
+        return [
+            MarketCatalogItem(
+                market_code=row["market"],
+                korean_name=row["display_name"],
+                english_name=row["display_name"],
+                market_warning="NONE",
+                tradable=True,
+            )
+            for row in fixture_ticker_rows(self._market_count)
+        ]
+
     def get_krw_tickers(self) -> list[dict[str, str]]:
         return fixture_ticker_rows(self._market_count)
 
@@ -92,18 +122,36 @@ class FixtureUpbitClient:
         return [
             row
             for page in self.fetch_minute_candle_pages(market, start_at, end_at)
-            for row in page
+            for row in (page.rows if isinstance(page, FetchedCandlePage) else page)
         ]
 
     def fetch_minute_candle_pages(
         self, market: str, start_at: datetime, end_at: datetime
-    ) -> Iterable[list[dict[str, str]]]:
+    ) -> Iterable[CandlePage]:
         minutes = max(1, int((end_at - start_at).total_seconds() // 60))
-        yield [
+        requested_at = datetime.now(UTC)
+        rows = [
             row
             for row in fixture_candle_rows([market], minutes=minutes)
             if start_at <= datetime.fromisoformat(row["candle_start_at"]).astimezone(KST) < end_at
         ]
+        yield FetchedCandlePage(
+            rows=rows,
+            evidence=FetchEvidence(
+                endpoint="/v1/candles/minutes/1",
+                request_parameters={
+                    "market": market,
+                    "to": end_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+                    "count": 200,
+                },
+                requested_at=requested_at,
+                responded_at=datetime.now(UTC),
+                response_status=200,
+                response_payload=rows,
+                requested_range_start_at=start_at.astimezone(UTC),
+                requested_range_end_at=end_at.astimezone(UTC),
+            ),
+        )
 
 
 class LiveUpbitClient:
@@ -114,16 +162,25 @@ class LiveUpbitClient:
         timeout: float = 10.0,
         http_client: httpx.Client | None = None,
         min_request_interval_seconds: float = 0.12,
-        retry_sleep_seconds: float = 1.0,
-        max_retries: int = 3,
     ) -> None:
         self._client = http_client or httpx.Client(base_url=self.BASE_URL, timeout=timeout)
         self._rate_limiter = UpbitRateLimiter(min_request_interval_seconds)
-        self._retry_sleep_seconds = retry_sleep_seconds
-        self._max_retries = max_retries
+
+    def get_market_catalog(self) -> list[MarketCatalogItem]:
+        response = self._get_json("/market/all", params={"isDetails": "true"})
+        return [
+            MarketCatalogItem(
+                market_code=str(item["market"]),
+                korean_name=str(item.get("korean_name") or item["market"]),
+                english_name=str(item.get("english_name") or item["market"]),
+                market_warning=str(item.get("market_warning") or "NONE"),
+                tradable=_is_market_tradable(item),
+            )
+            for item in response
+        ]
 
     def get_krw_tickers(self) -> list[dict[str, str]]:
-        markets_response = self._get_json("/market/all", params={"isDetails": "false"})
+        markets_response = self._get_json("/market/all", params={"isDetails": "true"})
         market_codes = [
             item["market"]
             for item in markets_response
@@ -138,6 +195,7 @@ class LiveUpbitClient:
                 "trade_price": str(by_market[market_code]["trade_price"]),
                 "acc_trade_price_24h": str(by_market[market_code]["acc_trade_price_24h"]),
                 "signed_change_rate": str(by_market[market_code].get("signed_change_rate") or "0"),
+                "timestamp": str(by_market[market_code].get("timestamp") or ""),
             }
             for market_code in market_codes
             if market_code in by_market
@@ -164,6 +222,7 @@ class LiveUpbitClient:
                     "bid_depth_10": str(bid_depth),
                     "ask_depth_10": str(ask_depth),
                     "imbalance_10": str(imbalance),
+                    "timestamp": str(item.get("timestamp") or ""),
                 }
             )
         return rows
@@ -202,7 +261,7 @@ class LiveUpbitClient:
     ) -> list[dict[str, str]]:
         rows_by_started_at: dict[datetime, dict[str, str]] = {}
         for page in self.fetch_minute_candle_pages(market, start_at, end_at):
-            for row in page:
+            for row in page.rows:
                 rows_by_started_at[
                     datetime.fromisoformat(row["candle_start_at"]).astimezone(UTC)
                 ] = row
@@ -213,22 +272,29 @@ class LiveUpbitClient:
 
     def fetch_minute_candle_pages(
         self, market: str, start_at: datetime, end_at: datetime
-    ) -> Iterable[list[dict[str, str]]]:
+    ) -> Iterable[FetchedCandlePage]:
         if start_at >= end_at:
             raise ValueError("캔들 조회 종료 시각은 시작 시각보다 뒤여야 한다.")
         cursor = end_at.astimezone(UTC)
         start_at_utc = start_at.astimezone(UTC)
         end_at_utc = end_at.astimezone(UTC)
         while cursor > start_at_utc:
-            payload = self._get_json(
-                "/candles/minutes/1",
-                params={
-                    "market": market,
-                    "to": cursor.isoformat().replace("+00:00", "Z"),
-                    "count": 200,
-                },
+            endpoint = "/v1/candles/minutes/1"
+            parameters: dict[str, str | int] = {
+                "market": market,
+                "to": cursor.isoformat().replace("+00:00", "Z"),
+                "count": 200,
+            }
+            payload, evidence = self._get_json_with_evidence(
+                "/candles/minutes/1", endpoint=endpoint, params=parameters
+            )
+            evidence = replace(
+                evidence,
+                requested_range_start_at=start_at_utc,
+                requested_range_end_at=cursor,
             )
             if not payload:
+                yield FetchedCandlePage(rows=[], evidence=evidence)
                 break
             page_times = [
                 _parse_upbit_candle_time(item["candle_date_time_utc"]) for item in payload
@@ -238,10 +304,15 @@ class LiveUpbitClient:
                 if start_at_utc <= candle_start_at < end_at_utc:
                     page_rows_by_started_at[candle_start_at] = _upbit_candle_to_row(market, item)
             if page_rows_by_started_at:
-                yield [
-                    page_rows_by_started_at[started_at]
-                    for started_at in sorted(page_rows_by_started_at)
-                ]
+                yield FetchedCandlePage(
+                    rows=[
+                        page_rows_by_started_at[started_at]
+                        for started_at in sorted(page_rows_by_started_at)
+                    ],
+                    evidence=evidence,
+                )
+            else:
+                yield FetchedCandlePage(rows=[], evidence=evidence)
             oldest = min(page_times)
             if oldest <= start_at_utc:
                 break
@@ -250,20 +321,84 @@ class LiveUpbitClient:
             cursor = oldest.astimezone(UTC)
 
     def _get_json(self, path: str, params: dict[str, str | int]) -> list[dict[str, Any]]:
-        attempts = 0
-        while True:
-            self._rate_limiter.wait()
+        self._rate_limiter.wait()
+        response = self._client.get(path, params=params)
+        self._rate_limiter.observe_remaining_req(response.headers.get("Remaining-Req"))
+        if response.status_code < 400:
+            return list(response.json())
+        retry_after_seconds = _api_retry_delay(response)
+        raise UpbitApiError(
+            status_code=response.status_code,
+            message=_response_error_message(response),
+            retry_after_seconds=retry_after_seconds,
+        )
+
+    def _get_json_with_evidence(
+        self,
+        path: str,
+        *,
+        endpoint: str,
+        params: dict[str, str | int],
+    ) -> tuple[list[dict[str, Any]], FetchEvidence]:
+        self._rate_limiter.wait()
+        requested_at = datetime.now(UTC)
+        try:
             response = self._client.get(path, params=params)
-            self._rate_limiter.observe_remaining_req(response.headers.get("Remaining-Req"))
-            if response.status_code < 400:
-                return list(response.json())
-            if response.status_code not in {418, 429} or attempts >= self._max_retries:
-                raise UpbitApiError(
-                    status_code=response.status_code,
-                    message=_response_error_message(response),
-                )
-            attempts += 1
-            time.sleep(_retry_delay(response, self._retry_sleep_seconds))
+        except httpx.TransportError as exc:
+            responded_at = datetime.now(UTC)
+            error_type = type(exc).__name__
+            transport_error_message = str(exc) or error_type
+            evidence = FetchEvidence(
+                endpoint=endpoint,
+                request_parameters=dict(params),
+                requested_at=requested_at,
+                responded_at=responded_at,
+                response_status=None,
+                response_payload=None,
+                error_type=error_type,
+                error_message=transport_error_message,
+            )
+            raise UpbitApiError(
+                status_code=None,
+                message=transport_error_message,
+                evidence=evidence,
+                error_type=error_type,
+            ) from exc
+        responded_at = datetime.now(UTC)
+        self._rate_limiter.observe_remaining_req(response.headers.get("Remaining-Req"))
+        response_payload = _raw_response_payload(response)
+        error_message = (
+            _response_error_message(response) if response.status_code >= 400 else None
+        )
+        evidence = FetchEvidence(
+            endpoint=endpoint,
+            request_parameters=dict(params),
+            requested_at=requested_at,
+            responded_at=responded_at,
+            response_status=response.status_code,
+            response_payload=response_payload,
+            error_type=("HTTPStatusError" if response.status_code >= 400 else None),
+            error_message=error_message,
+        )
+        if response.status_code < 400:
+            if not isinstance(response_payload, list):
+                raise ValueError("업비트 목록 응답이 JSON 배열이 아니다.")
+            return list(response_payload), evidence
+        retry_after_seconds = _api_retry_delay(response)
+        raise UpbitApiError(
+            status_code=response.status_code,
+            message=error_message or f"Upbit API returned {response.status_code}",
+            retry_after_seconds=retry_after_seconds,
+            evidence=evidence,
+            error_type="HTTPStatusError",
+        )
+
+
+def _is_market_tradable(item: dict[str, Any]) -> bool:
+    event = item.get("market_event")
+    if not isinstance(event, dict):
+        return True
+    return not bool(event.get("trading_suspended"))
 
 
 def _parse_upbit_candle_time(value: object) -> datetime:
@@ -298,7 +433,24 @@ def _response_error_message(response: httpx.Response) -> str:
     return f"Upbit API returned {response.status_code}"
 
 
-def _retry_delay(response: httpx.Response, default_seconds: float) -> float:
+def _raw_response_payload(response: httpx.Response) -> object:
+    try:
+        return response.json()
+    except ValueError:
+        return response.text
+
+
+def _api_retry_delay(response: httpx.Response) -> float | None:
+    if response.status_code == 418:
+        return _retry_delay(response, None)
+    if response.status_code == 429:
+        return _retry_delay(response, 1.0)
+    return None
+
+
+def _retry_delay(
+    response: httpx.Response, default_seconds: float | None
+) -> float | None:
     retry_after = response.headers.get("Retry-After")
     if retry_after is not None:
         try:

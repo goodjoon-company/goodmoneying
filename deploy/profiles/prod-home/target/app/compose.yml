@@ -61,6 +61,16 @@ services:
       - ${GOODMONEYING_APP_REALTIME_COLLECTION_WORKER_DATA_DIR}:/var/lib/goodmoneying/realtime-collection-worker
       - ${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro
 
+  market-sync-worker:
+    image: ghcr.io/goodjoon-company/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}
+    container_name: goodmoneying-market-sync-worker
+    restart: unless-stopped
+    command: ["uv", "run", "--no-sync", "python", "-m", "goodmoneying_worker.data_foundation_worker"]
+    env_file:
+      - ${GOODMONEYING_APP_BASE_DIR}/env/app.env
+    volumes:
+      - ${GOODMONEYING_APP_CONFIG_DIR}:/etc/goodmoneying:ro
+
   backfill-collection-worker:
     image: ghcr.io/goodjoon-company/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}
     container_name: goodmoneying-backfill-collection-worker

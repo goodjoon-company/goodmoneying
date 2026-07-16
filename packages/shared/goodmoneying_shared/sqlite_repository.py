@@ -50,6 +50,7 @@ from goodmoneying_shared.models import (
     OrderbookSummary,
     RealtimeCollectionHeatmapBucket,
     RealtimeCollectionHeatmapRow,
+    RealtimeSourceFrame,
     RealtimeWorkerStatus,
     SourceCandle,
     StorageBreakdownItem,
@@ -254,6 +255,8 @@ class SQLiteOperationsRepository:
                   acc_trade_price_24h TEXT NOT NULL,
                   change_rate TEXT NOT NULL,
                   collected_at TEXT NOT NULL,
+                  occurred_at TEXT,
+                  received_at TEXT,
                   PRIMARY KEY (instrument_id, bucket_at)
                 );
 
@@ -269,6 +272,8 @@ class SQLiteOperationsRepository:
                   ask_depth_10 TEXT NOT NULL,
                   imbalance_10 TEXT NOT NULL,
                   collected_at TEXT NOT NULL,
+                  occurred_at TEXT,
+                  received_at TEXT,
                   PRIMARY KEY (instrument_id, bucket_at)
                 );
 
@@ -384,6 +389,15 @@ class SQLiteOperationsRepository:
             }
             if "target_order" not in columns:
                 self._conn.execute("ALTER TABLE collection_targets ADD COLUMN target_order INTEGER")
+            for table_name in ("ticker_snapshots", "orderbook_summaries"):
+                snapshot_columns = {
+                    row["name"]
+                    for row in self._conn.execute(f"PRAGMA table_info({table_name})")
+                }
+                if "occurred_at" not in snapshot_columns:
+                    self._conn.execute(f"ALTER TABLE {table_name} ADD COLUMN occurred_at TEXT")
+                if "received_at" not in snapshot_columns:
+                    self._conn.execute(f"ALTER TABLE {table_name} ADD COLUMN received_at TEXT")
 
     def upsert_instrument(self, market_code: str, display_name: str) -> Instrument:
         quote_currency, base_asset = market_code.split("-", maxsplit=1)
@@ -672,6 +686,18 @@ class SQLiteOperationsRepository:
                 (_to_db_time(now_kst()), run_id),
             )
         return sum(inserted_by_instrument.values())
+
+    def record_realtime_source_frames(self, frames: list[RealtimeSourceFrame]) -> int:
+        summaries = [frame.summary for frame in frames if frame.summary is not None]
+        with self._lock, self._conn:
+            self._upsert_orderbooks(summaries)
+        return len(frames)
+
+    def purge_expired_source_evidence(
+        self, *, as_of: datetime | None = None
+    ) -> tuple[int, int]:
+        del as_of
+        return (0, 0)
 
     def _dashboard_summary(self) -> DashboardSummary:
         targets = self.collection_dashboard_targets()
@@ -1194,9 +1220,8 @@ class SQLiteOperationsRepository:
                     """,
                     (instrument.id, unit),
                 ).fetchone()["candle_start_at"]
-                if (
-                    rollup_latest is None
-                    or _from_db_time(rollup_latest) < rollup_bucket_start(unit, latest)
+                if rollup_latest is None or _from_db_time(rollup_latest) < rollup_bucket_start(
+                    unit, latest
                 ):
                     stale_targets.append((instrument.id, unit))
         if not stale_targets:
@@ -1322,9 +1347,7 @@ class SQLiteOperationsRepository:
             id=int(row["id"]),
             status=cast(Literal["pending", "running", "succeeded", "failed"], row["status"]),
             progress_percent=(
-                Decimal(completed) * Decimal("100") / Decimal(total)
-                if total
-                else Decimal("0")
+                Decimal(completed) * Decimal("100") / Decimal(total) if total else Decimal("0")
             ),
             total_target_count=total,
             completed_target_count=completed,
@@ -1616,8 +1639,14 @@ class SQLiteOperationsRepository:
         return [self._backfill_target_from_row(row) for row in rows]
 
     def record_backfill_candles(
-        self, job_id: int, instrument_id: int, candles: list[SourceCandle]
+        self,
+        job_id: int,
+        instrument_id: int,
+        candles: list[SourceCandle],
+        *,
+        fetch_evidence: object | None = None,
     ) -> int:
+        del fetch_evidence
         if not candles:
             return 0
         if any(item.instrument_id != instrument_id for item in candles):
@@ -1701,7 +1730,11 @@ class SQLiteOperationsRepository:
         last_completed_at: datetime | None,
         error_code: str | None = None,
         error_message: str | None = None,
+        retry_after_seconds: float | None = None,
+        *,
+        fetch_evidence: object | None = None,
     ) -> None:
+        del retry_after_seconds, fetch_evidence
         if status not in {"pending", "running", "paused", "stopped", "succeeded", "failed"}:
             raise ValueError("지원하지 않는 백필 대상 상태다.")
         with self._lock, self._conn:
@@ -3190,14 +3223,16 @@ class SQLiteOperationsRepository:
                 """
                 INSERT INTO ticker_snapshots (
                   instrument_id, bucket_at, trade_price, acc_trade_price_24h,
-                  change_rate, collected_at
+                  change_rate, collected_at, occurred_at, received_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(instrument_id, bucket_at) DO UPDATE SET
                   trade_price = excluded.trade_price,
                   acc_trade_price_24h = excluded.acc_trade_price_24h,
                   change_rate = excluded.change_rate,
-                  collected_at = excluded.collected_at
+                  collected_at = excluded.collected_at,
+                  occurred_at = excluded.occurred_at,
+                  received_at = excluded.received_at
                 WHERE excluded.collected_at > ticker_snapshots.collected_at
                 """,
                 (
@@ -3207,6 +3242,8 @@ class SQLiteOperationsRepository:
                     str(item.acc_trade_price_24h),
                     str(item.change_rate),
                     _to_db_time(item.collected_at),
+                    item.occurred_at.astimezone(KST).isoformat(),
+                    item.received_at.astimezone(KST).isoformat(),
                 ),
             )
             counts[item.instrument_id] = counts.get(item.instrument_id, 0) + 1
@@ -3220,9 +3257,9 @@ class SQLiteOperationsRepository:
                 INSERT INTO orderbook_summaries (
                   instrument_id, bucket_at, best_bid_price, best_bid_size,
                   best_ask_price, best_ask_size, spread, bid_depth_10,
-                  ask_depth_10, imbalance_10, collected_at
+                  ask_depth_10, imbalance_10, collected_at, occurred_at, received_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(instrument_id, bucket_at) DO UPDATE SET
                   best_bid_price = excluded.best_bid_price,
                   best_bid_size = excluded.best_bid_size,
@@ -3232,7 +3269,9 @@ class SQLiteOperationsRepository:
                   bid_depth_10 = excluded.bid_depth_10,
                   ask_depth_10 = excluded.ask_depth_10,
                   imbalance_10 = excluded.imbalance_10,
-                  collected_at = excluded.collected_at
+                  collected_at = excluded.collected_at,
+                  occurred_at = excluded.occurred_at,
+                  received_at = excluded.received_at
                 WHERE excluded.collected_at > orderbook_summaries.collected_at
                 """,
                 (
@@ -3247,6 +3286,8 @@ class SQLiteOperationsRepository:
                     str(item.ask_depth_10),
                     str(item.imbalance_10),
                     _to_db_time(item.collected_at),
+                    item.occurred_at.astimezone(KST).isoformat(),
+                    item.received_at.astimezone(KST).isoformat(),
                 ),
             )
             counts[item.instrument_id] = counts.get(item.instrument_id, 0) + 1
@@ -3501,7 +3542,8 @@ class SQLiteOperationsRepository:
             trade_price=_decimal(row["trade_price"]),
             acc_trade_price_24h=_decimal(row["acc_trade_price_24h"]),
             change_rate=_decimal(row["change_rate"]),
-            collected_at=_from_db_time(row["collected_at"]),
+            occurred_at=_from_db_time(row["occurred_at"] or row["bucket_at"]),
+            received_at=_from_db_time(row["received_at"] or row["collected_at"]),
         )
 
     def _orderbook_from_row(self, row: sqlite3.Row) -> OrderbookSummary:
@@ -3516,7 +3558,8 @@ class SQLiteOperationsRepository:
             bid_depth_10=_decimal(row["bid_depth_10"]),
             ask_depth_10=_decimal(row["ask_depth_10"]),
             imbalance_10=_decimal(row["imbalance_10"]),
-            collected_at=_from_db_time(row["collected_at"]),
+            occurred_at=_from_db_time(row["occurred_at"] or row["bucket_at"]),
+            received_at=_from_db_time(row["received_at"] or row["collected_at"]),
         )
 
     def _candle_from_row(self, row: sqlite3.Row) -> SourceCandle:

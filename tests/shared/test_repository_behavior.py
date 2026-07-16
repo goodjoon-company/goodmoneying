@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +12,48 @@ from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_shared.time import KST, minute_bucket, now_kst
 from goodmoneying_worker.collector import UpbitCollectionWorker
 from goodmoneying_worker.upbit_client import FixtureUpbitClient
+
+
+def test_sqlite_existing_snapshot_tables_gain_exchange_and_receive_time_columns(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "legacy.sqlite"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE ticker_snapshots (
+              instrument_id INTEGER NOT NULL, bucket_at TEXT NOT NULL,
+              trade_price TEXT NOT NULL, acc_trade_price_24h TEXT NOT NULL,
+              change_rate TEXT NOT NULL, collected_at TEXT NOT NULL,
+              PRIMARY KEY (instrument_id, bucket_at)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE orderbook_summaries (
+              instrument_id INTEGER NOT NULL, bucket_at TEXT NOT NULL,
+              best_bid_price TEXT NOT NULL, best_bid_size TEXT NOT NULL,
+              best_ask_price TEXT NOT NULL, best_ask_size TEXT NOT NULL,
+              spread TEXT NOT NULL, bid_depth_10 TEXT NOT NULL,
+              ask_depth_10 TEXT NOT NULL, imbalance_10 TEXT NOT NULL,
+              collected_at TEXT NOT NULL,
+              PRIMARY KEY (instrument_id, bucket_at)
+            )
+            """
+        )
+
+    repository = SQLiteOperationsRepository.from_path(database_path)
+    ticker_columns = {
+        row["name"] for row in repository._execute("PRAGMA table_info(ticker_snapshots)")
+    }
+    orderbook_columns = {
+        row["name"] for row in repository._execute("PRAGMA table_info(orderbook_summaries)")
+    }
+    repository.close()
+
+    assert {"occurred_at", "received_at"}.issubset(ticker_columns)
+    assert {"occurred_at", "received_at"}.issubset(orderbook_columns)
 
 
 def test_candidate_universe_defaults_to_top_50_active_targets() -> None:

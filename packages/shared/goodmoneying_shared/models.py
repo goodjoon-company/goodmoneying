@@ -11,14 +11,22 @@ QualityStatus = Literal["normal", "warning", "incident", "backfilling"]
 CollectionOverallStatus = Literal["latest_collecting", "collecting", "warning", "incident"]
 CoverageSegmentStatus = Literal["collected", "missing", "collecting", "future"]
 BackfillStatus = Literal[
-    "planned", "pending", "running", "paused", "stopped", "succeeded", "failed"
+    "planned",
+    "pending",
+    "leased",
+    "running",
+    "retry_wait",
+    "paused",
+    "stopped",
+    "succeeded",
+    "failed",
+    "dead_letter",
+    "cancelled",
 ]
 CollectionRunStatus = Literal["running", "succeeded", "partial", "failed", "cancelled"]
 CollectionDataType = Literal["source_candle", "ticker_snapshot", "orderbook_summary"]
 CollectionRowsByType = dict[CollectionDataType, int]
-CollectionWorkerType = Literal[
-    "realtime_collection", "backfill_collection", "candle_aggregation"
-]
+CollectionWorkerType = Literal["realtime_collection", "backfill_collection", "candle_aggregation"]
 CollectionWorkerHeartbeatStatus = Literal["running", "failed"]
 CollectionWorkerStatus = Literal["running", "stale", "failed"]
 TradeDirection = Literal["ASK", "BID"]
@@ -51,17 +59,47 @@ class CandidateUniverseEntry:
     favorite_order: int | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class TickerSnapshot:
     instrument_id: int
     bucket_at: datetime
     trade_price: Decimal
     acc_trade_price_24h: Decimal
     change_rate: Decimal
-    collected_at: datetime
+    occurred_at: datetime
+    received_at: datetime
+
+    def __init__(
+        self,
+        instrument_id: int,
+        bucket_at: datetime,
+        trade_price: Decimal,
+        acc_trade_price_24h: Decimal,
+        change_rate: Decimal,
+        *,
+        occurred_at: datetime | None = None,
+        received_at: datetime | None = None,
+        collected_at: datetime | None = None,
+    ) -> None:
+        resolved_received_at = received_at or collected_at
+        if resolved_received_at is None:
+            raise TypeError("TickerSnapshot에는 received_at이 필요하다.")
+        object.__setattr__(self, "instrument_id", instrument_id)
+        object.__setattr__(self, "bucket_at", bucket_at)
+        object.__setattr__(self, "trade_price", trade_price)
+        object.__setattr__(self, "acc_trade_price_24h", acc_trade_price_24h)
+        object.__setattr__(self, "change_rate", change_rate)
+        object.__setattr__(self, "occurred_at", occurred_at or bucket_at)
+        object.__setattr__(self, "received_at", resolved_received_at)
+
+    @property
+    def collected_at(self) -> datetime:
+        """기존 호출자 호환 별칭이며 의미는 로컬 수신 시각이다."""
+
+        return self.received_at
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class OrderbookSummary:
     instrument_id: int
     bucket_at: datetime
@@ -73,7 +111,92 @@ class OrderbookSummary:
     bid_depth_10: Decimal
     ask_depth_10: Decimal
     imbalance_10: Decimal
-    collected_at: datetime
+    occurred_at: datetime
+    received_at: datetime
+
+    def __init__(
+        self,
+        instrument_id: int,
+        bucket_at: datetime,
+        best_bid_price: Decimal,
+        best_bid_size: Decimal,
+        best_ask_price: Decimal,
+        best_ask_size: Decimal,
+        spread: Decimal,
+        bid_depth_10: Decimal,
+        ask_depth_10: Decimal,
+        imbalance_10: Decimal,
+        *,
+        occurred_at: datetime | None = None,
+        received_at: datetime | None = None,
+        collected_at: datetime | None = None,
+    ) -> None:
+        resolved_received_at = received_at or collected_at
+        if resolved_received_at is None:
+            raise TypeError("OrderbookSummary에는 received_at이 필요하다.")
+        object.__setattr__(self, "instrument_id", instrument_id)
+        object.__setattr__(self, "bucket_at", bucket_at)
+        object.__setattr__(self, "best_bid_price", best_bid_price)
+        object.__setattr__(self, "best_bid_size", best_bid_size)
+        object.__setattr__(self, "best_ask_price", best_ask_price)
+        object.__setattr__(self, "best_ask_size", best_ask_size)
+        object.__setattr__(self, "spread", spread)
+        object.__setattr__(self, "bid_depth_10", bid_depth_10)
+        object.__setattr__(self, "ask_depth_10", ask_depth_10)
+        object.__setattr__(self, "imbalance_10", imbalance_10)
+        object.__setattr__(self, "occurred_at", occurred_at or bucket_at)
+        object.__setattr__(self, "received_at", resolved_received_at)
+
+    @property
+    def collected_at(self) -> datetime:
+        """기존 호출자 호환 별칭이며 의미는 로컬 수신 시각이다."""
+
+        return self.received_at
+
+
+@dataclass(frozen=True)
+class SourceReceipt:
+    data_type: str
+    instrument_id: int
+    connection_id: str
+    frame_sequence: int
+    occurred_at: datetime
+    received_at: datetime
+    payload_checksum: str
+    raw_payload: dict[str, object]
+    fetch_manifest_id: int | None = None
+
+
+@dataclass(frozen=True)
+class OrderbookSnapshotLevel:
+    level_index: int
+    ask_price: Decimal
+    ask_size: Decimal
+    bid_price: Decimal
+    bid_size: Decimal
+
+
+@dataclass(frozen=True)
+class OrderbookSnapshot:
+    instrument_id: int
+    source: Exchange
+    occurred_at: datetime
+    received_at: datetime
+    total_ask_size: Decimal
+    total_bid_size: Decimal
+    level_count: int
+    level: Decimal | None
+    stream_type: str | None
+    payload_checksum: str
+    levels: tuple[OrderbookSnapshotLevel, ...]
+    fetch_manifest_id: int | None = None
+
+
+@dataclass(frozen=True)
+class RealtimeSourceFrame:
+    receipt: SourceReceipt
+    snapshot: OrderbookSnapshot | None = None
+    summary: OrderbookSummary | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +211,26 @@ class SourceCandle:
     trade_volume: Decimal
     trade_amount: Decimal
     collected_at: datetime
+
+
+@dataclass(frozen=True)
+class FetchEvidence:
+    endpoint: str
+    request_parameters: dict[str, str | int]
+    requested_at: datetime
+    responded_at: datetime
+    response_status: int | None
+    response_payload: object | None
+    error_type: str | None = None
+    error_message: str | None = None
+    requested_range_start_at: datetime | None = None
+    requested_range_end_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class FetchedCandlePage:
+    rows: list[dict[str, str]]
+    evidence: FetchEvidence
 
 
 @dataclass(frozen=True)
@@ -413,6 +556,11 @@ class BackfillJob:
     target_end_at: datetime
     targets: list[Instrument]
     created_at: datetime
+    attempt_count: int = 0
+    max_attempts: int = 5
+    next_retry_at: datetime | None = None
+    last_error_code: str | None = None
+    dead_letter_reason: str | None = None
 
 
 @dataclass(frozen=True)

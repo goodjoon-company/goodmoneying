@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import httpx
 import pytest
 
-from goodmoneying_shared.models import SourceCandle
+from goodmoneying_shared.models import FetchedCandlePage, FetchEvidence, SourceCandle
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_shared.time import KST
 from goodmoneying_worker.collector import UpbitCollectionWorker
@@ -110,7 +110,7 @@ def test_live_client_fetches_historical_minute_candles_with_to_pagination() -> N
     assert calls[1].url.params["to"].startswith("2025-12-31T15:02:00")
 
 
-def test_live_client_retries_429_before_succeeding() -> None:
+def test_live_client_does_not_retry_429_automatically() -> None:
     calls = 0
     start_at = datetime(2026, 1, 1, 0, 1, tzinfo=KST)
     end_at = datetime(2026, 1, 1, 0, 2, tzinfo=KST)
@@ -132,14 +132,40 @@ def test_live_client_retries_429_before_succeeding() -> None:
             transport=httpx.MockTransport(handler),
         ),
         min_request_interval_seconds=0,
-        retry_sleep_seconds=0,
-        max_retries=1,
     )
 
-    rows = client.fetch_minute_candles("KRW-BTC", start_at, end_at)
+    with pytest.raises(UpbitApiError) as captured:
+        client.fetch_minute_candles("KRW-BTC", start_at, end_at)
 
-    assert calls == 2
-    assert rows[0]["close_price"] == "101.0"
+    assert calls == 1
+    assert captured.value.status_code == 429
+
+
+def test_live_client_does_not_retry_418_automatically() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            418,
+            json={"error": {"message": "요청 수 제한으로 3초 동안 차단됩니다."}},
+        )
+
+    client = LiveUpbitClient(
+        http_client=httpx.Client(
+            base_url=LiveUpbitClient.BASE_URL,
+            transport=httpx.MockTransport(handler),
+        ),
+        min_request_interval_seconds=0,
+    )
+
+    with pytest.raises(UpbitApiError) as captured:
+        client.get_krw_tickers()
+
+    assert calls == 1
+    assert captured.value.status_code == 418
+    assert captured.value.retry_after_seconds == 3
 
 
 def test_rate_limiter_waits_when_remaining_req_second_quota_is_exhausted() -> None:
@@ -171,7 +197,7 @@ def test_retry_delay_uses_418_block_duration_message() -> None:
     assert _retry_delay(response, default_seconds=1) == 3
 
 
-def test_live_client_raises_api_error_after_retry_exhaustion() -> None:
+def test_live_client_raises_api_error_without_hidden_retry() -> None:
     start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
     end_at = datetime(2026, 1, 1, 0, 2, tzinfo=KST)
     client = LiveUpbitClient(
@@ -180,12 +206,53 @@ def test_live_client_raises_api_error_after_retry_exhaustion() -> None:
             transport=httpx.MockTransport(lambda request: httpx.Response(429)),
         ),
         min_request_interval_seconds=0,
-        retry_sleep_seconds=0,
-        max_retries=0,
     )
 
     with pytest.raises(UpbitApiError):
         client.fetch_minute_candles("KRW-BTC", start_at, end_at)
+
+
+def test_live_client_reads_detailed_market_catalog_without_ticker_filtering() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "market": "KRW-BTC",
+                    "korean_name": "비트코인",
+                    "english_name": "Bitcoin",
+                    "market_warning": "NONE",
+                    "market_event": {"trading_suspended": False},
+                },
+                {
+                    "market": "BTC-ETH",
+                    "korean_name": "이더리움",
+                    "english_name": "Ethereum",
+                    "market_warning": "CAUTION",
+                    "market_event": {"trading_suspended": True},
+                },
+            ],
+        )
+
+    client = LiveUpbitClient(
+        http_client=httpx.Client(
+            base_url=LiveUpbitClient.BASE_URL,
+            transport=httpx.MockTransport(handler),
+        ),
+        min_request_interval_seconds=0,
+    )
+
+    catalog = client.get_market_catalog()
+
+    assert [item.market_code for item in catalog] == ["KRW-BTC", "BTC-ETH"]
+    assert catalog[0].korean_name == "비트코인"
+    assert catalog[1].market_warning == "CAUTION"
+    assert not catalog[1].tradable
+    assert requests[0].url.path == "/v1/market/all"
+    assert requests[0].url.params["isDetails"] == "true"
 
 
 def test_worker_runs_approved_backfill_job_and_records_progress() -> None:
@@ -360,6 +427,71 @@ def test_worker_flushes_large_missing_range_in_configured_batches() -> None:
     assert target.last_completed_at == start_at + timedelta(minutes=7)
 
 
+def test_worker_keeps_page_evidence_when_page_is_split_into_storage_batches() -> None:
+    repository = EvidenceRecordingRepository()
+    instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 3, tzinfo=KST)
+    evidence = _test_fetch_evidence("page-1")
+    rows = [
+        _worker_candle_row(start_at + timedelta(minutes=offset), str(100 + offset))
+        for offset in range(3)
+    ]
+    client = EvidencePageClient([FetchedCandlePage(rows=rows, evidence=evidence)])
+    worker = UpbitCollectionWorker(repository, client, backfill_batch_size=2)
+    plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
+    repository.approve_backfill_job(plan.plan_id)
+
+    assert worker.run_backfill_once() == 3
+    assert repository.recorded_pages == [(2, evidence), (1, evidence)]
+
+
+def test_worker_forwards_failed_request_evidence_to_repository() -> None:
+    repository = EvidenceRecordingRepository()
+    instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 1, tzinfo=KST)
+    evidence = _test_fetch_evidence("failed-page", response_status=429)
+    error = UpbitApiError(429, "요청 수 제한")
+    error.evidence = evidence
+    worker = UpbitCollectionWorker(repository, FailedEvidenceClient(error))
+    plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
+    repository.approve_backfill_job(plan.plan_id)
+
+    assert worker.run_backfill_once() == 0
+    assert repository.failed_evidence is evidence
+
+
+def test_worker_uses_transport_error_type_in_failed_target_error_code() -> None:
+    repository = EvidenceRecordingRepository()
+    instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
+    start_at = datetime(2026, 1, 1, 0, 0, tzinfo=KST)
+    end_at = datetime(2026, 1, 1, 0, 1, tzinfo=KST)
+    requested_at = datetime(2026, 1, 1, tzinfo=UTC)
+    evidence = FetchEvidence(
+        endpoint="/v1/candles/minutes/1",
+        request_parameters={
+            "market": "KRW-BTC",
+            "to": "2025-12-31T15:01:00Z",
+            "count": 200,
+        },
+        requested_at=requested_at,
+        responded_at=requested_at + timedelta(milliseconds=1),
+        response_status=None,
+        response_payload=None,
+        error_type="ReadTimeout",
+        error_message="upstream timed out",
+    )
+    error = UpbitApiError(None, "upstream timed out", evidence=evidence)
+    worker = UpbitCollectionWorker(repository, FailedEvidenceClient(error))
+    plan = repository.create_backfill_plan("source_candle", start_at, end_at, [instrument.id])
+    repository.approve_backfill_job(plan.plan_id)
+
+    assert worker.run_backfill_once() == 0
+    assert repository.failed_evidence is evidence
+    assert repository.failed_error_code == "UPBIT_ReadTimeout"
+
+
 def test_worker_records_heartbeat_after_fetch_before_batch_progress_changes() -> None:
     repository = CountingBackfillRepository()
     instrument = repository.upsert_instrument("KRW-BTC", "비트코인")
@@ -491,7 +623,7 @@ def test_worker_records_failed_backfill_target_when_client_fails() -> None:
     assert written == 0
     assert repository.backfill_jobs()[0].status == "failed"
     assert targets[0].status == "failed"
-    assert targets[0].error_code == "UpbitApiError"
+    assert targets[0].error_code == "UPBIT_429"
 
 
 def test_worker_resumes_failed_backfill_with_only_missing_rows() -> None:
@@ -677,6 +809,32 @@ def _worker_candle(instrument_id: int, candle_start_at: datetime, close: str) ->
     )
 
 
+def _worker_candle_row(candle_start_at: datetime, close: str) -> dict[str, str]:
+    return {
+        "market": "KRW-BTC",
+        "candle_unit": "1m",
+        "candle_start_at": candle_start_at.isoformat(),
+        "open_price": close,
+        "high_price": close,
+        "low_price": close,
+        "close_price": close,
+        "trade_volume": "1",
+        "trade_amount": close,
+    }
+
+
+def _test_fetch_evidence(key: str, *, response_status: int = 200) -> FetchEvidence:
+    requested_at = datetime(2026, 1, 1, tzinfo=UTC)
+    return FetchEvidence(
+        endpoint="/v1/candles/minutes/1",
+        request_parameters={"market": "KRW-BTC", "to": key, "count": 200},
+        requested_at=requested_at,
+        responded_at=requested_at + timedelta(milliseconds=1),
+        response_status=response_status,
+        response_payload=[] if response_status == 200 else {"error": key},
+    )
+
+
 class BackfillOnlyClient(FixtureUpbitClient):
     def __init__(self, candles: list[SourceCandle]) -> None:
         super().__init__(market_count=1)
@@ -721,6 +879,30 @@ class NoYieldBackfillClient(FixtureUpbitClient):
         return []
 
 
+class EvidencePageClient(FixtureUpbitClient):
+    def __init__(self, pages: list[FetchedCandlePage]) -> None:
+        super().__init__(market_count=1)
+        self._pages = pages
+
+    def fetch_minute_candle_pages(
+        self, market: str, start_at: datetime, end_at: datetime
+    ) -> list[FetchedCandlePage]:
+        del market, start_at, end_at
+        return self._pages
+
+
+class FailedEvidenceClient(FixtureUpbitClient):
+    def __init__(self, error: UpbitApiError) -> None:
+        super().__init__(market_count=1)
+        self._error = error
+
+    def fetch_minute_candle_pages(
+        self, market: str, start_at: datetime, end_at: datetime
+    ) -> list[list[dict[str, str]]]:
+        del market, start_at, end_at
+        raise self._error
+
+
 class CountingBackfillRepository(SQLiteOperationsRepository):
     def __init__(self) -> None:
         super().__init__()
@@ -732,11 +914,15 @@ class CountingBackfillRepository(SQLiteOperationsRepository):
         job_id: int,
         instrument_id: int,
         candles: list[SourceCandle],
+        *,
+        fetch_evidence: object | None = None,
     ) -> int:
         self.backfill_batch_sizes.append(len(candles))
         self.upsert_in_progress = True
         try:
-            return super().record_backfill_candles(job_id, instrument_id, candles)
+            return super().record_backfill_candles(
+                job_id, instrument_id, candles, fetch_evidence=fetch_evidence
+            )
         finally:
             self.upsert_in_progress = False
 
@@ -758,6 +944,53 @@ class CountingBackfillRepository(SQLiteOperationsRepository):
         }
 
 
+class EvidenceRecordingRepository(SQLiteOperationsRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.recorded_pages: list[tuple[int, object | None]] = []
+        self.failed_evidence: object | None = None
+        self.failed_error_code: str | None = None
+
+    def record_backfill_candles(
+        self,
+        job_id: int,
+        instrument_id: int,
+        candles: list[SourceCandle],
+        *,
+        fetch_evidence: object | None = None,
+    ) -> int:
+        self.recorded_pages.append((len(candles), fetch_evidence))
+        return super().record_backfill_candles(
+            job_id, instrument_id, candles, fetch_evidence=fetch_evidence
+        )
+
+    def mark_backfill_target(
+        self,
+        job_id: int,
+        instrument_id: int,
+        status: str,
+        last_completed_at: datetime | None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        retry_after_seconds: float | None = None,
+        *,
+        fetch_evidence: object | None = None,
+    ) -> None:
+        if status == "failed":
+            self.failed_evidence = fetch_evidence
+            self.failed_error_code = error_code
+        super().mark_backfill_target(
+            job_id,
+            instrument_id,
+            status,
+            last_completed_at,
+            error_code,
+            error_message,
+            retry_after_seconds,
+            fetch_evidence=fetch_evidence,
+        )
+
+
 class ControllingBackfillRepository(CountingBackfillRepository):
     def __init__(self, action_after_first_batch: str) -> None:
         super().__init__()
@@ -768,8 +1001,12 @@ class ControllingBackfillRepository(CountingBackfillRepository):
         job_id: int,
         instrument_id: int,
         candles: list[SourceCandle],
+        *,
+        fetch_evidence: object | None = None,
     ) -> int:
-        rows_written = super().record_backfill_candles(job_id, instrument_id, candles)
+        rows_written = super().record_backfill_candles(
+            job_id, instrument_id, candles, fetch_evidence=fetch_evidence
+        )
         if len(self.backfill_batch_sizes) == 1:
             self.control_backfill_job(job_id, self._action_after_first_batch)
         return rows_written

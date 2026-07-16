@@ -340,6 +340,13 @@ function BackfillJobs({
                 {job.estimatedMissingRangeCount.toLocaleString("ko-KR")}
               </span>
               <span>예상 요청 {job.estimatedRequestCount.toLocaleString("ko-KR")}</span>
+              <span>
+                시도 {job.attemptCount.toLocaleString("ko-KR")}/
+                {job.maxAttempts.toLocaleString("ko-KR")}
+              </span>
+              {job.nextRetryAt ? <span>다음 재시도 {formatKstDateTime(job.nextRetryAt)}</span> : null}
+              {job.lastErrorCode ? <span>최근 오류 {job.lastErrorCode}</span> : null}
+              {job.deadLetterReason ? <span>격리 사유 {job.deadLetterReason}</span> : null}
             </div>
             <div className="approved-backfill-actions">
               {canResumeBackfillJob(job) ? (
@@ -390,11 +397,13 @@ function BackfillJobs({
 }
 
 function BackfillJobStatusIcon({ status }: { status: BackfillJob["status"] }) {
-  if (status === "running") return <CircleDashed size={14} />;
+  if (status === "leased" || status === "running" || status === "retry_wait") {
+    return <CircleDashed size={14} />;
+  }
   if (status === "paused") return <PauseCircle size={14} />;
   if (status === "stopped") return <StopCircle size={14} />;
   if (status === "succeeded") return <CheckCircle2 size={14} />;
-  if (status === "failed") return <AlertCircle size={14} />;
+  if (status === "failed" || status === "dead_letter") return <AlertCircle size={14} />;
   return <ListChecks size={14} />;
 }
 
@@ -402,11 +411,15 @@ function backfillJobStatusLabel(status: BackfillJob["status"]): string {
   const labels: Record<BackfillJob["status"], string> = {
     planned: "계획됨",
     pending: "대기 중",
+    leased: "임대됨",
     running: "실행 중",
+    retry_wait: "재시도 대기",
     paused: "일시정지",
     stopped: "중지",
     succeeded: "완료",
-    failed: "실패"
+    failed: "실패",
+    dead_letter: "재시도 소진",
+    cancelled: "취소됨"
   };
   return labels[status];
 }
@@ -443,11 +456,17 @@ function formatBackfillJobRange(startAt: string, endAt: string): string {
 }
 
 function canStopBackfillJob(job: BackfillJob): boolean {
-  return job.status === "pending" || job.status === "running" || job.status === "paused";
+  return (
+    job.status === "pending" ||
+    job.status === "leased" ||
+    job.status === "running" ||
+    job.status === "retry_wait" ||
+    job.status === "paused"
+  );
 }
 
 function canPauseBackfillJob(job: BackfillJob): boolean {
-  return job.status === "pending" || job.status === "running";
+  return job.status === "pending" || job.status === "leased" || job.status === "running";
 }
 
 function canResumeBackfillJob(job: BackfillJob): boolean {
@@ -455,7 +474,7 @@ function canResumeBackfillJob(job: BackfillJob): boolean {
 }
 
 function canDeleteBackfillJob(job: BackfillJob): boolean {
-  return job.status !== "running";
+  return job.status !== "leased" && job.status !== "running";
 }
 
 function backfillProgressWidth(value: string): number {

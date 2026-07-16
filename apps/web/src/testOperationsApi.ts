@@ -313,6 +313,11 @@ export function createTestBackfillJob(overrides: Partial<BackfillJob> = {}): Bac
     targetEndAt: "2026-02-01T00:00:00+09:00",
     targets: createTestInstruments(2),
     createdAt: NOW,
+    attemptCount: 0,
+    maxAttempts: 5,
+    nextRetryAt: null,
+    lastErrorCode: null,
+    deadLetterReason: null,
     ...overrides
   };
 }
@@ -333,6 +338,21 @@ export function createTestOperationsFetch(
     }
     if (url.endsWith("/v1/market-list")) {
       return Response.json({ rows: createTestMarketRows() });
+    }
+    if (url.endsWith("/v1/data-foundation")) {
+      return Response.json({
+        timeZone: "UTC",
+        policyStartAt: "2024-01-01T00:00:00Z",
+        summary: {
+          marketCount: 100,
+          krwMarketCount: 100,
+          activeTargetCount: 400,
+          pendingBackfillJobCount: 100,
+          desiredSubscriptionCount: 300,
+          coverageCounts: { available: 1, no_trade: 0, missing: 0, unavailable: 0, unverified: 1 }
+        },
+        markets: []
+      });
     }
     if (url.match(/\/v1\/instruments\/\d+$/)) {
       const instrumentId = Number(url.split("/").at(-1));

@@ -20,6 +20,9 @@ def test_dbmate_migration_e2e_uses_empty_postgres_and_cleans_up() -> None:
     assert '"$ROOT_DIR/dev.sh" db dump' in script
     assert "diff -u" in script
     assert "SHOW timezone" in script
-    assert "Asia/Seoul" in script
+    assert script.count('"$version_count" == "6"') == 2
+    assert '"$timezone" == "UTC"' in script
     assert "E2E 통과" in script
     assert 'docker logs "$DB_CONTAINER"' in script
+    assert 'docker restart "$DB_CONTAINER"' in script
+    assert "재시작 후 PostgreSQL" in script

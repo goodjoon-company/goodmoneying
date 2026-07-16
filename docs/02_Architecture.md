@@ -180,4 +180,4 @@ DB migration 성공 뒤 app·web 배포가 실패해도 down migration을 자동
 - [HTTP·WebSocket 계약](contracts/api/README.md)
 - [운영](03_Operations.md)
 
-기존 모듈 문서는 현재 구현 설명으로만 유효하다. 상위 100·활성 50·KST 저장·수동 백필·실제 주문 전면 차단은 각각 Issue #28·#33이 완료되면 모듈 문서와 코드에서 함께 제거한다. 목표 설계는 구현 의도를 안내하지만 운영 형식으로 강제되지 않는다. 실행 전에는 해당 Issue의 migration·OpenAPI·JSON Schema가 존재하고 자동 검증되는지 확인한다.
+P1에서 상위 100·활성 50·KST 내부 저장·수동 시작 전제는 모든 KRW 자동 정책, UTC 내부 시간, 내구성 자동 백필과 동적 실시간 구독으로 대체됐다. 기존 테이블과 화면은 무손실 전환을 위한 호환 경로일 뿐 권위 모델이 아니다. 실제 주문 전면 차단은 Issue #33에서 안전한 주문 어댑터와 기본 비활성 capability로 대체한다. 각 후속 Issue는 migration·OpenAPI·JSON Schema를 먼저 추가하고 자동 검증한다.

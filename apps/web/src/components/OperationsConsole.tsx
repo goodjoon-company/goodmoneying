@@ -8,6 +8,7 @@ import { useOperationsConsole, type SectionId } from "../useOperationsConsole";
 import { InstrumentName } from "./common";
 import { Dashboard } from "./Dashboard";
 import { CoinAnalysis } from "./CoinAnalysis";
+import { CoverageQuality } from "./CoverageQuality";
 import { DetailModal } from "./Detail";
 import { Markets } from "./Markets";
 import { Targets } from "./Targets";
@@ -23,7 +24,8 @@ const menuGroups: {
     title: "데이터 수집관리",
     items: [
       { id: "dashboard", label: "운영 상태", badge: "MVP" },
-      { id: "targets", label: "Backfill 관리", badge: "MVP" },
+      { id: "coverage", label: "Coverage & Quality", badge: "P1" },
+      { id: "targets", label: "Backfill 관리", badge: "호환" },
       { id: "system", label: "시스템 관리", badge: "NEW" }
     ]
   }
@@ -52,6 +54,12 @@ const sectionMeta: Record<SectionId, { crumb: string; milestone: string; title: 
     milestone: "M2 · 운영 관제형",
     title: "Backfill 관리",
     desc: "상위 100개 후보 중 활성 수집 대상 최대 50개를 조정하고 백필 작업을 시작합니다."
+  },
+  coverage: {
+    crumb: "goodmoneying / Coverage & Quality / P1",
+    milestone: "P1 · 데이터 기반",
+    title: "시장 수집 정책과 커버리지",
+    desc: "모든 KRW 시장의 2024 UTC 기본 정책, 자동 백필·실시간 desired state, 5단계 품질 증거를 확인합니다."
   },
   markets: {
     crumb: "goodmoneying / 관심종목 / M2",
@@ -213,7 +221,7 @@ export function OperationsConsole() {
           </div>
           <div className="runtime-pills" aria-label="화면 갱신 기준">
             <span>표시 KST</span>
-            <span>저장 KST</span>
+            <span>저장 UTC</span>
             <span>{activeSection === "analysis" || activeSection === "system" ? "WebSocket 실시간" : activeSection === "upbit-api-test" ? "게이트웨이 격리 조회" : "SSE 실시간"}</span>
             <span>마지막 갱신 {formatFreshness(snapshot.dashboard.refreshedAt)}</span>
           </div>
@@ -225,6 +233,7 @@ export function OperationsConsole() {
         {activeSection === "targets" ? (
           <Targets snapshot={snapshot} favoriteRows={favoriteCoinRows} />
         ) : null}
+        {activeSection === "coverage" ? <CoverageQuality /> : null}
         {activeSection === "markets" ? (
           <Markets
             rows={marketRows}

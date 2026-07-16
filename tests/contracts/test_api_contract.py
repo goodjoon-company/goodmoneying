@@ -17,6 +17,8 @@ def test_openapi_contract_contains_m1_paths() -> None:
     assert contract["openapi"] == "3.1.0"
     assert set(contract["paths"]) >= {
         "/health",
+        "/v1/data-foundation",
+        "/v1/data-foundation/markets/{marketCode}",
         "/v1/dashboard/summary",
         "/v1/dashboard/summary/stream",
         "/v1/dashboard/overview",
@@ -64,6 +66,8 @@ def test_openapi_contract_groups_operations_with_described_tags() -> None:
 
     expected_operation_tags = {
         ("get", "/health"): ["상태(Health)"],
+        ("get", "/v1/data-foundation"): ["수집(Collection)"],
+        ("patch", "/v1/data-foundation/markets/{marketCode}"): ["수집(Collection)"],
         ("get", "/v1/dashboard/summary"): ["대시보드(Dashboard)"],
         ("get", "/v1/dashboard/summary/stream"): ["대시보드(Dashboard)"],
         ("get", "/v1/dashboard/overview"): ["대시보드(Dashboard)"],

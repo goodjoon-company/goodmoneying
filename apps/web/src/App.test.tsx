@@ -137,9 +137,21 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.getByText("운영 헬스")).toBeInTheDocument();
     expect(screen.getByText(/마지막 갱신/)).toBeInTheDocument();
     expect(screen.getByText("표시 KST")).toBeInTheDocument();
-    expect(screen.getByText("저장 KST")).toBeInTheDocument();
+    expect(screen.getByText("저장 UTC")).toBeInTheDocument();
     expect(screen.getByText("SSE 실시간")).toBeInTheDocument();
     expect(container.querySelector(".app-shell")).toHaveAttribute("data-theme", "dark");
+  });
+
+  it("Coverage & Quality에서 2024 UTC 정책과 5단계 상태를 표시한다", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Coverage & Quality" }));
+
+    expect(await screen.findByRole("heading", { name: "Coverage & Quality" })).toBeInTheDocument();
+    expect(screen.getByText("2024-01-01 00:00 UTC")).toBeInTheDocument();
+    expect(screen.getByText("available · 사용 가능")).toBeInTheDocument();
+    expect(screen.getByText("missing · 복구 필요")).toBeInTheDocument();
   });
 
   it("운영 상태는 코인별 실시간 수집과 수집 범위를 동적인 숫자로 표시한다", async () => {
@@ -348,7 +360,12 @@ describe("데이터 수집관리 화면", () => {
                   displayName: "이더리움"
                 }
               ],
-              createdAt: "2026-06-21T09:00:00+09:00"
+              createdAt: "2026-06-21T09:00:00+09:00",
+              attemptCount: 2,
+              maxAttempts: 5,
+              nextRetryAt: null,
+              lastErrorCode: null,
+              deadLetterReason: null
             },
             {
               id: 76,
@@ -366,7 +383,12 @@ describe("데이터 수집관리 화면", () => {
               targetStartAt: "2026-01-01T00:00:00+09:00",
               targetEndAt: "2026-01-03T00:00:00+09:00",
               targets: createTestInstruments(50),
-              createdAt: "2026-06-20T18:30:00+09:00"
+              createdAt: "2026-06-20T18:30:00+09:00",
+              attemptCount: 1,
+              maxAttempts: 5,
+              nextRetryAt: null,
+              lastErrorCode: null,
+              deadLetterReason: null
             },
             {
               id: 75,
@@ -384,7 +406,12 @@ describe("데이터 수집관리 화면", () => {
               targetStartAt: "2026-01-01T00:00:00+09:00",
               targetEndAt: "2026-01-03T00:00:00+09:00",
               targets: createTestInstruments(1),
-              createdAt: "2026-06-20T12:00:00+09:00"
+              createdAt: "2026-06-20T12:00:00+09:00",
+              attemptCount: 1,
+              maxAttempts: 5,
+              nextRetryAt: null,
+              lastErrorCode: null,
+              deadLetterReason: null
             },
             {
               id: 74,
@@ -402,7 +429,12 @@ describe("데이터 수집관리 화면", () => {
               targetStartAt: "2026-01-01T00:00:00+09:00",
               targetEndAt: "2026-01-03T00:00:00+09:00",
               targets: createTestInstruments(2),
-              createdAt: "2026-06-20T11:00:00+09:00"
+              createdAt: "2026-06-20T11:00:00+09:00",
+              attemptCount: 5,
+              maxAttempts: 5,
+              nextRetryAt: null,
+              lastErrorCode: "UPBIT_500",
+              deadLetterReason: "재시도 예산 소진"
             }
           ]
         })

@@ -1,5 +1,57 @@
 export type Status = "normal" | "warning" | "incident";
 
+export type CoverageIntervalStatus =
+  | "available"
+  | "no_trade"
+  | "missing"
+  | "unavailable"
+  | "unverified";
+
+export type CoverageCounts = Record<CoverageIntervalStatus, number>;
+
+export type CollectionPolicyDataType =
+  | "source_candle"
+  | "trade_event"
+  | "orderbook_snapshot"
+  | "ticker_snapshot";
+
+export type MarketCollectionPolicy = {
+  startAt: string;
+  dataTypes: CollectionPolicyDataType[];
+  candleUnit: "1m";
+  retentionDays: number | null;
+  priority: number;
+  continuous: boolean;
+};
+
+export type DataFoundationMarket = {
+  marketCode: string;
+  koreanName: string;
+  englishName: string;
+  quoteCurrency: string;
+  tradingStatus: "active" | "inactive" | "delisted" | "unknown";
+  marketWarning: string;
+  targetStatus: "active" | "paused" | "excluded" | "not_targeted";
+  activeDataTypeCount: number;
+  totalDataTypeCount: number;
+  coverageCounts: CoverageCounts;
+  collectionPolicy: MarketCollectionPolicy | null;
+};
+
+export type DataFoundation = {
+  timeZone: "UTC";
+  policyStartAt: string;
+  summary: {
+    marketCount: number;
+    krwMarketCount: number;
+    activeTargetCount: number;
+    pendingBackfillJobCount: number;
+    desiredSubscriptionCount: number;
+    coverageCounts: CoverageCounts;
+  };
+  markets: DataFoundationMarket[];
+};
+
 export type Instrument = {
   id: number;
   exchange: "UPBIT";
@@ -318,7 +370,18 @@ export type QualityHistoryEvent = {
 
 export type BackfillJob = {
   id: number;
-  status: "planned" | "pending" | "running" | "paused" | "stopped" | "succeeded" | "failed";
+  status:
+    | "planned"
+    | "pending"
+    | "leased"
+    | "running"
+    | "retry_wait"
+    | "paused"
+    | "stopped"
+    | "succeeded"
+    | "failed"
+    | "dead_letter"
+    | "cancelled";
   dataType: string;
   progressPercent: string;
   estimatedRequestCount: number;
@@ -333,6 +396,11 @@ export type BackfillJob = {
   targetEndAt: string;
   targets: Instrument[];
   createdAt: string;
+  attemptCount: number;
+  maxAttempts: number;
+  nextRetryAt: string | null;
+  lastErrorCode: string | null;
+  deadLetterReason: string | null;
 };
 
 export type OperationsSnapshot = {
@@ -505,7 +573,12 @@ function normalizeBackfillJob(job: BackfillJob): BackfillJob {
     estimatedMissingRangeCount: numberOrZero(job.estimatedMissingRangeCount),
     targetStartAt: job.targetStartAt ?? JANUARY_2026_BACKFILL_START,
     targetEndAt: job.targetEndAt ?? JANUARY_2026_BACKFILL_END,
-    targets: job.targets ?? []
+    targets: job.targets ?? [],
+    attemptCount: numberOrZero(job.attemptCount),
+    maxAttempts: numberOrZero(job.maxAttempts),
+    nextRetryAt: job.nextRetryAt ?? null,
+    lastErrorCode: job.lastErrorCode ?? null,
+    deadLetterReason: job.deadLetterReason ?? null
   };
 }
 
@@ -581,6 +654,23 @@ function numberOrZero(value: number | null | undefined): number {
 export async function loadCandidateUniverse(): Promise<CandidateUniverseEntry[]> {
   const universe = await getJson<{ entries: CandidateUniverseEntry[] }>("/v1/candidate-universe");
   return universe.entries;
+}
+
+export async function loadDataFoundation(): Promise<DataFoundation> {
+  return getJson<DataFoundation>("/v1/data-foundation");
+}
+
+export async function updateMarketTargetState(
+  marketCode: string,
+  state: "active" | "paused" | "excluded",
+  reason: string,
+  policy?: MarketCollectionPolicy
+): Promise<{ marketCode: string; state: string; changedAt: string }> {
+  return sendJson(`/v1/data-foundation/markets/${encodeURIComponent(marketCode)}`, "PATCH", {
+    state,
+    reason,
+    ...(policy ? { policy } : {})
+  });
 }
 
 export async function loadMarketList(): Promise<MarketListRow[]> {

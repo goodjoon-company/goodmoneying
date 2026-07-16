@@ -10,7 +10,7 @@ from psycopg.conninfo import conninfo_to_dict
 pytestmark = pytest.mark.live
 
 
-def test_live_postgres_uses_database_name_and_persistent_timezone_from_url() -> None:
+def test_live_postgres_uses_database_name_and_persistent_utc_from_url() -> None:
     if os.getenv("GOODMONEYING_LIVE_POSTGRES_TEST") != "1":
         pytest.skip("GOODMONEYING_LIVE_POSTGRES_TEST=1에서만 실제 PostgreSQL을 검증한다")
 
@@ -46,7 +46,7 @@ def test_live_postgres_uses_database_name_and_persistent_timezone_from_url() -> 
                   SELECT oid FROM pg_database WHERE datname = current_database()
                 )
                   AND setrole = 0
-                  AND setting = 'TimeZone=Asia/Seoul'
+                  AND setting = 'TimeZone=UTC'
               ),
               (SELECT count(*) FROM pg_tables WHERE schemaname = 'public')
             FROM pg_database
@@ -55,11 +55,11 @@ def test_live_postgres_uses_database_name_and_persistent_timezone_from_url() -> 
         ).fetchone()
 
     assert database_state is not None
-    database_name, current_user, database_owner, timezone, persistent_kst, table_count = (
+    database_name, current_user, database_owner, timezone, persistent_utc, table_count = (
         database_state
     )
     assert database_name == expected_database
     assert current_user == database_owner
-    assert timezone == "Asia/Seoul"
-    assert persistent_kst is True
+    assert timezone == "UTC"
+    assert persistent_utc is True
     assert table_count >= 1

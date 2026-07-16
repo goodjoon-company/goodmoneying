@@ -547,7 +547,7 @@ class OperationsService:
         active_by_id = {item.id: item for item in active_targets}
         backfill_items: list[dict[str, object]] = []
         for job in self._repository.backfill_jobs():
-            if job.status not in {"pending", "running", "paused"}:
+            if job.status not in {"pending", "leased", "running", "retry_wait", "paused"}:
                 continue
             items = [job.current_target] if job.current_target else job.targets
             for item in items:
@@ -560,9 +560,7 @@ class OperationsService:
                         }
                     )
         aggregation_job = self._repository.latest_candle_aggregation_job()
-        aggregation_worker = self._repository.collection_worker_runtime_status(
-            "candle_aggregation"
-        )
+        aggregation_worker = self._repository.collection_worker_runtime_status("candle_aggregation")
         aggregation_items: list[dict[str, object]] = []
         aggregation: dict[str, object] | None = None
         if aggregation_job is not None:
@@ -1004,6 +1002,11 @@ def backfill_job_to_response(item: BackfillJob) -> BackfillJobResponse:
         targetEndAt=item.target_end_at,
         targets=[instrument_to_response(target) for target in item.targets],
         createdAt=item.created_at,
+        attemptCount=item.attempt_count,
+        maxAttempts=item.max_attempts,
+        nextRetryAt=item.next_retry_at,
+        lastErrorCode=item.last_error_code,
+        deadLetterReason=item.dead_letter_reason,
     )
 
 

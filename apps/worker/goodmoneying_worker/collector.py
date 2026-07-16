@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from goodmoneying_shared.models import OrderbookSummary, SourceCandle, TickerSnapshot
+from goodmoneying_shared.models import (
+    FetchedCandlePage,
+    FetchEvidence,
+    OrderbookSummary,
+    SourceCandle,
+    TickerSnapshot,
+)
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.time import KST, minute_bucket, now_kst
-from goodmoneying_worker.upbit_client import UpbitClient
+from goodmoneying_worker.upbit_client import UpbitApiError, UpbitClient
 
 logger = logging.getLogger(__name__)
 
@@ -60,17 +66,17 @@ class UpbitCollectionWorker:
         active_by_market = {item.market_code: item for item in active_targets}
         markets = list(active_by_market.keys())
         collected_at = now_kst()
-        bucket_at = minute_bucket(collected_at)
 
         ticker_rows = self._client.get_krw_tickers()
         tickers = [
             TickerSnapshot(
                 instrument_id=active_by_market[row["market"]].id,
-                bucket_at=bucket_at,
+                bucket_at=minute_bucket(_row_occurred_at(row, collected_at)),
                 trade_price=Decimal(row["trade_price"]),
                 acc_trade_price_24h=Decimal(row["acc_trade_price_24h"]),
                 change_rate=Decimal(row["signed_change_rate"]),
-                collected_at=collected_at,
+                occurred_at=_row_occurred_at(row, collected_at),
+                received_at=collected_at,
             )
             for row in ticker_rows
             if row["market"] in active_by_market
@@ -79,7 +85,7 @@ class UpbitCollectionWorker:
         orderbooks = [
             OrderbookSummary(
                 instrument_id=active_by_market[row["market"]].id,
-                bucket_at=bucket_at,
+                bucket_at=minute_bucket(_row_occurred_at(row, collected_at)),
                 best_bid_price=Decimal(row["best_bid_price"]),
                 best_bid_size=Decimal(row["best_bid_size"]),
                 best_ask_price=Decimal(row["best_ask_price"]),
@@ -88,7 +94,8 @@ class UpbitCollectionWorker:
                 bid_depth_10=Decimal(row["bid_depth_10"]),
                 ask_depth_10=Decimal(row["ask_depth_10"]),
                 imbalance_10=Decimal(row["imbalance_10"]),
-                collected_at=collected_at,
+                occurred_at=_row_occurred_at(row, collected_at),
+                received_at=collected_at,
             )
             for row in self._client.get_orderbooks(markets)
             if row["market"] in active_by_market
@@ -137,8 +144,22 @@ class UpbitCollectionWorker:
             should_claim_next_job = False
             for target in self._repository.backfill_job_targets(job.id):
                 job_status = self._backfill_job_status(job.id)
-                if job_status in {"paused", "stopped", "failed", "succeeded"}:
-                    should_claim_next_job = job_status in {"paused", "stopped"}
+                if job_status in {
+                    "retry_wait",
+                    "paused",
+                    "stopped",
+                    "failed",
+                    "succeeded",
+                    "dead_letter",
+                    "cancelled",
+                }:
+                    should_claim_next_job = job_status in {
+                        "retry_wait",
+                        "paused",
+                        "stopped",
+                        "dead_letter",
+                        "cancelled",
+                    }
                     break
                 if target.status in {"succeeded", "stopped"}:
                     continue
@@ -165,6 +186,7 @@ class UpbitCollectionWorker:
                         error_message="백필 대상 거래 상품을 찾을 수 없다.",
                     )
                     continue
+                last_completed_at = target.last_completed_at
                 try:
                     logger.info(
                         "backfill_target_started job_id=%s instrument_id=%s market=%s "
@@ -200,7 +222,6 @@ class UpbitCollectionWorker:
                     target_written = 0
                     processed_missing_ranges = 0
                     estimated_missing_ranges = len(missing_ranges)
-                    last_completed_at = target.last_completed_at
                     target_interrupted = False
                     self._repository.record_backfill_target_progress(
                         job.id,
@@ -212,16 +233,18 @@ class UpbitCollectionWorker:
                     )
                     for range_index, (fetch_start_at, fetch_end_at) in enumerate(missing_ranges):
                         if self._backfill_job_status(job.id) in {
+                            "retry_wait",
                             "paused",
                             "stopped",
                             "failed",
                             "succeeded",
+                            "dead_letter",
+                            "cancelled",
                         }:
                             target_interrupted = True
                             break
                         if on_progress is not None:
                             on_progress()
-                        batch: list[SourceCandle] = []
                         should_stop_current_target = False
                         logger.debug(
                             "backfill_fetch_started job_id=%s instrument_id=%s market=%s "
@@ -233,11 +256,13 @@ class UpbitCollectionWorker:
                             fetch_start_at.isoformat(),
                             fetch_end_at.isoformat(),
                         )
-                        for rows in self._client.fetch_minute_candle_pages(
+                        for page in self._client.fetch_minute_candle_pages(
                             instrument.market_code,
                             fetch_start_at,
                             fetch_end_at,
                         ):
+                            rows = page.rows if isinstance(page, FetchedCandlePage) else page
+                            fetch_evidence = getattr(page, "evidence", None)
                             if on_progress is not None:
                                 on_progress()
                             logger.debug(
@@ -249,23 +274,32 @@ class UpbitCollectionWorker:
                                 range_index + 1,
                                 len(rows),
                             )
-                            collected_at = now_kst()
-                            batch.extend(
-                                self._source_candles_from_rows(
-                                    target.instrument_id,
-                                    rows,
-                                    collected_at,
-                                )
+                            page_candles = self._source_candles_from_rows(
+                                target.instrument_id,
+                                rows,
+                                now_kst(),
                             )
-                            while len(batch) >= self._backfill_batch_size:
+                            if not page_candles:
+                                self._repository.record_backfill_candles(
+                                    job.id,
+                                    target.instrument_id,
+                                    [],
+                                    fetch_evidence=fetch_evidence,
+                                )
+                            for batch_start in range(
+                                0, len(page_candles), self._backfill_batch_size
+                            ):
+                                batch = page_candles[
+                                    batch_start : batch_start + self._backfill_batch_size
+                                ]
                                 rows_written, batch_last_completed_at = (
                                     self._record_backfill_candle_batch(
                                         job.id,
                                         target.instrument_id,
-                                        batch[: self._backfill_batch_size],
+                                        batch,
+                                        fetch_evidence=fetch_evidence,
                                     )
                                 )
-                                batch = batch[self._backfill_batch_size :]
                                 target_written += rows_written
                                 last_completed_at = batch_last_completed_at
                                 logger.info(
@@ -276,7 +310,7 @@ class UpbitCollectionWorker:
                                     target.instrument_id,
                                     instrument.market_code,
                                     rows_written,
-                                    self._backfill_batch_size,
+                                    len(batch),
                                     last_completed_at.isoformat(),
                                 )
                                 self._repository.record_backfill_target_progress(
@@ -289,7 +323,8 @@ class UpbitCollectionWorker:
                                 )
                                 if on_progress is not None:
                                     on_progress()
-                                if self._backfill_job_status(job.id) in {
+                                has_more_batches = batch_start + len(batch) < len(page_candles)
+                                if has_more_batches and self._backfill_job_status(job.id) in {
                                     "paused",
                                     "stopped",
                                     "failed",
@@ -302,36 +337,6 @@ class UpbitCollectionWorker:
                         if should_stop_current_target:
                             target_interrupted = True
                             break
-                        if batch:
-                            rows_written, batch_last_completed_at = (
-                                self._record_backfill_candle_batch(
-                                    job.id,
-                                    target.instrument_id,
-                                    batch,
-                                )
-                            )
-                            target_written += rows_written
-                            last_completed_at = batch_last_completed_at
-                            logger.info(
-                                "backfill_batch_upserted job_id=%s instrument_id=%s market=%s "
-                                "rows_written=%s batch_size=%s last_completed_at=%s",
-                                job.id,
-                                target.instrument_id,
-                                instrument.market_code,
-                                rows_written,
-                                len(batch),
-                                last_completed_at.isoformat(),
-                            )
-                            self._repository.record_backfill_target_progress(
-                                job.id,
-                                target.instrument_id,
-                                processed_missing_range_count=processed_missing_ranges,
-                                estimated_missing_range_count=estimated_missing_ranges,
-                                rows_written_count=target_written,
-                                last_completed_at=last_completed_at,
-                            )
-                            if on_progress is not None:
-                                on_progress()
                         processed_missing_ranges += 1
                         self._repository.record_backfill_target_progress(
                             job.id,
@@ -344,7 +349,13 @@ class UpbitCollectionWorker:
                         if on_progress is not None:
                             on_progress()
                         job_status = self._backfill_job_status(job.id)
-                        if job_status in {"paused", "stopped"}:
+                        if job_status in {
+                            "retry_wait",
+                            "paused",
+                            "stopped",
+                            "dead_letter",
+                            "cancelled",
+                        }:
                             should_claim_next_job = True
                             target_interrupted = range_index < len(missing_ranges) - 1
                             break
@@ -369,10 +380,28 @@ class UpbitCollectionWorker:
                         last_completed_at.isoformat() if last_completed_at is not None else "-",
                     )
                     job_status = self._backfill_job_status(job.id)
-                    if job_status in {"paused", "stopped"}:
+                    if job_status in {
+                        "retry_wait",
+                        "paused",
+                        "stopped",
+                        "dead_letter",
+                        "cancelled",
+                    }:
                         should_claim_next_job = True
                         break
                 except Exception as exc:
+                    if isinstance(exc, UpbitApiError):
+                        upbit_error_code = (
+                            str(exc.status_code)
+                            if exc.status_code is not None
+                            else exc.error_type or type(exc).__name__
+                        )
+                        error_code = f"UPBIT_{upbit_error_code}"
+                    else:
+                        error_code = type(exc).__name__
+                    retry_after_seconds = (
+                        exc.retry_after_seconds if isinstance(exc, UpbitApiError) else None
+                    )
                     logger.exception(
                         "backfill_target_failed job_id=%s instrument_id=%s market=%s error=%s",
                         job.id,
@@ -384,9 +413,13 @@ class UpbitCollectionWorker:
                         job.id,
                         target.instrument_id,
                         status="failed",
-                        last_completed_at=target.last_completed_at,
-                        error_code=type(exc).__name__,
+                        last_completed_at=last_completed_at,
+                        error_code=error_code,
                         error_message=str(exc),
+                        retry_after_seconds=retry_after_seconds,
+                        fetch_evidence=(
+                            exc.evidence if isinstance(exc, UpbitApiError) else None
+                        ),
                     )
                     if on_progress is not None:
                         on_progress()
@@ -422,12 +455,22 @@ class UpbitCollectionWorker:
         job_id: int,
         instrument_id: int,
         candles: list[SourceCandle],
+        *,
+        fetch_evidence: FetchEvidence | None = None,
     ) -> tuple[int, datetime]:
-        rows_written = self._repository.record_backfill_candles(
-            job_id,
-            instrument_id,
-            candles,
-        )
+        if fetch_evidence is None:
+            rows_written = self._repository.record_backfill_candles(
+                job_id,
+                instrument_id,
+                candles,
+            )
+        else:
+            rows_written = self._repository.record_backfill_candles(
+                job_id,
+                instrument_id,
+                candles,
+                fetch_evidence=fetch_evidence,
+            )
         last_completed_at = max(item.candle_start_at for item in candles)
         return rows_written, last_completed_at
 
@@ -467,3 +510,10 @@ def seed_repository(repository: OperationsRepository, client: UpbitClient) -> No
     worker = UpbitCollectionWorker(repository, client)
     worker.refresh_candidate_universe()
     worker.collect_incremental()
+
+
+def _row_occurred_at(row: dict[str, str], fallback: datetime) -> datetime:
+    timestamp = row.get("timestamp")
+    if not timestamp:
+        return fallback
+    return datetime.fromtimestamp(int(timestamp) / 1000, tz=UTC)

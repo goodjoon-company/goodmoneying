@@ -83,9 +83,31 @@ version_count="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" -d "$P
 instrument_count="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT count(*) FROM instruments WHERE market_code = 'KRW-E2E';")"
 timezone="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SHOW timezone;")"
 
-[[ "$version_count" == "1" ]] || { printf '오류: 적용 버전 수=%s\n' "$version_count" >&2; exit 1; }
+[[ "$version_count" == "6" ]] || { printf '오류: 적용 버전 수=%s\n' "$version_count" >&2; exit 1; }
 [[ "$instrument_count" == "1" ]] || { printf '오류: 재적용 후 데이터 행 수=%s\n' "$instrument_count" >&2; exit 1; }
-[[ "$timezone" == "Asia/Seoul" ]] || { printf '오류: DB 시간대=%s\n' "$timezone" >&2; exit 1; }
+[[ "$timezone" == "UTC" ]] || { printf '오류: DB 시간대=%s\n' "$timezone" >&2; exit 1; }
+
+docker restart "$DB_CONTAINER" >/dev/null
+restart_ready=0
+for _ in {1..30}; do
+  if docker exec "$DB_CONTAINER" pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    >/dev/null 2>&1; then
+    restart_ready=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$restart_ready" != "1" ]]; then
+  printf '오류: 재시작 후 PostgreSQL이 준비되지 않았습니다.\n' >&2
+  docker logs "$DB_CONTAINER" >&2 || true
+  exit 1
+fi
+version_count="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT count(*) FROM schema_migrations;")"
+instrument_count="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT count(*) FROM instruments WHERE market_code = 'KRW-E2E';")"
+timezone="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SHOW timezone;")"
+[[ "$version_count" == "6" ]] || { printf '오류: 재시작 후 적용 버전 수=%s\n' "$version_count" >&2; exit 1; }
+[[ "$instrument_count" == "1" ]] || { printf '오류: 재시작 후 데이터 행 수=%s\n' "$instrument_count" >&2; exit 1; }
+[[ "$timezone" == "UTC" ]] || { printf '오류: 재시작 후 DB 시간대=%s\n' "$timezone" >&2; exit 1; }
 
 docker run -d \
   --name "$API_CONTAINER" \
@@ -147,7 +169,10 @@ host_port="${host_binding##*:}"
   cd "$ROOT_DIR"
   GOODMONEYING_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${host_port}/${POSTGRES_DB}?sslmode=disable" \
   GOODMONEYING_LIVE_POSTGRES_TEST=1 \
-    uv run pytest -q tests/e2e/test_live_postgres_candle_aggregation.py
+    uv run pytest -q \
+      tests/e2e/test_live_postgres_candle_aggregation.py \
+      tests/e2e/test_live_postgres_data_foundation.py \
+      tests/e2e/test_live_postgres_source_evidence.py
 )
 GOODMONEYING_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${host_port}/${POSTGRES_DB}?sslmode=disable" \
 GOODMONEYING_ENV_FILE="$SNAPSHOT_DIR/missing.env" \

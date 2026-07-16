@@ -10,7 +10,7 @@ COPY apps/upbit_gateway ./apps/upbit_gateway
 RUN pip install --no-cache-dir uv \
   && uv sync --frozen --no-dev
 
-ENV TZ=Asia/Seoul
+ENV TZ=UTC
 ENV PYTHONPATH=/app/apps/upbit_gateway
 EXPOSE 8001
 CMD ["uv", "run", "--no-sync", "uvicorn", "goodmoneying_upbit_gateway.main:app", "--host", "0.0.0.0", "--port", "8001"]

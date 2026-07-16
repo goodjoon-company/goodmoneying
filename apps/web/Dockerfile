@@ -1,6 +1,6 @@
 FROM node:24-slim AS build
 
-ENV TZ=Asia/Seoul
+ENV TZ=UTC
 RUN apt-get update \
   && apt-get install -y --no-install-recommends tzdata \
   && rm -rf /var/lib/apt/lists/*
@@ -14,7 +14,7 @@ ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 RUN npm run build
 
 FROM nginx:1.29-alpine
-ENV TZ=Asia/Seoul
+ENV TZ=UTC
 ENV GOODMONEYING_API_INTERNAL_URL=http://api:8000
 ENV GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL=http://upbit-gateway:8001
 ENV GOODMONEYING_OPERATOR_TOKEN=local-dev-token

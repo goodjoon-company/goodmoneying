@@ -1,7 +1,8 @@
 # ADR-0002-M1-PostgreSQL-단일-저장소
 
-Status: Accepted
+Status: Superseded
 Date: 2026-06-17
+Superseded By: `docs/ADR/ADR-0013-UTC-원천-결측-재현성.md`
 미래 결정 게이트 정제(Future Gate Refined By): `docs/ADR/ADR-0007-Post-MVP-아키텍처-결정-게이트.md`
 
 ## 맥락
@@ -22,7 +23,7 @@ M1 저장소는 PostgreSQL 단일 저장소로 시작한다. DB는 원천 사실
 
 ## 결과
 
-- 모든 저장 시각(Storage Time)은 절대 시각을 보존하는 `timestamptz`로 둔다. 현재 DB 계약과 런타임은 PostgreSQL 세션·애플리케이션 계산·API 표시를 KST(Korea Standard Time, `Asia/Seoul`)로 통일한다.
+- 당시에는 모든 저장 시각(Storage Time)을 `timestamptz`로 두고 세션·계산·표시를 KST로 통일했다. 이 시간대 결정은 P1에서 ADR-0013의 UTC 저장·계산, UI KST 표시 경계로 대체됐다.
 - 가격, 수량, 거래대금, 스프레드(Spread), 잔량, 등락률, 호가 불균형(Imbalance)은 DB에서 `numeric`, Python에서 `Decimal`로 다룬다.
 - API 응답의 Decimal 값은 문자열로 보낸다.
 - M1 데이터 보존 정책은 삭제 없음이다.

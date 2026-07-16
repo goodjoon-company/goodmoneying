@@ -159,6 +159,7 @@ def test_prod_home_compose_files_assign_expected_services() -> None:
         "migrate",
         "api",
         "upbit-gateway",
+        "market-sync-worker",
         "realtime-collection-worker",
         "backfill-collection-worker",
         "candle-aggregation-worker",
@@ -175,6 +176,9 @@ def test_prod_home_compose_uses_external_env_files() -> None:
     assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["api"]["env_file"]
     assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["upbit-gateway"]["env_file"]
     assert "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["migrate"]["env_file"]
+    assert (
+        "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["market-sync-worker"]["env_file"]
+    )
     assert (
         "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["realtime-collection-worker"]["env_file"]
     )
@@ -211,6 +215,7 @@ def test_prod_home_app_workers_do_not_override_runtime_env_file_values() -> None
     app = services(load_compose("app"))
 
     for service_name in (
+        "market-sync-worker",
         "realtime-collection-worker",
         "backfill-collection-worker",
         "candle-aggregation-worker",
@@ -218,6 +223,7 @@ def test_prod_home_app_workers_do_not_override_runtime_env_file_values() -> None
         environment = app[service_name].get("environment", {})
 
         assert "GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS" not in environment
+        assert "GOODMONEYING_MARKET_SYNC_INTERVAL_SECONDS" not in environment
         assert "GOODMONEYING_BACKFILL_POLL_SECONDS" not in environment
         assert "GOODMONEYING_BACKFILL_BATCH_SIZE" not in environment
         assert "GOODMONEYING_AGGREGATION_POLL_SECONDS" not in environment

@@ -1,0 +1,282 @@
+.coverage-quality {
+  display: grid;
+  gap: 1rem;
+}
+
+.coverage-quality-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 0.8fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.coverage-quality-header h2 {
+  margin: 0.2rem 0 0.45rem;
+  font-size: 1.35rem;
+}
+
+.coverage-quality-header p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.coverage-policy-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin: 0;
+}
+
+.coverage-policy-summary div,
+.coverage-state-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+}
+
+.coverage-policy-summary div {
+  padding: 0.75rem;
+}
+
+.coverage-policy-summary dt {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.coverage-policy-summary dd {
+  margin: 0.25rem 0 0;
+  font: 700 1.1rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.coverage-state-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.coverage-state-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: start;
+  padding: 0.75rem;
+  overflow: hidden;
+}
+
+.coverage-state-card::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: currentColor;
+  content: "";
+}
+
+.coverage-state-card svg {
+  width: 17px;
+  height: 17px;
+}
+
+.coverage-state-card strong {
+  display: block;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.coverage-state-card p {
+  margin: 0.25rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.coverage-state-card > span {
+  font: 700 1rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.status-available { color: #6bdc9a; }
+.status-no_trade { color: #56cfe1; }
+.status-unavailable { color: #9aa5b1; }
+.status-unverified { color: #f4c95d; }
+.status-missing { color: #ff6b78; }
+
+.coverage-notice {
+  margin: 0;
+  border-left: 3px solid #56cfe1;
+  padding: 0.65rem 0.8rem;
+  background: rgb(86 207 225 / 8%);
+}
+
+.coverage-market-panel {
+  min-width: 0;
+}
+
+.coverage-table-wrap {
+  overflow-x: auto;
+}
+
+.coverage-market-table {
+  width: 100%;
+  min-width: 920px;
+  border-collapse: collapse;
+}
+
+.coverage-market-table th,
+.coverage-market-table td {
+  border-top: 1px solid var(--border);
+  padding: 0.7rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.coverage-market-table thead th {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.coverage-market-table tbody th span {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.policy-state {
+  display: inline-flex;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0.18rem 0.45rem;
+  font-size: 0.72rem;
+}
+
+.policy-active { color: #6bdc9a; }
+.policy-paused { color: #f4c95d; }
+.policy-excluded { color: #9aa5b1; }
+
+.coverage-count-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, max-content));
+  gap: 0.18rem 0.7rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.coverage-dot {
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-right: 0.3rem;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-no_trade.coverage-dot { background: repeating-linear-gradient(45deg, currentColor 0 1px, transparent 1px 3px); }
+.status-unavailable.coverage-dot { border-radius: 0; background: repeating-linear-gradient(135deg, currentColor 0 1px, transparent 1px 3px); }
+.status-unverified.coverage-dot { background: transparent; }
+
+.coverage-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.coverage-row-actions button {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.35rem 0.55rem;
+}
+
+.coverage-policy-modal {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  overflow-y: auto;
+  padding: 1rem;
+  background: rgb(4 10 18 / 72%);
+  inset: 0;
+  place-items: center;
+}
+
+.coverage-policy-editor {
+  width: min(680px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1rem;
+  background: var(--panel);
+  box-shadow: 0 20px 60px rgb(0 0 0 / 35%);
+}
+
+.coverage-policy-editor > header,
+.coverage-policy-editor > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.coverage-policy-editor h3 { margin: 0.2rem 0 0; }
+.coverage-policy-editor > header button { min-width: 40px; min-height: 40px; }
+.coverage-policy-editor > footer { justify-content: flex-end; margin-top: 1rem; }
+
+.coverage-policy-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+  margin-top: 1rem;
+}
+
+.coverage-policy-fields > label,
+.coverage-policy-fields fieldset {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.coverage-policy-fields input,
+.coverage-policy-fields select {
+  min-width: 0;
+  min-height: 42px;
+}
+
+.coverage-policy-fields fieldset {
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.coverage-policy-fields legend { grid-column: 1 / -1; margin-bottom: 0.35rem; }
+.coverage-policy-fields fieldset label,
+.coverage-policy-continuous {
+  display: flex !important;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.coverage-policy-fields input[type="checkbox"] { width: 1rem; min-height: 1rem; }
+
+@media (max-width: 1100px) {
+  .coverage-state-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 760px) {
+  .coverage-quality-header { grid-template-columns: 1fr; }
+  .coverage-state-grid { grid-template-columns: 1fr; }
+  .coverage-policy-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .coverage-policy-fields { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .coverage-quality * { scroll-behavior: auto !important; transition: none !important; }
+}

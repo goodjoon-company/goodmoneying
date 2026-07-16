@@ -15,6 +15,20 @@ SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
 
+--
+-- Name: btree_gist; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;
+
+
+--
+-- Name: EXTENSION btree_gist; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON EXTENSION btree_gist IS 'support for indexing common datatypes in GiST';
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -66,6 +80,8 @@ CREATE TABLE public.backfill_job_targets (
     error_code text,
     error_message text,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    target_spec_id bigint,
+    last_fetch_manifest_id bigint,
     CONSTRAINT backfill_job_targets_status_ck CHECK ((status = ANY (ARRAY['pending'::text, 'running'::text, 'paused'::text, 'stopped'::text, 'succeeded'::text, 'failed'::text])))
 );
 
@@ -92,11 +108,20 @@ CREATE TABLE public.backfill_jobs (
     finished_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    idempotency_key text NOT NULL,
+    priority integer DEFAULT 100 NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    max_attempts integer DEFAULT 5 NOT NULL,
+    next_retry_at timestamp with time zone,
+    lease_owner text,
+    lease_expires_at timestamp with time zone,
+    last_error_code text,
+    dead_letter_reason text,
     CONSTRAINT backfill_jobs_data_type_ck CHECK ((data_type = 'source_candle'::text)),
     CONSTRAINT backfill_jobs_estimated_request_count_ck CHECK ((estimated_request_count >= 0)),
     CONSTRAINT backfill_jobs_estimated_row_count_ck CHECK ((estimated_row_count >= 0)),
     CONSTRAINT backfill_jobs_restart_mode_ck CHECK (((restart_mode IS NULL) OR (restart_mode = 'safe_restart'::text))),
-    CONSTRAINT backfill_jobs_status_ck CHECK ((status = ANY (ARRAY['planned'::text, 'pending'::text, 'running'::text, 'paused'::text, 'stopped'::text, 'succeeded'::text, 'failed'::text]))),
+    CONSTRAINT backfill_jobs_status_ck CHECK ((status = ANY (ARRAY['planned'::text, 'pending'::text, 'leased'::text, 'running'::text, 'retry_wait'::text, 'paused'::text, 'stopped'::text, 'succeeded'::text, 'failed'::text, 'dead_letter'::text, 'cancelled'::text]))),
     CONSTRAINT backfill_jobs_target_range_ck CHECK ((target_start_at < target_end_at))
 );
 
@@ -335,6 +360,45 @@ ALTER TABLE public.collection_plans ALTER COLUMN id ADD GENERATED ALWAYS AS IDEN
 
 
 --
+-- Name: collection_policies; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.collection_policies (
+    id bigint NOT NULL,
+    exchange text NOT NULL,
+    quote_currency text NOT NULL,
+    name text NOT NULL,
+    default_start_at timestamp with time zone,
+    lookback_years integer,
+    retention_days integer,
+    priority integer DEFAULT 100 NOT NULL,
+    auto_include_new_markets boolean DEFAULT true NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT collection_policies_lookback_ck CHECK (((lookback_years IS NULL) OR (lookback_years > 0))),
+    CONSTRAINT collection_policies_priority_ck CHECK (((priority >= 1) AND (priority <= 1000))),
+    CONSTRAINT collection_policies_range_ck CHECK (((default_start_at IS NOT NULL) <> (lookback_years IS NOT NULL))),
+    CONSTRAINT collection_policies_retention_ck CHECK (((retention_days IS NULL) OR (retention_days > 0))),
+    CONSTRAINT collection_policies_status_ck CHECK ((status = ANY (ARRAY['active'::text, 'paused'::text])))
+);
+
+
+--
+-- Name: collection_policies_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.collection_policies ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.collection_policies_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: collection_runs; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -349,6 +413,9 @@ CREATE TABLE public.collection_runs (
     error_code text,
     error_message text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    worker_role text,
+    run_key text,
+    request_id text,
     CONSTRAINT collection_runs_data_type_ck CHECK ((data_type = ANY (ARRAY['candidate_universe'::text, 'source_candle'::text, 'ticker_snapshot'::text, 'orderbook_summary'::text, 'trade_event'::text, 'missing_range'::text]))),
     CONSTRAINT collection_runs_run_type_ck CHECK ((run_type = ANY (ARRAY['candidate_refresh'::text, 'incremental'::text, 'backfill'::text, 'completeness_check'::text]))),
     CONSTRAINT collection_runs_status_ck CHECK ((status = ANY (ARRAY['running'::text, 'succeeded'::text, 'partial'::text, 'failed'::text, 'cancelled'::text]))),
@@ -384,6 +451,22 @@ CREATE TABLE public.collection_settings (
 
 
 --
+-- Name: collection_subscription_desires; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.collection_subscription_desires (
+    target_spec_id bigint NOT NULL,
+    desired_state text NOT NULL,
+    generation bigint DEFAULT 1 NOT NULL,
+    applied_generation bigint,
+    connection_id text,
+    last_applied_at timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT collection_subscription_desires_state_ck CHECK ((desired_state = ANY (ARRAY['subscribed'::text, 'unsubscribed'::text])))
+);
+
+
+--
 -- Name: collection_target_changes; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -407,6 +490,58 @@ CREATE TABLE public.collection_target_changes (
 
 ALTER TABLE public.collection_target_changes ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
     SEQUENCE NAME public.collection_target_changes_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: collection_target_specs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.collection_target_specs (
+    id bigint NOT NULL,
+    policy_id bigint NOT NULL,
+    market_id bigint NOT NULL,
+    legacy_target_id bigint,
+    data_type text NOT NULL,
+    candle_unit text,
+    range_start_at timestamp with time zone NOT NULL,
+    retention_days integer,
+    priority integer NOT NULL,
+    continuous boolean DEFAULT true NOT NULL,
+    auto_managed boolean DEFAULT true NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    excluded_by text,
+    exclusion_reason text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    state_reason text,
+    CONSTRAINT collection_target_specs_candle_unit_ck CHECK ((((data_type = 'source_candle'::text) AND (candle_unit = ANY (ARRAY['1m'::text, '1d'::text]))) OR ((data_type <> 'source_candle'::text) AND (candle_unit IS NULL)))),
+    CONSTRAINT collection_target_specs_data_type_ck CHECK ((data_type = ANY (ARRAY['source_candle'::text, 'trade_event'::text, 'orderbook_snapshot'::text, 'ticker_snapshot'::text]))),
+    CONSTRAINT collection_target_specs_priority_ck CHECK (((priority >= 1) AND (priority <= 1000))),
+    CONSTRAINT collection_target_specs_retention_ck CHECK (((retention_days IS NULL) OR (retention_days > 0))),
+    CONSTRAINT collection_target_specs_state_reason_ck CHECK ((((status = 'active'::text) AND (state_reason IS NULL)) OR ((status = 'paused'::text) AND (state_reason IS NOT NULL) AND (state_reason = ANY (ARRAY['catalog_missing'::text, 'market_inactive'::text, 'operator_paused'::text, 'policy_data_type_disabled'::text]))) OR ((status = 'excluded'::text) AND (state_reason IS NOT NULL) AND (state_reason = 'operator_excluded'::text)))),
+    CONSTRAINT collection_target_specs_status_ck CHECK ((status = ANY (ARRAY['active'::text, 'paused'::text, 'excluded'::text])))
+);
+
+
+--
+-- Name: COLUMN collection_target_specs.state_reason; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.collection_target_specs.state_reason IS '상태 원인: catalog_missing, market_inactive, operator_paused, operator_excluded, policy_data_type_disabled';
+
+
+--
+-- Name: collection_target_specs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.collection_target_specs ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.collection_target_specs_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -468,6 +603,118 @@ CREATE TABLE public.collection_worker_heartbeats (
 
 
 --
+-- Name: coverage_intervals; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.coverage_intervals (
+    id bigint NOT NULL,
+    target_spec_id bigint NOT NULL,
+    range_start_at timestamp with time zone NOT NULL,
+    range_end_at timestamp with time zone NOT NULL,
+    status text NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    fetch_manifest_id bigint,
+    assessed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT coverage_intervals_range_ck CHECK ((range_start_at < range_end_at)),
+    CONSTRAINT coverage_intervals_status_ck CHECK ((status = ANY (ARRAY['available'::text, 'no_trade'::text, 'missing'::text, 'unavailable'::text, 'unverified'::text])))
+);
+
+
+--
+-- Name: coverage_intervals_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.coverage_intervals ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.coverage_intervals_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: data_quality_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.data_quality_events (
+    id bigint NOT NULL,
+    target_spec_id bigint NOT NULL,
+    event_type text NOT NULL,
+    previous_status text,
+    new_status text NOT NULL,
+    range_start_at timestamp with time zone NOT NULL,
+    range_end_at timestamp with time zone NOT NULL,
+    fingerprint text NOT NULL,
+    evidence jsonb NOT NULL,
+    detected_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    fetch_manifest_id bigint,
+    CONSTRAINT data_quality_events_new_status_ck CHECK ((new_status = ANY (ARRAY['available'::text, 'no_trade'::text, 'missing'::text, 'unavailable'::text, 'unverified'::text]))),
+    CONSTRAINT data_quality_events_previous_status_ck CHECK (((previous_status IS NULL) OR (previous_status = ANY (ARRAY['available'::text, 'no_trade'::text, 'missing'::text, 'unavailable'::text, 'unverified'::text]))))
+);
+
+
+--
+-- Name: data_quality_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.data_quality_events ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.data_quality_events_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: fetch_manifests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.fetch_manifests (
+    id bigint NOT NULL,
+    target_spec_id bigint,
+    collection_run_id bigint,
+    source text NOT NULL,
+    endpoint text NOT NULL,
+    request_parameters jsonb NOT NULL,
+    request_fingerprint text NOT NULL,
+    requested_at timestamp with time zone NOT NULL,
+    responded_at timestamp with time zone,
+    response_status integer,
+    response_checksum text,
+    collector_version text NOT NULL,
+    schema_version text NOT NULL,
+    outcome text NOT NULL,
+    error_code text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    response_payload jsonb,
+    error_message text,
+    CONSTRAINT fetch_manifests_outcome_ck CHECK ((outcome = ANY (ARRAY['succeeded'::text, 'rate_limited'::text, 'blocked'::text, 'failed'::text, 'unknown'::text]))),
+    CONSTRAINT fetch_manifests_source_ck CHECK ((source = ANY (ARRAY['UPBIT'::text, 'LEGACY'::text])))
+);
+
+
+--
+-- Name: fetch_manifests_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.fetch_manifests ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.fetch_manifests_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: instruments; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -491,6 +738,76 @@ CREATE TABLE public.instruments (
 
 ALTER TABLE public.instruments ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
     SEQUENCE NAME public.instruments_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: market_status_history; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.market_status_history (
+    id bigint NOT NULL,
+    market_id bigint NOT NULL,
+    trading_status text NOT NULL,
+    market_warning text NOT NULL,
+    market_event jsonb DEFAULT '{}'::jsonb NOT NULL,
+    source_payload_checksum text NOT NULL,
+    valid_from timestamp with time zone NOT NULL,
+    valid_to timestamp with time zone,
+    observed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT market_status_history_range_ck CHECK (((valid_to IS NULL) OR (valid_from < valid_to))),
+    CONSTRAINT market_status_history_status_ck CHECK ((trading_status = ANY (ARRAY['active'::text, 'inactive'::text, 'delisted'::text, 'unknown'::text])))
+);
+
+
+--
+-- Name: market_status_history_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.market_status_history ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.market_status_history_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: markets; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.markets (
+    id bigint NOT NULL,
+    exchange text NOT NULL,
+    market_code text NOT NULL,
+    quote_currency text NOT NULL,
+    base_asset text NOT NULL,
+    korean_name text NOT NULL,
+    english_name text NOT NULL,
+    legacy_instrument_id bigint,
+    first_observed_at timestamp with time zone NOT NULL,
+    last_observed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT markets_exchange_ck CHECK ((exchange = 'UPBIT'::text)),
+    CONSTRAINT markets_observation_range_ck CHECK ((first_observed_at <= last_observed_at))
+);
+
+
+--
+-- Name: markets_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.markets ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.markets_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -572,6 +889,65 @@ ALTER TABLE public.notification_events ALTER COLUMN id ADD GENERATED ALWAYS AS I
 
 
 --
+-- Name: orderbook_snapshot_levels; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.orderbook_snapshot_levels (
+    snapshot_id bigint NOT NULL,
+    level_index integer NOT NULL,
+    ask_price numeric(38,18) NOT NULL,
+    ask_size numeric(38,18) NOT NULL,
+    bid_price numeric(38,18) NOT NULL,
+    bid_size numeric(38,18) NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT orderbook_snapshot_levels_index_ck CHECK ((level_index >= 0)),
+    CONSTRAINT orderbook_snapshot_levels_value_ck CHECK (((ask_price >= (0)::numeric) AND (ask_size >= (0)::numeric) AND (bid_price >= (0)::numeric) AND (bid_size >= (0)::numeric)))
+);
+
+
+--
+-- Name: orderbook_snapshots; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.orderbook_snapshots (
+    id bigint NOT NULL,
+    market_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    source text NOT NULL,
+    occurred_at timestamp with time zone NOT NULL,
+    received_at timestamp with time zone NOT NULL,
+    stored_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    total_ask_size numeric(38,18) NOT NULL,
+    total_bid_size numeric(38,18) NOT NULL,
+    level_count integer NOT NULL,
+    level numeric(38,18),
+    stream_type text,
+    payload_checksum text NOT NULL,
+    fetch_manifest_id bigint,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT orderbook_snapshots_level_count_ck CHECK ((level_count > 0)),
+    CONSTRAINT orderbook_snapshots_payload_checksum_ck CHECK ((length(payload_checksum) = 64)),
+    CONSTRAINT orderbook_snapshots_source_ck CHECK ((source = 'UPBIT'::text)),
+    CONSTRAINT orderbook_snapshots_total_size_ck CHECK (((total_ask_size >= (0)::numeric) AND (total_bid_size >= (0)::numeric)))
+);
+
+
+--
+-- Name: orderbook_snapshots_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.orderbook_snapshots ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.orderbook_snapshots_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: orderbook_summaries; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -593,6 +969,12 @@ CREATE TABLE public.orderbook_summaries (
     collection_run_id bigint,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    market_id bigint,
+    occurred_at timestamp with time zone,
+    received_at timestamp with time zone,
+    stored_at timestamp with time zone,
+    knowledge_at timestamp with time zone,
+    fetch_manifest_id bigint,
     CONSTRAINT orderbook_summaries_source_ck CHECK ((source = 'UPBIT'::text))
 );
 
@@ -674,6 +1056,12 @@ CREATE TABLE public.source_candles (
     collection_run_id bigint,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    market_id bigint,
+    occurred_at timestamp with time zone,
+    received_at timestamp with time zone,
+    stored_at timestamp with time zone,
+    knowledge_at timestamp with time zone,
+    fetch_manifest_id bigint,
     CONSTRAINT source_candles_candle_unit_ck CHECK ((candle_unit = ANY (ARRAY['1m'::text, '1d'::text]))),
     CONSTRAINT source_candles_source_ck CHECK ((source = 'UPBIT'::text))
 );
@@ -685,6 +1073,43 @@ CREATE TABLE public.source_candles (
 
 ALTER TABLE public.source_candles ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
     SEQUENCE NAME public.source_candles_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: source_receipts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.source_receipts (
+    id bigint NOT NULL,
+    data_type text NOT NULL,
+    market_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    connection_id uuid NOT NULL,
+    frame_sequence bigint NOT NULL,
+    occurred_at timestamp with time zone NOT NULL,
+    received_at timestamp with time zone NOT NULL,
+    payload_checksum text NOT NULL,
+    raw_payload jsonb NOT NULL,
+    fetch_manifest_id bigint,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT source_receipts_data_type_ck CHECK ((data_type = ANY (ARRAY['source_candle'::text, 'trade_event'::text, 'orderbook_snapshot'::text, 'ticker_snapshot'::text]))),
+    CONSTRAINT source_receipts_frame_sequence_ck CHECK ((frame_sequence > 0)),
+    CONSTRAINT source_receipts_payload_checksum_ck CHECK ((length(payload_checksum) = 64))
+);
+
+
+--
+-- Name: source_receipts_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.source_receipts ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.source_receipts_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -756,6 +1181,12 @@ CREATE TABLE public.ticker_snapshots (
     collection_run_id bigint,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    market_id bigint,
+    occurred_at timestamp with time zone,
+    received_at timestamp with time zone,
+    stored_at timestamp with time zone,
+    knowledge_at timestamp with time zone,
+    fetch_manifest_id bigint,
     CONSTRAINT ticker_snapshots_source_ck CHECK ((source = 'UPBIT'::text))
 );
 
@@ -791,6 +1222,12 @@ CREATE TABLE public.trade_events (
     collected_at timestamp with time zone NOT NULL,
     collection_run_id bigint,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    market_id bigint,
+    occurred_at timestamp with time zone,
+    received_at timestamp with time zone,
+    stored_at timestamp with time zone,
+    knowledge_at timestamp with time zone,
+    fetch_manifest_id bigint,
     CONSTRAINT trade_events_ask_bid_ck CHECK ((ask_bid = ANY (ARRAY['ASK'::text, 'BID'::text]))),
     CONSTRAINT trade_events_source_ck CHECK ((source = 'UPBIT'::text))
 );
@@ -824,6 +1261,14 @@ ALTER TABLE ONLY public.audit_logs
 
 ALTER TABLE ONLY public.backfill_job_targets
     ADD CONSTRAINT backfill_job_targets_pkey PRIMARY KEY (backfill_job_id, instrument_id);
+
+
+--
+-- Name: backfill_jobs backfill_jobs_idempotency_key_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backfill_jobs
+    ADD CONSTRAINT backfill_jobs_idempotency_key_uk UNIQUE (idempotency_key);
 
 
 --
@@ -915,6 +1360,22 @@ ALTER TABLE ONLY public.collection_plans
 
 
 --
+-- Name: collection_policies collection_policies_natural_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collection_policies
+    ADD CONSTRAINT collection_policies_natural_uk UNIQUE (exchange, quote_currency, name);
+
+
+--
+-- Name: collection_policies collection_policies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collection_policies
+    ADD CONSTRAINT collection_policies_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: collection_runs collection_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -931,11 +1392,35 @@ ALTER TABLE ONLY public.collection_settings
 
 
 --
+-- Name: collection_subscription_desires collection_subscription_desires_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collection_subscription_desires
+    ADD CONSTRAINT collection_subscription_desires_pkey PRIMARY KEY (target_spec_id);
+
+
+--
 -- Name: collection_target_changes collection_target_changes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.collection_target_changes
     ADD CONSTRAINT collection_target_changes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: collection_target_specs collection_target_specs_natural_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collection_target_specs
+    ADD CONSTRAINT collection_target_specs_natural_uk UNIQUE NULLS NOT DISTINCT (policy_id, market_id, data_type, candle_unit);
+
+
+--
+-- Name: collection_target_specs collection_target_specs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collection_target_specs
+    ADD CONSTRAINT collection_target_specs_pkey PRIMARY KEY (id);
 
 
 --
@@ -963,6 +1448,62 @@ ALTER TABLE ONLY public.collection_worker_heartbeats
 
 
 --
+-- Name: coverage_intervals coverage_intervals_natural_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.coverage_intervals
+    ADD CONSTRAINT coverage_intervals_natural_uk UNIQUE (target_spec_id, range_start_at, range_end_at, status);
+
+
+--
+-- Name: coverage_intervals coverage_intervals_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.coverage_intervals
+    ADD CONSTRAINT coverage_intervals_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: coverage_intervals coverage_intervals_target_spec_id_tstzrange_excl; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.coverage_intervals
+    ADD CONSTRAINT coverage_intervals_target_spec_id_tstzrange_excl EXCLUDE USING gist (target_spec_id WITH =, tstzrange(range_start_at, range_end_at, '[)'::text) WITH &&);
+
+
+--
+-- Name: data_quality_events data_quality_events_fingerprint_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.data_quality_events
+    ADD CONSTRAINT data_quality_events_fingerprint_uk UNIQUE (target_spec_id, fingerprint);
+
+
+--
+-- Name: data_quality_events data_quality_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.data_quality_events
+    ADD CONSTRAINT data_quality_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: fetch_manifests fetch_manifests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fetch_manifests
+    ADD CONSTRAINT fetch_manifests_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: fetch_manifests fetch_manifests_request_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fetch_manifests
+    ADD CONSTRAINT fetch_manifests_request_uk UNIQUE (source, request_fingerprint, requested_at);
+
+
+--
 -- Name: instruments instruments_exchange_market_code_uk; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -976,6 +1517,54 @@ ALTER TABLE ONLY public.instruments
 
 ALTER TABLE ONLY public.instruments
     ADD CONSTRAINT instruments_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: market_status_history market_status_history_market_from_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_status_history
+    ADD CONSTRAINT market_status_history_market_from_uk UNIQUE (market_id, valid_from);
+
+
+--
+-- Name: market_status_history market_status_history_market_id_tstzrange_excl; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_status_history
+    ADD CONSTRAINT market_status_history_market_id_tstzrange_excl EXCLUDE USING gist (market_id WITH =, tstzrange(valid_from, valid_to, '[)'::text) WITH &&);
+
+
+--
+-- Name: market_status_history market_status_history_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_status_history
+    ADD CONSTRAINT market_status_history_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: markets markets_exchange_market_code_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.markets
+    ADD CONSTRAINT markets_exchange_market_code_uk UNIQUE (exchange, market_code);
+
+
+--
+-- Name: markets markets_legacy_instrument_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.markets
+    ADD CONSTRAINT markets_legacy_instrument_id_key UNIQUE (legacy_instrument_id);
+
+
+--
+-- Name: markets markets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.markets
+    ADD CONSTRAINT markets_pkey PRIMARY KEY (id);
 
 
 --
@@ -1000,6 +1589,30 @@ ALTER TABLE ONLY public.missing_ranges
 
 ALTER TABLE ONLY public.notification_events
     ADD CONSTRAINT notification_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: orderbook_snapshot_levels orderbook_snapshot_levels_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orderbook_snapshot_levels
+    ADD CONSTRAINT orderbook_snapshot_levels_pkey PRIMARY KEY (snapshot_id, level_index);
+
+
+--
+-- Name: orderbook_snapshots orderbook_snapshots_economic_state_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orderbook_snapshots
+    ADD CONSTRAINT orderbook_snapshots_economic_state_uk UNIQUE (instrument_id, source, occurred_at, payload_checksum);
+
+
+--
+-- Name: orderbook_snapshots orderbook_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orderbook_snapshots
+    ADD CONSTRAINT orderbook_snapshots_pkey PRIMARY KEY (id);
 
 
 --
@@ -1051,6 +1664,22 @@ ALTER TABLE ONLY public.source_candles
 
 
 --
+-- Name: source_receipts source_receipts_connection_frame_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_receipts
+    ADD CONSTRAINT source_receipts_connection_frame_uk UNIQUE (connection_id, frame_sequence);
+
+
+--
+-- Name: source_receipts source_receipts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_receipts
+    ADD CONSTRAINT source_receipts_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: target_collection_results target_collection_results_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1098,6 +1727,13 @@ CREATE INDEX audit_logs_created_at_idx ON public.audit_logs USING btree (created
 
 
 --
+-- Name: backfill_jobs_lease_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX backfill_jobs_lease_idx ON public.backfill_jobs USING btree (status, next_retry_at, lease_expires_at, priority DESC, created_at);
+
+
+--
 -- Name: backfill_jobs_status_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1133,10 +1769,52 @@ CREATE INDEX collection_runs_started_at_idx ON public.collection_runs USING btre
 
 
 --
+-- Name: collection_runs_worker_run_key_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX collection_runs_worker_run_key_uk ON public.collection_runs USING btree (worker_role, run_key) WHERE ((worker_role IS NOT NULL) AND (run_key IS NOT NULL));
+
+
+--
+-- Name: collection_subscription_desires_generation_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX collection_subscription_desires_generation_idx ON public.collection_subscription_desires USING btree (desired_state, generation, applied_generation);
+
+
+--
+-- Name: collection_target_specs_scheduler_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX collection_target_specs_scheduler_idx ON public.collection_target_specs USING btree (status, priority DESC, updated_at);
+
+
+--
 -- Name: collection_worker_heartbeats_status_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX collection_worker_heartbeats_status_idx ON public.collection_worker_heartbeats USING btree (status, last_heartbeat_at DESC);
+
+
+--
+-- Name: coverage_intervals_target_time_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX coverage_intervals_target_time_idx ON public.coverage_intervals USING btree (target_spec_id, range_start_at, range_end_at);
+
+
+--
+-- Name: market_status_history_point_in_time_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX market_status_history_point_in_time_idx ON public.market_status_history USING btree (market_id, valid_from DESC, valid_to);
+
+
+--
+-- Name: markets_quote_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX markets_quote_status_idx ON public.markets USING btree (exchange, quote_currency, market_code);
 
 
 --
@@ -1151,6 +1829,13 @@ CREATE INDEX missing_ranges_status_idx ON public.missing_ranges USING btree (sta
 --
 
 CREATE INDEX notification_events_status_idx ON public.notification_events USING btree (status, created_at DESC);
+
+
+--
+-- Name: orderbook_snapshots_market_occurred_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX orderbook_snapshots_market_occurred_idx ON public.orderbook_snapshots USING btree (market_id, occurred_at DESC);
 
 
 --
@@ -1179,6 +1864,20 @@ CREATE INDEX source_candles_collected_at_idx ON public.source_candles USING btre
 --
 
 CREATE INDEX source_candles_instrument_time_idx ON public.source_candles USING btree (instrument_id, candle_unit, candle_start_at DESC);
+
+
+--
+-- Name: source_receipts_market_occurred_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX source_receipts_market_occurred_idx ON public.source_receipts USING btree (market_id, data_type, occurred_at DESC);
+
+
+--
+-- Name: source_receipts_payload_checksum_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX source_receipts_payload_checksum_idx ON public.source_receipts USING btree (payload_checksum);
 
 
 --
@@ -1230,6 +1929,22 @@ ALTER TABLE ONLY public.backfill_job_targets
 
 ALTER TABLE ONLY public.backfill_job_targets
     ADD CONSTRAINT backfill_job_targets_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: backfill_job_targets backfill_job_targets_last_fetch_manifest_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backfill_job_targets
+    ADD CONSTRAINT backfill_job_targets_last_fetch_manifest_id_fkey FOREIGN KEY (last_fetch_manifest_id) REFERENCES public.fetch_manifests(id);
+
+
+--
+-- Name: backfill_job_targets backfill_job_targets_target_spec_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backfill_job_targets
+    ADD CONSTRAINT backfill_job_targets_target_spec_id_fkey FOREIGN KEY (target_spec_id) REFERENCES public.collection_target_specs(id);
 
 
 --
@@ -1297,11 +2012,43 @@ ALTER TABLE ONLY public.collection_plans
 
 
 --
+-- Name: collection_subscription_desires collection_subscription_desires_target_spec_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collection_subscription_desires
+    ADD CONSTRAINT collection_subscription_desires_target_spec_id_fkey FOREIGN KEY (target_spec_id) REFERENCES public.collection_target_specs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: collection_target_changes collection_target_changes_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.collection_target_changes
     ADD CONSTRAINT collection_target_changes_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: collection_target_specs collection_target_specs_legacy_target_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collection_target_specs
+    ADD CONSTRAINT collection_target_specs_legacy_target_id_fkey FOREIGN KEY (legacy_target_id) REFERENCES public.collection_targets(id);
+
+
+--
+-- Name: collection_target_specs collection_target_specs_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collection_target_specs
+    ADD CONSTRAINT collection_target_specs_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
+
+
+--
+-- Name: collection_target_specs collection_target_specs_policy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collection_target_specs
+    ADD CONSTRAINT collection_target_specs_policy_id_fkey FOREIGN KEY (policy_id) REFERENCES public.collection_policies(id);
 
 
 --
@@ -1313,11 +2060,107 @@ ALTER TABLE ONLY public.collection_targets
 
 
 --
+-- Name: coverage_intervals coverage_intervals_fetch_manifest_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.coverage_intervals
+    ADD CONSTRAINT coverage_intervals_fetch_manifest_id_fkey FOREIGN KEY (fetch_manifest_id) REFERENCES public.fetch_manifests(id);
+
+
+--
+-- Name: coverage_intervals coverage_intervals_target_spec_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.coverage_intervals
+    ADD CONSTRAINT coverage_intervals_target_spec_id_fkey FOREIGN KEY (target_spec_id) REFERENCES public.collection_target_specs(id);
+
+
+--
+-- Name: data_quality_events data_quality_events_fetch_manifest_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.data_quality_events
+    ADD CONSTRAINT data_quality_events_fetch_manifest_id_fkey FOREIGN KEY (fetch_manifest_id) REFERENCES public.fetch_manifests(id);
+
+
+--
+-- Name: data_quality_events data_quality_events_target_spec_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.data_quality_events
+    ADD CONSTRAINT data_quality_events_target_spec_id_fkey FOREIGN KEY (target_spec_id) REFERENCES public.collection_target_specs(id);
+
+
+--
+-- Name: fetch_manifests fetch_manifests_collection_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fetch_manifests
+    ADD CONSTRAINT fetch_manifests_collection_run_id_fkey FOREIGN KEY (collection_run_id) REFERENCES public.collection_runs(id);
+
+
+--
+-- Name: fetch_manifests fetch_manifests_target_spec_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fetch_manifests
+    ADD CONSTRAINT fetch_manifests_target_spec_id_fkey FOREIGN KEY (target_spec_id) REFERENCES public.collection_target_specs(id);
+
+
+--
+-- Name: market_status_history market_status_history_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_status_history
+    ADD CONSTRAINT market_status_history_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
+
+
+--
+-- Name: markets markets_legacy_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.markets
+    ADD CONSTRAINT markets_legacy_instrument_id_fkey FOREIGN KEY (legacy_instrument_id) REFERENCES public.instruments(id);
+
+
+--
 -- Name: missing_ranges missing_ranges_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.missing_ranges
     ADD CONSTRAINT missing_ranges_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: orderbook_snapshot_levels orderbook_snapshot_levels_snapshot_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orderbook_snapshot_levels
+    ADD CONSTRAINT orderbook_snapshot_levels_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES public.orderbook_snapshots(id) ON DELETE CASCADE;
+
+
+--
+-- Name: orderbook_snapshots orderbook_snapshots_fetch_manifest_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orderbook_snapshots
+    ADD CONSTRAINT orderbook_snapshots_fetch_manifest_id_fkey FOREIGN KEY (fetch_manifest_id) REFERENCES public.fetch_manifests(id);
+
+
+--
+-- Name: orderbook_snapshots orderbook_snapshots_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orderbook_snapshots
+    ADD CONSTRAINT orderbook_snapshots_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: orderbook_snapshots orderbook_snapshots_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orderbook_snapshots
+    ADD CONSTRAINT orderbook_snapshots_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
 
 
 --
@@ -1329,11 +2172,27 @@ ALTER TABLE ONLY public.orderbook_summaries
 
 
 --
+-- Name: orderbook_summaries orderbook_summaries_fetch_manifest_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orderbook_summaries
+    ADD CONSTRAINT orderbook_summaries_fetch_manifest_id_fkey FOREIGN KEY (fetch_manifest_id) REFERENCES public.fetch_manifests(id);
+
+
+--
 -- Name: orderbook_summaries orderbook_summaries_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.orderbook_summaries
     ADD CONSTRAINT orderbook_summaries_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: orderbook_summaries orderbook_summaries_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orderbook_summaries
+    ADD CONSTRAINT orderbook_summaries_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
 
 
 --
@@ -1345,11 +2204,51 @@ ALTER TABLE ONLY public.source_candles
 
 
 --
+-- Name: source_candles source_candles_fetch_manifest_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_candles
+    ADD CONSTRAINT source_candles_fetch_manifest_id_fkey FOREIGN KEY (fetch_manifest_id) REFERENCES public.fetch_manifests(id);
+
+
+--
 -- Name: source_candles source_candles_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.source_candles
     ADD CONSTRAINT source_candles_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: source_candles source_candles_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_candles
+    ADD CONSTRAINT source_candles_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
+
+
+--
+-- Name: source_receipts source_receipts_fetch_manifest_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_receipts
+    ADD CONSTRAINT source_receipts_fetch_manifest_id_fkey FOREIGN KEY (fetch_manifest_id) REFERENCES public.fetch_manifests(id);
+
+
+--
+-- Name: source_receipts source_receipts_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_receipts
+    ADD CONSTRAINT source_receipts_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: source_receipts source_receipts_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_receipts
+    ADD CONSTRAINT source_receipts_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
 
 
 --
@@ -1377,11 +2276,27 @@ ALTER TABLE ONLY public.ticker_snapshots
 
 
 --
+-- Name: ticker_snapshots ticker_snapshots_fetch_manifest_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ticker_snapshots
+    ADD CONSTRAINT ticker_snapshots_fetch_manifest_id_fkey FOREIGN KEY (fetch_manifest_id) REFERENCES public.fetch_manifests(id);
+
+
+--
 -- Name: ticker_snapshots ticker_snapshots_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.ticker_snapshots
     ADD CONSTRAINT ticker_snapshots_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: ticker_snapshots ticker_snapshots_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ticker_snapshots
+    ADD CONSTRAINT ticker_snapshots_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
 
 
 --
@@ -1393,11 +2308,27 @@ ALTER TABLE ONLY public.trade_events
 
 
 --
+-- Name: trade_events trade_events_fetch_manifest_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.trade_events
+    ADD CONSTRAINT trade_events_fetch_manifest_id_fkey FOREIGN KEY (fetch_manifest_id) REFERENCES public.fetch_manifests(id);
+
+
+--
 -- Name: trade_events trade_events_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.trade_events
     ADD CONSTRAINT trade_events_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: trade_events trade_events_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.trade_events
+    ADD CONSTRAINT trade_events_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
 
 
 --
@@ -1412,4 +2343,9 @@ ALTER TABLE ONLY public.trade_events
 --
 
 INSERT INTO public.schema_migrations (version) VALUES
-    ('20260715000100');
+    ('20260715000100'),
+    ('20260717000100'),
+    ('20260717000200'),
+    ('20260717000300'),
+    ('20260717000400'),
+    ('20260717000500');

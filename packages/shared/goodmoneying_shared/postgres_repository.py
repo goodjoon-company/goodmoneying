@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import uuid
 from calendar import monthrange
-from datetime import datetime, timedelta
+from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from hashlib import sha256
 from math import ceil
 from typing import Any, Literal, cast
 
@@ -16,6 +19,14 @@ from goodmoneying_shared.aggregation import (
     SOURCE_FETCH_BATCH_SIZE,
     aggregate_candles,
     rollup_bucket_start,
+)
+from goodmoneying_shared.coverage_transition import replace_coverage_with_classification
+from goodmoneying_shared.data_foundation import (
+    INSTRUMENT_ADVISORY_LOCK_NAMESPACE,
+    CollectionSubscriptionDesire,
+    CoverageEvidence,
+    classify_coverage,
+    internal_minute_candle_gaps,
 )
 from goodmoneying_shared.models import (
     AuditLogSummary,
@@ -43,6 +54,7 @@ from goodmoneying_shared.models import (
     CoverageSegment,
     CoverageStatus,
     DashboardSummary,
+    FetchEvidence,
     HealthCheck,
     Instrument,
     MarketListRow,
@@ -52,6 +64,7 @@ from goodmoneying_shared.models import (
     OrderbookSummary,
     RealtimeCollectionHeatmapBucket,
     RealtimeCollectionHeatmapRow,
+    RealtimeSourceFrame,
     RealtimeWorkerStatus,
     SourceCandle,
     StorageBreakdownItem,
@@ -63,6 +76,11 @@ from goodmoneying_shared.models import (
 from goodmoneying_shared.time import KST, isoformat_kst, minute_bucket, now_kst
 
 Row = dict[str, Any]
+BACKFILL_LEASE_SECONDS = 120
+BACKFILL_RETRY_BASE_SECONDS = 5
+BACKFILL_RETRY_MAX_SECONDS = 300
+SOURCE_EVIDENCE_SCHEMA_VERSION = "20260717000300"
+SOURCE_EVIDENCE_COLLECTOR_VERSION = "postgres-repository-v2"
 
 
 def _is_fixture_candidate_entry(market_code: str, display_name: str) -> bool:
@@ -102,12 +120,11 @@ class PostgresOperationsRepository:
         connect_and_statement_timeout_seconds: float | None = None,
     ) -> None:
         self._database_url = database_url
-        self._connect_and_statement_timeout_seconds = (
-            connect_and_statement_timeout_seconds
-        )
+        self._backfill_worker_id = f"backfill:{uuid.uuid4()}"
+        self._connect_and_statement_timeout_seconds = connect_and_statement_timeout_seconds
 
     def _connect(self) -> psycopg.Connection[Any]:
-        options = "-c timezone=Asia/Seoul"
+        options = "-c timezone=UTC"
         connect_timeout: int | None = None
         if self._connect_and_statement_timeout_seconds is not None:
             statement_timeout_ms = max(
@@ -331,6 +348,64 @@ class PostgresOperationsRepository:
             ).fetchall()
         return [_instrument(row) for row in rows]
 
+    def load_collection_subscription_desires(
+        self,
+    ) -> list[CollectionSubscriptionDesire]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                  desire.target_spec_id,
+                  market.market_code,
+                  desire.desired_state,
+                  desire.generation,
+                  target.status AS target_status,
+                  COALESCE(history.trading_status, 'unknown') AS trading_status,
+                  target.data_type,
+                  target.continuous
+                FROM collection_subscription_desires desire
+                JOIN collection_target_specs target ON target.id = desire.target_spec_id
+                JOIN markets market ON market.id = target.market_id
+                LEFT JOIN market_status_history history
+                  ON history.market_id = market.id AND history.valid_to IS NULL
+                ORDER BY desire.target_spec_id
+                """
+            ).fetchall()
+        return [
+            CollectionSubscriptionDesire(
+                target_spec_id=int(row["target_spec_id"]),
+                market_code=str(row["market_code"]),
+                desired_state=cast(Any, row["desired_state"]),
+                generation=int(row["generation"]),
+                target_status=cast(Any, row["target_status"]),
+                trading_status=cast(Any, row["trading_status"]),
+                data_type=cast(Any, row["data_type"]),
+                continuous=bool(row["continuous"]),
+            )
+            for row in rows
+        ]
+
+    def mark_collection_subscription_desires_applied(
+        self,
+        versions: tuple[tuple[int, int], ...],
+        *,
+        connection_id: str,
+    ) -> None:
+        if not versions:
+            return
+        with self._connect() as conn:
+            for target_spec_id, generation in versions:
+                conn.execute(
+                    """
+                    UPDATE collection_subscription_desires
+                    SET applied_generation = generation,
+                        connection_id = %s,
+                        last_applied_at = clock_timestamp()
+                    WHERE target_spec_id = %s AND generation = %s
+                    """,
+                    (connection_id, target_spec_id, generation),
+                )
+
     def record_incremental_collection(
         self,
         tickers: list[TickerSnapshot],
@@ -353,9 +428,11 @@ class PostgresOperationsRepository:
                     ).fetchone()
                 )["id"]
             )
-            ticker_rows = self._upsert_tickers(conn, run_id, tickers)
-            orderbook_rows = self._upsert_orderbooks(conn, run_id, orderbooks)
-            candle_rows = self._upsert_candles(conn, run_id, candles)
+            ticker_rows = self._upsert_tickers(conn, run_id, tickers, requested_at=started_at)
+            orderbook_rows = self._upsert_orderbooks(
+                conn, run_id, orderbooks, requested_at=started_at
+            )
+            candle_rows = self._upsert_candles(conn, run_id, candles, requested_at=started_at)
             all_ids = sorted(
                 {item.instrument_id for item in tickers}
                 | {item.instrument_id for item in orderbooks}
@@ -412,15 +489,29 @@ class PostgresOperationsRepository:
                 )["id"]
             )
             inserted_by_instrument: dict[int, int] = {}
+            manifests = self._source_manifests_by_instrument(
+                conn,
+                run_id=run_id,
+                data_type="trade_event",
+                candle_unit=None,
+                endpoint="/websocket/v1/trade",
+                items=trades,
+                requested_at=started_at,
+            )
             for trade in trades:
+                market_id, target_spec_id, manifest_id = manifests[trade.instrument_id]
                 row = conn.execute(
                     """
                     INSERT INTO trade_events (
                       instrument_id, source, sequential_id, trade_timestamp_at,
                       trade_price, trade_volume, trade_amount, ask_bid,
-                      collected_at, collection_run_id
+                      collected_at, collection_run_id, market_id, occurred_at,
+                      received_at, stored_at, knowledge_at, fetch_manifest_id
                     )
-                    VALUES (%s, 'UPBIT', %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (
+                      %s, 'UPBIT', %s, %s, %s, %s, %s, %s, %s, %s,
+                      %s, %s, %s, clock_timestamp(), %s, %s
+                    )
                     ON CONFLICT (instrument_id, source, sequential_id) DO NOTHING
                     RETURNING instrument_id
                     """,
@@ -434,11 +525,53 @@ class PostgresOperationsRepository:
                         trade.ask_bid,
                         trade.collected_at,
                         run_id,
+                        market_id,
+                        trade.trade_timestamp_at,
+                        trade.collected_at,
+                        trade.collected_at,
+                        manifest_id,
                     ),
                 ).fetchone()
+                conn.execute(
+                    """
+                    UPDATE trade_events
+                    SET market_id = COALESCE(market_id, %s),
+                        occurred_at = COALESCE(occurred_at, %s),
+                        received_at = COALESCE(received_at, %s),
+                        stored_at = COALESCE(stored_at, clock_timestamp()),
+                        knowledge_at = COALESCE(knowledge_at, %s),
+                        fetch_manifest_id = COALESCE(fetch_manifest_id, %s)
+                    WHERE instrument_id = %s AND source = 'UPBIT' AND sequential_id = %s
+                    """,
+                    (
+                        market_id,
+                        trade.trade_timestamp_at,
+                        trade.collected_at,
+                        trade.collected_at,
+                        manifest_id,
+                        trade.instrument_id,
+                        trade.sequential_id,
+                    ),
+                )
                 if row is not None:
                     inserted_by_instrument[trade.instrument_id] = (
                         inserted_by_instrument.get(trade.instrument_id, 0) + 1
+                    )
+                exists = conn.execute(
+                    """
+                    SELECT 1 FROM trade_events
+                    WHERE instrument_id = %s AND source = 'UPBIT' AND sequential_id = %s
+                    """,
+                    (trade.instrument_id, trade.sequential_id),
+                ).fetchone()
+                if exists is not None and target_spec_id is not None:
+                    self._replace_coverage_with_observed(
+                        conn,
+                        target_spec_id=target_spec_id,
+                        range_start_at=trade.trade_timestamp_at,
+                        range_end_at=trade.trade_timestamp_at + timedelta(microseconds=1),
+                        manifest_id=manifest_id,
+                        natural_key={"sequentialId": trade.sequential_id},
                     )
             for instrument_id, rows_written in inserted_by_instrument.items():
                 conn.execute(
@@ -457,6 +590,223 @@ class PostgresOperationsRepository:
                 (finished_at, run_id),
             )
         return sum(inserted_by_instrument.values())
+
+    def record_realtime_source_frames(self, frames: list[RealtimeSourceFrame]) -> int:
+        if not frames:
+            return 0
+        started_at = now_kst()
+        summaries: list[OrderbookSummary] = []
+        inserted_receipts = 0
+        with self._connect() as conn:
+            for frame in frames:
+                receipt = frame.receipt
+                market_row = _expect_row(
+                    conn.execute(
+                        """
+                        SELECT id
+                        FROM markets
+                        WHERE legacy_instrument_id = %s
+                        """,
+                        (receipt.instrument_id,),
+                    ).fetchone()
+                )
+                market_id = int(market_row["id"])
+                receipt_row = conn.execute(
+                    """
+                    INSERT INTO source_receipts (
+                      data_type, market_id, instrument_id, connection_id,
+                      frame_sequence, occurred_at, received_at, payload_checksum,
+                      raw_payload, fetch_manifest_id
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (connection_id, frame_sequence) DO NOTHING
+                    RETURNING id
+                    """,
+                    (
+                        receipt.data_type,
+                        market_id,
+                        receipt.instrument_id,
+                        receipt.connection_id,
+                        receipt.frame_sequence,
+                        receipt.occurred_at,
+                        receipt.received_at,
+                        receipt.payload_checksum,
+                        Jsonb(receipt.raw_payload),
+                        receipt.fetch_manifest_id,
+                    ),
+                ).fetchone()
+                if receipt_row is None:
+                    existing_receipt = _expect_row(
+                        conn.execute(
+                            """
+                            SELECT data_type, instrument_id, payload_checksum, raw_payload
+                            FROM source_receipts
+                            WHERE connection_id = %s AND frame_sequence = %s
+                            """,
+                            (receipt.connection_id, receipt.frame_sequence),
+                        ).fetchone()
+                    )
+                    if (
+                        existing_receipt["data_type"] != receipt.data_type
+                        or int(existing_receipt["instrument_id"]) != receipt.instrument_id
+                        or existing_receipt["payload_checksum"] != receipt.payload_checksum
+                        or existing_receipt["raw_payload"] != receipt.raw_payload
+                    ):
+                        raise ValueError(
+                            "source receipt connection_id/frame_sequence payload 불일치"
+                        )
+                    continue
+                inserted_receipts += 1
+                if frame.summary is not None:
+                    summaries.append(frame.summary)
+                snapshot = frame.snapshot
+                if snapshot is None:
+                    continue
+                snapshot_row = conn.execute(
+                    """
+                    INSERT INTO orderbook_snapshots (
+                      market_id, instrument_id, source, occurred_at, received_at,
+                      stored_at, knowledge_at, total_ask_size, total_bid_size,
+                      level_count, level, stream_type, payload_checksum, fetch_manifest_id
+                    )
+                    VALUES (
+                      %s, %s, %s, %s, %s, clock_timestamp(), %s, %s, %s, %s,
+                      %s, %s, %s, %s
+                    )
+                    ON CONFLICT (
+                      instrument_id, source, occurred_at, payload_checksum
+                    ) DO NOTHING
+                    RETURNING id
+                    """,
+                    (
+                        market_id,
+                        snapshot.instrument_id,
+                        snapshot.source,
+                        snapshot.occurred_at,
+                        snapshot.received_at,
+                        snapshot.received_at,
+                        snapshot.total_ask_size,
+                        snapshot.total_bid_size,
+                        snapshot.level_count,
+                        snapshot.level,
+                        snapshot.stream_type,
+                        snapshot.payload_checksum,
+                        snapshot.fetch_manifest_id,
+                    ),
+                ).fetchone()
+                if snapshot_row is None:
+                    continue
+                snapshot_id = int(snapshot_row["id"])
+                for level in snapshot.levels:
+                    conn.execute(
+                        """
+                        INSERT INTO orderbook_snapshot_levels (
+                          snapshot_id, level_index, ask_price, ask_size,
+                          bid_price, bid_size
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            snapshot_id,
+                            level.level_index,
+                            level.ask_price,
+                            level.ask_size,
+                            level.bid_price,
+                            level.bid_size,
+                        ),
+                    )
+            if summaries:
+                run_id = int(
+                    _expect_row(
+                        conn.execute(
+                            """
+                            INSERT INTO collection_runs (
+                              run_type, data_type, status, trigger_type, started_at
+                            )
+                            VALUES (
+                              'incremental', 'orderbook_summary', 'running', 'schedule', %s
+                            )
+                            RETURNING id
+                            """,
+                            (started_at,),
+                        ).fetchone()
+                    )["id"]
+                )
+                counts = self._upsert_orderbooks(
+                    conn, run_id, summaries, requested_at=started_at
+                )
+                for instrument_id, rows_written in counts.items():
+                    conn.execute(
+                        """
+                        INSERT INTO target_collection_results (
+                          collection_run_id, instrument_id, data_type, status,
+                          latency_ms, rows_written
+                        )
+                        VALUES (%s, %s, 'orderbook_summary', 'succeeded', 0, %s)
+                        """,
+                        (run_id, instrument_id, rows_written),
+                    )
+                conn.execute(
+                    """
+                    UPDATE collection_runs
+                    SET status = 'succeeded', finished_at = clock_timestamp()
+                    WHERE id = %s
+                    """,
+                    (run_id,),
+                )
+        return inserted_receipts
+
+    def purge_expired_source_evidence(
+        self, *, as_of: datetime | None = None
+    ) -> tuple[int, int]:
+        retention_as_of = as_of or now_kst()
+        with self._connect() as conn:
+            receipt_result = conn.execute(
+                """
+                WITH effective_retention AS (
+                  SELECT
+                    market_id,
+                    data_type,
+                    CASE
+                      WHEN bool_or(retention_days IS NULL) THEN NULL
+                      ELSE max(retention_days)
+                    END AS retention_days
+                  FROM collection_target_specs
+                  GROUP BY market_id, data_type
+                )
+                DELETE FROM source_receipts receipt
+                USING effective_retention retention
+                WHERE retention.market_id = receipt.market_id
+                  AND retention.data_type = receipt.data_type
+                  AND retention.retention_days IS NOT NULL
+                  AND receipt.occurred_at
+                      < %s - make_interval(days => retention.retention_days)
+                """,
+                (retention_as_of,),
+            )
+            snapshot_result = conn.execute(
+                """
+                WITH effective_retention AS (
+                  SELECT
+                    market_id,
+                    CASE
+                      WHEN bool_or(retention_days IS NULL) THEN NULL
+                      ELSE max(retention_days)
+                    END AS retention_days
+                  FROM collection_target_specs
+                  WHERE data_type = 'orderbook_snapshot'
+                  GROUP BY market_id
+                )
+                DELETE FROM orderbook_snapshots snapshot
+                USING effective_retention retention
+                WHERE retention.market_id = snapshot.market_id
+                  AND retention.retention_days IS NOT NULL
+                  AND snapshot.occurred_at
+                      < %s - make_interval(days => retention.retention_days)
+                """,
+                (retention_as_of,),
+            )
+        return (receipt_result.rowcount, snapshot_result.rowcount)
 
     def dashboard_summary(self) -> DashboardSummary:
         targets = self.collection_dashboard_targets()
@@ -979,22 +1329,26 @@ class PostgresOperationsRepository:
                 return self._candle_aggregation_job(int(existing["id"]))
             targets: list[tuple[int, str]] = []
             for instrument in self.list_active_targets():
-                source_row = _expect_row(conn.execute(
-                    "SELECT MAX(candle_start_at) AS candle_start_at "
-                    "FROM source_candles WHERE instrument_id = %s",
-                    (instrument.id,),
-                ).fetchone())
+                source_row = _expect_row(
+                    conn.execute(
+                        "SELECT MAX(candle_start_at) AS candle_start_at "
+                        "FROM source_candles WHERE instrument_id = %s",
+                        (instrument.id,),
+                    ).fetchone()
+                )
                 source_latest = source_row["candle_start_at"]
                 if source_latest is None:
                     continue
                 for unit in AGGREGATION_UNITS:
-                    rollup_row = _expect_row(conn.execute(
-                        """
+                    rollup_row = _expect_row(
+                        conn.execute(
+                            """
                         SELECT MAX(candle_start_at) AS candle_start_at FROM candle_rollups
                         WHERE instrument_id = %s AND candle_unit = %s
                         """,
-                        (instrument.id, unit),
-                    ).fetchone())
+                            (instrument.id, unit),
+                        ).fetchone()
+                    )
                     rollup_latest = rollup_row["candle_start_at"]
                     if rollup_latest is None or rollup_latest < rollup_bucket_start(
                         unit, source_latest
@@ -1310,16 +1664,42 @@ class PostgresOperationsRepository:
             targets=instrument_ids,
         )
         with self._connect() as conn:
+            for instrument_id in sorted(set(instrument_ids)):
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(%s, %s)",
+                    (INSTRUMENT_ADVISORY_LOCK_NAMESPACE, instrument_id),
+                )
+                conflict = conn.execute(
+                    """
+                    SELECT 1
+                    FROM backfill_jobs job
+                    WHERE job.status IN (
+                      'planned', 'pending', 'leased', 'running', 'retry_wait', 'paused'
+                    )
+                      AND (
+                        job.plan -> 'targets' @> %s
+                        OR EXISTS (
+                          SELECT 1 FROM backfill_job_targets target
+                          WHERE target.backfill_job_id = job.id
+                            AND target.instrument_id = %s
+                        )
+                      )
+                    LIMIT 1
+                    """,
+                    (Jsonb([instrument_id]), instrument_id),
+                ).fetchone()
+                if conflict is not None:
+                    raise ValueError("같은 상품에 이미 활성 백필 작업이 있다.")
             conn.execute(
                 """
                 INSERT INTO backfill_jobs (
                   status, data_type, plan, target_start_at, target_end_at,
                   estimated_request_count, estimated_row_count, estimated_storage_bytes,
-                  restart_mode, created_by
+                  restart_mode, created_by, idempotency_key
                 )
                 VALUES (
                   'planned', %s, %s, %s, %s, %s, %s, %s,
-                  'safe_restart', 'local_user'
+                  'safe_restart', 'local_user', %s
                 )
                 """,
                 (
@@ -1330,6 +1710,7 @@ class PostgresOperationsRepository:
                     plan.estimated_request_count,
                     plan.estimated_row_count,
                     plan.estimated_storage_bytes,
+                    f"manual:{plan.plan_id}",
                 ),
             )
         return plan
@@ -1352,6 +1733,49 @@ class PostgresOperationsRepository:
             targets = [
                 int(item) for item in cast(dict[str, Any], planned["plan"]).get("targets", [])
             ]
+            for instrument_id in sorted(set(targets)):
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(%s, %s)",
+                    (INSTRUMENT_ADVISORY_LOCK_NAMESPACE, instrument_id),
+                )
+                conflict = conn.execute(
+                    """
+                    SELECT 1
+                    FROM backfill_jobs job
+                    WHERE job.id <> %s
+                      AND job.status IN (
+                        'planned', 'pending', 'leased', 'running', 'retry_wait', 'paused'
+                      )
+                      AND (
+                        job.plan -> 'targets' @> %s
+                        OR EXISTS (
+                          SELECT 1 FROM backfill_job_targets target
+                          WHERE target.backfill_job_id = job.id
+                            AND target.instrument_id = %s
+                        )
+                      )
+                    LIMIT 1
+                    """,
+                    (planned["id"], Jsonb([instrument_id]), instrument_id),
+                ).fetchone()
+                if conflict is not None:
+                    raise ValueError("같은 상품에 이미 활성 백필 작업이 있다.")
+                active_market = conn.execute(
+                    """
+                    SELECT 1
+                    FROM collection_targets target
+                    JOIN instruments instrument ON instrument.id = target.instrument_id
+                    WHERE target.instrument_id = %s
+                      AND target.status = 'active'
+                      AND instrument.status = 'active'
+                    LIMIT 1
+                    """,
+                    (instrument_id,),
+                ).fetchone()
+                if active_market is None:
+                    raise ValueError(
+                        "비활성 수집 시장의 수동 백필 계획은 승인할 수 없다."
+                    )
             row = _expect_row(
                 conn.execute(
                     """
@@ -1378,32 +1802,83 @@ class PostgresOperationsRepository:
             return self._backfill_job_by_id(conn, int(row["id"]))
 
     def claim_next_backfill_job(self) -> BackfillJobDetail | None:
+        claimed_at = datetime.now(UTC)
+        lease_expires_at = claimed_at + timedelta(seconds=BACKFILL_LEASE_SECONDS)
         with self._connect() as conn:
+            exhausted_rows = conn.execute(
+                """
+                SELECT id, last_error_code
+                FROM backfill_jobs
+                WHERE attempt_count >= max_attempts
+                  AND (
+                    status IN ('pending', 'retry_wait')
+                    OR (
+                      status = 'running'
+                      AND (lease_expires_at IS NULL OR lease_expires_at <= %s)
+                    )
+                  )
+                FOR UPDATE SKIP LOCKED
+                """,
+                (claimed_at,),
+            ).fetchall()
+            for exhausted in exhausted_rows:
+                self._move_backfill_job_to_dead_letter(
+                    conn,
+                    int(exhausted["id"]),
+                    error_code=cast(str | None, exhausted["last_error_code"]),
+                    reason="backfill attempt budget exhausted before claim",
+                )
             row = conn.execute(
                 """
                 SELECT *
                 FROM backfill_jobs
-                WHERE status IN ('pending', 'running')
-                ORDER BY created_at
+                WHERE attempt_count < max_attempts
+                  AND (
+                    status = 'pending'
+                    OR (
+                      status = 'retry_wait'
+                      AND COALESCE(next_retry_at, '-infinity'::timestamptz) <= %s
+                    )
+                    OR (
+                      status = 'running'
+                      AND (
+                        lease_expires_at IS NULL
+                        OR lease_expires_at <= %s
+                      )
+                    )
+                  )
+                ORDER BY priority DESC, created_at, id
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
-                """
+                """,
+                (claimed_at, claimed_at),
             ).fetchone()
             if row is None:
                 return None
-            if row["status"] == "pending":
-                row = _expect_row(
-                    conn.execute(
-                        """
-                        UPDATE backfill_jobs
-                        SET status = 'running', started_at = COALESCE(started_at, now()),
-                            updated_at = now()
-                        WHERE id = %s
-                        RETURNING *
-                        """,
-                        (row["id"],),
-                    ).fetchone()
-                )
+            row = _expect_row(
+                conn.execute(
+                    """
+                    UPDATE backfill_jobs
+                    SET status = 'running',
+                        started_at = COALESCE(started_at, %s),
+                        lease_owner = %s,
+                        lease_expires_at = %s,
+                        next_retry_at = NULL,
+                        attempt_count = attempt_count + %s,
+                        updated_at = %s
+                    WHERE id = %s
+                    RETURNING *
+                    """,
+                    (
+                        claimed_at,
+                        self._backfill_worker_id,
+                        lease_expires_at,
+                        1,
+                        claimed_at,
+                        row["id"],
+                    ),
+                ).fetchone()
+            )
         return _backfill_job_detail(row)
 
     def backfill_job_targets(self, job_id: int) -> list[BackfillJobTarget]:
@@ -1420,14 +1895,18 @@ class PostgresOperationsRepository:
         return [_backfill_target(row) for row in rows]
 
     def record_backfill_candles(
-        self, job_id: int, instrument_id: int, candles: list[SourceCandle]
+        self,
+        job_id: int,
+        instrument_id: int,
+        candles: list[SourceCandle],
+        *,
+        fetch_evidence: FetchEvidence | None = None,
     ) -> int:
-        if not candles:
-            return 0
         if any(item.instrument_id != instrument_id for item in candles):
             raise ValueError("백필 캔들 대상 instrument_id가 작업 대상과 다르다.")
         started_at = now_kst()
         with self._connect() as conn:
+            self._assert_backfill_write_lease(conn, job_id)
             run_id = int(
                 _expect_row(
                     conn.execute(
@@ -1442,7 +1921,71 @@ class PostgresOperationsRepository:
                     ).fetchone()
                 )["id"]
             )
-            counts = self._upsert_candles(conn, run_id, candles)
+            manifest_overrides: dict[
+                tuple[int, str], tuple[int | None, int | None, int]
+            ] = {}
+            target_spec_id: int | None = None
+            manifest_id: int | None = None
+            if fetch_evidence is not None:
+                context = conn.execute(
+                    """
+                    SELECT market.id AS market_id, spec.id AS target_spec_id
+                    FROM instruments instrument
+                    LEFT JOIN markets market ON market.legacy_instrument_id = instrument.id
+                    LEFT JOIN collection_target_specs spec
+                      ON spec.market_id = market.id
+                     AND spec.data_type = 'source_candle'
+                     AND spec.candle_unit = '1m'
+                    WHERE instrument.id = %s
+                    ORDER BY (spec.status = 'active') DESC NULLS LAST, spec.id
+                    LIMIT 1
+                    """,
+                    (instrument_id,),
+                ).fetchone()
+                market_id = cast(int | None, context["market_id"]) if context else None
+                target_spec_id = (
+                    cast(int | None, context["target_spec_id"]) if context else None
+                )
+                manifest_id = self._insert_fetch_manifest(
+                    conn,
+                    target_spec_id=target_spec_id,
+                    collection_run_id=run_id,
+                    endpoint=fetch_evidence.endpoint,
+                    request_parameters=fetch_evidence.request_parameters,
+                    payload=fetch_evidence.response_payload,
+                    requested_at=fetch_evidence.requested_at,
+                    responded_at=fetch_evidence.responded_at,
+                    response_status=fetch_evidence.response_status,
+                    outcome="succeeded",
+                    error_code=None,
+                    preserve_payload=True,
+                    share_across_runs=True,
+                )
+                manifest_overrides[(instrument_id, "1m")] = (
+                    market_id,
+                    target_spec_id,
+                    manifest_id,
+                )
+            counts = self._upsert_candles(
+                conn,
+                run_id,
+                candles,
+                requested_at=started_at,
+                expected_instrument_ids=(instrument_id,),
+                request_context={"backfillJobId": job_id},
+                manifest_overrides=manifest_overrides,
+            )
+            if (
+                fetch_evidence is not None
+                and target_spec_id is not None
+                and manifest_id is not None
+            ):
+                self._record_confirmed_no_trade_gaps(
+                    conn,
+                    target_spec_id=target_spec_id,
+                    manifest_id=manifest_id,
+                    fetch_evidence=fetch_evidence,
+                )
             rows_written = counts.get(instrument_id, 0)
             conn.execute(
                 """
@@ -1470,6 +2013,7 @@ class PostgresOperationsRepository:
                 """,
                 (job_id, instrument_id),
             )
+            self._renew_backfill_lease(conn, job_id)
         return rows_written
 
     def record_backfill_target_progress(
@@ -1482,6 +2026,7 @@ class PostgresOperationsRepository:
         last_completed_at: datetime | None,
     ) -> None:
         with self._connect() as conn:
+            self._assert_backfill_write_lease(conn, job_id)
             conn.execute(
                 """
                 UPDATE backfill_job_targets
@@ -1501,6 +2046,7 @@ class PostgresOperationsRepository:
                     instrument_id,
                 ),
             )
+            self._renew_backfill_lease(conn, job_id)
 
     def mark_backfill_target(
         self,
@@ -1510,29 +2056,251 @@ class PostgresOperationsRepository:
         last_completed_at: datetime | None,
         error_code: str | None = None,
         error_message: str | None = None,
+        retry_after_seconds: float | None = None,
+        *,
+        fetch_evidence: FetchEvidence | None = None,
     ) -> None:
         if status not in {"pending", "running", "paused", "stopped", "succeeded", "failed"}:
             raise ValueError("지원하지 않는 백필 대상 상태다.")
         with self._connect() as conn:
+            self._assert_backfill_write_lease(conn, job_id)
             conn.execute(
                 """
                 UPDATE backfill_job_targets
-                SET status = %s, last_completed_at = %s, error_code = %s,
+                SET status = %s,
+                    last_completed_at = GREATEST(
+                      last_completed_at, %s::timestamptz
+                    ),
+                    error_code = %s,
                     error_message = %s, updated_at = now()
                 WHERE backfill_job_id = %s AND instrument_id = %s
                 """,
-                (status, last_completed_at, error_code, error_message, job_id, instrument_id),
+                (
+                    status,
+                    last_completed_at,
+                    error_code,
+                    error_message,
+                    job_id,
+                    instrument_id,
+                ),
             )
-            self._refresh_backfill_job_progress(conn, job_id)
+            if status == "failed":
+                target = conn.execute(
+                    """
+                    SELECT target.target_spec_id, job.target_start_at, job.target_end_at
+                    FROM backfill_job_targets target
+                    JOIN backfill_jobs job ON job.id = target.backfill_job_id
+                    WHERE target.backfill_job_id = %s AND target.instrument_id = %s
+                    """,
+                    (job_id, instrument_id),
+                ).fetchone()
+                if target is not None:
+                    requested_at = (
+                        fetch_evidence.requested_at
+                        if fetch_evidence is not None
+                        else datetime.now(UTC)
+                    )
+                    manifest_id = self._insert_fetch_manifest(
+                        conn,
+                        target_spec_id=cast(int | None, target["target_spec_id"]),
+                        collection_run_id=None,
+                        endpoint=(
+                            fetch_evidence.endpoint
+                            if fetch_evidence is not None
+                            else "/v1/candles/minutes/1"
+                        ),
+                        request_parameters=(
+                            fetch_evidence.request_parameters
+                            if fetch_evidence is not None
+                            else {
+                                "backfillJobId": job_id,
+                                "instrumentId": instrument_id,
+                                "rangeStartAt": target["target_start_at"],
+                                "rangeEndAt": target["target_end_at"],
+                            }
+                        ),
+                        payload=(
+                            fetch_evidence.response_payload
+                            if fetch_evidence is not None
+                            else None
+                        ),
+                        requested_at=requested_at,
+                        responded_at=(
+                            fetch_evidence.responded_at
+                            if fetch_evidence is not None
+                            else requested_at
+                        ),
+                        response_status=(
+                            fetch_evidence.response_status
+                            if fetch_evidence is not None
+                            else _response_status_from_error_code(error_code)
+                        ),
+                        outcome=_manifest_outcome_from_error_code(error_code),
+                        error_code=error_code,
+                        error_message=(
+                            fetch_evidence.error_message or error_message
+                            if fetch_evidence is not None
+                            else error_message
+                        ),
+                        preserve_payload=fetch_evidence is not None,
+                        share_across_runs=fetch_evidence is not None,
+                    )
+                    conn.execute(
+                        """
+                        UPDATE backfill_job_targets
+                        SET last_fetch_manifest_id = %s, updated_at = now()
+                        WHERE backfill_job_id = %s AND instrument_id = %s
+                        """,
+                        (manifest_id, job_id, instrument_id),
+                    )
+            self._refresh_backfill_job_progress(
+                conn,
+                job_id,
+                retry_after_seconds=retry_after_seconds,
+            )
+
+    def _renew_backfill_lease(
+        self,
+        conn: psycopg.Connection[Any],
+        job_id: int,
+    ) -> None:
+        renewed_at = datetime.now(UTC)
+        conn.execute(
+            """
+            UPDATE backfill_jobs
+            SET lease_expires_at = %s, updated_at = %s
+            WHERE id = %s
+              AND status = 'running'
+              AND lease_owner = %s
+            """,
+            (
+                renewed_at + timedelta(seconds=BACKFILL_LEASE_SECONDS),
+                renewed_at,
+                job_id,
+                self._backfill_worker_id,
+            ),
+        )
+
+    def _assert_backfill_write_lease(
+        self,
+        conn: psycopg.Connection[Any],
+        job_id: int,
+    ) -> None:
+        checked_at = datetime.now(UTC)
+        job = conn.execute(
+            """
+            SELECT status, lease_owner, lease_expires_at
+            FROM backfill_jobs
+            WHERE id = %s
+            FOR UPDATE
+            """,
+            (job_id,),
+        ).fetchone()
+        if job is None:
+            raise ValueError("존재하지 않는 백필 작업이다.")
+        if (
+            job["status"] != "running"
+            or job["lease_owner"] != self._backfill_worker_id
+            or job["lease_expires_at"] is None
+            or cast(datetime, job["lease_expires_at"]) <= checked_at
+        ):
+            raise RuntimeError("백필 쓰기 임대가 없거나 만료되어 결과를 기록할 수 없다.")
+
+    def _move_backfill_job_to_dead_letter(
+        self,
+        conn: psycopg.Connection[Any],
+        job_id: int,
+        *,
+        error_code: str | None,
+        reason: str,
+    ) -> None:
+        detected_at = datetime.now(UTC)
+        conn.execute(
+            """
+            UPDATE backfill_jobs
+            SET status = 'dead_letter',
+                next_retry_at = NULL,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                last_error_code = COALESCE(%s, last_error_code),
+                dead_letter_reason = %s,
+                finished_at = COALESCE(finished_at, %s),
+                updated_at = %s
+            WHERE id = %s
+            """,
+            (error_code, reason, detected_at, detected_at, job_id),
+        )
+        targets = conn.execute(
+            """
+            SELECT target.target_spec_id, target.last_fetch_manifest_id,
+                   job.target_start_at, job.target_end_at
+            FROM backfill_job_targets target
+            JOIN backfill_jobs job ON job.id = target.backfill_job_id
+            WHERE target.backfill_job_id = %s
+              AND target.target_spec_id IS NOT NULL
+            ORDER BY target.target_spec_id
+            FOR UPDATE OF target
+            """,
+            (job_id,),
+        ).fetchall()
+        evidence = {
+            "backfillJobId": job_id,
+            "errorCode": error_code,
+            "reason": reason,
+        }
+        missing_status = classify_coverage(
+            CoverageEvidence(attempted=True, retry_budget_exhausted=True)
+        )
+        for target in targets:
+            target_spec_id = int(target["target_spec_id"])
+            range_start_at = cast(datetime, target["target_start_at"])
+            range_end_at = cast(datetime, target["target_end_at"])
+            overlaps = conn.execute(
+                """
+                SELECT range_start_at, range_end_at, status
+                FROM coverage_intervals
+                WHERE target_spec_id = %s
+                  AND tstzrange(range_start_at, range_end_at, '[)')
+                      && tstzrange(%s, %s, '[)')
+                ORDER BY range_start_at
+                """,
+                (target_spec_id, range_start_at, range_end_at),
+            ).fetchall()
+            cursor = range_start_at
+            change_ranges: list[tuple[datetime, datetime]] = []
+            for overlap in overlaps:
+                overlap_start = max(range_start_at, cast(datetime, overlap["range_start_at"]))
+                overlap_end = min(range_end_at, cast(datetime, overlap["range_end_at"]))
+                if cursor < overlap_start:
+                    change_ranges.append((cursor, overlap_start))
+                if overlap["status"] == "unverified" and overlap_start < overlap_end:
+                    change_ranges.append((overlap_start, overlap_end))
+                cursor = max(cursor, overlap_end)
+            if cursor < range_end_at:
+                change_ranges.append((cursor, range_end_at))
+            for change_start, change_end in change_ranges:
+                replace_coverage_with_classification(
+                    conn,
+                    target_spec_id=target_spec_id,
+                    range_start_at=change_start,
+                    range_end_at=change_end,
+                    status=missing_status,
+                    reason_code="backfill_attempts_exhausted",
+                    manifest_id=cast(int | None, target["last_fetch_manifest_id"]),
+                    evidence=evidence,
+                )
+        conn.execute(
+            """
+            UPDATE backfill_job_targets
+            SET status = 'failed', updated_at = %s
+            WHERE backfill_job_id = %s
+              AND status NOT IN ('succeeded', 'stopped')
+            """,
+            (detected_at, job_id),
+        )
 
     def control_backfill_job(self, job_id: int, action: str) -> BackfillJob:
-        transitions = {
-            "pause": "paused",
-            "stop": "stopped",
-            "resume": "running",
-            "safe-restart": "pending",
-        }
-        if action not in transitions:
+        if action not in {"pause", "stop", "resume", "safe-restart"}:
             raise ValueError("지원하지 않는 백필 제어 명령이다.")
         with self._connect() as conn:
             current = conn.execute(
@@ -1540,25 +2308,84 @@ class PostgresOperationsRepository:
             ).fetchone()
             if current is None:
                 raise ValueError("존재하지 않는 백필 작업이다.")
-            is_terminal_action_allowed = action == "safe-restart" or (
-                current["status"] == "failed" and action == "resume"
-            )
-            if (
-                current["status"] in {"succeeded", "failed", "stopped"}
-                and not is_terminal_action_allowed
-            ):
+            current_status = str(current["status"])
+            if current_status == "succeeded":
                 raise ValueError("완료 또는 중지된 백필 작업은 해당 명령을 수행할 수 없다.")
+            if action == "pause" and current_status not in {
+                "pending",
+                "leased",
+                "running",
+                "retry_wait",
+            }:
+                raise ValueError("현재 상태의 백필 작업은 일시정지할 수 없다.")
+            if action == "resume" and current_status not in {"paused", "failed"}:
+                raise ValueError("현재 상태의 백필 작업은 재개할 수 없다.")
+            if action == "safe-restart" and current_status not in {
+                "paused",
+                "stopped",
+                "failed",
+                "dead_letter",
+                "cancelled",
+            }:
+                raise ValueError("현재 상태의 백필 작업은 안전 재시작할 수 없다.")
+            next_status = {
+                "pause": "paused",
+                "stop": "stopped",
+                "resume": "pending",
+                "safe-restart": "pending",
+            }[action]
             row = _expect_row(
                 conn.execute(
                     """
                     UPDATE backfill_jobs
-                    SET status = %s, updated_at = now()
+                    SET status = %s,
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
+                        next_retry_at = NULL,
+                        attempt_count = CASE WHEN %s = 'safe-restart' THEN 0 ELSE attempt_count END,
+                        last_error_code = CASE
+                          WHEN %s = 'safe-restart' THEN NULL ELSE last_error_code
+                        END,
+                        dead_letter_reason = CASE
+                          WHEN %s = 'safe-restart' THEN NULL ELSE dead_letter_reason
+                        END,
+                        finished_at = CASE
+                          WHEN %s IN ('resume', 'safe-restart') THEN NULL ELSE finished_at
+                        END,
+                        updated_at = now()
                     WHERE id = %s
                     RETURNING *
                     """,
-                    (transitions[action], job_id),
+                    (next_status, action, action, action, action, job_id),
                 ).fetchone()
             )
+            if action in {"resume", "safe-restart"}:
+                conn.execute(
+                    """
+                    UPDATE backfill_job_targets
+                    SET status = 'pending', updated_at = now()
+                    WHERE backfill_job_id = %s AND status <> 'succeeded'
+                    """,
+                    (job_id,),
+                )
+            elif action == "pause":
+                conn.execute(
+                    """
+                    UPDATE backfill_job_targets
+                    SET status = 'paused', updated_at = now()
+                    WHERE backfill_job_id = %s AND status IN ('pending', 'running')
+                    """,
+                    (job_id,),
+                )
+            elif action == "stop":
+                conn.execute(
+                    """
+                    UPDATE backfill_job_targets
+                    SET status = 'stopped', updated_at = now()
+                    WHERE backfill_job_id = %s AND status NOT IN ('succeeded', 'failed')
+                    """,
+                    (job_id,),
+                )
             return self._backfill_job_by_id(conn, int(row["id"]))
 
     def delete_backfill_job(self, job_id: int) -> None:
@@ -1568,7 +2395,7 @@ class PostgresOperationsRepository:
             ).fetchone()
             if current is None:
                 raise ValueError("존재하지 않는 백필 작업이다.")
-            if current["status"] == "running":
+            if current["status"] in {"leased", "running"}:
                 raise ValueError("실행 중인 백필 작업은 먼저 중지해야 한다.")
             conn.execute("DELETE FROM backfill_jobs WHERE id = %s", (job_id,))
 
@@ -2349,7 +3176,7 @@ class PostgresOperationsRepository:
                 """
                 SELECT COUNT(*) AS count
                 FROM backfill_job_targets
-                WHERE status = 'failed'
+                WHERE error_code IS NOT NULL
                 """
             ).fetchone()
         return int(_expect_row(row)["count"])
@@ -2370,8 +3197,12 @@ class PostgresOperationsRepository:
                 """
                 SELECT id
                 FROM backfill_jobs
-                WHERE status IN ('running', 'pending')
-                ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, created_at
+                WHERE status IN ('leased', 'running', 'retry_wait', 'pending')
+                ORDER BY CASE
+                  WHEN status IN ('leased', 'running') THEN 0
+                  WHEN status = 'retry_wait' THEN 1
+                  ELSE 2
+                END, created_at
                 LIMIT 1
                 """
             ).fetchone()
@@ -2398,7 +3229,7 @@ class PostgresOperationsRepository:
                       COUNT(bjt.instrument_id) AS queued_target_count
                     FROM backfill_jobs bj
                     LEFT JOIN backfill_job_targets bjt ON bjt.backfill_job_id = bj.id
-                    WHERE bj.status = 'pending' AND bj.id <> %s
+                    WHERE bj.status IN ('pending', 'retry_wait') AND bj.id <> %s
                     """,
                     (active_job_id,),
                 ).fetchone()
@@ -3193,22 +4024,257 @@ class PostgresOperationsRepository:
     def _expected_minutes(self, start_at: datetime, end_at: datetime) -> int:
         return max(1, int((end_at - start_at).total_seconds() // 60))
 
+    def _source_manifests_by_instrument(
+        self,
+        conn: psycopg.Connection[Any],
+        *,
+        run_id: int,
+        data_type: str,
+        candle_unit: str | None,
+        endpoint: str,
+        items: list[Any],
+        requested_at: datetime,
+        expected_instrument_ids: tuple[int, ...] = (),
+        request_context: dict[str, Any] | None = None,
+    ) -> dict[int, tuple[int | None, int | None, int]]:
+        grouped: dict[int, list[Any]] = {}
+        for item in items:
+            grouped.setdefault(int(item.instrument_id), []).append(item)
+        for instrument_id in expected_instrument_ids:
+            grouped.setdefault(instrument_id, [])
+
+        manifests: dict[int, tuple[int | None, int | None, int]] = {}
+        for instrument_id, instrument_items in grouped.items():
+            context = conn.execute(
+                """
+                SELECT market.id AS market_id, spec.id AS target_spec_id
+                FROM instruments instrument
+                LEFT JOIN markets market
+                  ON market.legacy_instrument_id = instrument.id
+                LEFT JOIN collection_target_specs spec
+                  ON spec.market_id = market.id
+                 AND spec.data_type = %s
+                 AND spec.candle_unit IS NOT DISTINCT FROM %s
+                WHERE instrument.id = %s
+                ORDER BY (spec.status = 'active') DESC NULLS LAST, spec.id
+                LIMIT 1
+                """,
+                (data_type, candle_unit, instrument_id),
+            ).fetchone()
+            market_id = cast(int | None, context["market_id"]) if context is not None else None
+            target_spec_id = (
+                cast(int | None, context["target_spec_id"]) if context is not None else None
+            )
+            parameters: dict[str, Any] = {
+                "dataType": data_type,
+                "candleUnit": candle_unit,
+                "instrumentId": instrument_id,
+                "itemCount": len(instrument_items),
+            }
+            if request_context is not None:
+                parameters.update(request_context)
+            manifest_id = self._insert_fetch_manifest(
+                conn,
+                target_spec_id=target_spec_id,
+                collection_run_id=run_id,
+                endpoint=endpoint,
+                request_parameters=parameters,
+                payload=[asdict(item) for item in instrument_items],
+                requested_at=requested_at,
+                responded_at=datetime.now(UTC),
+                response_status=200,
+                outcome="succeeded",
+                error_code=None,
+            )
+            manifests[instrument_id] = (market_id, target_spec_id, manifest_id)
+        return manifests
+
+    def _insert_fetch_manifest(
+        self,
+        conn: psycopg.Connection[Any],
+        *,
+        target_spec_id: int | None,
+        collection_run_id: int | None,
+        endpoint: str,
+        request_parameters: dict[str, Any],
+        payload: object | None,
+        requested_at: datetime,
+        responded_at: datetime | None,
+        response_status: int | None,
+        outcome: str,
+        error_code: str | None,
+        error_message: str | None = None,
+        preserve_payload: bool = False,
+        share_across_runs: bool = False,
+    ) -> int:
+        normalized_parameters = _jsonable(request_parameters)
+        fingerprint_payload: dict[str, Any] = {
+            "endpoint": endpoint,
+            "parameters": normalized_parameters,
+        }
+        if not share_across_runs:
+            fingerprint_payload["collectionRunId"] = collection_run_id
+        request_fingerprint = _checksum(fingerprint_payload)
+        response_checksum = _checksum(payload) if payload is not None else None
+        row = _expect_row(
+            conn.execute(
+                """
+                INSERT INTO fetch_manifests (
+                  target_spec_id, collection_run_id, source, endpoint,
+                  request_parameters, request_fingerprint, requested_at,
+                  responded_at, response_status, response_checksum,
+                  response_payload, collector_version, schema_version, outcome, error_code,
+                  error_message
+                )
+                VALUES (
+                  %s, %s, 'UPBIT', %s, %s, %s, %s, %s, %s, %s,
+                  %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (source, request_fingerprint, requested_at)
+                DO UPDATE SET
+                  responded_at = excluded.responded_at,
+                  response_status = excluded.response_status,
+                  response_checksum = excluded.response_checksum,
+                  response_payload = excluded.response_payload,
+                  outcome = excluded.outcome,
+                  error_code = excluded.error_code,
+                  error_message = excluded.error_message
+                RETURNING id
+                """,
+                (
+                    target_spec_id,
+                    collection_run_id,
+                    endpoint,
+                    Jsonb(normalized_parameters),
+                    request_fingerprint,
+                    requested_at,
+                    responded_at,
+                    response_status,
+                    response_checksum,
+                    (
+                        Jsonb(_jsonable(payload))
+                        if preserve_payload and payload is not None
+                        else None
+                    ),
+                    SOURCE_EVIDENCE_COLLECTOR_VERSION,
+                    SOURCE_EVIDENCE_SCHEMA_VERSION,
+                    outcome,
+                    error_code,
+                    error_message,
+                ),
+            ).fetchone()
+        )
+        return int(row["id"])
+
+    def _replace_coverage_with_observed(
+        self,
+        conn: psycopg.Connection[Any],
+        *,
+        target_spec_id: int,
+        range_start_at: datetime,
+        range_end_at: datetime,
+        manifest_id: int,
+        natural_key: dict[str, Any],
+    ) -> None:
+        status = classify_coverage(
+            CoverageEvidence(source_row_count=1, manifest_checksum=str(manifest_id))
+        )
+        replace_coverage_with_classification(
+            conn,
+            target_spec_id=target_spec_id,
+            range_start_at=range_start_at,
+            range_end_at=range_end_at,
+            status=status,
+            reason_code="source_row_observed",
+            manifest_id=manifest_id,
+            evidence={
+                "classification": "source_natural_key_with_checksum_manifest",
+                "naturalKey": natural_key,
+                "responseChecksumVerified": True,
+            },
+        )
+
+    def _record_confirmed_no_trade_gaps(
+        self,
+        conn: psycopg.Connection[Any],
+        *,
+        target_spec_id: int,
+        manifest_id: int,
+        fetch_evidence: FetchEvidence,
+    ) -> None:
+        if (
+            fetch_evidence.response_status != 200
+            or fetch_evidence.requested_range_start_at is None
+            or fetch_evidence.requested_range_end_at is None
+            or not isinstance(fetch_evidence.response_payload, list)
+        ):
+            return
+        candle_starts: list[datetime] = []
+        for item in fetch_evidence.response_payload:
+            if not isinstance(item, dict):
+                continue
+            raw_started_at = item.get("candle_date_time_utc") or item.get("candle_start_at")
+            if not isinstance(raw_started_at, str):
+                continue
+            started_at = datetime.fromisoformat(raw_started_at.replace("Z", "+00:00"))
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=UTC)
+            candle_starts.append(started_at.astimezone(UTC))
+        no_trade_status = classify_coverage(
+            CoverageEvidence(request_succeeded=True, no_trade_corroborated=True)
+        )
+        for gap_start, gap_end in internal_minute_candle_gaps(
+            requested_start_at=fetch_evidence.requested_range_start_at,
+            requested_end_at=fetch_evidence.requested_range_end_at,
+            candle_starts=tuple(candle_starts),
+        ):
+            replace_coverage_with_classification(
+                conn,
+                target_spec_id=target_spec_id,
+                range_start_at=gap_start,
+                range_end_at=gap_end,
+                status=no_trade_status,
+                reason_code="upbit_minute_candle_internal_gap",
+                manifest_id=manifest_id,
+                evidence={
+                    "classification": "fully_bounded_successful_upbit_minute_page_gap",
+                    "requestedRangeStartAt": fetch_evidence.requested_range_start_at,
+                    "requestedRangeEndAt": fetch_evidence.requested_range_end_at,
+                },
+            )
+
     def _upsert_tickers(
         self,
         conn: psycopg.Connection[Any],
         run_id: int,
         tickers: list[TickerSnapshot],
+        *,
+        requested_at: datetime,
     ) -> dict[int, int]:
         counts: dict[int, int] = {}
+        manifests = self._source_manifests_by_instrument(
+            conn,
+            run_id=run_id,
+            data_type="ticker_snapshot",
+            candle_unit=None,
+            endpoint="/websocket/v1/ticker",
+            items=tickers,
+            requested_at=requested_at,
+        )
         for item in tickers:
+            market_id, target_spec_id, manifest_id = manifests[item.instrument_id]
             conn.execute(
                 """
                 INSERT INTO ticker_snapshots (
                   instrument_id, source, bucket_at, trade_price,
                   acc_trade_price_24h, change_rate, signed_change_rate,
-                  collected_at, collection_run_id
+                  collected_at, collection_run_id, market_id, occurred_at,
+                  received_at, stored_at, knowledge_at, fetch_manifest_id
                 )
-                VALUES (%s, 'UPBIT', %s, %s, %s, %s, %s, %s, %s)
+                VALUES (
+                  %s, 'UPBIT', %s, %s, %s, %s, %s, %s, %s,
+                  %s, %s, %s, clock_timestamp(), %s, %s
+                )
                 ON CONFLICT (instrument_id, source, bucket_at) DO UPDATE SET
                   trade_price = excluded.trade_price,
                   acc_trade_price_24h = excluded.acc_trade_price_24h,
@@ -3216,6 +4282,12 @@ class PostgresOperationsRepository:
                   signed_change_rate = excluded.signed_change_rate,
                   collected_at = excluded.collected_at,
                   collection_run_id = excluded.collection_run_id,
+                  market_id = excluded.market_id,
+                  occurred_at = excluded.occurred_at,
+                  received_at = excluded.received_at,
+                  stored_at = excluded.stored_at,
+                  knowledge_at = excluded.knowledge_at,
+                  fetch_manifest_id = excluded.fetch_manifest_id,
                   updated_at = now()
                 WHERE excluded.collected_at > ticker_snapshots.collected_at
                 """,
@@ -3226,11 +4298,46 @@ class PostgresOperationsRepository:
                     item.acc_trade_price_24h,
                     item.change_rate,
                     item.change_rate,
-                    item.collected_at,
+                    item.received_at,
                     run_id,
+                    market_id,
+                    item.occurred_at,
+                    item.received_at,
+                    item.received_at,
+                    manifest_id,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE ticker_snapshots
+                SET market_id = COALESCE(market_id, %s),
+                    occurred_at = COALESCE(occurred_at, %s),
+                    received_at = COALESCE(received_at, %s),
+                    stored_at = COALESCE(stored_at, clock_timestamp()),
+                    knowledge_at = COALESCE(knowledge_at, %s),
+                    fetch_manifest_id = COALESCE(fetch_manifest_id, %s)
+                WHERE instrument_id = %s AND source = 'UPBIT' AND bucket_at = %s
+                """,
+                (
+                    market_id,
+                    item.occurred_at,
+                    item.received_at,
+                    item.received_at,
+                    manifest_id,
+                    item.instrument_id,
+                    minute_bucket(item.bucket_at),
                 ),
             )
             counts[item.instrument_id] = counts.get(item.instrument_id, 0) + 1
+            if target_spec_id is not None:
+                self._replace_coverage_with_observed(
+                    conn,
+                    target_spec_id=target_spec_id,
+                    range_start_at=minute_bucket(item.bucket_at),
+                    range_end_at=minute_bucket(item.bucket_at) + timedelta(minutes=1),
+                    manifest_id=manifest_id,
+                    natural_key={"bucketAt": minute_bucket(item.bucket_at)},
+                )
         return counts
 
     def _upsert_orderbooks(
@@ -3238,17 +4345,33 @@ class PostgresOperationsRepository:
         conn: psycopg.Connection[Any],
         run_id: int,
         orderbooks: list[OrderbookSummary],
+        *,
+        requested_at: datetime,
     ) -> dict[int, int]:
         counts: dict[int, int] = {}
+        manifests = self._source_manifests_by_instrument(
+            conn,
+            run_id=run_id,
+            data_type="orderbook_snapshot",
+            candle_unit=None,
+            endpoint="/websocket/v1/orderbook",
+            items=orderbooks,
+            requested_at=requested_at,
+        )
         for item in orderbooks:
+            market_id, target_spec_id, manifest_id = manifests[item.instrument_id]
             conn.execute(
                 """
                 INSERT INTO orderbook_summaries (
                   instrument_id, source, bucket_at, best_bid_price, best_bid_size,
                   best_ask_price, best_ask_size, spread, bid_depth_10, ask_depth_10,
-                  imbalance_10, collected_at, collection_run_id
+                  imbalance_10, collected_at, collection_run_id, market_id,
+                  occurred_at, received_at, stored_at, knowledge_at, fetch_manifest_id
                 )
-                VALUES (%s, 'UPBIT', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (
+                  %s, 'UPBIT', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                  %s, %s, %s, clock_timestamp(), %s, %s
+                )
                 ON CONFLICT (instrument_id, source, bucket_at) DO UPDATE SET
                   best_bid_price = excluded.best_bid_price,
                   best_bid_size = excluded.best_bid_size,
@@ -3260,6 +4383,12 @@ class PostgresOperationsRepository:
                   imbalance_10 = excluded.imbalance_10,
                   collected_at = excluded.collected_at,
                   collection_run_id = excluded.collection_run_id,
+                  market_id = excluded.market_id,
+                  occurred_at = excluded.occurred_at,
+                  received_at = excluded.received_at,
+                  stored_at = excluded.stored_at,
+                  knowledge_at = excluded.knowledge_at,
+                  fetch_manifest_id = excluded.fetch_manifest_id,
                   updated_at = now()
                 WHERE excluded.collected_at > orderbook_summaries.collected_at
                 """,
@@ -3274,11 +4403,46 @@ class PostgresOperationsRepository:
                     item.bid_depth_10,
                     item.ask_depth_10,
                     item.imbalance_10,
-                    item.collected_at,
+                    item.received_at,
                     run_id,
+                    market_id,
+                    item.occurred_at,
+                    item.received_at,
+                    item.received_at,
+                    manifest_id,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE orderbook_summaries
+                SET market_id = COALESCE(market_id, %s),
+                    occurred_at = COALESCE(occurred_at, %s),
+                    received_at = COALESCE(received_at, %s),
+                    stored_at = COALESCE(stored_at, clock_timestamp()),
+                    knowledge_at = COALESCE(knowledge_at, %s),
+                    fetch_manifest_id = COALESCE(fetch_manifest_id, %s)
+                WHERE instrument_id = %s AND source = 'UPBIT' AND bucket_at = %s
+                """,
+                (
+                    market_id,
+                    item.occurred_at,
+                    item.received_at,
+                    item.received_at,
+                    manifest_id,
+                    item.instrument_id,
+                    minute_bucket(item.bucket_at),
                 ),
             )
             counts[item.instrument_id] = counts.get(item.instrument_id, 0) + 1
+            if target_spec_id is not None:
+                self._replace_coverage_with_observed(
+                    conn,
+                    target_spec_id=target_spec_id,
+                    range_start_at=minute_bucket(item.bucket_at),
+                    range_end_at=minute_bucket(item.bucket_at) + timedelta(minutes=1),
+                    manifest_id=manifest_id,
+                    natural_key={"bucketAt": minute_bucket(item.bucket_at)},
+                )
         return counts
 
     def _upsert_candles(
@@ -3286,17 +4450,58 @@ class PostgresOperationsRepository:
         conn: psycopg.Connection[Any],
         run_id: int,
         candles: list[SourceCandle],
+        *,
+        requested_at: datetime,
+        expected_instrument_ids: tuple[int, ...] = (),
+        request_context: dict[str, Any] | None = None,
+        manifest_overrides: dict[
+            tuple[int, str], tuple[int | None, int | None, int]
+        ] | None = None,
     ) -> dict[int, int]:
         counts: dict[int, int] = {}
+        units = sorted({item.candle_unit for item in candles}) or ["1m"]
+        manifests = dict(manifest_overrides or {})
+        for candle_unit in units:
+            unit_items = [item for item in candles if item.candle_unit == candle_unit]
+            instrument_ids = {item.instrument_id for item in unit_items} or set(
+                expected_instrument_ids
+            )
+            if instrument_ids and all(
+                (instrument_id, candle_unit) in manifests for instrument_id in instrument_ids
+            ):
+                continue
+            endpoint = "/v1/candles/minutes/1" if candle_unit == "1m" else "/v1/candles/days"
+            unit_manifests = self._source_manifests_by_instrument(
+                conn,
+                run_id=run_id,
+                data_type="source_candle",
+                candle_unit=candle_unit,
+                endpoint=endpoint,
+                items=unit_items,
+                requested_at=requested_at,
+                expected_instrument_ids=(expected_instrument_ids if not unit_items else ()),
+                request_context=request_context,
+            )
+            manifests.update(
+                {
+                    (instrument_id, candle_unit): manifest
+                    for instrument_id, manifest in unit_manifests.items()
+                }
+            )
         if not candles:
             return counts
         sql = """
             INSERT INTO source_candles (
               instrument_id, source, candle_unit, candle_start_at,
               open_price, high_price, low_price, close_price,
-              trade_volume, trade_amount, collected_at, collection_run_id
+              trade_volume, trade_amount, collected_at, collection_run_id,
+              market_id, occurred_at, received_at, stored_at, knowledge_at,
+              fetch_manifest_id
             )
-            VALUES (%s, 'UPBIT', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (
+              %s, 'UPBIT', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, clock_timestamp(), %s, %s
+            )
             ON CONFLICT (instrument_id, source, candle_unit, candle_start_at)
             DO UPDATE SET
               open_price = excluded.open_price,
@@ -3307,11 +4512,20 @@ class PostgresOperationsRepository:
               trade_amount = excluded.trade_amount,
               collected_at = excluded.collected_at,
               collection_run_id = excluded.collection_run_id,
+              market_id = excluded.market_id,
+              occurred_at = excluded.occurred_at,
+              received_at = excluded.received_at,
+              stored_at = excluded.stored_at,
+              knowledge_at = excluded.knowledge_at,
+              fetch_manifest_id = excluded.fetch_manifest_id,
               updated_at = now()
             WHERE excluded.collected_at > source_candles.collected_at
             """
         params = []
         for item in candles:
+            market_id, _target_spec_id, manifest_id = manifests[
+                (item.instrument_id, item.candle_unit)
+            ]
             params.append(
                 (
                     item.instrument_id,
@@ -3325,11 +4539,77 @@ class PostgresOperationsRepository:
                     item.trade_amount,
                     item.collected_at,
                     run_id,
+                    market_id,
+                    item.candle_start_at,
+                    item.collected_at,
+                    item.collected_at,
+                    manifest_id,
                 ),
             )
             counts[item.instrument_id] = counts.get(item.instrument_id, 0) + 1
         with conn.cursor() as cursor:
             cursor.executemany(sql, params)
+        observed_starts: dict[tuple[int, int, str], list[datetime]] = {}
+        for item in candles:
+            _market_id, target_spec_id, manifest_id = manifests[
+                (item.instrument_id, item.candle_unit)
+            ]
+            conn.execute(
+                """
+                UPDATE source_candles
+                SET market_id = COALESCE(market_id, %s),
+                    occurred_at = COALESCE(occurred_at, %s),
+                    received_at = COALESCE(received_at, %s),
+                    stored_at = COALESCE(stored_at, clock_timestamp()),
+                    knowledge_at = COALESCE(knowledge_at, %s),
+                    fetch_manifest_id = COALESCE(fetch_manifest_id, %s)
+                WHERE instrument_id = %s AND source = 'UPBIT'
+                  AND candle_unit = %s AND candle_start_at = %s
+                """,
+                (
+                    _market_id,
+                    item.candle_start_at,
+                    item.collected_at,
+                    item.collected_at,
+                    manifest_id,
+                    item.instrument_id,
+                    item.candle_unit,
+                    item.candle_start_at,
+                ),
+            )
+            exists = conn.execute(
+                """
+                SELECT 1 FROM source_candles
+                WHERE instrument_id = %s AND source = 'UPBIT'
+                  AND candle_unit = %s AND candle_start_at = %s
+                """,
+                (item.instrument_id, item.candle_unit, item.candle_start_at),
+            ).fetchone()
+            if exists is not None and target_spec_id is not None:
+                observed_starts.setdefault(
+                    (target_spec_id, manifest_id, item.candle_unit), []
+                ).append(item.candle_start_at)
+        for (
+            target_spec_id,
+            manifest_id,
+            coverage_candle_unit,
+        ), starts in observed_starts.items():
+            for range_start_at, range_end_at, row_count in _contiguous_candle_ranges(
+                starts, coverage_candle_unit
+            ):
+                self._replace_coverage_with_observed(
+                    conn,
+                    target_spec_id=target_spec_id,
+                    range_start_at=range_start_at,
+                    range_end_at=range_end_at,
+                    manifest_id=manifest_id,
+                    natural_key={
+                        "candleUnit": coverage_candle_unit,
+                        "firstCandleStartAt": range_start_at,
+                        "lastCandleStartAt": range_end_at - _candle_interval(coverage_candle_unit),
+                        "rowCount": row_count,
+                    },
+                )
         return counts
 
     def _latest_candle_time(self, instrument_id: int) -> datetime | None:
@@ -3356,42 +4636,186 @@ class PostgresOperationsRepository:
             ).fetchone()
         return int(_expect_row(row)["count"])
 
-    def _refresh_backfill_job_progress(self, conn: psycopg.Connection[Any], job_id: int) -> None:
-        current = _expect_row(
-            conn.execute("SELECT status FROM backfill_jobs WHERE id = %s", (job_id,)).fetchone()
-        )["status"]
-        if current in {"paused", "stopped"}:
+    def _refresh_backfill_job_progress(
+        self,
+        conn: psycopg.Connection[Any],
+        job_id: int,
+        *,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        job = _expect_row(
+            conn.execute(
+                """
+                SELECT status, attempt_count, max_attempts
+                FROM backfill_jobs
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (job_id,),
+            ).fetchone()
+        )
+        current = str(job["status"])
+        if current in {
+            "retry_wait",
+            "paused",
+            "stopped",
+            "succeeded",
+            "failed",
+            "dead_letter",
+            "cancelled",
+        }:
             conn.execute(
                 "UPDATE backfill_jobs SET updated_at = now() WHERE id = %s",
                 (job_id,),
             )
             return
         rows = conn.execute(
-            "SELECT status FROM backfill_job_targets WHERE backfill_job_id = %s",
+            """
+            SELECT status, error_code, error_message
+            FROM backfill_job_targets
+            WHERE backfill_job_id = %s
+            ORDER BY instrument_id
+            """,
             (job_id,),
         ).fetchall()
         total = len(rows)
         succeeded = sum(1 for row in rows if row["status"] == "succeeded")
-        failed = any(row["status"] == "failed" for row in rows)
-        if total == 0 or failed:
-            status = "failed"
-        elif succeeded == total:
-            status = "succeeded"
-        else:
-            status = "running"
+        failed_rows = [row for row in rows if row["status"] == "failed"]
+        if total == 0:
+            self._move_backfill_job_to_dead_letter(
+                conn,
+                job_id,
+                error_code="BackfillTargetsMissing",
+                reason="backfill job has no targets",
+            )
+            return
+        if failed_rows:
+            latest_failure = failed_rows[-1]
+            error_code = cast(str | None, latest_failure["error_code"])
+            error_message = cast(str | None, latest_failure["error_message"])
+            if int(job["attempt_count"]) < int(job["max_attempts"]):
+                exponential_delay = min(
+                    BACKFILL_RETRY_MAX_SECONDS,
+                    BACKFILL_RETRY_BASE_SECONDS * (2 ** max(0, int(job["attempt_count"]) - 1)),
+                )
+                if retry_after_seconds is not None:
+                    delay_seconds = max(exponential_delay, retry_after_seconds)
+                elif _response_status_from_error_code(error_code) == 418:
+                    delay_seconds = max(exponential_delay, BACKFILL_RETRY_MAX_SECONDS)
+                elif _response_status_from_error_code(error_code) == 429:
+                    delay_seconds = max(exponential_delay, 1)
+                else:
+                    delay_seconds = exponential_delay
+                conn.execute(
+                    """
+                    UPDATE backfill_job_targets
+                    SET status = 'pending', updated_at = now()
+                    WHERE backfill_job_id = %s AND status = 'failed'
+                    """,
+                    (job_id,),
+                )
+                conn.execute(
+                    """
+                    UPDATE backfill_jobs
+                    SET status = 'retry_wait',
+                        next_retry_at = now() + make_interval(secs => %s),
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
+                        last_error_code = %s,
+                        dead_letter_reason = NULL,
+                        finished_at = NULL,
+                        updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (delay_seconds, error_code, job_id),
+                )
+                return
+            self._move_backfill_job_to_dead_letter(
+                conn,
+                job_id,
+                error_code=error_code,
+                reason=error_message or error_code or "backfill attempt budget exhausted",
+            )
+            return
+        status = "succeeded" if succeeded == total else "running"
         conn.execute(
             """
             UPDATE backfill_jobs
             SET status = %s,
                 finished_at = CASE
-                  WHEN %s IN ('succeeded', 'failed') THEN now()
+                  WHEN %s = 'succeeded' THEN now()
                   ELSE finished_at
                 END,
+                next_retry_at = NULL,
+                lease_owner = CASE WHEN %s = 'succeeded' THEN NULL ELSE lease_owner END,
+                lease_expires_at = CASE WHEN %s = 'succeeded' THEN NULL ELSE lease_expires_at END,
                 updated_at = now()
             WHERE id = %s
             """,
-            (status, status, job_id),
+            (status, status, status, status, job_id),
         )
+
+
+def _jsonable(value: object) -> Any:
+    return json.loads(
+        json.dumps(value, default=str, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
+
+
+def _checksum(value: object) -> str:
+    canonical = json.dumps(
+        _jsonable(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _response_status_from_error_code(error_code: str | None) -> int | None:
+    if error_code is None:
+        return None
+    for status in (418, 429):
+        if str(status) in error_code:
+            return status
+    return None
+
+
+def _manifest_outcome_from_error_code(error_code: str | None) -> str:
+    response_status = _response_status_from_error_code(error_code)
+    if response_status == 429:
+        return "rate_limited"
+    if response_status == 418:
+        return "blocked"
+    return "failed"
+
+
+def _candle_interval(candle_unit: str) -> timedelta:
+    return timedelta(minutes=1) if candle_unit == "1m" else timedelta(days=1)
+
+
+def _contiguous_candle_ranges(
+    starts: list[datetime], candle_unit: str
+) -> list[tuple[datetime, datetime, int]]:
+    interval = _candle_interval(candle_unit)
+    ordered = sorted(set(starts))
+    if not ordered:
+        return []
+    ranges: list[tuple[datetime, datetime, int]] = []
+    range_start = ordered[0]
+    previous = ordered[0]
+    row_count = 1
+    for current in ordered[1:]:
+        if current == previous + interval:
+            previous = current
+            row_count += 1
+            continue
+        ranges.append((range_start, previous + interval, row_count))
+        range_start = current
+        previous = current
+        row_count = 1
+    ranges.append((range_start, previous + interval, row_count))
+    return ranges
 
 
 def _latest_snapshot_id(conn: psycopg.Connection[Any]) -> int:
@@ -3436,7 +4860,8 @@ def _ticker(row: dict[str, Any]) -> TickerSnapshot:
         trade_price=Decimal(row["trade_price"]),
         acc_trade_price_24h=Decimal(row["acc_trade_price_24h"]),
         change_rate=Decimal(row["change_rate"] or "0"),
-        collected_at=cast(datetime, row["collected_at"]),
+        occurred_at=cast(datetime, row.get("occurred_at") or row["bucket_at"]),
+        received_at=cast(datetime, row.get("received_at") or row["collected_at"]),
     )
 
 
@@ -3452,7 +4877,8 @@ def _orderbook(row: dict[str, Any]) -> OrderbookSummary:
         bid_depth_10=Decimal(row["bid_depth_10"]),
         ask_depth_10=Decimal(row["ask_depth_10"]),
         imbalance_10=Decimal(row["imbalance_10"]),
-        collected_at=cast(datetime, row["collected_at"]),
+        occurred_at=cast(datetime, row.get("occurred_at") or row["bucket_at"]),
+        received_at=cast(datetime, row.get("received_at") or row["collected_at"]),
     )
 
 
@@ -3600,7 +5026,19 @@ def _backfill_job(
     return BackfillJob(
         id=int(row["id"]),
         status=cast(
-            Literal["planned", "pending", "running", "paused", "stopped", "succeeded", "failed"],
+            Literal[
+                "planned",
+                "pending",
+                "leased",
+                "running",
+                "retry_wait",
+                "paused",
+                "stopped",
+                "succeeded",
+                "failed",
+                "dead_letter",
+                "cancelled",
+            ],
             row["status"],
         ),
         data_type=str(row["data_type"]),
@@ -3621,6 +5059,11 @@ def _backfill_job(
         target_end_at=cast(datetime, row["target_end_at"]),
         targets=targets or [],
         created_at=cast(datetime, row["created_at"]),
+        attempt_count=int(row.get("attempt_count") or 0),
+        max_attempts=int(row.get("max_attempts") or 0),
+        next_retry_at=cast(datetime | None, row.get("next_retry_at")),
+        last_error_code=cast(str | None, row.get("last_error_code")),
+        dead_letter_reason=cast(str | None, row.get("dead_letter_reason")),
     )
 
 
@@ -3628,7 +5071,19 @@ def _backfill_job_detail(row: dict[str, Any]) -> BackfillJobDetail:
     return BackfillJobDetail(
         id=int(row["id"]),
         status=cast(
-            Literal["planned", "pending", "running", "paused", "stopped", "succeeded", "failed"],
+            Literal[
+                "planned",
+                "pending",
+                "leased",
+                "running",
+                "retry_wait",
+                "paused",
+                "stopped",
+                "succeeded",
+                "failed",
+                "dead_letter",
+                "cancelled",
+            ],
             row["status"],
         ),
         data_type=str(row["data_type"]),

@@ -23,6 +23,7 @@ from goodmoneying_shared.models import (
     CoverageSegment,
     CoverageStatus,
     DashboardSummary,
+    FetchEvidence,
     Instrument,
     MarketListRow,
     MissingRangeSummary,
@@ -30,6 +31,7 @@ from goodmoneying_shared.models import (
     OperationsTrendPoint,
     OrderbookSummary,
     RealtimeCollectionHeatmapRow,
+    RealtimeSourceFrame,
     SourceCandle,
     StorageBreakdownItem,
     TickerSnapshot,
@@ -63,6 +65,12 @@ class OperationsRepository(Protocol):
     ) -> CollectionRun: ...
 
     def record_trade_events(self, trades: list[TradeEvent]) -> int: ...
+
+    def record_realtime_source_frames(self, frames: list[RealtimeSourceFrame]) -> int: ...
+
+    def purge_expired_source_evidence(
+        self, *, as_of: datetime | None = None
+    ) -> tuple[int, int]: ...
 
     def dashboard_summary(self) -> DashboardSummary: ...
 
@@ -169,7 +177,12 @@ class OperationsRepository(Protocol):
     def backfill_job_targets(self, job_id: int) -> list[BackfillJobTarget]: ...
 
     def record_backfill_candles(
-        self, job_id: int, instrument_id: int, candles: list[SourceCandle]
+        self,
+        job_id: int,
+        instrument_id: int,
+        candles: list[SourceCandle],
+        *,
+        fetch_evidence: FetchEvidence | None = None,
     ) -> int: ...
 
     def record_backfill_target_progress(
@@ -190,6 +203,9 @@ class OperationsRepository(Protocol):
         last_completed_at: datetime | None,
         error_code: str | None = None,
         error_message: str | None = None,
+        retry_after_seconds: float | None = None,
+        *,
+        fetch_evidence: FetchEvidence | None = None,
     ) -> None: ...
 
     def control_backfill_job(self, job_id: int, action: str) -> BackfillJob: ...

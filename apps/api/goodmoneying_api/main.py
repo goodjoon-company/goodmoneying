@@ -4,9 +4,9 @@ import builtins
 import os
 import time
 from asyncio import wait_for
-from collections.abc import Iterator
-from datetime import datetime
-from typing import Annotated, cast
+from collections.abc import Iterator, Mapping
+from datetime import UTC, datetime
+from typing import Annotated, Protocol, cast
 from uuid import uuid4
 
 from fastapi import (
@@ -35,6 +35,7 @@ from goodmoneying_api.schemas import (
     CollectionCoverageSegmentsResponse,
     CollectionRunsResponse,
     CollectionTargetsResponse,
+    CoverageCountsResponse,
     CreateBackfillJobRequest,
     CreateBackfillPlanRequest,
     DashboardAuditLogSummaryResponse,
@@ -47,15 +48,29 @@ from goodmoneying_api.schemas import (
     DashboardStorageBreakdownResponse,
     DashboardSummaryResponse,
     DashboardTargetsResponse,
+    DataFoundationMarketResponse,
+    DataFoundationResponse,
+    DataFoundationSummaryResponse,
     HealthResponse,
     InstrumentDetailResponse,
+    MarketCollectionPolicyResponse,
     MarketListResponse,
     NotificationEventsResponse,
     OrderbookSummariesResponse,
     TickerSnapshotsResponse,
     UpdateCollectionTargetsRequest,
+    UpdateMarketTargetStateRequest,
+    UpdateMarketTargetStateResponse,
 )
 from goodmoneying_api.service import AnalysisSubscriptionError, OperationsService
+from goodmoneying_shared.data_foundation import (
+    CoverageState,
+    DataFoundationOverview,
+    MarketCollectionPolicySettings,
+)
+from goodmoneying_shared.data_foundation_repository import (
+    PostgresDataFoundationRepository,
+)
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
@@ -74,11 +89,71 @@ def create_repository_from_environment() -> OperationsRepository:
     return SQLiteOperationsRepository()
 
 
-def create_app(repository: OperationsRepository | None = None) -> FastAPI:
+class DataFoundationApiRepository(Protocol):
+    def overview(self) -> DataFoundationOverview: ...
+
+    def set_market_target_state(
+        self,
+        market_code: str,
+        *,
+        state: str,
+        actor: str,
+        reason: str,
+        changed_at: datetime,
+        policy: MarketCollectionPolicySettings | None = None,
+    ) -> None: ...
+
+
+class EmptyDataFoundationRepository:
+    def overview(self) -> DataFoundationOverview:
+        from goodmoneying_shared.data_foundation import DEFAULT_KRW_START_AT
+
+        return DataFoundationOverview(
+            market_count=0,
+            krw_market_count=0,
+            active_target_count=0,
+            pending_backfill_job_count=0,
+            desired_subscription_count=0,
+            policy_start_at=DEFAULT_KRW_START_AT,
+            coverage_counts={
+                "available": 0,
+                "no_trade": 0,
+                "missing": 0,
+                "unavailable": 0,
+                "unverified": 0,
+            },
+            markets=[],
+        )
+
+    def set_market_target_state(
+        self,
+        market_code: str,
+        *,
+        state: str,
+        actor: str,
+        reason: str,
+        changed_at: datetime,
+        policy: MarketCollectionPolicySettings | None = None,
+    ) -> None:
+        raise ValueError("변경할 시장을 찾을 수 없다.")
+
+
+def create_app(
+    repository: OperationsRepository | None = None,
+    *,
+    data_foundation_repository: DataFoundationApiRepository | None = None,
+) -> FastAPI:
     repo = repository or create_repository_from_environment()
+    foundation_repository = data_foundation_repository
+    if foundation_repository is None:
+        database_url = getattr(repo, "_database_url", None)
+        if isinstance(repo, PostgresOperationsRepository) and isinstance(database_url, str):
+            foundation_repository = PostgresDataFoundationRepository(database_url)
+        else:
+            foundation_repository = EmptyDataFoundationRepository()
     operator_token = os.getenv("GOODMONEYING_OPERATOR_TOKEN", "local-dev-token")
     service = OperationsService(repo, load_dashboard_refresh_seconds())
-    app = FastAPI(title="goodmoneying M1 Operations API", version="0.1.0")
+    app = FastAPI(title="goodmoneying 시스템 트레이딩 운영 API", version="0.2.0")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -111,6 +186,90 @@ def create_app(repository: OperationsRepository | None = None) -> FastAPI:
     @app.get("/health", response_model=HealthResponse)
     def get_health() -> HealthResponse:
         return HealthResponse(status="ok", checkedAt=now_kst())
+
+    @app.get("/v1/data-foundation", response_model=DataFoundationResponse)
+    def get_data_foundation() -> DataFoundationResponse:
+        overview = foundation_repository.overview()
+        return DataFoundationResponse(
+            timeZone="UTC",
+            policyStartAt=overview.policy_start_at,
+            summary=DataFoundationSummaryResponse(
+                marketCount=overview.market_count,
+                krwMarketCount=overview.krw_market_count,
+                activeTargetCount=overview.active_target_count,
+                pendingBackfillJobCount=overview.pending_backfill_job_count,
+                desiredSubscriptionCount=overview.desired_subscription_count,
+                coverageCounts=_coverage_counts_response(overview.coverage_counts),
+            ),
+            markets=[
+                DataFoundationMarketResponse(
+                    marketCode=market.market_code,
+                    koreanName=market.korean_name,
+                    englishName=market.english_name,
+                    quoteCurrency=market.quote_currency,
+                    tradingStatus=market.trading_status,
+                    marketWarning=market.market_warning,
+                    targetStatus=market.target_status,
+                    activeDataTypeCount=market.active_data_type_count,
+                    totalDataTypeCount=market.total_data_type_count,
+                    coverageCounts=_coverage_counts_response(market.coverage_counts),
+                    collectionPolicy=(
+                        MarketCollectionPolicyResponse(
+                            startAt=market.collection_policy.start_at,
+                            dataTypes=list(market.collection_policy.data_types),
+                            candleUnit=market.collection_policy.candle_unit,
+                            retentionDays=market.collection_policy.retention_days,
+                            priority=market.collection_policy.priority,
+                            continuous=market.collection_policy.continuous,
+                        )
+                        if market.collection_policy is not None
+                        else None
+                    ),
+                )
+                for market in overview.markets
+            ],
+        )
+
+    @app.patch(
+        "/v1/data-foundation/markets/{marketCode}",
+        response_model=UpdateMarketTargetStateResponse,
+        dependencies=[Depends(require_operator_token)],
+    )
+    def update_market_target_state(
+        marketCode: str,
+        request: UpdateMarketTargetStateRequest,
+    ) -> UpdateMarketTargetStateResponse:
+        changed_at = datetime.now(UTC)
+        try:
+            foundation_repository.set_market_target_state(
+                marketCode,
+                state=request.state,
+                actor="operator:local",
+                reason=request.reason,
+                changed_at=changed_at,
+                policy=(
+                    MarketCollectionPolicySettings(
+                        start_at=request.policy.startAt,
+                        data_types=request.policy.dataTypes,
+                        candle_unit=request.policy.candleUnit,
+                        retention_days=request.policy.retentionDays,
+                        priority=request.policy.priority,
+                        continuous=request.policy.continuous,
+                    )
+                    if request.policy is not None
+                    else None
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "INVALID_MARKET_TARGET_STATE", "message": str(exc)},
+            ) from exc
+        return UpdateMarketTargetStateResponse(
+            marketCode=marketCode,
+            state=request.state,
+            changedAt=changed_at,
+        )
 
     @app.get("/v1/dashboard/summary", response_model=DashboardSummaryResponse)
     def get_dashboard_summary() -> DashboardSummaryResponse:
@@ -483,6 +642,18 @@ def create_app(repository: OperationsRepository | None = None) -> FastAPI:
         return service.notifications()
 
     return app
+
+
+def _coverage_counts_response(
+    counts: Mapping[CoverageState, int],
+) -> CoverageCountsResponse:
+    return CoverageCountsResponse(
+        available=counts["available"],
+        no_trade=counts["no_trade"],
+        missing=counts["missing"],
+        unavailable=counts["unavailable"],
+        unverified=counts["unverified"],
+    )
 
 
 app = create_app()

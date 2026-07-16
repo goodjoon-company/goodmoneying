@@ -583,7 +583,7 @@ test("M1 운영 화면에서 주요 시나리오를 탐색한다", async ({ page
   await expect(page.getByText("Rate limit 여유 64%")).toHaveCount(0);
   await expect(page.getByText("중복 행 0")).toHaveCount(0);
   await expect(page.getByText("표시 KST")).toBeVisible();
-  await expect(page.getByText("저장 KST")).toBeVisible();
+  await expect(page.getByText("저장 UTC")).toBeVisible();
   await expect(page.getByText("SSE 실시간")).toBeVisible();
   await page.getByRole("button", { name: "Realtime worker 24시간 오류 상세" }).click();
   await expect(page.getByRole("dialog", { name: "Realtime worker 오류 상세" })).toBeVisible();

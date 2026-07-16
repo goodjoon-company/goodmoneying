@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ErrorResponse(BaseModel):
@@ -14,6 +14,103 @@ class ErrorResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded", "down"]
     checkedAt: datetime
+
+
+class CoverageCountsResponse(BaseModel):
+    available: int
+    no_trade: int
+    missing: int
+    unavailable: int
+    unverified: int
+
+
+class DataFoundationSummaryResponse(BaseModel):
+    marketCount: int
+    krwMarketCount: int
+    activeTargetCount: int
+    pendingBackfillJobCount: int
+    desiredSubscriptionCount: int
+    coverageCounts: CoverageCountsResponse
+
+
+class MarketCollectionPolicyResponse(BaseModel):
+    startAt: datetime
+    dataTypes: list[
+        Literal[
+            "source_candle",
+            "trade_event",
+            "orderbook_snapshot",
+            "ticker_snapshot",
+        ]
+    ]
+    candleUnit: Literal["1m"]
+    retentionDays: int | None
+    priority: int
+    continuous: bool
+
+
+class DataFoundationMarketResponse(BaseModel):
+    marketCode: str
+    koreanName: str
+    englishName: str
+    quoteCurrency: str
+    tradingStatus: Literal["active", "inactive", "delisted", "unknown"]
+    marketWarning: str
+    targetStatus: Literal["active", "paused", "excluded", "not_targeted"]
+    activeDataTypeCount: int
+    totalDataTypeCount: int
+    coverageCounts: CoverageCountsResponse
+    collectionPolicy: MarketCollectionPolicyResponse | None
+
+
+class DataFoundationResponse(BaseModel):
+    timeZone: Literal["UTC"]
+    policyStartAt: datetime
+    summary: DataFoundationSummaryResponse
+    markets: list[DataFoundationMarketResponse]
+
+
+class UpdateMarketCollectionPolicyRequest(BaseModel):
+    startAt: datetime
+    dataTypes: tuple[
+        Literal[
+            "source_candle",
+            "trade_event",
+            "orderbook_snapshot",
+            "ticker_snapshot",
+        ],
+        ...,
+    ] = Field(min_length=1)
+    candleUnit: Literal["1m"]
+    retentionDays: int | None = Field(default=None, ge=1, le=36_500)
+    priority: int = Field(ge=1, le=1000)
+    continuous: bool
+
+    @field_validator("startAt")
+    @classmethod
+    def require_utc_start_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
+            raise ValueError("startAt은 UTC timezone-aware datetime이어야 한다.")
+        return value
+
+    @field_validator("dataTypes")
+    @classmethod
+    def require_unique_data_types(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("dataTypes는 중복될 수 없다.")
+        return value
+
+
+class UpdateMarketTargetStateRequest(BaseModel):
+    state: Literal["active", "paused", "excluded"]
+    reason: str = Field(min_length=1, max_length=500)
+    policy: UpdateMarketCollectionPolicyRequest | None = None
+
+
+class UpdateMarketTargetStateResponse(BaseModel):
+    marketCode: str
+    state: Literal["active", "paused", "excluded"]
+    changedAt: datetime
 
 
 class InstrumentResponse(BaseModel):
@@ -483,7 +580,19 @@ class BackfillPlanResponse(BaseModel):
 
 class BackfillJobResponse(BaseModel):
     id: int
-    status: Literal["planned", "pending", "running", "paused", "stopped", "succeeded", "failed"]
+    status: Literal[
+        "planned",
+        "pending",
+        "leased",
+        "running",
+        "retry_wait",
+        "paused",
+        "stopped",
+        "succeeded",
+        "failed",
+        "dead_letter",
+        "cancelled",
+    ]
     dataType: str
     progressPercent: str
     estimatedRequestCount: int
@@ -498,6 +607,11 @@ class BackfillJobResponse(BaseModel):
     targetEndAt: datetime
     targets: list[InstrumentResponse]
     createdAt: datetime
+    attemptCount: int
+    maxAttempts: int
+    nextRetryAt: datetime | None
+    lastErrorCode: str | None
+    deadLetterReason: str | None
 
 
 class BackfillJobsResponse(BaseModel):

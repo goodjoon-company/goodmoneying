@@ -53,8 +53,9 @@ UPBIT_GATEWAY_PORT="${GOODMONEYING_UPBIT_GATEWAY_PORT:-8001}"
 POSTGRES_PORT="${GOODMONEYING_POSTGRES_PORT:-5432}"
 OPERATOR_TOKEN="${GOODMONEYING_OPERATOR_TOKEN:-local-dev-token}"
 DATABASE_URL="${GOODMONEYING_DATABASE_URL:-postgresql://goodmoneying:goodmoneying@127.0.0.1:${POSTGRES_PORT}/goodmoneying?sslmode=disable}"
-APP_TIMEZONE="${GOODMONEYING_TIMEZONE:-Asia/Seoul}"
+APP_TIMEZONE="${GOODMONEYING_TIMEZONE:-UTC}"
 REALTIME_COLLECTION_INTERVAL_SECONDS="${GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS:-60}"
+MARKET_SYNC_INTERVAL_SECONDS="${GOODMONEYING_MARKET_SYNC_INTERVAL_SECONDS:-300}"
 BACKFILL_POLL_SECONDS="${GOODMONEYING_BACKFILL_POLL_SECONDS:-10}"
 BACKFILL_BATCH_SIZE="${GOODMONEYING_BACKFILL_BATCH_SIZE:-3000}"
 AGGREGATION_POLL_SECONDS="${GOODMONEYING_AGGREGATION_POLL_SECONDS:-5}"
@@ -86,12 +87,12 @@ usage() {
   ./dev.sh db dump
   ./dev.sh db rollback
 
-  ./dev.sh app start [api|web|upbit-gateway|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
-  ./dev.sh app stop [api|web|upbit-gateway|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
-  ./dev.sh app restart [api|web|upbit-gateway|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
-  ./dev.sh app status [api|web|upbit-gateway|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
+  ./dev.sh app start [api|web|upbit-gateway|market-sync-worker|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
+  ./dev.sh app stop [api|web|upbit-gateway|market-sync-worker|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
+  ./dev.sh app restart [api|web|upbit-gateway|market-sync-worker|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
+  ./dev.sh app status [api|web|upbit-gateway|market-sync-worker|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker|all]
 
-  ./dev.sh logs [api|web|upbit-gateway|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker]
+  ./dev.sh logs [api|web|upbit-gateway|market-sync-worker|realtime-collection-worker|backfill-collection-worker|candle-aggregation-worker]
 
 설명:
   infra 는 Podman Compose 로 PostgreSQL 을 관리한다.
@@ -357,8 +358,8 @@ require_local_database_port() {
 service_list() {
   local target="${1:-all}"
   case "$target" in
-    all) printf '%s\n' api web upbit-gateway realtime-collection-worker backfill-collection-worker candle-aggregation-worker ;;
-    api | web | upbit-gateway | realtime-collection-worker | backfill-collection-worker | candle-aggregation-worker) printf '%s\n' "$target" ;;
+    all) printf '%s\n' api web upbit-gateway market-sync-worker realtime-collection-worker backfill-collection-worker candle-aggregation-worker ;;
+    api | web | upbit-gateway | market-sync-worker | realtime-collection-worker | backfill-collection-worker | candle-aggregation-worker) printf '%s\n' "$target" ;;
     *) print_error "알 수 없는 app 대상: $target"; return 2 ;;
   esac
 }
@@ -433,6 +434,7 @@ pid_from_process_table() {
   local unit="$1"
   local pattern
   case "$unit" in
+    market-sync-worker) pattern="goodmoneying_worker.data_foundation_worker" ;;
     realtime-collection-worker) pattern="goodmoneying_worker.realtime_collection_worker" ;;
     backfill-collection-worker) pattern="goodmoneying_worker.backfill_collection_worker" ;;
     candle-aggregation-worker) pattern="goodmoneying_worker.aggregation_collection_worker" ;;
@@ -565,6 +567,19 @@ start_realtime_collection_worker() {
       bash -c 'while true; do "$GOODMONEYING_PYTHON_BIN" -m goodmoneying_worker.realtime_collection_worker; sleep "$GOODMONEYING_REALTIME_COLLECTION_INTERVAL_SECONDS"; done'
 }
 
+start_market_sync_worker() {
+  require_local_database_port
+  start_background market-sync-worker \
+    env PYTHONPATH=apps/api:apps/worker:packages/shared \
+      GOODMONEYING_DATABASE_URL="$DATABASE_URL" \
+      GOODMONEYING_LIVE_UPBIT="${GOODMONEYING_LIVE_UPBIT:-1}" \
+      GOODMONEYING_MARKET_SYNC_INTERVAL_SECONDS="$MARKET_SYNC_INTERVAL_SECONDS" \
+      GOODMONEYING_LOG_LEVEL="$LOG_LEVEL" \
+      TZ="$APP_TIMEZONE" \
+      PGTZ="$APP_TIMEZONE" \
+      "$PYTHON_BIN" -m goodmoneying_worker.data_foundation_worker
+}
+
 start_backfill_collection_worker() {
   require_local_database_port
   start_background backfill-collection-worker \
@@ -598,6 +613,7 @@ start_app_unit() {
     api) start_api ;;
     web) start_web ;;
     upbit-gateway) start_upbit_gateway ;;
+    market-sync-worker) start_market_sync_worker ;;
     realtime-collection-worker) start_realtime_collection_worker ;;
     backfill-collection-worker) start_backfill_collection_worker ;;
     candle-aggregation-worker) start_candle_aggregation_worker ;;
@@ -714,12 +730,12 @@ app_stop() {
 show_logs() {
   local unit="${1:-}"
   if [[ -z "$unit" ]]; then
-    print_error "logs 대상이 필요합니다: api, web, upbit-gateway, realtime-collection-worker, backfill-collection-worker, candle-aggregation-worker"
+    print_error "logs 대상이 필요합니다: api, web, upbit-gateway, market-sync-worker, realtime-collection-worker, backfill-collection-worker, candle-aggregation-worker"
     usage
     return 2
   fi
   case "$unit" in
-    api | web | upbit-gateway | realtime-collection-worker | backfill-collection-worker | candle-aggregation-worker) ;;
+    api | web | upbit-gateway | market-sync-worker | realtime-collection-worker | backfill-collection-worker | candle-aggregation-worker) ;;
     *) print_error "알 수 없는 logs 대상: $unit"; return 2 ;;
   esac
   tail -n 120 -f "$(log_file_for "$unit")"

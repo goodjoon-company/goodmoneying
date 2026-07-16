@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, ArrowUpDown, Search, Star } from "lucide-react";
 import { updateFavoriteTargets, type CandidateUniverseEntry, type MarketListRow } from "../api";
 import { formatCurrencyAmount, formatPercent } from "../operationsDisplay";
+import { formatKstDate, formatKstDateTime } from "../displayFormat";
 import { CoverageMeter, InstrumentName } from "./common";
 
 const EMPTY_MARKET_ROWS: MarketListRow[] = [];
@@ -355,7 +356,6 @@ function MoneyCell({ value, currency }: { value: string | null; currency: string
   return (
     <span className="money-cell">
       <strong>{formatCurrencyAmount(value, currency)}</strong>
-      <em>{currency}</em>
     </span>
   );
 }
@@ -370,27 +370,6 @@ function CoverageWithRange({ row }: { row: MarketListRow }) {
       </span>
     </span>
   );
-}
-
-function formatKstDateTime(value: string): string {
-  return new Date(value).toLocaleString("ko-KR", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23"
-  });
-}
-
-function formatKstDate(value: string): string {
-  return new Date(value).toLocaleDateString("ko-KR", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  });
 }
 
 function sortMarketRows(
@@ -466,19 +445,7 @@ function latestMarketTickerBasis(rows: MarketListRow[]) {
     .map((row) => nullableTime(row.tickerCollectedAt))
     .filter((value) => Number.isFinite(value))
     .sort((left, right) => right - left)[0];
-  return Number.isFinite(latest) ? formatKstShort(new Date(latest).toISOString()) : "기준 없음";
-}
-
-function formatKstShort(value: string) {
-  const parts = new Intl.DateTimeFormat("ko-KR", {
-    timeZone: "Asia/Seoul",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  }).formatToParts(new Date(value));
-  const get = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((part) => part.type === type)?.value ?? "";
-  return `${get("month")}.${get("day")} ${get("hour")}:${get("minute")} KST`;
+  return Number.isFinite(latest)
+    ? formatKstDateTime(new Date(latest).toISOString())
+    : "기준 없음";
 }

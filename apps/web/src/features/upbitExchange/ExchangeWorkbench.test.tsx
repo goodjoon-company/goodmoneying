@@ -28,16 +28,45 @@ describe("Exchange 전체 REST 작업대", () => {
     render(<ExchangeWorkbench gateway={fakeGateway()} initialGroup="pocket" />);
     await userEvent.click(await screen.findByRole("button", { name: /포켓별 API Key 목록 조회 기능 선택/ }));
 
-    expect(screen.getByLabelText("uuids[]")).toHaveAttribute("placeholder", expect.stringContaining("쉼표"));
-    expect(screen.getByLabelText("include_expired")).toHaveAttribute("type", "checkbox");
+    expect(screen.getByLabelText("UUID 목록(uuids[])")).toHaveAttribute("placeholder", expect.stringContaining("쉼표"));
+    expect(screen.getByLabelText("만료 항목 포함(include_expired)")).toHaveAttribute("type", "checkbox");
 
     await userEvent.click(screen.getByRole("button", { name: /메인포켓 자산 이전 목록 조회 기능 선택/ }));
-    expect(screen.getByLabelText("start_time")).toHaveAttribute("type", "datetime-local");
-    expect(screen.getByLabelText("order_by").tagName).toBe("SELECT");
+    expect(screen.getByLabelText("시작 시각(start_time)")).toHaveAttribute("type", "datetime-local");
+    expect(screen.getByLabelText("정렬 순서(order_by)").tagName).toBe("SELECT");
 
     await userEvent.click(screen.getByRole("tab", { name: /주문/ }));
     await userEvent.click(screen.getByRole("button", { name: /체결 대기 주문 목록 조회 기능 선택/ }));
-    expect(screen.getByLabelText("limit")).toHaveAttribute("type", "number");
+    expect(screen.getByLabelText("페이지 크기(limit)")).toHaveAttribute("type", "number");
+    expect(screen.getByLabelText("페이지 크기(limit)")).toHaveValue(100);
+    expect(screen.getByText("기본 100 · 최소 1 · 최대 100 · 단위 개")).toBeVisible();
+
+    await userEvent.click(screen.getByRole("tab", { name: /출금/ }));
+    await userEvent.click(screen.getByRole("button", { name: /list-withdrawals 기능 선택/ }));
+    expect(screen.getByLabelText("이전 커서(from)")).toHaveAttribute("type", "text");
+  });
+
+  it("현재 시각을 KST 초 단위로 채우고 숫자 제한 초과 요청을 사전에 차단한다", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T00:00:01.000Z"));
+    try {
+      const execute = vi.fn();
+      render(<ExchangeWorkbench gateway={fakeGateway({ execute })} initialGroup="pocket" />);
+      await act(async () => { await Promise.resolve(); });
+      fireEvent.click(screen.getByRole("button", { name: /메인포켓 자산 이전 목록 조회 기능 선택/ }));
+      fireEvent.click(screen.getByRole("button", { name: "시작 시각(start_time) 현재 시각 입력" }));
+      expect((screen.getByLabelText("시작 시각(start_time)") as HTMLInputElement).value)
+        .toMatch(/^2026-07-16T09:00:01(?:\.000)?$/);
+
+      fireEvent.click(screen.getByRole("tab", { name: /주문/ }));
+      fireEvent.click(screen.getByRole("button", { name: /체결 대기 주문 목록 조회 기능 선택/ }));
+      fireEvent.change(screen.getByLabelText("페이지 크기(limit)"), { target: { value: "101" } });
+      fireEvent.click(screen.getByRole("button", { name: "조회 실행" }));
+      expect(screen.getByRole("alert")).toHaveTextContent("최대 100 이하");
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("공통 페어 어댑터를 사용하고 조회 결과를 잔고 표와 원본 추적으로 연결한다", async () => {
@@ -66,7 +95,9 @@ describe("Exchange 전체 REST 작업대", () => {
     await userEvent.click(screen.getByRole("tab", { name: /계정/ }));
     await userEvent.click(screen.getByRole("button", { name: /포켓 잔고 조회 기능 선택/ }));
     await userEvent.click(screen.getByRole("button", { name: "조회 실행" }));
-    expect(await screen.findByRole("table", { name: "계정 잔고 결과" })).toHaveTextContent("KRW");
+    const balanceTable = await screen.findByRole("table", { name: "계정 잔고 결과" });
+    expect(balanceTable).toHaveTextContent("KRW");
+    expect(balanceTable).toHaveTextContent("120,000 ￦");
     await userEvent.click(screen.getByRole("button", { name: "원본 추적 열기" }));
     expect(screen.getByRole("dialog", { name: "API 원본 추적" })).toHaveTextContent("trace_id");
   });
@@ -109,7 +140,7 @@ describe("Exchange 전체 REST 작업대", () => {
     );
     await userEvent.click(await screen.findByRole("button", { name: /페어별 주문 가능 정보 조회 기능 선택/ }));
 
-    expect(screen.queryByLabelText("market")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("거래쌍(market)")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "조회 실행" }));
     await waitFor(() => expect(execute).toHaveBeenCalledWith({
       endpoint_id: "rest.available-order-information",
@@ -123,8 +154,8 @@ describe("Exchange 전체 REST 작업대", () => {
     await userEvent.click(await screen.findByRole("button", { name: /주문 생성 테스트 기능 선택/ }));
 
     expect(screen.getByText("비파괴 테스트")).toBeVisible();
-    fireEvent.change(screen.getByLabelText("market"), { target: { value: "KRW-BTC" } });
-    fireEvent.change(screen.getByLabelText("side"), { target: { value: "bid" } });
+    fireEvent.change(screen.getByLabelText("거래쌍(market)"), { target: { value: "KRW-BTC" } });
+    fireEvent.change(screen.getByLabelText("주문 방향(side)"), { target: { value: "bid" } });
     await userEvent.click(screen.getByRole("button", { name: "주문 테스트 실행" }));
 
     await waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
@@ -166,7 +197,7 @@ describe("Exchange 전체 REST 작업대", () => {
     const execute = vi.fn();
     render(<ExchangeWorkbench gateway={fakeGateway({ execute })} initialGroup="order" />);
     await userEvent.click(await screen.findByRole("button", { name: /주문 생성 기능 선택/ }));
-    fireEvent.change(screen.getByLabelText("market"), { target: { value: "krw-btc" } });
+    fireEvent.change(screen.getByLabelText("거래쌍(market)"), { target: { value: "krw-btc" } });
 
     expect(screen.getByRole("alert")).toHaveTextContent("업비트로 전송하지 않습니다");
     expect(screen.getByRole("region", { name: "최종 요청 미리보기" })).toHaveTextContent("rest.new-order");
@@ -195,7 +226,7 @@ describe("Exchange 전체 REST 작업대", () => {
     await userEvent.click(await screen.findByRole("button", { name: /개별 주문 취소 접수 기능 선택/ }));
     expect(screen.getByText(/필수 입력 조합.*미충족/)).toBeVisible();
 
-    await userEvent.type(screen.getByLabelText("identifier"), "client-order-id");
+    await userEvent.type(screen.getByLabelText("식별자(identifier)"), "client-order-id");
 
     expect(screen.getByText(/필수 입력 조합.*충족/)).toBeVisible();
     expect(screen.getByRole("button", { name: "정책으로 전송 차단됨" })).toBeDisabled();
@@ -205,13 +236,13 @@ describe("Exchange 전체 REST 작업대", () => {
     const execute = vi.fn(async () => traceFor("rest.get-deposit", []));
     render(<ExchangeWorkbench gateway={fakeGateway({ execute })} initialGroup="deposit" />);
     await userEvent.click(await screen.findByRole("button", { name: /개별 입금 조회 기능 선택/ }));
-    await userEvent.type(screen.getByLabelText("txid"), "transaction-id");
+    await userEvent.type(screen.getByLabelText("트랜잭션 ID(txid)"), "transaction-id");
 
     await userEvent.click(screen.getByRole("button", { name: "조회 실행" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("필수 입력 조합");
     expect(execute).not.toHaveBeenCalled();
 
-    await userEvent.type(screen.getByLabelText("currency"), "BTC");
+    await userEvent.type(screen.getByLabelText("통화(currency)"), "BTC");
     await userEvent.click(screen.getByRole("button", { name: "조회 실행" }));
     await waitFor(() => expect(execute).toHaveBeenCalledWith(expect.objectContaining({
       parameters: { txid: "transaction-id", currency: "BTC" }
@@ -219,9 +250,9 @@ describe("Exchange 전체 REST 작업대", () => {
   });
 
   it.each([
-    ["order", /개별 주문 조회 기능 선택/, "identifier"],
-    ["withdrawal", /개별 출금 조회 기능 선택/, "txid"],
-    ["deposit", /개별 입금 조회 기능 선택/, "uuid"]
+    ["order", /개별 주문 조회 기능 선택/, "식별자(identifier)"],
+    ["withdrawal", /개별 출금 조회 기능 선택/, "트랜잭션 ID(txid)"],
+    ["deposit", /개별 입금 조회 기능 선택/, "UUID(uuid)"]
   ] as const)(
     "%s 조회는 대체 필수 입력 조합이 없으면 실행 전에 차단한다",
     async (initialGroup, endpointName, validField) => {
@@ -259,7 +290,7 @@ describe("Exchange 전체 REST 작업대", () => {
     const execute = vi.fn(async () => traceFor("rest.get-pocket-api-keys", []));
     render(<ExchangeWorkbench gateway={fakeGateway({ execute })} initialGroup="pocket" />);
     await userEvent.click(await screen.findByRole("button", { name: /포켓별 API Key 목록 조회 기능 선택/ }));
-    const checkbox = screen.getByLabelText("include_expired");
+    const checkbox = screen.getByLabelText("만료 항목 포함(include_expired)");
     await userEvent.click(checkbox);
     await userEvent.click(checkbox);
 

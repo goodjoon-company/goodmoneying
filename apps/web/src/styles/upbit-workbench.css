@@ -15,9 +15,22 @@
 .upbit-common-selection { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0; border: 1px solid rgb(255 255 255 / .08); border-radius: 8px; padding: 12px; }
 .upbit-common-selection legend { padding: 0 5px; color: #718078; font-size: 11px; font-weight: 800; }
 .upbit-common-selection input { width: 100%; min-height: 40px; border: 1px solid rgb(255 255 255 / .12); border-radius: 7px; padding: 0 10px; background: #0d1411; color: #eef7f0; font: inherit; }
-.upbit-dynamic-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.upbit-dynamic-fields { display: grid; grid-template-columns: minmax(0, 22rem) minmax(7rem, 8rem); gap: 10px; }
+.upbit-dynamic-fields .catalog-parameter-field { display: grid; grid-column: 1 / -1; align-content: start; gap: 6px; min-width: 0; }
+.upbit-dynamic-fields .catalog-parameter-field[data-parameter="to"] { grid-column: 1; }
+.upbit-dynamic-fields .catalog-parameter-field[data-parameter="count"] { grid-column: 2; }
+.upbit-dynamic-fields input:is([type="datetime-local"], [type="time"]) { color-scheme: dark; }
 .upbit-dynamic-fields label > span { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .upbit-dynamic-fields em { color: #6d7d73; font-size: 10px; font-style: normal; }
+.upbit-dynamic-fields .parameter-constraint { color: #7e9085; font-size: 11px; line-height: 1.45; }
+.upbit-dynamic-fields .parameter-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.upbit-dynamic-fields .parameter-actions button { min-height: 28px; border: 1px solid #315d48; border-radius: 6px; padding: 0 8px; background: #14221a; color: #a9c9b5; font-size: 11px; font-weight: 800; }
+.upbit-dynamic-fields .parameter-error { color: #f2aaa3; font-size: 11px; }
+.upbit-dynamic-fields .has-error input, .upbit-dynamic-fields .has-error textarea, .upbit-dynamic-fields .has-error select { border-color: #b76760; }
+.upbit-dynamic-fields .boolean-inline { width: fit-content; }
+.upbit-dynamic-fields .boolean-inline label { display: inline-grid; grid-template-columns: auto 18px; align-items: center; gap: 8px; }
+.upbit-dynamic-fields .boolean-inline label > span { gap: 8px; justify-content: start; }
+.upbit-dynamic-fields .boolean-inline input[type="checkbox"] { width: 18px; min-height: 18px; padding: 0; accent-color: #55cf91; }
 .upbit-boolean-field { grid-template-columns: minmax(0, 1fr) auto; align-items: center; min-height: 42px; border: 1px solid rgb(255 255 255 / .08); border-radius: 7px; padding: 0 10px; }
 .upbit-boolean-field input { width: 18px; min-height: 18px; accent-color: #55cf91; }
 .upbit-execute-button { min-height: 42px; border: 0; border-radius: 8px; background: #e8f3eb; color: #102016; font-weight: 900; }
@@ -78,7 +91,9 @@
   }
   .upbit-common-selection > * { min-width: 0; }
   .upbit-common-selection, .upbit-dynamic-fields, .upbit-ticker-cards { grid-template-columns: 1fr; }
+  .upbit-dynamic-fields .catalog-parameter-field[data-parameter="to"], .upbit-dynamic-fields .catalog-parameter-field[data-parameter="count"] { grid-column: 1; }
   .upbit-request-builder input, .upbit-request-builder select, .upbit-execute-button, .upbit-workbench-tabs button { min-height: 44px; }
+  .upbit-dynamic-fields .parameter-actions button { min-height: 36px; }
   .upbit-result-panel { min-height: 400px; padding: 12px; }
   .upbit-workbench-placeholder, .upbit-workbench-loading, .upbit-workbench-error { margin-inline: 16px; }
   .upbit-extension-shell { padding: 0 16px 40px; }

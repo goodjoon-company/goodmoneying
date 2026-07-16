@@ -50,8 +50,8 @@ rest_endpoints:
     path: /v1/candles/seconds
     parameters: &candle_parameters
       - {name: market, location: query, type: string, required: true}
-      - {name: to, location: query, type: string, required: false, format: date-time}
-      - {name: count, location: query, type: integer, required: false, minimum: 1, maximum: 200}
+      - {name: to, location: query, type: string, required: false, format: date-time, timezone: Asia/Seoul, step: 1}
+      - {name: count, location: query, type: integer, required: false, default: 1, minimum: 1, maximum: 200, step: 1, unit: 개}
     rate_limit_group: candle
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-candles-seconds.md
@@ -64,8 +64,8 @@ rest_endpoints:
     parameters:
       - {name: unit, location: path, type: integer, required: true, enum: [1, 3, 5, 10, 15, 30, 60, 240]}
       - {name: market, location: query, type: string, required: true}
-      - {name: to, location: query, type: string, required: false, format: date-time}
-      - {name: count, location: query, type: integer, required: false, minimum: 1, maximum: 200}
+      - {name: to, location: query, type: string, required: false, format: date-time, timezone: Asia/Seoul, step: 1}
+      - {name: count, location: query, type: integer, required: false, default: 1, minimum: 1, maximum: 200, step: 1, unit: 개}
     rate_limit_group: candle
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-candles-minutes.md
@@ -77,8 +77,8 @@ rest_endpoints:
     path: /v1/candles/days
     parameters:
       - {name: market, location: query, type: string, required: true}
-      - {name: to, location: query, type: string, required: false, format: date-time}
-      - {name: count, location: query, type: integer, required: false, minimum: 1, maximum: 200}
+      - {name: to, location: query, type: string, required: false, format: date-time, timezone: Asia/Seoul, step: 1}
+      - {name: count, location: query, type: integer, required: false, default: 1, minimum: 1, maximum: 200, step: 1, unit: 개}
       - {name: converting_price_unit, location: query, type: string, required: false}
     rate_limit_group: candle
     safety: read
@@ -121,10 +121,10 @@ rest_endpoints:
     path: /v1/trades/ticks
     parameters:
       - {name: market, location: query, type: string, required: true}
-      - {name: to, location: query, type: string, required: false}
-      - {name: count, location: query, type: integer, required: false, minimum: 1, maximum: 500}
+      - {name: to, location: query, type: string, required: false, format: time, timezone: UTC, step: 1}
+      - {name: count, location: query, type: integer, required: false, default: 1, minimum: 1, maximum: 500, step: 1, unit: 개}
       - {name: cursor, location: query, type: string, required: false}
-      - {name: days_ago, location: query, type: integer, required: false}
+      - {name: days_ago, location: query, type: integer, required: false, default: 1, minimum: 1, maximum: 7, step: 1, unit: 일}
     rate_limit_group: trade
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-pair-trades.md
@@ -156,8 +156,8 @@ rest_endpoints:
     path: /v1/orderbook
     parameters:
       - {name: markets, location: query, type: string, required: true}
-      - {name: level, location: query, type: string, required: false}
-      - {name: count, location: query, type: integer, required: false, enum: [1, 5, 15, 30]}
+      - {name: level, location: query, type: string, required: false, format: decimal-string, default: "0", dynamic_constraint_source: rest.list-orderbook-instruments}
+      - {name: count, location: query, type: integer, required: false, default: 30, minimum: 1, maximum: 30, step: 1, unit: 호가 쌍}
     rate_limit_group: orderbook
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-orderbooks.md
@@ -224,7 +224,7 @@ rest_endpoints:
       - {name: from, location: body, type: string, required: false}
       - {name: to, location: body, type: string, required: true}
       - {name: currency, location: body, type: string, required: true}
-      - {name: amount, location: body, type: string, required: true}
+      - {name: amount, location: body, type: string, required: true, format: decimal-string}
       - {name: identifier, location: body, type: string, required: false}
     rate_limit_group: default
     safety: blocked
@@ -239,12 +239,12 @@ rest_endpoints:
       - {name: from, location: query, type: string, required: false}
       - {name: to, location: query, type: string, required: false}
       - {name: "states[]", location: query, type: array, items: string, required: false}
-      - {name: "uuids[]", location: query, type: array, items: string, required: false}
-      - {name: "identifiers[]", location: query, type: array, items: string, required: false}
-      - {name: start_time, location: query, type: string, required: false, format: date-time}
-      - {name: end_time, location: query, type: string, required: false, format: date-time}
+      - {name: "uuids[]", location: query, type: array, items: string, required: false, max_items: 20, unique_items: true}
+      - {name: "identifiers[]", location: query, type: array, items: string, required: false, max_items: 20, unique_items: true}
+      - {name: start_time, location: query, type: string, required: false, format: date-time, timezone: Asia/Seoul, step: 1, range_with: end_time, range_max_seconds: 604800}
+      - {name: end_time, location: query, type: string, required: false, format: date-time, timezone: Asia/Seoul, step: 1, range_with: start_time, range_max_seconds: 604800}
       - {name: currency, location: query, type: string, required: false}
-      - {name: limit, location: query, type: string, required: false}
+      - {name: limit, location: query, type: string, required: false, format: integer-string, default: "20", maximum: 100, step: 1, unit: 개}
       - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
     rate_limit_group: default
     safety: read
@@ -258,7 +258,7 @@ rest_endpoints:
     parameters:
       - {name: to, location: body, type: string, required: true}
       - {name: currency, location: body, type: string, required: true}
-      - {name: amount, location: body, type: string, required: true}
+      - {name: amount, location: body, type: string, required: true, format: decimal-string}
       - {name: identifier, location: body, type: string, required: false}
     rate_limit_group: default
     safety: blocked
@@ -273,12 +273,12 @@ rest_endpoints:
       - {name: direction, location: query, type: string, required: false, enum: [in, out]}
       - {name: to, location: query, type: string, required: false}
       - {name: "states[]", location: query, type: array, items: string, required: false}
-      - {name: "uuids[]", location: query, type: array, items: string, required: false}
-      - {name: "identifiers[]", location: query, type: array, items: string, required: false}
-      - {name: start_time, location: query, type: string, required: false, format: date-time}
-      - {name: end_time, location: query, type: string, required: false, format: date-time}
+      - {name: "uuids[]", location: query, type: array, items: string, required: false, max_items: 20, unique_items: true}
+      - {name: "identifiers[]", location: query, type: array, items: string, required: false, max_items: 20, unique_items: true}
+      - {name: start_time, location: query, type: string, required: false, format: date-time, timezone: Asia/Seoul, step: 1, range_with: end_time, range_max_seconds: 604800}
+      - {name: end_time, location: query, type: string, required: false, format: date-time, timezone: Asia/Seoul, step: 1, range_with: start_time, range_max_seconds: 604800}
       - {name: currency, location: query, type: string, required: false}
-      - {name: limit, location: query, type: string, required: false}
+      - {name: limit, location: query, type: string, required: false, format: integer-string, default: "20", maximum: 100, step: 1, unit: 개}
       - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
     rate_limit_group: default
     safety: read
@@ -312,8 +312,8 @@ rest_endpoints:
     parameters: &order_parameters
       - {name: market, location: body, type: string, required: true}
       - {name: side, location: body, type: string, required: true, enum: [ask, bid]}
-      - {name: volume, location: body, type: string, required: false}
-      - {name: price, location: body, type: string, required: false}
+      - {name: volume, location: body, type: string, required: false, format: decimal-string, dynamic_constraint_source: rest.available-order-information}
+      - {name: price, location: body, type: string, required: false, format: decimal-string, dynamic_constraint_source: rest.list-orderbook-instruments}
       - {name: ord_type, location: body, type: string, required: false, enum: [limit, price, market, best]}
       - {name: identifier, location: body, type: string, required: false}
       - {name: time_in_force, location: body, type: string, required: false, enum: [ioc, fok, post_only]}
@@ -352,8 +352,8 @@ rest_endpoints:
     path: /v1/orders/uuids
     parameters:
       - {name: market, location: query, type: string, required: false}
-      - {name: "uuids[]", location: query, type: array, items: string, required: false}
-      - {name: "identifiers[]", location: query, type: array, items: string, required: false}
+      - {name: "uuids[]", location: query, type: array, items: string, required: false, max_items: 100, unique_items: true}
+      - {name: "identifiers[]", location: query, type: array, items: string, required: false, max_items: 100, unique_items: true}
       - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
     rate_limit_group: default
     safety: read
@@ -368,8 +368,8 @@ rest_endpoints:
       - {name: market, location: query, type: string, required: false}
       - {name: state, location: query, type: string, required: false}
       - {name: "states[]", location: query, type: array, items: string, required: false}
-      - {name: page, location: query, type: integer, required: false}
-      - {name: limit, location: query, type: integer, required: false}
+      - {name: page, location: query, type: integer, required: false, default: 1, minimum: 1, step: 1, unit: 페이지}
+      - {name: limit, location: query, type: integer, required: false, default: 100, maximum: 100, step: 1, unit: 개}
       - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
     rate_limit_group: default
     safety: read
@@ -384,9 +384,9 @@ rest_endpoints:
       - {name: market, location: query, type: string, required: false}
       - {name: state, location: query, type: string, required: false}
       - {name: "states[]", location: query, type: array, items: string, required: false}
-      - {name: start_time, location: query, type: string, required: false, format: date-time}
-      - {name: end_time, location: query, type: string, required: false, format: date-time}
-      - {name: limit, location: query, type: integer, required: false}
+      - {name: start_time, location: query, type: string, required: false, format: date-time, timezone: Asia/Seoul, step: 1, range_with: end_time, range_max_seconds: 604800}
+      - {name: end_time, location: query, type: string, required: false, format: date-time, timezone: Asia/Seoul, step: 1, range_with: start_time, range_max_seconds: 604800}
+      - {name: limit, location: query, type: integer, required: false, default: 100, maximum: 1000, step: 1, unit: 개}
       - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
     rate_limit_group: default
     safety: read
@@ -411,8 +411,8 @@ rest_endpoints:
     method: DELETE
     path: /v1/orders/uuids
     parameters:
-      - {name: "uuids[]", location: query, type: array, items: string, required: false}
-      - {name: "identifiers[]", location: query, type: array, items: string, required: false}
+      - {name: "uuids[]", location: query, type: array, items: string, required: false, max_items: 20, unique_items: true}
+      - {name: "identifiers[]", location: query, type: array, items: string, required: false, max_items: 20, unique_items: true}
     rate_limit_group: default
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/cancel-orders-by-ids.md
@@ -425,10 +425,10 @@ rest_endpoints:
     parameters:
       - {name: quote_currencies, location: query, type: string, required: false}
       - {name: cancel_side, location: query, type: string, required: false, enum: [all, ask, bid]}
-      - {name: count, location: query, type: integer, required: false, maximum: 300}
+      - {name: count, location: query, type: integer, required: false, default: 20, maximum: 300, step: 1, unit: 개}
       - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
-      - {name: pairs, location: query, type: string, required: false}
-      - {name: exclude_pairs, location: query, type: string, required: false}
+      - {name: pairs, location: query, type: string, required: false, format: csv, max_items: 20, unique_items: true}
+      - {name: exclude_pairs, location: query, type: string, required: false, format: csv, max_items: 20, unique_items: true}
     rate_limit_group: order-cancel-all
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/batch-cancel-orders.md
@@ -481,7 +481,7 @@ rest_endpoints:
     parameters:
       - {name: currency, location: body, type: string, required: true}
       - {name: net_type, location: body, type: string, required: true}
-      - {name: amount, location: body, type: string, required: true}
+      - {name: amount, location: body, type: string, required: true, format: decimal-string, dynamic_constraint_source: rest.available-withdrawal-information}
       - {name: address, location: body, type: string, required: true}
       - {name: secondary_address, location: body, type: string, required: false}
       - {name: transaction_type, location: body, type: string, required: false, enum: [default, internal]}
@@ -495,7 +495,7 @@ rest_endpoints:
     method: POST
     path: /v1/withdraws/krw
     parameters:
-      - {name: amount, location: body, type: string, required: true}
+      - {name: amount, location: body, type: string, required: true, format: decimal-string}
       - {name: two_factor_type, location: body, type: string, required: true}
     rate_limit_group: default
     safety: blocked
@@ -523,13 +523,13 @@ rest_endpoints:
     parameters: &ledger_list_parameters
       - {name: currency, location: query, type: string, required: false}
       - {name: state, location: query, type: string, required: false}
-      - {name: "uuids[]", location: query, type: array, items: string, required: false}
-      - {name: "txids[]", location: query, type: array, items: string, required: false}
-      - {name: limit, location: query, type: integer, required: false}
-      - {name: page, location: query, type: integer, required: false}
+      - {name: "uuids[]", location: query, type: array, items: string, required: false, max_items: 100, unique_items: true}
+      - {name: "txids[]", location: query, type: array, items: string, required: false, max_items: 100, unique_items: true}
+      - {name: limit, location: query, type: integer, required: false, default: 100, maximum: 100, step: 1, unit: 개}
+      - {name: page, location: query, type: integer, required: false, default: 1, minimum: 1, step: 1, unit: 페이지}
       - {name: order_by, location: query, type: string, required: false, enum: [asc, desc]}
-      - {name: from, location: query, type: string, required: false, format: date-time}
-      - {name: to, location: query, type: string, required: false, format: date-time}
+      - {name: from, location: query, type: string, required: false, format: cursor}
+      - {name: to, location: query, type: string, required: false, format: cursor}
     rate_limit_group: default
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-withdrawals.md
@@ -596,7 +596,7 @@ rest_endpoints:
     method: POST
     path: /v1/deposits/krw
     parameters:
-      - {name: amount, location: body, type: string, required: true}
+      - {name: amount, location: body, type: string, required: true, format: decimal-string}
       - {name: two_factor_type, location: body, type: string, required: true}
     rate_limit_group: default
     safety: blocked

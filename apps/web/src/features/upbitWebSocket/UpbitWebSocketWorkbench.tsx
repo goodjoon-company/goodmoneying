@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileJson } from "lucide-react";
+import { formatAssetAmount, formatKstDateTime, formatMoney } from "../../displayFormat";
 import { appendBoundedFrame, defaultGatewayWebSocketUrl, framePayloads, isGatewayFrame, marketOptions, streamForTab, workbenchCandleUnits } from "./protocol";
 import type { BrowserSocket, CandleUnit, GatewayEvent, GatewayFrameEvent, MarketLike, SocketFactory, UpbitFormat, Visibility, WorkbenchTab } from "./types";
 import "./styles.css";
@@ -268,28 +269,53 @@ export function UpbitWebSocketWorkbench({
     {rawOpen && <div className="raw-dialog" role="dialog" aria-label="raw frame 추적" aria-modal="true" tabIndex={-1} onKeyDown={handleRawDialogKeyDown}>
       <div className="raw-dialog-head"><h2>최근 raw frame ({frames.length}/200)</h2><button autoFocus onClick={closeRaw}>닫기</button></div>
       <ol>{frames.slice().reverse().map((frame) => <li key={`${frame.connection_id}-${frame.sequence}`}>
-        <strong>#{frame.sequence} · {frame.trace_id}</strong><small>{frame.received_at} · {frame.binary ? "binary" : "text"}</small><small>{frame.provenance.visibility} · {frame.provenance.format} · {frame.provenance.endpoint_ids.join(", ")}</small><pre tabIndex={0} aria-label={`raw frame ${frame.sequence}`}>{frame.raw}</pre>
+        <strong>#{frame.sequence} · {frame.trace_id}</strong><small>{formatKstDateTime(frame.received_at)} · {frame.binary ? "binary" : "text"}</small><small>{frame.provenance.visibility} · {frame.provenance.format} · {frame.provenance.endpoint_ids.join(", ")}</small><pre tabIndex={0} aria-label={`raw frame ${frame.sequence}`}>{frame.raw}</pre>
       </li>)}</ol>
     </div>}
   </section>;
 }
 
-function number(value: unknown) {
-  return typeof value === "number" ? value.toLocaleString("ko-KR") : "—";
+function numericValue(value: unknown): string | number | null {
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) {
+    return value;
+  }
+  return null;
+}
+
+function marketAssets(code: unknown): { quote: string; base: string } {
+  const [quote = "", base = ""] = String(code ?? "").toUpperCase().split("-");
+  return { quote, base };
+}
+
+function money(value: unknown, currency: string) {
+  const numeric = numericValue(value);
+  return numeric === null ? "—" : formatMoney(numeric, currency);
+}
+
+function amount(value: unknown, asset: string) {
+  const numeric = numericValue(value);
+  return numeric === null ? "—" : formatAssetAmount(numeric, asset);
 }
 
 function LiveVisualization({ tab, payload, payloads }: { tab: WorkbenchTab; payload?: Record<string, unknown>; payloads: Record<string, unknown>[] }) {
   if (!payload) return <div className="empty">구독하면 실시간 데이터가 이곳에 표시됩니다.</div>;
-  if (tab === "ticker") return <article aria-label="실시간 현재가" className="visual ticker"><span>{String(payload.code ?? payload.cd ?? "")}</span><strong>{number(payload.trade_price ?? payload.tp)}</strong><small>{String(payload.change ?? payload.c ?? "")}</small></article>;
-  if (tab === "trade") return <article aria-label="실시간 체결" className="visual"><h2>최근 체결</h2><ol>{payloads.slice(-20).reverse().map((item, index) => <li key={index}><b>{String(item.code ?? item.cd ?? "")}</b><span>{number(item.trade_price ?? item.tp)}</span><span>{number(item.trade_volume ?? item.tv)}</span></li>)}</ol></article>;
+  if (tab === "ticker") {
+    const code = payload.code ?? payload.cd;
+    return <article aria-label="실시간 현재가" className="visual ticker"><span>{String(code ?? "")}</span><strong>{money(payload.trade_price ?? payload.tp, marketAssets(code).quote)}</strong><small>{String(payload.change ?? payload.c ?? "")}</small></article>;
+  }
+  if (tab === "trade") return <article aria-label="실시간 체결" className="visual"><h2>최근 체결</h2><ol>{payloads.slice(-20).reverse().map((item, index) => { const code = item.code ?? item.cd; const assets = marketAssets(code); return <li key={index}><b>{String(code ?? "")}</b><span>{money(item.trade_price ?? item.tp, assets.quote)}</span><span>{amount(item.trade_volume ?? item.tv, assets.base)}</span></li>; })}</ol></article>;
   if (tab === "orderbook") {
     const units = (payload.orderbook_units ?? payload.obu ?? []) as Record<string, unknown>[];
-    return <article aria-label="실시간 호가" className="visual"><h2>호가</h2><table><thead><tr><th>매도</th><th>가격</th><th>매수</th></tr></thead><tbody>{units.slice(0, 15).map((unit, index) => <tr key={index}><td>{number(unit.ask_size ?? unit.as)}</td><td>{number(unit.ask_price ?? unit.ap)} / {number(unit.bid_price ?? unit.bp)}</td><td>{number(unit.bid_size ?? unit.bs)}</td></tr>)}</tbody></table></article>;
+    const assets = marketAssets(payload.code ?? payload.cd);
+    return <article aria-label="실시간 호가" className="visual"><h2>호가</h2><table><thead><tr><th>매도</th><th>가격</th><th>매수</th></tr></thead><tbody>{units.slice(0, 15).map((unit, index) => <tr key={index}><td>{amount(unit.ask_size ?? unit.as, assets.base)}</td><td>{money(unit.ask_price ?? unit.ap, assets.quote)} / {money(unit.bid_price ?? unit.bp, assets.quote)}</td><td>{amount(unit.bid_size ?? unit.bs, assets.base)}</td></tr>)}</tbody></table></article>;
   }
-  if (tab === "candle") return <article aria-label="실시간 캔들" className="visual candle"><h2>{String(payload.code ?? payload.cd ?? "")} 캔들</h2><div>{[["시가", payload.opening_price ?? payload.op], ["고가", payload.high_price ?? payload.hp], ["저가", payload.low_price ?? payload.lp], ["종가", payload.trade_price ?? payload.tp]].map(([label, value]) => <span key={String(label)}><small>{String(label)}</small><b>{number(value)}</b></span>)}</div></article>;
+  if (tab === "candle") { const code = payload.code ?? payload.cd; const quote = marketAssets(code).quote; return <article aria-label="실시간 캔들" className="visual candle"><h2>{String(code ?? "")} 캔들</h2><div>{[["시가", payload.opening_price ?? payload.op], ["고가", payload.high_price ?? payload.hp], ["저가", payload.low_price ?? payload.lp], ["종가", payload.trade_price ?? payload.tp]].map(([label, value]) => <span key={String(label)}><small>{String(label)}</small><b>{money(value, quote)}</b></span>)}</div></article>; }
   if (tab === "asset") {
     const assets = (payload.assets ?? payload.ast ?? []) as Record<string, unknown>[];
-    return <article aria-label="내 자산 이벤트" className="visual"><h2>내 자산</h2><table><thead><tr><th>자산</th><th>주문 가능</th><th>주문 중</th></tr></thead><tbody>{assets.map((asset, index) => <tr key={`${String(asset.currency ?? asset.cu ?? "asset")}-${index}`}><td>{String(asset.currency ?? asset.cu ?? "")}</td><td>{number(asset.balance ?? asset.b)}</td><td>{number(asset.locked ?? asset.l)}</td></tr>)}</tbody></table></article>;
+    return <article aria-label="내 자산 이벤트" className="visual"><h2>내 자산</h2><table><thead><tr><th>자산</th><th>주문 가능</th><th>주문 중</th></tr></thead><tbody>{assets.map((asset, index) => { const currency = String(asset.currency ?? asset.cu ?? ""); return <tr key={`${currency || "asset"}-${index}`}><td>{currency}</td><td>{amount(asset.balance ?? asset.b, currency)}</td><td>{amount(asset.locked ?? asset.l, currency)}</td></tr>; })}</tbody></table></article>;
   }
-  return <article aria-label="내 주문 이벤트" className="visual"><h2>내 주문</h2><dl><div><dt>페어</dt><dd>{String(payload.code ?? payload.cd ?? "")}</dd></div><div><dt>상태</dt><dd>{String(payload.state ?? payload.st ?? "")}</dd></div><div><dt>가격</dt><dd>{number(payload.price ?? payload.p)}</dd></div><div><dt>수량</dt><dd>{number(payload.volume ?? payload.v)}</dd></div></dl></article>;
+  const code = payload.code ?? payload.cd;
+  const assets = marketAssets(code);
+  return <article aria-label="내 주문 이벤트" className="visual"><h2>내 주문</h2><dl><div><dt>페어</dt><dd>{String(code ?? "")}</dd></div><div><dt>상태</dt><dd>{String(payload.state ?? payload.st ?? "")}</dd></div><div><dt>가격</dt><dd>{money(payload.price ?? payload.p, assets.quote)}</dd></div><div><dt>수량</dt><dd>{amount(payload.volume ?? payload.v, assets.base)}</dd></div></dl></article>;
 }

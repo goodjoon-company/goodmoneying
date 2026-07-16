@@ -70,12 +70,14 @@ describe("업비트 웹소켓 작업대", () => {
       provenance: { visibility: "public", format: "DEFAULT", endpoint_ids: ["websocket.ticker"] }
     }));
 
-    expect(screen.getByLabelText("실시간 현재가")).toHaveTextContent("123,456");
+    expect(screen.getByLabelText("실시간 현재가")).toHaveTextContent("123,456 ￦");
     const traceTrigger = screen.getByRole("button", { name: "raw 추적" });
     expect(traceTrigger.querySelector("svg")).not.toBeNull();
     expect(traceTrigger).toHaveTextContent("");
     fireEvent.click(traceTrigger);
     expect(screen.getByRole("dialog", { name: "raw frame 추적" })).toHaveTextContent("trace-1");
+    expect(screen.getByRole("dialog", { name: "raw frame 추적" }))
+      .toHaveTextContent("2026.07.16 09:00:00 KST");
   });
 
   it("비공개 탭은 브라우저 키 입력 없이 private 연결과 내 자산 구독만 보낸다", () => {
@@ -183,7 +185,7 @@ describe("업비트 웹소켓 작업대", () => {
     }, ["websocket.my-asset"])));
 
     expect(screen.getByLabelText("내 자산 이벤트")).toHaveTextContent("KRW");
-    expect(screen.getByLabelText("내 자산 이벤트")).toHaveTextContent("1,200");
+    expect(screen.getByLabelText("내 자산 이벤트")).toHaveTextContent("1,200 ￦");
     fireEvent.click(screen.getByRole("button", { name: "raw 추적" }));
     const dialog = screen.getByRole("dialog", { name: "raw frame 추적" });
     expect(dialog).toHaveTextContent("private · DEFAULT · websocket.my-asset");
@@ -197,6 +199,8 @@ describe("업비트 웹소켓 작업대", () => {
     }, ["websocket.my-order"])));
     expect(screen.getByLabelText("내 주문 이벤트")).toHaveTextContent("KRW-BTC");
     expect(screen.getByLabelText("내 주문 이벤트")).toHaveTextContent("wait");
+    expect(screen.getByLabelText("내 주문 이벤트")).toHaveTextContent("1,000 ￦");
+    expect(screen.getByLabelText("내 주문 이벤트")).toHaveTextContent("2 ₿");
   });
 
   it("방향키로 탭을 이동하고 선택한 탭에 초점을 둔다", () => {

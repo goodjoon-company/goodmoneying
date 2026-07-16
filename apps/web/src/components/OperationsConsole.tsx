@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCcw, Star, X } from "lucide-react";
 import { loadMarketList, subscribeMarketList, type MarketListRow } from "../api";
 import { formatCurrencyAmount, formatFreshness } from "../operationsDisplay";
+import { formatKstDateTime } from "../displayFormat";
 import { useOperationsConsole, type SectionId } from "../useOperationsConsole";
 import { InstrumentName } from "./common";
 import { Dashboard } from "./Dashboard";
@@ -285,7 +286,6 @@ function FavoriteCoinsDialog({
                   ) : (
                     <strong>{formatCurrencyAmount(row.tradePrice, row.priceCurrency)}</strong>
                   )}
-                  <em>{row.priceCurrency}</em>
                 </span>
               </article>
             ))}
@@ -294,16 +294,4 @@ function FavoriteCoinsDialog({
       </section>
     </div>
   );
-}
-
-function formatKstDateTime(value: string): string {
-  return new Date(value).toLocaleString("ko-KR", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23"
-  });
 }

@@ -9,7 +9,8 @@ import {
 } from "lightweight-charts";
 import { type Candle, type Instrument, type InstrumentDetail, type OperationsSnapshot } from "../api";
 import { formatFreshness, formatNumber, formatPercent } from "../operationsDisplay";
-import { InstrumentTitle, MiniMetric, TimeInline, sampleCandles, statusText } from "./common";
+import { formatAssetAmount, formatKstDateTime, formatMoney } from "../displayFormat";
+import { InstrumentTitle, MiniMetric, sampleCandles, statusText } from "./common";
 
 export function DetailModal({
   snapshot,
@@ -60,15 +61,15 @@ function Detail({ detail, candles: rawCandles }: { detail: InstrumentDetail; can
           currentPrice={detail.latestTicker.tradePrice}
         />
         <div className="detail-stats">
-          <MiniMetric label="현재가" value={`₩${formatNumber(detail.latestTicker.tradePrice)}`} detail={detail.tickerFreshnessLabel} />
+          <MiniMetric label="현재가" value={formatMoney(detail.latestTicker.tradePrice, instrument.quoteCurrency)} detail={formatFreshness(detail.latestTicker.collectedAt)} />
           <MiniMetric
             label="24H 변동금액"
-            value={`₩${formatNumber(detail.priceChangeAmount24h)}`}
+            value={formatMoney(detail.priceChangeAmount24h, instrument.quoteCurrency)}
             detail={formatPercent(detail.priceChangeRate24h)}
           />
           <MiniMetric
             label="24H 거래량"
-            value={formatNumber(detail.tradeVolume24h)}
+            value={formatAssetAmount(detail.tradeVolume24h, instrument.baseAsset)}
             detail={formatPercent(detail.tradeVolumeChangeRate24h)}
           />
           <MiniMetric
@@ -81,12 +82,12 @@ function Detail({ detail, candles: rawCandles }: { detail: InstrumentDetail; can
       <section className="panel orderbook-panel">
         <div className="panel-heading">
           <h2>호가 요약</h2>
-          <TimeInline value={detail.orderbookFreshnessLabel} zone="KST" />
+          <span>{formatFreshness(detail.latestOrderbook.collectedAt)}</span>
         </div>
         <div className="orderbook-grid">
-          <MiniMetric label="최우선 매수" value={formatNumber(detail.latestOrderbook.bestBidPrice)} detail={`수량 ${detail.latestOrderbook.bestBidSize} ${instrument.baseAsset}`} />
-          <MiniMetric label="최우선 매도" value={formatNumber(detail.latestOrderbook.bestAskPrice)} detail={`수량 ${detail.latestOrderbook.bestAskSize} ${instrument.baseAsset}`} />
-          <MiniMetric label="스프레드" value={`${detail.latestOrderbook.spread}`} detail="정상 범위" />
+          <MiniMetric label="최우선 매수" value={formatMoney(detail.latestOrderbook.bestBidPrice, instrument.quoteCurrency)} detail={`수량 ${formatAssetAmount(detail.latestOrderbook.bestBidSize, instrument.baseAsset)}`} />
+          <MiniMetric label="최우선 매도" value={formatMoney(detail.latestOrderbook.bestAskPrice, instrument.quoteCurrency)} detail={`수량 ${formatAssetAmount(detail.latestOrderbook.bestAskSize, instrument.baseAsset)}`} />
+          <MiniMetric label="스프레드" value={formatMoney(detail.latestOrderbook.spread, instrument.quoteCurrency)} detail="정상 범위" />
           <MiniMetric label="호가 불균형" value={formatPercent(detail.latestOrderbook.imbalance10)} detail="매수 잔량 우세" />
         </div>
       </section>
@@ -127,9 +128,11 @@ function TradingViewCandleChart({
       return;
     }
     const container = containerRef.current;
+    const chartTimeFormatter = (time: unknown) => formatKstDateTime(Number(time) * 1000);
     const chart = createChart(container, {
       width: container.clientWidth || 900,
       height: 328,
+      localization: { timeFormatter: chartTimeFormatter },
       layout: {
         background: { type: ColorType.Solid, color: "#0c1010" },
         textColor: "#9ca7a0"
@@ -139,14 +142,15 @@ function TradingViewCandleChart({
         horzLines: { color: "rgba(148, 163, 184, 0.12)" }
       },
       rightPriceScale: { borderColor: "rgba(148, 163, 184, 0.2)" },
-      timeScale: { borderColor: "rgba(148, 163, 184, 0.2)", timeVisible: true }
+      timeScale: { borderColor: "rgba(148, 163, 184, 0.2)", timeVisible: true, secondsVisible: true, tickMarkFormatter: chartTimeFormatter }
     });
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: "#22c7a5",
       downColor: "#ff4d5a",
       borderVisible: false,
       wickUpColor: "#22c7a5",
-      wickDownColor: "#ff4d5a"
+      wickDownColor: "#ff4d5a",
+      priceFormat: { type: "custom", minMove: 0.00000001, formatter: (price: number) => formatMoney(price, instrument.quoteCurrency) }
     });
     candleSeries.setData(
       candles.map((item) => ({
@@ -178,24 +182,24 @@ function TradingViewCandleChart({
       observer.disconnect();
       chart.remove();
     };
-  }, [candles]);
+  }, [candles, instrument.quoteCurrency]);
 
   return (
     <div className="trading-chart-shell" aria-label="TradingView 캔들 차트">
       <div className="chart-titlebar">
         <span>{instrument.baseAsset} / {instrument.quoteCurrency} · 1분 · UpBit</span>
-        <strong>{formatNumber(currentPrice)}</strong>
+        <strong>{formatMoney(currentPrice, instrument.quoteCurrency)}</strong>
       </div>
       <div className="chart-canvas" ref={containerRef}>
         {candles.length === 0 ? <span>선택한 기간에 저장된 캔들이 없습니다.</span> : null}
       </div>
       <div className="price-gauge">
         <span>현재가 게이지</span>
-        <strong>{formatNumber(currentPrice)}</strong>
+        <strong>{formatMoney(currentPrice, instrument.quoteCurrency)}</strong>
       </div>
       <div className="volume-gauge">
         <span>거래량 게이지</span>
-        <strong>{candles.length > 0 ? formatNumber(candles.at(-1)?.volume ?? "0") : "0"}</strong>
+        <strong>{candles.length > 0 ? formatAssetAmount(candles.at(-1)?.volume ?? "0", instrument.baseAsset) : `0 ${instrument.baseAsset}`}</strong>
       </div>
       <div className="trading-watermark">TradingView Lightweight Charts</div>
     </div>

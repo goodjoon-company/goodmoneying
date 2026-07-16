@@ -5,6 +5,10 @@ import type {
   RequestParameters,
   WorkbenchContext
 } from "./types";
+import {
+  coerceParameterInputValue,
+  formatParameterInputValue
+} from "./parameterInput";
 
 export const quotationGroups = [
   { id: "pair", label: "페어" },
@@ -33,8 +37,11 @@ export function buildInitialParameters(
   return Object.fromEntries(endpoint.parameters.flatMap((parameter) => {
     const common = commonParameterValue(parameter.name, context);
     if (common !== undefined) return [[parameter.name, common]];
+    if (endpoint.safety === "read" && parameter.name === "count" && parameter.maximum !== undefined) {
+      return [[parameter.name, parameter.maximum]];
+    }
+    if (parameter.default !== undefined) return [[parameter.name, parameter.default]];
     if (parameter.enum?.length) return [[parameter.name, parameter.enum[0]]];
-    if (parameter.name === "count") return [[parameter.name, parameter.maximum ?? 200]];
     if (parameter.type === "boolean") return [[parameter.name, false]];
     return [];
   }));
@@ -44,23 +51,14 @@ export function coerceParameterValue(
   parameter: CatalogParameter,
   value: string | boolean
 ): ParameterValue {
-  if (parameter.type === "boolean") return value === true || value === "true";
-  if (parameter.format === "date-time") return new Date(String(value)).toISOString();
-  if (parameter.type === "integer" || parameter.type === "number") return Number(value);
-  if (parameter.type === "array") return String(value).split(",").map((item) => item.trim()).filter(Boolean);
-  return String(value);
+  return coerceParameterInputValue(parameter, value);
 }
 
 export function formatParameterValue(
   parameter: CatalogParameter,
   value: ParameterValue | undefined
 ): string {
-  if (value === undefined) return "";
-  if (parameter.format !== "date-time") return Array.isArray(value) ? value.join(",") : String(value);
-  const date = new Date(String(value));
-  if (Number.isNaN(date.getTime())) return String(value);
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
-  return local.toISOString().slice(0, 16);
+  return formatParameterInputValue(parameter, value);
 }
 
 export function serializeParameters(

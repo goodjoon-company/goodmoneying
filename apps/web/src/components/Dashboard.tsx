@@ -26,6 +26,7 @@ import {
   formatShortDay,
   normalizeRealtimeCollectionHeatmapRows
 } from "../operationsDisplay";
+import { formatMoney, formatNumber as formatDisplayNumber } from "../displayFormat";
 import {
   CoverageBar,
   CoverageMeter,
@@ -613,11 +614,11 @@ function formatHeatmapHour(value: string): string {
 }
 
 function formatMetric(value: string): string {
-  return Number(value).toLocaleString("ko-KR", { maximumFractionDigits: 2 });
+  return formatDisplayNumber(value, 2);
 }
 
 function formatCurrency(value: string): string {
-  return `₩${Number(value).toLocaleString("ko-KR", { maximumFractionDigits: 0 })}`;
+  return formatMoney(value, "KRW");
 }
 
 function StorageRowsTable({ items }: { items: StorageBreakdownItem[] }) {
@@ -817,7 +818,9 @@ function CollectionTargetRow({
         <span className={Number(target.changeRate) >= 0 ? "change up" : "change down"}>
           {formatPercent(target.changeRate)}
         </span>
-        <span className="mono-value">{target.accTradePrice24hDisplay}</span>
+        <span className="mono-value">
+          {formatMoney(numericDisplay(target.accTradePrice24hDisplay), target.instrument.quoteCurrency)}
+        </span>
         <span className="mono-value freshness">
           {formatFreshness(orderbookStatus?.lastSuccessfulAt ?? target.plan.rangeStartAt)}
         </span>

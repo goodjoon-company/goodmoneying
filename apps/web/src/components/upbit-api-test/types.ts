@@ -8,11 +8,22 @@ export type CatalogParameter = {
   name: string;
   location: "path" | "query" | "body";
   type: "string" | "integer" | "number" | "boolean" | "array";
+  items?: "string" | "integer" | "number" | "boolean";
   required: boolean;
   format?: string;
   enum?: Array<string | number>;
+  default?: string | number | boolean | string[];
   minimum?: number;
   maximum?: number;
+  step?: number;
+  unit?: string;
+  max_items?: number;
+  unique_items?: boolean;
+  timezone?: "Asia/Seoul" | "UTC";
+  range_with?: string;
+  range_max_seconds?: number;
+  dynamic_constraint_source?: string;
+  description?: string;
 };
 
 export type CatalogEndpoint = {

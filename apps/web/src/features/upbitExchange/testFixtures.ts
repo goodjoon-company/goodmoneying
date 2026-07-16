@@ -84,10 +84,10 @@ const parametersByEndpoint: Record<string, ExchangeCatalogEndpoint["parameters"]
   "rest.cancel-order": identifierParameters("identifier"),
   "rest.list-open-orders": [
     { name: "market", location: "query", type: "string", required: false },
-    { name: "limit", location: "query", type: "integer", required: false, minimum: 1, maximum: 100 }
+    { name: "limit", location: "query", type: "integer", required: false, default: 100, minimum: 1, maximum: 100, step: 1, unit: "개" }
   ],
   "rest.get-universal-transfer": [
-    { name: "start_time", location: "query", type: "string", format: "date-time", required: false },
+    { name: "start_time", location: "query", type: "string", format: "date-time", timezone: "Asia/Seoul", step: 1, required: false },
     { name: "order_by", location: "query", type: "string", enum: ["asc", "desc"], required: false }
   ],
   "rest.withdraw": [
@@ -96,6 +96,11 @@ const parametersByEndpoint: Record<string, ExchangeCatalogEndpoint["parameters"]
     { name: "address", location: "body", type: "string", required: true }
   ],
   "rest.get-withdrawal": identifierParameters("txid", true),
+  "rest.list-withdrawals": [
+    { name: "limit", location: "query", type: "integer", required: false, default: 100, maximum: 100, step: 1, unit: "개" },
+    { name: "from", location: "query", type: "string", format: "cursor", required: false },
+    { name: "to", location: "query", type: "string", format: "cursor", required: false }
+  ],
   "rest.get-deposit": [
     { name: "currency", location: "query", type: "string", required: false },
     { name: "uuid", location: "query", type: "string", required: false },

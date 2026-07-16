@@ -35,8 +35,8 @@ const endpoints: CatalogEndpoint[] = names.map(([group, title], index) => ({
     : index === 1
       ? [
         { name: "market", location: "query", type: "string", required: true },
-        { name: "to", location: "query", type: "string", required: false, format: "date-time" },
-        { name: "count", location: "query", type: "integer", required: false, maximum: 2 }
+        { name: "to", location: "query", type: "string", required: false, format: "date-time", timezone: "Asia/Seoul", step: 1 },
+        { name: "count", location: "query", type: "integer", required: false, default: 1, minimum: 1, maximum: 2, step: 1, unit: "개" }
       ]
       : [{ name: "market", location: "query", type: "string", required: true }],
   rate_limit_group: group,
@@ -78,9 +78,9 @@ describe("업비트 API 공통 작업대", () => {
     expect(screen.getByText("활성 12개 · 사용 중단 1개")).toBeInTheDocument();
     const selector = screen.getByLabelText("API 기능");
     expect(within(selector).getAllByRole("option")).toHaveLength(13);
-    expect(screen.getByRole("textbox", { name: "states" }).tagName).toBe("TEXTAREA");
+    expect(screen.getByRole("textbox", { name: "상태 목록(states)" }).tagName).toBe("TEXTAREA");
 
-    await user.click(screen.getByLabelText("상세 정보 포함"));
+    await user.click(screen.getByLabelText("상세 정보 포함(is_details)"));
     await user.click(screen.getByRole("button", { name: "요청 실행" }));
     await waitFor(() => expect(client.execute).toHaveBeenCalledWith(
       endpoints[0].endpoint_id, { is_details: true }, expect.any(AbortSignal)
@@ -92,6 +92,7 @@ describe("업비트 API 공통 작업대", () => {
     const traceButton = screen.getByRole("button", { name: "원본 응답과 API 출처 보기" });
     expect(dialog).toHaveTextContent("3cb59f4b");
     expect(dialog).toHaveTextContent("remaining_sec");
+    expect(dialog).toHaveTextContent("2026.07.16 09:00:00 KST");
     const sourceLink = within(dialog).getByRole("link", { name: "Upbit 공식 문서" });
     const closeButton = within(dialog).getByRole("button", { name: "닫기" });
     expect(sourceLink).toHaveAttribute("href", endpoints[0].source_url);
@@ -145,9 +146,10 @@ describe("업비트 API 공통 작업대", () => {
 
     rerender(<UpbitApiWorkbench moduleId="quotation" market="KRW-ETH"
       onMarketChange={onMarketChange} client={{ loadCatalog: vi.fn(async () => catalog), execute: vi.fn(async () => trace) }} />);
-    expect(await screen.findByDisplayValue("KRW-ETH")).toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: "거래쌍" }), { target: { value: "BTC-XRP" } });
-    expect(onMarketChange).toHaveBeenLastCalledWith("BTC-XRP");
+    expect(await screen.findByLabelText("거래쌍")).toHaveValue("KRW-ETH");
+    expect(screen.getByLabelText("거래쌍")).toHaveAttribute("readonly");
+    fireEvent.change(screen.getByLabelText("마켓"), { target: { value: "BTC" } });
+    expect(onMarketChange).toHaveBeenLastCalledWith("BTC-ETH");
   });
 
   it("공통 거래쌍을 유일한 입력으로 사용하고 최신 값을 요청에 전파한다", async () => {
@@ -160,10 +162,13 @@ describe("업비트 API 공통 작업대", () => {
     await screen.findByLabelText("Quotation API 작업대");
     await user.click(screen.getByRole("tab", { name: "캔들" }));
 
-    expect(screen.queryByLabelText("market")).not.toBeInTheDocument();
-    const market = screen.getByRole("combobox", { name: "거래쌍" });
-    await user.clear(market);
-    await user.type(market, "BTC-ETH");
+    expect(screen.queryByLabelText("거래쌍(market)")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("마켓")).toHaveValue("KRW");
+    expect(screen.getByLabelText("거래쌍")).toHaveValue("KRW-BTC");
+    expect(screen.getByLabelText("거래쌍")).toHaveAttribute("readonly");
+    fireEvent.change(screen.getByLabelText("마켓"), { target: { value: "BTC" } });
+    await user.clear(screen.getByLabelText("기준 자산(Base)"));
+    await user.type(screen.getByLabelText("기준 자산(Base)"), "ETH");
     await user.click(screen.getByRole("button", { name: "요청 실행" }));
 
     await waitFor(() => expect(client.execute).toHaveBeenCalledWith(
@@ -171,6 +176,36 @@ describe("업비트 API 공통 작업대", () => {
       expect.objectContaining({ market: "BTC-ETH" }),
       expect.any(AbortSignal)
     ));
+  });
+
+  it("날짜·시간 Now와 숫자 제약을 표시하고 제한을 넘긴 요청을 실행 전에 차단한다", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T00:00:01.000Z"));
+    try {
+      const client = {
+        loadCatalog: vi.fn(async () => catalog),
+        execute: vi.fn(async () => ({ ...trace, endpoint_id: endpoints[1].endpoint_id }))
+      };
+      render(<UpbitApiWorkbench moduleId="quotation" client={client} />);
+      await act(async () => { await Promise.resolve(); });
+      fireEvent.click(screen.getByRole("tab", { name: "캔들" }));
+      await act(async () => { await Promise.resolve(); });
+
+      expect(screen.getByLabelText("조회 종료 시각(to)")).toHaveAttribute("type", "datetime-local");
+      expect(screen.getByLabelText("조회 종료 시각(to)")).toHaveAttribute("step", "1");
+      fireEvent.click(screen.getByRole("button", { name: "조회 종료 시각(to) 현재 시각 입력" }));
+      expect((screen.getByLabelText("조회 종료 시각(to)") as HTMLInputElement).value)
+        .toMatch(/^2026-07-16T09:00:01(?:\.000)?$/);
+      expect(screen.getByLabelText("조회 개수(count)")).toHaveValue(2);
+      expect(screen.getByText("화면 초기 2 · API 기본 1 · 최소 1 · 최대 2 · 단위 개")).toBeVisible();
+
+      fireEvent.change(screen.getByLabelText("조회 개수(count)"), { target: { value: "3" } });
+      fireEvent.click(screen.getByRole("button", { name: "요청 실행" }));
+      expect(screen.getByRole("alert")).toHaveTextContent("최대 2 이하");
+      expect(client.execute).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("빈 과거 페이지와 전부 중복인 미래 페이지를 방향별 종단으로 고정한다", async () => {
@@ -192,7 +227,7 @@ describe("업비트 API 공통 작업대", () => {
     render(<UpbitApiWorkbench moduleId="quotation" client={client} />);
     await screen.findByLabelText("Quotation API 작업대");
     await user.click(screen.getByRole("tab", { name: "캔들" }));
-    fireEvent.change(screen.getByLabelText("to"), { target: { value: "2026-07-15T09:03" } });
+    fireEvent.change(screen.getByLabelText("조회 종료 시각(to)"), { target: { value: "2026-07-15T09:03" } });
     await user.click(screen.getByRole("button", { name: "요청 실행" }));
     await screen.findByText("2개 캔들 · 가장자리 이동 시 연속 조회");
 

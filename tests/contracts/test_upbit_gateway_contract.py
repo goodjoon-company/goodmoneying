@@ -171,6 +171,155 @@ def test_catalog_defines_typed_parameters_rate_limits_and_official_sources() -> 
     ]
 
 
+def test_catalog_defines_parameter_input_constraints_and_defaults() -> None:
+    catalog = _load_yaml(CATALOG_PATH)
+    by_id = {endpoint["endpoint_id"]: endpoint for endpoint in catalog["rest_endpoints"]}
+
+    def parameter(endpoint_id: str, name: str) -> dict[str, Any]:
+        return next(
+            item
+            for item in by_id[endpoint_id]["parameters"]
+            if item["name"] == name
+        )
+
+    assert parameter("rest.list-candles-seconds", "to") == {
+        "name": "to",
+        "location": "query",
+        "type": "string",
+        "required": False,
+        "format": "date-time",
+        "timezone": "Asia/Seoul",
+        "step": 1,
+    }
+    assert parameter("rest.list-candles-seconds", "count") == {
+        "name": "count",
+        "location": "query",
+        "type": "integer",
+        "required": False,
+        "default": 1,
+        "minimum": 1,
+        "maximum": 200,
+        "step": 1,
+        "unit": "개",
+    }
+    assert parameter("rest.list-pair-trades", "count")["default"] == 1
+    assert parameter("rest.list-pair-trades", "days_ago") | {
+        "name": "days_ago",
+        "location": "query",
+        "type": "integer",
+        "required": False,
+    } == {
+        "name": "days_ago",
+        "location": "query",
+        "type": "integer",
+        "required": False,
+        "default": 1,
+        "minimum": 1,
+        "maximum": 7,
+        "step": 1,
+        "unit": "일",
+    }
+    assert parameter("rest.list-orderbooks", "count") | {
+        "name": "count",
+        "location": "query",
+        "type": "integer",
+        "required": False,
+    } == {
+        "name": "count",
+        "location": "query",
+        "type": "integer",
+        "required": False,
+        "default": 30,
+        "minimum": 1,
+        "maximum": 30,
+        "step": 1,
+        "unit": "호가 쌍",
+    }
+    assert parameter("rest.list-orderbooks", "level")["default"] == "0"
+    assert parameter("rest.list-orderbooks", "level")["format"] == "decimal-string"
+    assert parameter("rest.list-orderbooks", "level")["dynamic_constraint_source"] == (
+        "rest.list-orderbook-instruments"
+    )
+
+    assert parameter("rest.get-universal-transfer", "start_time")["range_with"] == "end_time"
+    assert parameter("rest.get-universal-transfer", "end_time")["range_with"] == "start_time"
+    assert parameter("rest.get-universal-transfer", "start_time")["range_max_seconds"] == 604800
+    assert parameter("rest.get-universal-transfer", "limit") | {
+        "name": "limit",
+        "location": "query",
+        "type": "string",
+        "required": False,
+    } == {
+        "name": "limit",
+        "location": "query",
+        "type": "string",
+        "required": False,
+        "format": "integer-string",
+        "default": "20",
+        "maximum": 100,
+        "step": 1,
+        "unit": "개",
+    }
+    assert parameter("rest.get-universal-transfer", "uuids[]")["max_items"] == 20
+    assert parameter("rest.get-universal-transfer", "identifiers[]")["max_items"] == 20
+
+    assert parameter("rest.list-open-orders", "page") | {
+        "name": "page",
+        "location": "query",
+        "type": "integer",
+        "required": False,
+    } == {
+        "name": "page",
+        "location": "query",
+        "type": "integer",
+        "required": False,
+        "default": 1,
+        "minimum": 1,
+        "step": 1,
+        "unit": "페이지",
+    }
+    assert parameter("rest.list-open-orders", "limit")["default"] == 100
+    assert parameter("rest.list-open-orders", "limit")["maximum"] == 100
+    assert parameter("rest.list-closed-orders", "limit")["default"] == 100
+    assert parameter("rest.list-closed-orders", "limit")["maximum"] == 1000
+    assert parameter("rest.list-closed-orders", "start_time")["range_max_seconds"] == 604800
+    assert parameter("rest.list-orders-by-ids", "uuids[]")["max_items"] == 100
+    assert parameter("rest.list-orders-by-ids", "identifiers[]")["max_items"] == 100
+    assert parameter("rest.cancel-orders-by-ids", "uuids[]")["max_items"] == 20
+    assert parameter("rest.cancel-orders-by-ids", "identifiers[]")["max_items"] == 20
+    assert parameter("rest.batch-cancel-orders", "count")["default"] == 20
+    assert parameter("rest.batch-cancel-orders", "count")["maximum"] == 300
+    assert parameter("rest.batch-cancel-orders", "pairs")["max_items"] == 20
+    assert parameter("rest.batch-cancel-orders", "exclude_pairs")["max_items"] == 20
+
+    for endpoint_id in ("rest.list-withdrawals", "rest.list-deposits"):
+        assert parameter(endpoint_id, "limit")["default"] == 100
+        assert parameter(endpoint_id, "limit")["maximum"] == 100
+        assert parameter(endpoint_id, "page")["default"] == 1
+        assert parameter(endpoint_id, "uuids[]")["max_items"] == 100
+        assert parameter(endpoint_id, "from")["format"] == "cursor"
+        assert parameter(endpoint_id, "to")["format"] == "cursor"
+
+    assert parameter("rest.order-test", "volume")["format"] == "decimal-string"
+    assert parameter("rest.order-test", "volume")["dynamic_constraint_source"] == (
+        "rest.available-order-information"
+    )
+    assert parameter("rest.order-test", "price")["dynamic_constraint_source"] == (
+        "rest.list-orderbook-instruments"
+    )
+    for endpoint_id in (
+        "rest.post-universal-transfer",
+        "rest.post-transfer",
+        "rest.withdraw",
+        "rest.withdraw-krw",
+        "rest.deposit-krw",
+    ):
+        assert parameter(endpoint_id, "amount")["format"] == "decimal-string"
+    assert parameter("rest.withdraw", "amount")["dynamic_constraint_source"] == (
+        "rest.available-withdrawal-information"
+    )
+
+
 def test_catalog_blocks_every_state_changing_operation_except_order_test() -> None:
     catalog = _load_yaml(CATALOG_PATH)
     by_id = {endpoint["endpoint_id"]: endpoint for endpoint in catalog["rest_endpoints"]}

@@ -1,3 +1,5 @@
+import type { CatalogParameter as SharedCatalogParameter } from "../../components/upbit-api-test/types";
+
 export type ExchangeSafety = "read" | "test" | "blocked";
 export type ExchangeFunctionalGroup =
   | "pocket"
@@ -8,17 +10,7 @@ export type ExchangeFunctionalGroup =
   | "travel_rule"
   | "service";
 
-export type CatalogParameter = {
-  name: string;
-  location: "path" | "query" | "body";
-  type: "string" | "integer" | "number" | "boolean" | "array";
-  items?: "string" | "integer" | "number" | "boolean";
-  required: boolean;
-  format?: string;
-  enum?: Array<string | number>;
-  minimum?: number;
-  maximum?: number;
-};
+export type CatalogParameter = SharedCatalogParameter;
 
 export type ExchangeCatalogEndpoint = {
   endpoint_id: string;

@@ -16,9 +16,9 @@ import {
 
 describe("운영 표시 모델", () => {
   it("숫자, 비율, 저장량을 화면 표시값으로 변환한다", () => {
-    expect(formatNumber("1234.56789")).toBe("1,234.5679");
-    expect(formatCurrencyAmount("1234.9876", "KRW")).toBe("1,234");
-    expect(formatCurrencyAmount("1234.9876", "USD")).toBe("1,234.9876");
+    expect(formatNumber("1234.567891234")).toBe("1,234.56789123");
+    expect(formatCurrencyAmount("1234.9876", "KRW")).toBe("1,234 ￦");
+    expect(formatCurrencyAmount("1234.9876", "USD")).toBe("1,234.9876 USD");
     expect(formatCompactCount(1_250_000)).toBe("1.3M");
     expect(formatCompactCount(12_500)).toBe("12.5K");
     expect(formatBytes(1024 ** 2)).toBe("1.0MB");
@@ -27,7 +27,8 @@ describe("운영 표시 모델", () => {
   });
 
   it("표시 시각과 datetime-local 값을 명확히 변환한다", () => {
-    expect(formatFreshness("2026-01-01T00:00:00+09:00")).toContain("01. 01.");
+    expect(formatFreshness("2026-01-01T00:00:00+09:00"))
+      .toBe("2026.01.01 00:00:00 KST");
     expect(formatDateTimeRange("2026-01-01T00:00:00+09:00", "2026-01-02T00:00:00.000Z"))
       .toContain("~");
     expect(dateTimeLocalToKstIso("2026-01-01T00:00")).toBe("2026-01-01T00:00:00+09:00");

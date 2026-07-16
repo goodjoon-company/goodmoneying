@@ -84,7 +84,7 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.getByRole("button", { name: "WebSocket API 테스트" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Quotation API 테스트" }));
     expect(await screen.findByLabelText("Quotation API 작업대")).toBeInTheDocument();
-    await user.click(screen.getByLabelText("상세 정보 포함"));
+    await user.click(screen.getByLabelText("상세 정보 포함(is_details)"));
     await user.click(screen.getByRole("button", { name: "요청 실행" }));
     expect(await screen.findByRole("cell", { name: "비트코인" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Exchange API 테스트" }));
@@ -254,13 +254,13 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.getByText("선택 49/50")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "저장" })).toBeEnabled();
     expect(screen.getByText("대상 변경 1건")).toBeInTheDocument();
-    expect(screen.getByText(/^₩100,000,000,000/)).toBeInTheDocument();
+    expect(screen.getByText("100,000,000,000 ￦")).toBeInTheDocument();
     expect(screen.getByText("24시간 거래대금")).toBeInTheDocument();
     expect(screen.queryByText("품질")).not.toBeInTheDocument();
     expect(screen.getByText("수집 시작일")).toBeInTheDocument();
     expect(screen.getByText("수집 최종일")).toBeInTheDocument();
-    expect(screen.getAllByText("2026-01-01 00:00 KST")[0]).toBeInTheDocument();
-    expect(screen.getAllByText("2026-06-19 09:00 KST")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("2026.01.01 00:00:00 KST")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("2026.06.19 09:00:00 KST")[0]).toBeInTheDocument();
     expect(screen.getAllByText("실시간")[0]).toBeInTheDocument();
     expect(screen.queryByText("수집", { selector: ".target-row span" })).not.toBeInTheDocument();
 
@@ -428,8 +428,8 @@ describe("데이터 수집관리 화면", () => {
     expect(within(runningCard as HTMLElement).getByText("예상 요청 42")).toBeInTheDocument();
     expect(within(panel).getAllByText("1분 캔들(Source Candle)")).toHaveLength(4);
     expect(within(runningCard as HTMLElement).getByText("BTC, ETH")).toBeInTheDocument();
-    expect(within(panel).getByText("2026년 01월 01일 00:00 ~ 2026년 02월 01일 00:00")).toBeInTheDocument();
-    expect(within(panel).getByText(/06. 21./)).toBeInTheDocument();
+    expect(within(panel).getByText("2026.01.01 00:00:00 KST ~ 2026.02.01 00:00:00 KST")).toBeInTheDocument();
+    expect(within(panel).getByText("2026.06.21 09:00:00 KST")).toBeInTheDocument();
     expect(within(panel).getByRole("button", { name: "작업 77 멈춤" })).toBeEnabled();
     expect(within(panel).getByRole("button", { name: "작업 77 중지" })).toBeEnabled();
     expect(within(panel).getByRole("button", { name: "작업 77 삭제" })).toBeDisabled();
@@ -498,18 +498,18 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.queryByText("저장 행")).not.toBeInTheDocument();
     expect(screen.queryByText("품질")).not.toBeInTheDocument();
     expect(screen.getByText("BTC / KRW")).toBeInTheDocument();
-    expect(screen.getAllByText("KRW").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("1,000,000")).toBeInTheDocument();
+    expect(screen.getByText("1,000,000 ￦")).toBeInTheDocument();
     expect(screen.queryByText("1,000,000.9876")).not.toBeInTheDocument();
-    expect(screen.getByText("100,000,000,000")).toBeInTheDocument();
+    expect(screen.getByText("100,000,000,000 ￦")).toBeInTheDocument();
     expect(screen.queryByText("100,000,000,000.9876")).not.toBeInTheDocument();
-    expect(screen.getAllByText("2026. 01. 01.")[0]).toBeInTheDocument();
-    expect(screen.getAllByText("2026. 06. 19.")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("2026.01.01")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("2026.06.19")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("2026.06.19 09:00:00 KST")[0]).toBeInTheDocument();
     expect(screen.getByText("1,000")).toBeInTheDocument();
     expect(screen.getByText("GM050 / KRW")).toBeInTheDocument();
     const noCandleRow = screen.getByText("GM076 / KRW").closest(".table-row");
     expect(noCandleRow).not.toBeNull();
-    expect(within(noCandleRow as HTMLElement).getByText("2026. 01. 01.")).toBeInTheDocument();
+    expect(within(noCandleRow as HTMLElement).getByText("2026.01.01")).toBeInTheDocument();
     expect(within(noCandleRow as HTMLElement).getByText("0")).toBeInTheDocument();
   });
 
@@ -647,7 +647,7 @@ describe("데이터 수집관리 화면", () => {
 
     await screen.findByRole("heading", { name: "업비트 수집 운영 상태" });
     await user.click(screen.getByRole("button", { name: "관심종목" }));
-    expect(await screen.findByText("1,000,000")).toBeInTheDocument();
+    expect(await screen.findByText("1,000,000 ￦")).toBeInTheDocument();
 
     const marketStream = eventSources.find((source) => source.url.endsWith("/v1/market-list/stream"));
     const marketListHandler = marketStream?.listeners.get("marketList");
@@ -667,8 +667,8 @@ describe("데이터 수집관리 화면", () => {
       })
     );
 
-    await waitFor(() => expect(screen.getByText("1,234,567")).toBeInTheDocument());
-    expect(screen.getByText("2,222,222,222")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("1,234,567 ￦")).toBeInTheDocument());
+    expect(screen.getByText("2,222,222,222 ￦")).toBeInTheDocument();
     expect(screen.queryByText("1,234,567.89")).not.toBeInTheDocument();
   });
 

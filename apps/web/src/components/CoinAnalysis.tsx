@@ -10,6 +10,7 @@ import {
 import type { MarketListRow } from "../api";
 import { type AnalysisRangeDays, type AnalysisUnit } from "../analysisStream";
 import { formatFreshness, formatNumber, formatPercent } from "../operationsDisplay";
+import { formatAssetAmount, formatKstDateTime, formatMoney } from "../displayFormat";
 import { useRealtimeAnalysis } from "../useRealtimeAnalysis";
 import { InstrumentTitle } from "./common";
 
@@ -74,7 +75,7 @@ export function CoinAnalysis({
               onClick={() => setInstrumentId(row.instrument.id)}
             >
               <span><InstrumentTitle instrument={row.instrument} /></span>
-              <strong>₩{formatNumber(row.tradePrice ?? "0")}</strong>
+              <strong>{formatMoney(row.tradePrice ?? "0", row.priceCurrency)}</strong>
               <em>{formatPercent(row.changeRate ?? "0")}</em>
             </button>
           ))}
@@ -98,15 +99,15 @@ export function CoinAnalysis({
         </div>
         {analysis.error ? <p className="analysis-error">{analysis.error}</p> : null}
         <section className="analysis-chart-panel panel">
-          <div className="panel-heading"><div><h2>가격 · 거래량 · 추세</h2><span>{timeframeLabel(unit)} · {rangeLabel(rangeDays)} 요청 · {analysis.candles.length.toLocaleString("ko-KR")}개 표시{isHighFrequency(unit) ? " (최근 1,000개 한도)" : ""}</span></div><strong>{analysis.market ? `₩${formatNumber(analysis.market.ticker.tradePrice)}` : "연결 중"}</strong></div>
-          <AnalysisChart candles={analysis.candles} indicators={analysis.indicators} />
+          <div className="panel-heading"><div><h2>가격 · 거래량 · 추세</h2><span>{timeframeLabel(unit)} · {rangeLabel(rangeDays)} 요청 · {analysis.candles.length.toLocaleString("ko-KR")}개 표시{isHighFrequency(unit) ? " (최근 1,000개 한도)" : ""}</span></div><strong>{analysis.market ? formatMoney(analysis.market.ticker.tradePrice, selected.instrument.quoteCurrency) : "연결 중"}</strong></div>
+          <AnalysisChart candles={analysis.candles} indicators={analysis.indicators} quoteCurrency={selected.instrument.quoteCurrency} />
           <div className="analysis-legend"><span>SMA 20</span><span>SMA 60</span><span>EMA 20</span><span>볼린저 밴드</span><span>거래량</span></div>
         </section>
         <section className="analysis-market-grid" aria-label="현재가 호가 체결">
-          <MarketCard title="현재가" value={analysis.market ? `₩${formatNumber(analysis.market.ticker.tradePrice)}` : "-"} detail={analysis.market ? `${formatPercent(analysis.market.ticker.changeRate)} · 24H ₩${formatNumber(analysis.market.ticker.accTradePrice24h)}` : "WebSocket 대기"} />
-          <MarketCard title="호가 요약" value={analysis.market ? `${formatNumber(analysis.market.orderbook.bestBidPrice)} / ${formatNumber(analysis.market.orderbook.bestAskPrice)}` : "-"} detail={analysis.market ? `매수 ${formatNumber(analysis.market.orderbook.bestBidSize)} · 매도 ${formatNumber(analysis.market.orderbook.bestAskSize)} · 스프레드 ${formatNumber(analysis.market.orderbook.spread)}` : "호가 대기"} />
-          <MarketCard title="10호가 · 불균형" value={analysis.market ? `${formatPercent(analysis.market.orderbook.imbalance10)}` : "-"} detail={analysis.market ? `매수 ${formatNumber(analysis.market.orderbook.bidDepth10)} · 매도 ${formatNumber(analysis.market.orderbook.askDepth10)}` : "호가 대기"} />
-          <MarketCard title="체결 흐름" value={analysis.market ? `${analysis.market.tradeSummary.tradeCount.toLocaleString("ko-KR")}건` : "-"} detail={analysis.market ? `매수 ${formatNumber(analysis.market.tradeSummary.buyVolume)} · 매도 ${formatNumber(analysis.market.tradeSummary.sellVolume)} · ${analysis.market.tradeSummary.lastTradeAt ? formatFreshness(analysis.market.tradeSummary.lastTradeAt) : "체결 없음"}` : "체결 대기"} />
+          <MarketCard title="현재가" value={analysis.market ? formatMoney(analysis.market.ticker.tradePrice, selected.instrument.quoteCurrency) : "-"} detail={analysis.market ? `${formatPercent(analysis.market.ticker.changeRate)} · 24H ${formatMoney(analysis.market.ticker.accTradePrice24h, selected.instrument.quoteCurrency)}` : "WebSocket 대기"} />
+          <MarketCard title="호가 요약" value={analysis.market ? `${formatMoney(analysis.market.orderbook.bestBidPrice, selected.instrument.quoteCurrency)} / ${formatMoney(analysis.market.orderbook.bestAskPrice, selected.instrument.quoteCurrency)}` : "-"} detail={analysis.market ? `매수 ${formatAssetAmount(analysis.market.orderbook.bestBidSize, selected.instrument.baseAsset)} · 매도 ${formatAssetAmount(analysis.market.orderbook.bestAskSize, selected.instrument.baseAsset)} · 스프레드 ${formatMoney(analysis.market.orderbook.spread, selected.instrument.quoteCurrency)}` : "호가 대기"} />
+          <MarketCard title="10호가 · 불균형" value={analysis.market ? `${formatPercent(analysis.market.orderbook.imbalance10)}` : "-"} detail={analysis.market ? `매수 ${formatAssetAmount(analysis.market.orderbook.bidDepth10, selected.instrument.baseAsset)} · 매도 ${formatAssetAmount(analysis.market.orderbook.askDepth10, selected.instrument.baseAsset)}` : "호가 대기"} />
+          <MarketCard title="체결 흐름" value={analysis.market ? `${analysis.market.tradeSummary.tradeCount.toLocaleString("ko-KR")}건` : "-"} detail={analysis.market ? `매수 ${formatAssetAmount(analysis.market.tradeSummary.buyVolume, selected.instrument.baseAsset)} · 매도 ${formatAssetAmount(analysis.market.tradeSummary.sellVolume, selected.instrument.baseAsset)} · ${analysis.market.tradeSummary.lastTradeAt ? formatFreshness(analysis.market.tradeSummary.lastTradeAt) : "체결 없음"}` : "체결 대기"} />
           <MarketCard title="RSI 14" value={analysis.indicators.at(-1)?.rsi14 ? formatNumber(analysis.indicators.at(-1)?.rsi14 ?? "0") : "-"} detail="최근 종가 기준 모멘텀" />
         </section>
       </div>
@@ -114,7 +115,7 @@ export function CoinAnalysis({
   );
 }
 
-function AnalysisChart({ candles, indicators }: { candles: ReturnType<typeof useRealtimeAnalysis>["candles"]; indicators: ReturnType<typeof useRealtimeAnalysis>["indicators"] }) {
+function AnalysisChart({ candles, indicators, quoteCurrency }: { candles: ReturnType<typeof useRealtimeAnalysis>["candles"]; indicators: ReturnType<typeof useRealtimeAnalysis>["indicators"]; quoteCurrency: string }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartAdapterRef = useRef<{
     update: (nextCandles: typeof candles, nextIndicators: typeof indicators) => void;
@@ -122,8 +123,9 @@ function AnalysisChart({ candles, indicators }: { candles: ReturnType<typeof use
   useEffect(() => {
     if (!containerRef.current || typeof ResizeObserver === "undefined") return;
     const container = containerRef.current;
-    const chart = createChart(container, { width: container.clientWidth || 900, height: 450, layout: { background: { type: ColorType.Solid, color: "#101713" }, textColor: "#8e9e94" }, grid: { vertLines: { color: "rgba(255,255,255,.05)" }, horzLines: { color: "rgba(255,255,255,.06)" } }, rightPriceScale: { borderColor: "rgba(255,255,255,.12)" }, timeScale: { borderColor: "rgba(255,255,255,.12)", timeVisible: true } });
-    const candleSeries = chart.addSeries(CandlestickSeries, { upColor: "#35dca7", downColor: "#ed6c62", borderVisible: false, wickUpColor: "#35dca7", wickDownColor: "#ed6c62" });
+    const chartTimeFormatter = (time: unknown) => formatKstDateTime(Number(time) * 1000);
+    const chart = createChart(container, { width: container.clientWidth || 900, height: 450, localization: { timeFormatter: chartTimeFormatter }, layout: { background: { type: ColorType.Solid, color: "#101713" }, textColor: "#8e9e94" }, grid: { vertLines: { color: "rgba(255,255,255,.05)" }, horzLines: { color: "rgba(255,255,255,.06)" } }, rightPriceScale: { borderColor: "rgba(255,255,255,.12)" }, timeScale: { borderColor: "rgba(255,255,255,.12)", timeVisible: true, secondsVisible: true, tickMarkFormatter: chartTimeFormatter } });
+    const candleSeries = chart.addSeries(CandlestickSeries, { upColor: "#35dca7", downColor: "#ed6c62", borderVisible: false, wickUpColor: "#35dca7", wickDownColor: "#ed6c62", priceFormat: { type: "custom", minMove: 0.00000001, formatter: (price: number) => formatMoney(price, quoteCurrency) } });
     const volume = chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "volume" });
     chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
     const lines = [["sma20", "#f2c96f"], ["sma60", "#b58cff"], ["ema20", "#62b5ff"], ["bollingerUpper", "#7896c9"], ["bollingerMiddle", "#6c7fa8"], ["bollingerLower", "#7896c9"]] as const;
@@ -144,7 +146,7 @@ function AnalysisChart({ candles, indicators }: { candles: ReturnType<typeof use
     const observer = new ResizeObserver(([entry]) => chart.applyOptions({ width: Math.floor(entry.contentRect.width) }));
     observer.observe(container);
     return () => { observer.disconnect(); chartAdapterRef.current = null; chart.remove(); };
-  }, []);
+  }, [quoteCurrency]);
   useEffect(() => { chartAdapterRef.current?.update(candles, indicators); }, [candles, indicators]);
   return <div className="analysis-chart-canvas" ref={containerRef} aria-label="코인 분석 캔들 차트">{candles.length === 0 ? <span>선택한 기간의 저장 차트가 없습니다. Backfill 관리에서 기간을 수집하면 이 위치에 차트와 보조지표가 표시됩니다.</span> : null}</div>;
 }

@@ -78,17 +78,20 @@ def aggregate_candles(
             grouped.setdefault(bucket, []).append(item)
         return _aggregate_groups(grouped, bucket_size, coverage, unit=unit)
     if unit == "1d":
-        if source_1d:
-            return _to_candle_views(source_1d)
         grouped_daily: dict[datetime, list[SourceCandle | CandleView]] = {}
         for item in source_1m:
             bucket = rollup_bucket_start("1d", item.candle_start_at)
             grouped_daily.setdefault(bucket, []).append(item)
-        return _aggregate_groups(grouped_daily, 24 * 60, coverage, unit=unit)
-    if unit in {"1w", "1M"}:
-        daily: list[CandleView] = (
-            _to_candle_views(source_1d) if source_1d else aggregate_candles("1d", source)
+        daily_by_start = {
+            item.started_at: item
+            for item in _aggregate_groups(grouped_daily, 24 * 60, coverage, unit=unit)
+        }
+        daily_by_start.update(
+            {item.started_at: item for item in _to_candle_views(source_1d)}
         )
+        return [daily_by_start[started_at] for started_at in sorted(daily_by_start)]
+    if unit in {"1w", "1M"}:
+        daily = aggregate_candles("1d", source, coverage=coverage)
         grouped_week_month: dict[datetime, list[CandleView]] = {}
         for daily_item in daily:
             if unit == "1w":

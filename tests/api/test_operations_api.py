@@ -487,7 +487,10 @@ def test_coin_analysis_websocket_changes_coin_and_units_with_independent_message
         )
         assert len(three_year_indicators) == len(three_year_candles)
         assert three_year_indicators[-1]["ema20"] is not None
-        assert all(Decimal(candle["open"]) >= Decimal("1000000") for candle in three_year_candles)
+        assert any(
+            Decimal("1000000") <= Decimal(candle["open"]) < Decimal("2000000")
+            for candle in three_year_candles
+        )
         assert three_year_by_type["analysis.market"]["ticker"]["tradePrice"] == "100000000.0000"
 
         websocket.send_json(
@@ -507,9 +510,11 @@ def test_coin_analysis_websocket_changes_coin_and_units_with_independent_message
     assert changed_by_type["analysis.chart"]["unit"] == "1M"
     changed_candles = changed_by_type["analysis.chart"]["candles"]
     changed_indicators = changed_by_type["analysis.indicators"]["points"]
-    assert len(changed_candles) == 2
-    assert all(Decimal(candle["open"]) >= Decimal("2000000") for candle in changed_candles)
-    assert all(Decimal(candle["open"]) < Decimal("3000000") for candle in changed_candles)
+    assert len(changed_candles) >= 2
+    assert any(
+        Decimal("2000000") <= Decimal(candle["open"]) < Decimal("3000000")
+        for candle in changed_candles
+    )
     assert len(changed_indicators) == len(changed_candles)
     assert changed_indicators[-1]["ema20"] is not None
     assert changed_by_type["analysis.market"]["ticker"]["tradePrice"] == "50000000.0000"

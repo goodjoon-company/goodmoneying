@@ -393,28 +393,36 @@ test("관심 코인 분석 화면이 WebSocket 메시지로 실시간 정보를 
   expect(monthlyThreeYearSnapshot.candles.length).toBeGreaterThan(
     monthlyOneYearSnapshot?.candles.length ?? 0
   );
-  expect(monthlyThreeYearSnapshot.candles).toHaveLength(3);
+  expect(monthlyThreeYearSnapshot.candles.length).toBeGreaterThanOrEqual(3);
   const threeYearStartedAt = monthlyThreeYearSnapshot.candles.map((candle) =>
     new Date(candle.startedAt).getTime()
   );
   expect(Math.min(...threeYearStartedAt)).toBeLessThan(Date.now() - 365 * 24 * 60 * 60 * 1000);
   expect(Math.max(...threeYearStartedAt)).toBeGreaterThan(Date.now() - 365 * 24 * 60 * 60 * 1000);
-  expect(monthlyThreeYearSnapshot.candles.every((candle) => Number(candle.open) >= 1_000_000)).toBeTruthy();
+  expect(monthlyThreeYearSnapshot.candles.some((candle) => {
+    const open = Number(candle.open);
+    return open >= 1_000_000 && open < 2_000_000;
+  })).toBeTruthy();
+  expect(monthlyThreeYearSnapshot.candles.some((candle) => Number(candle.open) < 1_000_000)).toBeTruthy();
   expect(monthlyThreeYearSnapshot.marketTradePrice).toBe("100000000.0000");
   await expect(page.getByRole("button", { name: "3년" })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator(".analysis-chart-panel")).toContainText("3개 표시");
+  await expect(page.locator(".analysis-chart-panel")).toContainText(
+    `${monthlyThreeYearSnapshot.candles.length}개 표시`
+  );
 
   startIndex = analysisFrames.length;
   await page.getByRole("button", { name: "ETH 분석" }).click();
   const ethSnapshot = await expectIndependentSnapshot(startIndex, "1M", 1095, "KRW-ETH", 1);
-  expect(ethSnapshot.candles).toHaveLength(2);
-  expect(ethSnapshot.candles.every((candle) => {
+  expect(ethSnapshot.candles.length).toBeGreaterThanOrEqual(2);
+  expect(ethSnapshot.candles.some((candle) => {
     const open = Number(candle.open);
     return open >= 2_000_000 && open < 3_000_000;
   })).toBeTruthy();
   expect(ethSnapshot.marketTradePrice).toBe("50000000.0000");
   await expect(page.getByRole("heading", { name: "ETH / KRW" })).toBeVisible();
-  await expect(page.locator(".analysis-chart-panel")).toContainText("2개 표시");
+  await expect(page.locator(".analysis-chart-panel")).toContainText(
+    `${ethSnapshot.candles.length}개 표시`
+  );
   await expect(page.getByLabel("현재가 호가 체결")).toContainText("50,000,000 ￦");
   expect(analysisSocketCount).toBe(initialAnalysisSocketCount);
   await expect(page.getByText("주식 분석")).toHaveCount(0);

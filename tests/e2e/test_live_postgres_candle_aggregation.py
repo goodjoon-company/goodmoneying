@@ -297,13 +297,26 @@ def test_live_postgres_rollup_completeness_uses_no_trade_and_missing_coverage() 
         specification_id = specification_row[0]
         connection.execute(
             """
-            UPDATE coverage_intervals SET status = 'no_trade'
+            DELETE FROM coverage_intervals
             WHERE target_spec_id = %s
-              AND range_start_at <= %s AND range_end_at >= %s
+              AND tstzrange(range_start_at, range_end_at, '[)') && tstzrange(%s, %s, '[)')
             """,
             (
                 specification_id,
                 started_at + timedelta(minutes=1),
+                started_at + timedelta(minutes=3),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO coverage_intervals (
+              target_spec_id, range_start_at, range_end_at, status, evidence, assessed_at
+            ) VALUES (%s, %s, %s, 'no_trade', '{}'::jsonb, %s)
+            """,
+            (
+                specification_id,
+                started_at + timedelta(minutes=1),
+                started_at + timedelta(minutes=3),
                 started_at + timedelta(minutes=3),
             ),
         )
@@ -388,6 +401,48 @@ def test_live_postgres_fallback_pagination_is_bounded_and_has_no_gaps() -> None:
     assert daily_cursor is None
 
 
+def test_live_postgres_page_merges_materialized_and_new_source_buckets() -> None:
+    database_url = live_database_url()
+    repository = PostgresOperationsRepository(database_url)
+    instrument = _prepare_p2_market(database_url)
+    started_at = datetime(2030, 1, 1, tzinfo=UTC) + timedelta(minutes=os.getpid() * 6)
+
+    def minute(offset: int) -> SourceCandle:
+        value = Decimal(100 + offset)
+        return SourceCandle(
+            instrument_id=instrument.id,
+            candle_unit="1m",
+            candle_start_at=started_at + timedelta(minutes=offset),
+            open_price=value,
+            high_price=value,
+            low_price=value,
+            close_price=value,
+            trade_volume=Decimal("1"),
+            trade_amount=value,
+            collected_at=started_at + timedelta(minutes=offset, seconds=1),
+        )
+
+    repository.record_incremental_collection([], [], [minute(offset) for offset in range(3)])
+    repository.materialize_candle_rollups(instrument.id, "3m")
+    materialized = repository.candle_rollups(
+        instrument.id, "3m", started_at, started_at + timedelta(minutes=3)
+    )[0]
+    repository.record_incremental_collection([], [], [minute(offset) for offset in range(3, 6)])
+
+    page, cursor = repository.candle_page(
+        instrument.id, "3m", started_at, started_at + timedelta(minutes=6), 500, None
+    )
+
+    assert [(item.started_at, item.close) for item in page] == [
+        (started_at, Decimal("102")),
+        (started_at + timedelta(minutes=3), Decimal("105")),
+    ]
+    assert page[0].input_content_hash == materialized.input_content_hash
+    assert page[0].input_revision_ids == materialized.input_revision_ids
+    assert page[1].input_revision_ids
+    assert cursor is None
+
+
 def test_live_postgres_daily_fallback_prefers_direct_daily_over_minute_rows() -> None:
     database_url = live_database_url()
     repository = PostgresOperationsRepository(database_url)
@@ -416,6 +471,108 @@ def test_live_postgres_daily_fallback_prefers_direct_daily_over_minute_rows() ->
     assert len(page) == 1
     assert page[0].close == Decimal("200")
     assert cursor is None
+
+
+def test_live_postgres_long_units_prefer_daily_and_fill_dates_from_minutes() -> None:
+    database_url = live_database_url()
+    repository = PostgresOperationsRepository(database_url)
+    instrument = _prepare_p2_market(database_url)
+    started_at = datetime(2040, 1, 2, tzinfo=UTC)
+
+    def source(
+        unit: Literal["1m", "1d"], day_offset: int, close: str, *, minute_offset: int = 0
+    ) -> SourceCandle:
+        candle_start_at = started_at + timedelta(days=day_offset, minutes=minute_offset)
+        value = Decimal(close)
+        return SourceCandle(
+            instrument_id=instrument.id,
+            candle_unit=unit,
+            candle_start_at=candle_start_at,
+            open_price=value,
+            high_price=value,
+            low_price=value,
+            close_price=value,
+            trade_volume=Decimal("1"),
+            trade_amount=value,
+            collected_at=candle_start_at + timedelta(seconds=1),
+        )
+
+    repository.record_incremental_collection(
+        [],
+        [],
+        [
+            source("1d", 0, "200"),
+            source("1m", 0, "100"),
+            source("1m", 1, "103"),
+            source("1m", 1, "104", minute_offset=1),
+            source("1m", 1, "105", minute_offset=2),
+        ],
+    )
+
+    first_daily, first_cursor = repository.candle_page(
+        instrument.id, "1d", started_at, started_at + timedelta(days=2), 1, None
+    )
+    second_daily, second_cursor = repository.candle_page(
+        instrument.id, "1d", started_at, started_at + timedelta(days=2), 1, first_cursor
+    )
+    weekly, weekly_cursor = repository.candle_page(
+        instrument.id, "1w", started_at, started_at + timedelta(days=7), 10, None
+    )
+    monthly, monthly_cursor = repository.candle_page(
+        instrument.id,
+        "1M",
+        started_at.replace(day=1),
+        started_at.replace(month=2),
+        10,
+        None,
+    )
+    unaligned_weekly, _ = repository.candle_page(
+        instrument.id,
+        "1w",
+        started_at + timedelta(days=1),
+        started_at + timedelta(days=7),
+        10,
+        None,
+    )
+    unaligned_monthly, _ = repository.candle_page(
+        instrument.id,
+        "1M",
+        started_at + timedelta(days=1),
+        started_at.replace(month=2),
+        10,
+        None,
+    )
+
+    assert [(item.started_at, item.close) for item in first_daily] == [
+        (started_at, Decimal("200"))
+    ]
+    assert first_cursor == started_at
+    assert [(item.started_at, item.close) for item in second_daily] == [
+        (started_at + timedelta(days=1), Decimal("105"))
+    ]
+    assert second_cursor is None
+    assert first_daily[0].input_revision_ids
+    assert len(second_daily[0].input_revision_ids) == 3
+
+    assert len(weekly) == 1
+    assert (weekly[0].open, weekly[0].close, weekly[0].volume) == (
+        Decimal("200"),
+        Decimal("105"),
+        Decimal("4"),
+    )
+    assert len(weekly[0].input_revision_ids) == 4
+    assert weekly_cursor is None
+
+    assert len(monthly) == 1
+    assert (monthly[0].open, monthly[0].close, monthly[0].volume) == (
+        Decimal("200"),
+        Decimal("105"),
+        Decimal("4"),
+    )
+    assert len(monthly[0].input_revision_ids) == 4
+    assert monthly_cursor is None
+    assert unaligned_weekly == []
+    assert unaligned_monthly == []
 
 
 def test_live_postgres_heartbeat_저장소의_statement_timeout이_pg_sleep를_중단한다() -> None:

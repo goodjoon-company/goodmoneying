@@ -1388,27 +1388,35 @@ class PostgresOperationsRepository:
                 ).fetchall()
                 candles = [_rollup_candle(row) for row in rows]
         source_limit_hit = False
-        if not candles:
+        if unit != "1m":
+            materialized_candles = candles
             with self._connect() as conn:
                 source_unit = "1m"
+                source_filter = "candle.candle_unit = '1m'"
                 if unit in {"1d", "1w", "1M"}:
-                    has_daily = conn.execute(
-                        """
-                        SELECT 1 FROM source_candles
-                        WHERE instrument_id = %s AND candle_unit = '1d'
-                          AND candle_start_at >= %s AND candle_start_at < %s
-                        LIMIT 1
-                        """,
-                        (instrument_id, start_at, end_at),
-                    ).fetchone()
-                    if has_daily is not None:
-                        source_unit = "1d"
+                    source_filter = """
+                      (
+                        candle.candle_unit = '1d'
+                        OR (
+                          candle.candle_unit = '1m'
+                          AND NOT EXISTS (
+                            SELECT 1 FROM source_candles daily
+                            WHERE daily.instrument_id = candle.instrument_id
+                              AND daily.source = candle.source
+                              AND daily.candle_unit = '1d'
+                              AND daily.candle_start_at =
+                                date_trunc('day', candle.candle_start_at AT TIME ZONE 'UTC')
+                                AT TIME ZONE 'UTC'
+                          )
+                        )
+                      )
+                    """
                 source_lower_bound = (
                     _next_candle_bucket_start(cursor, unit) if cursor is not None else start_at
                 )
                 source_limit = _source_page_limit(unit, page_size, source_unit)
                 source_rows = conn.execute(
-                    """
+                    f"""
                     SELECT candle.*, revision.id AS revision_id,
                            revision.input_content_hash,
                            revision.knowledge_at AS revision_knowledge_at
@@ -1423,16 +1431,30 @@ class PostgresOperationsRepository:
                         )
                       ORDER BY revision_number DESC LIMIT 1
                     ) revision ON true
-                    WHERE candle.instrument_id = %s AND candle.candle_unit = %s
+                    WHERE candle.instrument_id = %s AND {source_filter}
                       AND candle.candle_start_at >= %s
                       AND candle.candle_start_at < %s
                     ORDER BY candle.candle_start_at
                     LIMIT %s
                     """,
-                    (instrument_id, source_unit, source_lower_bound, end_at, source_limit),
+                    (instrument_id, source_lower_bound, end_at, source_limit),
                 ).fetchall()
             source_limit_hit = len(source_rows) == source_limit
-            candles = aggregate_candles(unit, [_candle(row) for row in source_rows])
+            derived_candles = aggregate_candles(unit, [_candle(row) for row in source_rows])
+            candles_by_start = {item.started_at: item for item in derived_candles}
+            candles_by_start.update(
+                {item.started_at: item for item in materialized_candles}
+            )
+            candles = [
+                candles_by_start[started_at]
+                for started_at in sorted(candles_by_start)
+                if started_at < end_at
+                and (
+                    started_at > lower_bound
+                    if cursor is not None
+                    else started_at >= lower_bound
+                )
+            ]
         page = candles[:page_size]
         next_cursor = (
             page[-1].started_at if page and (len(candles) > page_size or source_limit_hit) else None

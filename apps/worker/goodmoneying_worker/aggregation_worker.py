@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import uuid
 from collections.abc import Callable
 
 from goodmoneying_shared.models import CollectionWorkerHeartbeatStatus
@@ -60,12 +61,31 @@ class CandleAggregationWorker:
         self,
         repository: OperationsRepository,
         heartbeat_repository: OperationsRepository | None = None,
+        worker_id: str | None = None,
     ) -> None:
         self._repository = repository
         self._heartbeat_repository = heartbeat_repository or repository
         self._heartbeat_single_flight = threading.Lock()
+        self._worker_id = worker_id or f"candle-aggregation-{uuid.uuid4()}"
 
     def run_once(self) -> int:
+        claim_incremental = getattr(
+            self._repository, "claim_next_candle_rollup_recompute_job", None
+        )
+        if claim_incremental is not None:
+            incremental_job = claim_incremental(self._worker_id)
+            if incremental_job is not None:
+                try:
+                    return int(
+                        self._repository.run_candle_rollup_recompute_job(
+                            incremental_job.id, self._worker_id
+                        )
+                    )
+                except Exception as exc:
+                    self._repository.fail_candle_rollup_recompute_job(
+                        incremental_job.id, self._worker_id, type(exc).__name__
+                    )
+                    raise
         self._repository.schedule_candle_aggregation()
         job = self._repository.claim_next_candle_aggregation_job()
         if job is None:

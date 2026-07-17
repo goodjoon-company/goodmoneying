@@ -9,6 +9,7 @@ export function SystemManagement() {
   const { snapshot, connectionStatus } = useSystemManagement();
   if (!snapshot) return <section className="system-management loading-state">시스템 상태를 연결하는 중</section>;
   const aggregation = snapshot.aggregation;
+  const incremental = snapshot.incrementalAggregation;
   const aggregationWorker = snapshot.aggregationWorker;
   return <section className="system-management">
     <div className="system-live-bar"><strong>WebSocket {connectionStatus === "live" ? "연결됨" : "재연결 중"}</strong><span>상태 조각을 1초 단위로 갱신합니다.</span></div>
@@ -19,6 +20,7 @@ export function SystemManagement() {
         <div className="panel-heading"><div><p className="eyebrow">집계 워커</p><h2>캔들 집계</h2></div><strong>{aggregationWorker.statusLabel}</strong></div>
         <p>{aggregationWorker.statusDetail} · 마지막 heartbeat {aggregationWorker.lastHeartbeatAt ? formatFreshness(aggregationWorker.lastHeartbeatAt) : "기록 없음"}</p>
         <p>{aggregation ? `집계 작업 ${aggregation.status} · 전체 ${aggregation.totalTargetCount} · 완료 ${aggregation.completedTargetCount} · 실행 ${aggregation.runningTargetCount} · 대기 ${aggregation.pendingTargetCount} · 실패 ${aggregation.failedTargetCount}` : "모든 활성 코인의 집계 테이블이 최신입니다."}</p>
+        <p>{incremental ? `증분 재계산 ${incremental.status} · ${incremental.unit} · 시도 ${incremental.attemptCount}/${incremental.maxAttempts} · ${incremental.rowsWritten}행` : "대기 중인 증분 재계산이 없습니다."}</p>
         <strong>{aggregation ? `${aggregation.progressPercent}%` : "100%"}</strong>
         <div className="system-progress"><span style={{ width: `${aggregation?.progressPercent ?? "100"}%` }} /></div>
         <ul className="system-items">{aggregation?.items.slice(0, 12).map((item) => <li key={`${item.instrument.id}-${item.unit}`}><strong>{item.instrument.marketCode}</strong><span>{item.unit} · {item.status} · {item.rowsWritten.toLocaleString("ko-KR")}행</span></li>)}</ul>

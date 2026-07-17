@@ -26,6 +26,18 @@ vi.mock("../useSystemManagement", () => ({
         pendingTargetCount: 13,
         failedTargetCount: 1,
         items: []
+      },
+      incrementalAggregation: {
+        id: 33,
+        status: "retry_wait",
+        instrumentId: 1,
+        unit: "3m",
+        rangeStartAt: "2026-07-16T09:00:00+09:00",
+        rangeEndAt: "2026-07-16T09:03:00+09:00",
+        attemptCount: 2,
+        maxAttempts: 5,
+        rowsWritten: 0,
+        lastErrorCode: "CALCULATION_FAILED"
       }
     }
   })
@@ -45,5 +57,6 @@ describe("시스템 관리 집계 워커", () => {
       .toHaveTextContent("2026.07.16 08:59:55 KST");
     expect(within(card).getByText(/완료 5/)).toHaveTextContent("실행 1");
     expect(within(card).getByText(/대기 13/)).toHaveTextContent("실패 1");
+    expect(within(card).getByText(/증분 재계산 retry_wait/)).toHaveTextContent("시도 2/5");
   });
 });

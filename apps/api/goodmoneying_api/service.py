@@ -590,6 +590,7 @@ class OperationsService:
                         }
                     )
         aggregation_job = self._repository.latest_candle_aggregation_job()
+        incremental_job = self._repository.latest_candle_rollup_recompute_job()
         aggregation_worker = self._repository.collection_worker_runtime_status("candle_aggregation")
         aggregation_items: list[dict[str, object]] = []
         aggregation: dict[str, object] | None = None
@@ -649,6 +650,22 @@ class OperationsService:
                 ),
             },
             "aggregation": aggregation,
+            "incrementalAggregation": (
+                {
+                    "id": incremental_job.id,
+                    "status": incremental_job.status,
+                    "instrumentId": incremental_job.instrument_id,
+                    "unit": incremental_job.candle_unit,
+                    "rangeStartAt": incremental_job.range_start_at.isoformat(),
+                    "rangeEndAt": incremental_job.range_end_at.isoformat(),
+                    "attemptCount": incremental_job.attempt_count,
+                    "maxAttempts": incremental_job.max_attempts,
+                    "rowsWritten": incremental_job.rows_written,
+                    "lastErrorCode": incremental_job.last_error_code,
+                }
+                if incremental_job is not None
+                else None
+            ),
         }
 
     def notifications(self) -> NotificationEventsResponse:

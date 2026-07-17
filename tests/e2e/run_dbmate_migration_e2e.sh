@@ -357,6 +357,7 @@ host_port="${host_binding##*:}"
     uv run pytest -q \
       tests/e2e/test_live_postgres_data_foundation.py \
       tests/e2e/test_live_postgres_candle_aggregation.py \
+      tests/e2e/test_live_postgres_incremental_candle_aggregation.py \
       tests/e2e/test_live_postgres_source_evidence.py
 )
 GOODMONEYING_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${host_port}/${POSTGRES_DB}?sslmode=disable" \

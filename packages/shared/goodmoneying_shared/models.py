@@ -309,6 +309,31 @@ class CandleAggregationJobTarget:
 
 
 @dataclass(frozen=True)
+class CandleRollupRecomputeJob:
+    id: int
+    invalidation_id: int
+    status: Literal[
+        "pending", "running", "retry_wait", "succeeded", "dead_letter", "cancelled"
+    ]
+    market_id: int
+    instrument_id: int
+    candle_unit: str
+    calculation_version: str
+    range_start_at: datetime
+    range_end_at: datetime
+    source_revision_through_id: int
+    quality_event_through_id: int | None
+    attempt_count: int
+    max_attempts: int
+    next_retry_at: datetime
+    lease_owner: str | None
+    lease_expires_at: datetime | None
+    rows_written: int
+    last_error_code: str | None
+    dead_letter_reason: str | None
+
+
+@dataclass(frozen=True)
 class CoverageStatus:
     instrument_id: int
     data_type: Literal["source_candle", "ticker_snapshot", "orderbook_summary"]

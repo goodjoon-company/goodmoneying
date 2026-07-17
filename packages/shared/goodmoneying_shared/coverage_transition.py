@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import psycopg
 from psycopg.types.json import Jsonb
 
+from goodmoneying_shared.aggregation import CALCULATION_VERSION, MATERIALIZED_AGGREGATION_UNITS
 from goodmoneying_shared.data_foundation import (
     COVERAGE_ADVISORY_LOCK_NAMESPACE,
+    ROLLUP_FRONTIER_ADVISORY_LOCK_NAMESPACE,
     CoverageState,
 )
+from goodmoneying_shared.incremental_aggregation import affected_rollup_ranges_for_interval
 
 
 def replace_coverage_with_classification(
@@ -32,6 +35,16 @@ def replace_coverage_with_classification(
     connection.execute(
         "SELECT pg_advisory_xact_lock(%s, %s)",
         (COVERAGE_ADVISORY_LOCK_NAMESPACE, target_spec_id),
+    )
+    market = connection.execute(
+        "SELECT market_id FROM collection_target_specs WHERE id = %s",
+        (target_spec_id,),
+    ).fetchone()
+    if market is None:
+        return
+    connection.execute(
+        "SELECT pg_advisory_xact_lock(%s, %s)",
+        (ROLLUP_FRONTIER_ADVISORY_LOCK_NAMESPACE, market["market_id"]),
     )
     overlaps = connection.execute(
         """
@@ -107,6 +120,7 @@ def replace_coverage_with_classification(
             assessed_at,
         ),
     )
+    created_events: list[tuple[int, datetime, datetime]] = []
     for previous_status, event_start, event_end in transitions:
         fingerprint = _checksum(
             {
@@ -124,17 +138,24 @@ def replace_coverage_with_classification(
             "reasonCode": reason_code,
             "fetchManifestId": manifest_id,
         }
-        connection.execute(
+        quality_event_row = connection.execute(
+            "SELECT nextval('data_quality_events_id_seq') AS id"
+        ).fetchone()
+        assert quality_event_row is not None
+        quality_event_id = int(quality_event_row["id"])
+        created = connection.execute(
             """
             INSERT INTO data_quality_events (
-              target_spec_id, event_type, previous_status, new_status,
+              id, target_spec_id, event_type, previous_status, new_status,
               range_start_at, range_end_at, fingerprint, evidence,
               fetch_manifest_id, detected_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            OVERRIDING SYSTEM VALUE
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT DO NOTHING
             """,
             (
+                quality_event_id,
                 target_spec_id,
                 reason_code,
                 previous_status,
@@ -147,6 +168,169 @@ def replace_coverage_with_classification(
                 assessed_at,
             ),
         )
+        if created.rowcount == 1:
+            created_events.append((quality_event_id, event_start, event_end))
+    for quality_event_id, event_start, event_end in created_events:
+        _enqueue_quality_transition_recomputation(
+            connection,
+            target_spec_id=target_spec_id,
+            quality_event_id=quality_event_id,
+            event_start_at=event_start,
+            event_end_at=event_end,
+            knowledge_at=assessed_at,
+        )
+
+
+def _enqueue_quality_transition_recomputation(
+    connection: psycopg.Connection[Any],
+    *,
+    target_spec_id: int,
+    quality_event_id: int,
+    event_start_at: datetime,
+    event_end_at: datetime,
+    knowledge_at: datetime,
+) -> None:
+    context = connection.execute(
+        """
+        SELECT specification.market_id, specification.data_type,
+               specification.candle_unit, market.legacy_instrument_id AS instrument_id
+        FROM collection_target_specs specification
+        JOIN markets market ON market.id = specification.market_id
+        WHERE specification.id = %s
+        """,
+        (target_spec_id,),
+    ).fetchone()
+    if (
+        context is None
+        or context["data_type"] != "source_candle"
+        or context["candle_unit"] not in {"1m", "1d"}
+        or context["instrument_id"] is None
+    ):
+        return
+    instrument_id = int(context["instrument_id"])
+    bounds = connection.execute(
+        """
+        SELECT MIN(candle_start_at) AS first_at, MAX(candle_start_at) AS last_at,
+               MAX(id) AS source_revision_through_id
+        FROM source_candle_revisions
+        WHERE instrument_id = %s
+        """,
+        (instrument_id,),
+    ).fetchone()
+    if (
+        bounds is None
+        or bounds["first_at"] is None
+        or bounds["last_at"] is None
+        or bounds["source_revision_through_id"] is None
+    ):
+        return
+    affected_start = max(event_start_at, bounds["first_at"] - timedelta(days=32))
+    affected_end = min(event_end_at, bounds["last_at"] + timedelta(days=32))
+    affected_units = (
+        ("1d", "1w", "1M")
+        if context["candle_unit"] == "1d"
+        else MATERIALIZED_AGGREGATION_UNITS
+    )
+    for affected in affected_rollup_ranges_for_interval(
+        affected_start, affected_end, units=affected_units
+    ):
+        contains_source = connection.execute(
+            """
+            SELECT 1 FROM source_candle_revisions
+            WHERE instrument_id = %s
+              AND candle_start_at >= %s AND candle_start_at < %s
+            LIMIT 1
+            """,
+            (instrument_id, affected.start_at, affected.end_at),
+        ).fetchone()
+        if contains_source is None:
+            continue
+        coverage_rows = connection.execute(
+            """
+            SELECT GREATEST(coverage.range_start_at, %s) AS range_start_at,
+                   LEAST(coverage.range_end_at, %s) AS range_end_at,
+                   coverage.status
+            FROM coverage_intervals coverage
+            JOIN collection_target_specs specification
+              ON specification.id = coverage.target_spec_id
+            WHERE specification.market_id = %s
+              AND specification.data_type = 'source_candle'
+              AND specification.candle_unit IN ('1m', '1d')
+              AND tstzrange(coverage.range_start_at, coverage.range_end_at, '[)')
+                  && tstzrange(%s, %s, '[)')
+            ORDER BY range_start_at, range_end_at,
+                     specification.candle_unit, coverage.status,
+                     specification.id, coverage.id
+            """,
+            (
+                affected.start_at,
+                affected.end_at,
+                context["market_id"],
+                affected.start_at,
+                affected.end_at,
+            ),
+        ).fetchall()
+        coverage_payload = [
+            {
+                "startAt": row["range_start_at"].astimezone(UTC).isoformat(),
+                "endAt": row["range_end_at"].astimezone(UTC).isoformat(),
+                "status": str(row["status"]),
+            }
+            for row in coverage_rows
+        ]
+        coverage_json = json.dumps(
+            coverage_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        coverage_hash = hashlib.sha256(coverage_json.encode()).hexdigest()
+        fingerprint = _checksum(
+            {
+                "marketId": int(context["market_id"]),
+                "instrumentId": instrument_id,
+                "unit": affected.unit,
+                "startAt": affected.start_at,
+                "endAt": affected.end_at,
+                "calculationVersion": CALCULATION_VERSION,
+                "qualityEventId": quality_event_id,
+                "coverageSnapshotHash": coverage_hash,
+            }
+        )
+        invalidation = connection.execute(
+            """
+            INSERT INTO candle_rollup_invalidations (
+              idempotency_key, market_id, instrument_id, candle_unit,
+              calculation_version, range_start_at, range_end_at,
+              output_bucket_count, source_revision_ids,
+              source_revision_through_id, quality_event_through_id,
+              coverage_snapshot, coverage_snapshot_hash, knowledge_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (idempotency_key) DO NOTHING RETURNING id
+            """,
+            (
+                fingerprint,
+                context["market_id"],
+                instrument_id,
+                affected.unit,
+                CALCULATION_VERSION,
+                affected.start_at,
+                affected.end_at,
+                affected.output_bucket_count,
+                [],
+                bounds["source_revision_through_id"],
+                quality_event_id,
+                Jsonb(coverage_payload),
+                coverage_hash,
+                knowledge_at,
+            ),
+        ).fetchone()
+        if invalidation is not None:
+            connection.execute(
+                """
+                INSERT INTO candle_rollup_recompute_jobs (
+                  invalidation_id, idempotency_key, status
+                ) VALUES (%s, %s, 'pending')
+                """,
+                (invalidation["id"], fingerprint),
+            )
 
 
 def _jsonable(value: object) -> Any:

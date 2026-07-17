@@ -14,6 +14,11 @@ export type SystemManagementSnapshot = {
     failedTargetCount: number;
     items: AggregationWorkItem[];
   } | null;
+  incrementalAggregation: {
+    id: number; status: string; instrumentId: number; unit: string;
+    rangeStartAt: string; rangeEndAt: string; attemptCount: number;
+    maxAttempts: number; rowsWritten: number; lastErrorCode: string | null;
+  } | null;
 };
 
 type SystemWorkItem = { instrument: { id: number; marketCode: string; displayName: string }; dataTypes: string[]; status?: string };

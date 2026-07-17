@@ -26,10 +26,16 @@ from goodmoneying_shared.aggregation import (
 from goodmoneying_shared.coverage_transition import replace_coverage_with_classification
 from goodmoneying_shared.data_foundation import (
     INSTRUMENT_ADVISORY_LOCK_NAMESPACE,
+    ROLLUP_FRONTIER_ADVISORY_LOCK_NAMESPACE,
     CollectionSubscriptionDesire,
     CoverageEvidence,
     classify_coverage,
     internal_minute_candle_gaps,
+)
+from goodmoneying_shared.incremental_aggregation import (
+    affected_rollup_ranges,
+    rollup_bucket_end,
+    rollup_result_content_hash,
 )
 from goodmoneying_shared.models import (
     AuditLogSummary,
@@ -41,6 +47,7 @@ from goodmoneying_shared.models import (
     CandidateUniverseEntry,
     CandleAggregationJob,
     CandleAggregationJobTarget,
+    CandleRollupRecomputeJob,
     CandleView,
     CollectionActivityBucket,
     CollectionDashboardTarget,
@@ -101,6 +108,19 @@ def _source_candle_content_hash(item: SourceCandle) -> str:
         )
     )
     return sha256(payload.encode()).hexdigest()
+
+
+def _coverage_snapshot_hash(coverage: list[CoverageSlice]) -> str:
+    payload = [
+        {
+            "startAt": item.start_at.astimezone(UTC).isoformat(),
+            "endAt": item.end_at.astimezone(UTC).isoformat(),
+            "status": item.status,
+        }
+        for item in coverage
+    ]
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return sha256(canonical.encode()).hexdigest()
 
 
 def _source_page_limit(unit: str, page_size: int, source_unit: str) -> int:
@@ -238,6 +258,38 @@ class PostgresOperationsRepository:
                     """,
                     (market_code, quote_currency, base_asset, display_name),
                 ).fetchone()
+            )
+            observed_at = datetime.now(UTC)
+            conn.execute(
+                """
+                INSERT INTO markets (
+                  exchange, market_code, quote_currency, base_asset,
+                  korean_name, english_name, legacy_instrument_id,
+                  first_observed_at, last_observed_at
+                )
+                VALUES ('UPBIT', %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (exchange, market_code) DO UPDATE SET
+                  quote_currency = excluded.quote_currency,
+                  base_asset = excluded.base_asset,
+                  korean_name = excluded.korean_name,
+                  legacy_instrument_id = COALESCE(
+                    markets.legacy_instrument_id, excluded.legacy_instrument_id
+                  ),
+                  last_observed_at = GREATEST(
+                    markets.last_observed_at, excluded.last_observed_at
+                  ),
+                  updated_at = now()
+                """,
+                (
+                    market_code,
+                    quote_currency,
+                    base_asset,
+                    display_name,
+                    display_name,
+                    row["id"],
+                    observed_at,
+                    observed_at,
+                ),
             )
         return _instrument(row)
 
@@ -1370,10 +1422,21 @@ class PostgresOperationsRepository:
             else:
                 rows = conn.execute(
                     f"""
-                    SELECT * FROM candle_rollups
-                    WHERE instrument_id = %s AND candle_unit = %s
-                      AND calculation_version = %s
-                      AND candle_start_at {comparator} %s AND candle_start_at < %s
+                    SELECT * FROM (
+                      SELECT rollup.*,
+                             ROW_NUMBER() OVER (
+                               PARTITION BY instrument_id, candle_unit, candle_start_at,
+                                            calculation_version
+                               ORDER BY source_revision_through_id DESC,
+                                        quality_event_through_id DESC NULLS LAST,
+                                        knowledge_at DESC, id DESC
+                             ) AS projection_rank
+                      FROM candle_rollups rollup
+                      WHERE instrument_id = %s AND candle_unit = %s
+                        AND calculation_version = %s
+                        AND candle_start_at {comparator} %s AND candle_start_at < %s
+                    ) projection
+                    WHERE projection_rank = 1
                     ORDER BY candle_start_at
                     LIMIT %s
                     """,
@@ -1474,11 +1537,7 @@ class PostgresOperationsRepository:
                   SELECT id, input_content_hash, knowledge_at
                   FROM source_candle_revisions
                   WHERE source_candle_id = candle.id
-                    AND input_content_hash = source_candle_content_hash(
-                      candle.open_price, candle.high_price, candle.low_price,
-                      candle.close_price, candle.trade_volume, candle.trade_amount
-                    )
-                  ORDER BY revision_number DESC LIMIT 1
+                  ORDER BY source_as_of DESC, revision_number DESC, id DESC LIMIT 1
                 ) revision ON true
                 WHERE candle.instrument_id = %s
                 ORDER BY candle_start_at
@@ -1515,6 +1574,68 @@ class PostgresOperationsRepository:
             ]
             rollups = aggregate_candles(unit, source, coverage=coverage)
             for item in rollups:
+                bucket_coverage_rows = conn.execute(
+                    """
+                    SELECT GREATEST(coverage.range_start_at, %s) AS range_start_at,
+                           LEAST(coverage.range_end_at, %s) AS range_end_at,
+                           coverage.status
+                    FROM coverage_intervals coverage
+                    JOIN collection_target_specs specification
+                      ON specification.id = coverage.target_spec_id
+                    JOIN markets market ON market.id = specification.market_id
+                    WHERE market.legacy_instrument_id = %s
+                      AND specification.data_type = 'source_candle'
+                      AND specification.candle_unit IN ('1m', '1d')
+                      AND tstzrange(coverage.range_start_at, coverage.range_end_at, '[)')
+                          && tstzrange(%s, %s, '[)')
+                    ORDER BY range_start_at, range_end_at,
+                             specification.candle_unit, coverage.status,
+                             specification.id, coverage.id
+                    """,
+                    (
+                        item.started_at,
+                        rollup_bucket_end(unit, item.started_at),
+                        instrument_id,
+                        item.started_at,
+                        rollup_bucket_end(unit, item.started_at),
+                    ),
+                ).fetchall()
+                bucket_coverage = [
+                    CoverageSlice(
+                        cast(datetime, coverage_row["range_start_at"]),
+                        cast(datetime, coverage_row["range_end_at"]),
+                        cast(Any, coverage_row["status"]),
+                    )
+                    for coverage_row in bucket_coverage_rows
+                ]
+                coverage_hash = _coverage_snapshot_hash(bucket_coverage)
+                quality_ceiling = conn.execute(
+                    """
+                    SELECT ceiling.quality_event_through_id, ceiling.knowledge_at
+                    FROM markets market
+                    CROSS JOIN LATERAL current_rollup_quality_ceiling(
+                      market.id, %s, %s
+                    ) ceiling
+                    WHERE market.legacy_instrument_id = %s
+                    """,
+                    (
+                        item.started_at,
+                        rollup_bucket_end(unit, item.started_at),
+                        instrument_id,
+                    ),
+                ).fetchone()
+                quality_event_through_id = (
+                    quality_ceiling["quality_event_through_id"] if quality_ceiling else None
+                )
+                quality_knowledge_at = (
+                    cast(datetime, quality_ceiling["knowledge_at"])
+                    if quality_ceiling and quality_ceiling["knowledge_at"] is not None
+                    else None
+                )
+                knowledge_at = max(
+                    item.knowledge_at or datetime.min.replace(tzinfo=UTC),
+                    quality_knowledge_at or datetime.min.replace(tzinfo=UTC),
+                )
                 conn.execute(
                     """
                     INSERT INTO candle_rollups (
@@ -1522,21 +1643,16 @@ class PostgresOperationsRepository:
                       low_price,
                       close_price, trade_volume, trade_amount, completeness,
                       calculation_version, source_as_of, knowledge_at, input_content_hash,
-                      input_revision_ids, quality, materialized_at
+                      input_revision_ids, source_revision_through_id,
+                      quality_event_through_id, coverage_snapshot_hash,
+                      result_content_hash, quality, materialized_at
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                              %s, %s, %s, %s, %s, %s, now())
-                    ON CONFLICT (instrument_id, candle_unit, candle_start_at, calculation_version)
-                    DO UPDATE SET
-                      open_price = excluded.open_price, high_price = excluded.high_price,
-                      low_price = excluded.low_price, close_price = excluded.close_price,
-                      trade_volume = excluded.trade_volume, trade_amount = excluded.trade_amount,
-                      completeness = excluded.completeness,
-                      source_as_of = excluded.source_as_of,
-                      knowledge_at = excluded.knowledge_at,
-                      input_content_hash = excluded.input_content_hash,
-                      input_revision_ids = excluded.input_revision_ids,
-                      quality = excluded.quality,
-                      materialized_at = now()
+                              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                    ON CONFLICT (
+                      instrument_id, candle_unit, candle_start_at,
+                      calculation_version, input_content_hash, coverage_snapshot_hash,
+                      source_revision_through_id, quality_event_through_id
+                    ) DO NOTHING
                     """,
                     (
                         instrument_id,
@@ -1551,29 +1667,366 @@ class PostgresOperationsRepository:
                         item.completeness,
                         item.calculation_version,
                         item.source_as_of,
-                        item.knowledge_at,
+                        knowledge_at,
                         item.input_content_hash,
                         list(item.input_revision_ids),
+                        max(item.input_revision_ids, default=0),
+                        quality_event_through_id,
+                        coverage_hash,
+                        rollup_result_content_hash(item),
                         item.quality,
                     ),
                 )
         return len(rollups)
 
     def candle_rollups(
-        self, instrument_id: int, unit: str, start_at: datetime, end_at: datetime
+        self,
+        instrument_id: int,
+        unit: str,
+        start_at: datetime,
+        end_at: datetime,
+        *,
+        knowledge_at: datetime | None = None,
+        source_revision_through_id: int | None = None,
+        quality_event_through_id: int | None = None,
     ) -> list[CandleView]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT * FROM candle_rollups
-                WHERE instrument_id = %s AND candle_unit = %s
-                  AND calculation_version = %s
-                  AND candle_start_at >= %s AND candle_start_at < %s
+                SELECT * FROM (
+                  SELECT rollup.*,
+                         ROW_NUMBER() OVER (
+                           PARTITION BY instrument_id, candle_unit, candle_start_at,
+                                        calculation_version
+                           ORDER BY source_revision_through_id DESC,
+                                    quality_event_through_id DESC NULLS LAST,
+                                    knowledge_at DESC, id DESC
+                         ) AS projection_rank
+                  FROM candle_rollups rollup
+                  WHERE instrument_id = %s AND candle_unit = %s
+                    AND calculation_version = %s
+                    AND candle_start_at >= %s AND candle_start_at < %s
+                    AND (%s::timestamptz IS NULL OR knowledge_at <= %s::timestamptz)
+                    AND (%s::bigint IS NULL OR source_revision_through_id <= %s::bigint)
+                    AND (%s::bigint IS NULL OR
+                         COALESCE(quality_event_through_id, 0) <= %s::bigint)
+                ) projection
+                WHERE projection_rank = 1
                 ORDER BY candle_start_at
                 """,
-                (instrument_id, unit, CALCULATION_VERSION, start_at, end_at),
+                (
+                    instrument_id, unit, CALCULATION_VERSION, start_at, end_at,
+                    knowledge_at, knowledge_at,
+                    source_revision_through_id, source_revision_through_id,
+                    quality_event_through_id, quality_event_through_id,
+                ),
             ).fetchall()
         return [_rollup_candle(row) for row in rows]
+
+    def candle_rollup_recompute_job(self, job_id: int) -> CandleRollupRecomputeJob:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT job.*, invalidation.market_id, invalidation.instrument_id,
+                       invalidation.candle_unit, invalidation.calculation_version,
+                       invalidation.range_start_at, invalidation.range_end_at,
+                       invalidation.source_revision_through_id,
+                       invalidation.quality_event_through_id
+                FROM candle_rollup_recompute_jobs job
+                JOIN candle_rollup_invalidations invalidation
+                  ON invalidation.id = job.invalidation_id
+                WHERE job.id = %s
+                """,
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"집계 재계산 작업을 찾을 수 없다: {job_id}")
+        return _candle_rollup_recompute_job(row)
+
+    def latest_candle_rollup_recompute_job(self) -> CandleRollupRecomputeJob | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM candle_rollup_recompute_jobs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return self.candle_rollup_recompute_job(int(row["id"])) if row else None
+
+    def claim_next_candle_rollup_recompute_job(
+        self,
+        worker_id: str,
+        *,
+        now: datetime | None = None,
+        lease_seconds: int = 120,
+    ) -> CandleRollupRecomputeJob | None:
+        claimed_at = now or datetime.now(UTC)
+        with self._connect() as conn:
+            self._dead_letter_expired_candle_rollup_jobs(conn, claimed_at)
+            row = conn.execute(
+                """
+                WITH eligible AS (
+                  SELECT id FROM candle_rollup_recompute_jobs
+                  WHERE (status IN ('pending', 'retry_wait') AND next_retry_at <= %s
+                         AND attempt_count < max_attempts)
+                     OR (status = 'running' AND lease_expires_at < %s
+                         AND attempt_count < max_attempts)
+                  ORDER BY priority DESC, created_at, id
+                  FOR UPDATE SKIP LOCKED LIMIT 1
+                )
+                UPDATE candle_rollup_recompute_jobs job
+                SET status = 'running', lease_owner = %s,
+                    lease_expires_at = %s,
+                    attempt_count = job.attempt_count + 1,
+                    processing_source_revision_through_id = invalidation.source_revision_through_id,
+                    processing_quality_event_through_id = invalidation.quality_event_through_id,
+                    started_at = COALESCE(job.started_at, %s), updated_at = %s
+                FROM eligible, candle_rollup_invalidations invalidation
+                WHERE job.id = eligible.id AND invalidation.id = job.invalidation_id
+                RETURNING job.id
+                """,
+                (
+                    claimed_at, claimed_at, worker_id,
+                    claimed_at + timedelta(seconds=lease_seconds), claimed_at, claimed_at,
+                ),
+            ).fetchone()
+        return self.candle_rollup_recompute_job(int(row["id"])) if row else None
+
+    def claim_candle_rollup_recompute_job(
+        self,
+        job_id: int,
+        worker_id: str,
+        *,
+        now: datetime | None = None,
+        lease_seconds: int = 120,
+    ) -> CandleRollupRecomputeJob | None:
+        claimed_at = now or datetime.now(UTC)
+        with self._connect() as conn:
+            self._dead_letter_expired_candle_rollup_jobs(conn, claimed_at, job_id=job_id)
+            row = conn.execute(
+                """
+                UPDATE candle_rollup_recompute_jobs job
+                SET status = 'running', lease_owner = %s, lease_expires_at = %s,
+                    attempt_count = job.attempt_count + 1,
+                    processing_source_revision_through_id = invalidation.source_revision_through_id,
+                    processing_quality_event_through_id = invalidation.quality_event_through_id,
+                    started_at = COALESCE(job.started_at, %s), updated_at = %s
+                FROM candle_rollup_invalidations invalidation
+                WHERE job.id = %s AND invalidation.id = job.invalidation_id
+                  AND (
+                    (job.status IN ('pending', 'retry_wait') AND job.next_retry_at <= %s
+                     AND job.attempt_count < job.max_attempts)
+                    OR (job.status = 'running' AND job.lease_expires_at < %s
+                        AND job.attempt_count < job.max_attempts)
+                  )
+                RETURNING job.id
+                """,
+                (
+                    worker_id, claimed_at + timedelta(seconds=lease_seconds),
+                    claimed_at, claimed_at, job_id, claimed_at, claimed_at,
+                ),
+            ).fetchone()
+        return self.candle_rollup_recompute_job(job_id) if row else None
+
+    @staticmethod
+    def _dead_letter_expired_candle_rollup_jobs(
+        conn: Any, expired_at: datetime, *, job_id: int | None = None
+    ) -> None:
+        job_filter = "AND id = %s" if job_id is not None else ""
+        conn.execute(
+            f"""
+            UPDATE candle_rollup_recompute_jobs
+            SET status = 'dead_letter', lease_owner = NULL, lease_expires_at = NULL,
+                last_error_code = COALESCE(last_error_code, 'LEASE_EXPIRED'),
+                dead_letter_reason = 'LEASE_EXPIRED', finished_at = %s, updated_at = %s
+            WHERE status = 'running' AND lease_expires_at < %s
+              AND attempt_count >= max_attempts {job_filter}
+            """,
+            (expired_at, expired_at, expired_at, *([job_id] if job_id is not None else [])),
+        )
+
+    def run_candle_rollup_recompute_job(
+        self, job_id: int, worker_id: str, *, now: datetime | None = None
+    ) -> int:
+        completed_at = now or datetime.now(UTC)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT job.status, job.lease_owner, job.lease_expires_at,
+                       invalidation.*
+                FROM candle_rollup_recompute_jobs job
+                JOIN candle_rollup_invalidations invalidation
+                  ON invalidation.id = job.invalidation_id
+                WHERE job.id = %s FOR UPDATE OF job
+                """,
+                (job_id,),
+            ).fetchone()
+            if (
+                row is None
+                or row["status"] != "running"
+                or row["lease_owner"] != worker_id
+                or cast(datetime, row["lease_expires_at"]) < completed_at
+            ):
+                raise RuntimeError("집계 재계산 작업의 유효한 임대가 아니다.")
+            source_unit_filter = (
+                "revision.candle_unit IN ('1m', '1d')"
+                if row["candle_unit"] in {"1d", "1w", "1M"}
+                else "revision.candle_unit = '1m'"
+            )
+            source_rows = conn.execute(
+                f"""
+                SELECT revision.*, revision.source_as_of AS collected_at,
+                       revision.id AS revision_id,
+                       revision.knowledge_at AS revision_knowledge_at
+                FROM source_candle_revisions revision
+                WHERE revision.instrument_id = %s AND {source_unit_filter}
+                  AND revision.candle_start_at >= %s AND revision.candle_start_at < %s
+                  AND revision.id <= %s
+                  AND revision.id = (
+                    SELECT latest.id
+                    FROM source_candle_revisions latest
+                    WHERE latest.instrument_id = revision.instrument_id
+                      AND latest.candle_unit = revision.candle_unit
+                      AND latest.candle_start_at = revision.candle_start_at
+                      AND latest.id <= %s
+                    ORDER BY latest.source_as_of DESC,
+                             latest.revision_number DESC, latest.id DESC
+                    LIMIT 1
+                  )
+                ORDER BY revision.candle_start_at
+                """,
+                (
+                    row["instrument_id"], row["range_start_at"], row["range_end_at"],
+                    row["source_revision_through_id"], row["source_revision_through_id"],
+                ),
+            ).fetchall()
+            coverage = [
+                CoverageSlice(
+                    datetime.fromisoformat(item["startAt"]),
+                    datetime.fromisoformat(item["endAt"]),
+                    cast(Any, item["status"]),
+                )
+                for item in row["coverage_snapshot"]
+            ]
+            rollups = aggregate_candles(
+                str(row["candle_unit"]), [_candle(item) for item in source_rows], coverage=coverage
+            )
+            rows_written = 0
+            for item in rollups:
+                if not (
+                    cast(datetime, row["range_start_at"])
+                    <= item.started_at
+                    < cast(datetime, row["range_end_at"])
+                ):
+                    continue
+                result = conn.execute(
+                    """
+                    INSERT INTO candle_rollups (
+                      instrument_id, candle_unit, candle_start_at, open_price, high_price,
+                      low_price, close_price, trade_volume, trade_amount, completeness,
+                      calculation_version, source_as_of, knowledge_at, input_content_hash,
+                      input_revision_ids, source_revision_through_id,
+                      quality_event_through_id, coverage_snapshot_hash,
+                      result_content_hash, quality, materialized_at
+                    ) VALUES (
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    ON CONFLICT (
+                      instrument_id, candle_unit, candle_start_at,
+                      calculation_version, input_content_hash, coverage_snapshot_hash,
+                      source_revision_through_id, quality_event_through_id
+                    ) DO NOTHING
+                    """,
+                    (
+                        row["instrument_id"], row["candle_unit"], item.started_at,
+                        item.open, item.high, item.low, item.close, item.volume,
+                        item.trade_amount, item.completeness, row["calculation_version"],
+                        item.source_as_of or row["knowledge_at"],
+                        max(
+                            item.knowledge_at or datetime.min.replace(tzinfo=UTC),
+                            cast(datetime, row["knowledge_at"]),
+                        ),
+                        item.input_content_hash,
+                        list(item.input_revision_ids), row["source_revision_through_id"],
+                        row["quality_event_through_id"],
+                        row["coverage_snapshot_hash"], rollup_result_content_hash(item),
+                        item.quality, completed_at,
+                    ),
+                )
+                rows_written += result.rowcount
+            result = conn.execute(
+                """
+                UPDATE candle_rollup_recompute_jobs
+                SET status = 'succeeded', rows_written = %s, lease_owner = NULL,
+                    lease_expires_at = NULL, finished_at = clock_timestamp(),
+                    updated_at = clock_timestamp(),
+                    last_error_code = NULL, dead_letter_reason = NULL
+                WHERE id = %s AND status = 'running' AND lease_owner = %s
+                  AND lease_expires_at >= clock_timestamp()
+                """,
+                (rows_written, job_id, worker_id),
+            )
+            if result.rowcount != 1:
+                raise RuntimeError("집계 재계산 작업의 임대 fencing에 실패했다.")
+        return rows_written
+
+    def fail_candle_rollup_recompute_job(
+        self, job_id: int, worker_id: str, error_code: str, *, now: datetime | None = None
+    ) -> CandleRollupRecomputeJob:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *, clock_timestamp() AS db_failed_at
+                FROM candle_rollup_recompute_jobs
+                WHERE id = %s FOR UPDATE
+                """,
+                (job_id,),
+            ).fetchone()
+            if (
+                row is None or row["status"] != "running" or row["lease_owner"] != worker_id
+            ):
+                raise RuntimeError("집계 재계산 작업의 유효한 임대가 아니다.")
+            failed_at = cast(datetime, row["db_failed_at"])
+            attempts = int(row["attempt_count"])
+            exhausted = attempts >= int(row["max_attempts"])
+            retry_at = failed_at + timedelta(seconds=min(300, 5 * (2 ** (attempts - 1))))
+            result = conn.execute(
+                """
+                UPDATE candle_rollup_recompute_jobs
+                SET status = %s, next_retry_at = %s,
+                    lease_owner = NULL, lease_expires_at = NULL, last_error_code = %s,
+                    dead_letter_reason = %s, finished_at = %s, updated_at = %s
+                WHERE id = %s AND status = 'running' AND lease_owner = %s
+                  AND lease_expires_at >= clock_timestamp()
+                RETURNING id
+                """,
+                (
+                    "dead_letter" if exhausted else "retry_wait", retry_at,
+                    error_code, error_code if exhausted else None,
+                    failed_at if exhausted else None, failed_at, job_id, worker_id,
+                ),
+            ).fetchone()
+            if result is None:
+                raise RuntimeError("집계 재계산 작업의 유효한 임대가 아니다.")
+        return self.candle_rollup_recompute_job(job_id)
+
+    def safe_restart_candle_rollup_recompute_job(
+        self, job_id: int
+    ) -> CandleRollupRecomputeJob:
+        restarted_at = datetime.now(UTC)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE candle_rollup_recompute_jobs
+                SET status = 'pending', attempt_count = 0, next_retry_at = %s,
+                    lease_owner = NULL, lease_expires_at = NULL, last_error_code = NULL,
+                    dead_letter_reason = NULL, started_at = NULL, finished_at = NULL,
+                    updated_at = %s
+                WHERE id = %s AND status = 'dead_letter' RETURNING id
+                """,
+                (restarted_at, restarted_at, job_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError("dead_letter 작업만 safe-restart할 수 있다.")
+        return self.candle_rollup_recompute_job(job_id)
 
     def schedule_candle_aggregation(self) -> CandleAggregationJob | None:
         with self._connect() as conn:
@@ -4830,7 +5283,7 @@ class PostgresOperationsRepository:
               knowledge_at = excluded.knowledge_at,
               fetch_manifest_id = excluded.fetch_manifest_id,
               updated_at = now()
-            WHERE excluded.collected_at > source_candles.collected_at
+            WHERE excluded.collected_at >= source_candles.collected_at
             """
         params = []
         for item in candles:
@@ -4863,7 +5316,6 @@ class PostgresOperationsRepository:
             for item, item_params in zip(candles, params, strict=True):
                 cursor.execute(sql, item_params)
                 created_revisions.extend(self._append_source_candle_revisions(conn, [item]))
-        self._source_candle_revisions_created(conn, created_revisions)
         observed_starts: dict[tuple[int, int, str], list[datetime]] = {}
         for item in candles:
             _market_id, target_spec_id, manifest_id = manifests[
@@ -4908,7 +5360,7 @@ class PostgresOperationsRepository:
             target_spec_id,
             manifest_id,
             coverage_candle_unit,
-        ), starts in observed_starts.items():
+        ), starts in sorted(observed_starts.items()):
             for range_start_at, range_end_at, row_count in _contiguous_candle_ranges(
                 starts, coverage_candle_unit
             ):
@@ -4925,6 +5377,7 @@ class PostgresOperationsRepository:
                         "rowCount": row_count,
                     },
                 )
+        self._source_candle_revisions_created(conn, created_revisions)
         return counts
 
     def _append_source_candle_revisions(
@@ -5015,6 +5468,135 @@ class PostgresOperationsRepository:
         created: list[SourceCandleRevisionCreated],
     ) -> None:
         """P2-2가 같은 트랜잭션에서 신규 개정을 소비하는 내부 훅이다."""
+
+        if not created:
+            return
+        rows = conn.execute(
+            """
+            SELECT id, instrument_id, candle_unit
+            FROM source_candle_revisions
+            WHERE id = ANY(%s)
+            """,
+            ([item.id for item in created],),
+        ).fetchall()
+        metadata = {int(row["id"]): row for row in rows}
+        grouped: dict[tuple[int, int, str], list[SourceCandleRevisionCreated]] = {}
+        for item in created:
+            row = metadata.get(item.id)
+            if row is None or row["candle_unit"] not in {"1m", "1d"}:
+                continue
+            grouped.setdefault(
+                (item.market_id, int(row["instrument_id"]), str(row["candle_unit"])), []
+            ).append(item)
+        for (market_id, instrument_id, source_unit), revisions in sorted(grouped.items()):
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(%s, %s)",
+                (ROLLUP_FRONTIER_ADVISORY_LOCK_NAMESPACE, market_id),
+            )
+            revision_ids = sorted(item.id for item in revisions)
+            source_knowledge_at = max(item.knowledge_at for item in revisions)
+            for affected in affected_rollup_ranges(
+                [item.candle_start_at.astimezone(UTC) for item in revisions],
+                units=("1d", "1w", "1M")
+                if source_unit == "1d"
+                else MATERIALIZED_AGGREGATION_UNITS,
+            ):
+                quality_ceiling = conn.execute(
+                    """
+                    SELECT quality_event_through_id, knowledge_at
+                    FROM current_rollup_quality_ceiling(%s, %s, %s)
+                    """,
+                    (market_id, affected.start_at, affected.end_at),
+                ).fetchone()
+                quality_event_through_id = (
+                    quality_ceiling["quality_event_through_id"] if quality_ceiling else None
+                )
+                quality_knowledge_at = (
+                    cast(datetime, quality_ceiling["knowledge_at"])
+                    if quality_ceiling and quality_ceiling["knowledge_at"] is not None
+                    else source_knowledge_at
+                )
+                knowledge_at = max(source_knowledge_at, quality_knowledge_at)
+                coverage_rows = conn.execute(
+                    """
+                    SELECT GREATEST(coverage.range_start_at, %s) AS range_start_at,
+                           LEAST(coverage.range_end_at, %s) AS range_end_at,
+                           coverage.status
+                    FROM coverage_intervals coverage
+                    JOIN collection_target_specs specification
+                      ON specification.id = coverage.target_spec_id
+                    WHERE specification.market_id = %s
+                      AND specification.data_type = 'source_candle'
+                      AND specification.candle_unit IN ('1m', '1d')
+                      AND tstzrange(coverage.range_start_at, coverage.range_end_at, '[)')
+                          && tstzrange(%s, %s, '[)')
+                    ORDER BY range_start_at, range_end_at,
+                             specification.candle_unit, coverage.status,
+                             specification.id, coverage.id
+                    """,
+                    (
+                        affected.start_at, affected.end_at, market_id,
+                        affected.start_at, affected.end_at,
+                    ),
+                ).fetchall()
+                coverage_payload = [
+                    {
+                        "startAt": cast(datetime, row["range_start_at"])
+                        .astimezone(UTC)
+                        .isoformat(),
+                        "endAt": cast(datetime, row["range_end_at"])
+                        .astimezone(UTC)
+                        .isoformat(),
+                        "status": str(row["status"]),
+                    }
+                    for row in coverage_rows
+                ]
+                coverage_json = json.dumps(
+                    coverage_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                coverage_hash = sha256(coverage_json.encode()).hexdigest()
+                fingerprint = sha256(
+                    "|".join(
+                        (
+                            str(market_id), affected.unit, affected.start_at.isoformat(),
+                            affected.end_at.isoformat(), CALCULATION_VERSION,
+                            ",".join(str(value) for value in revision_ids), coverage_hash,
+                        )
+                    ).encode()
+                ).hexdigest()
+                invalidation = conn.execute(
+                    """
+                    INSERT INTO candle_rollup_invalidations (
+                      idempotency_key, market_id, instrument_id, candle_unit,
+                      calculation_version, range_start_at, range_end_at,
+                      output_bucket_count, source_revision_ids,
+                      source_revision_through_id, quality_event_through_id,
+                      coverage_snapshot, coverage_snapshot_hash, knowledge_at
+                    ) VALUES (
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    ) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id
+                    """,
+                    (
+                        fingerprint, market_id, instrument_id, affected.unit,
+                        CALCULATION_VERSION, affected.start_at, affected.end_at,
+                        affected.output_bucket_count, revision_ids, max(revision_ids),
+                        quality_event_through_id,
+                        Jsonb(coverage_payload), coverage_hash, knowledge_at,
+                    ),
+                ).fetchone()
+                if invalidation is None:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO candle_rollup_recompute_jobs (
+                      invalidation_id, idempotency_key, status
+                    ) VALUES (%s, %s, 'pending')
+                    """,
+                    (int(invalidation["id"]), f"rollup:{fingerprint}"),
+                )
 
     def _latest_candle_time(self, instrument_id: int) -> datetime | None:
         with self._connect() as conn:
@@ -5370,6 +5952,34 @@ def _candle_aggregation_target(row: Row) -> CandleAggregationJobTarget:
         candle_unit=str(row["candle_unit"]),
         status=cast(Literal["pending", "running", "succeeded", "failed"], row["status"]),
         rows_written=int(row["rows_written"]),
+    )
+
+
+def _candle_rollup_recompute_job(row: Row) -> CandleRollupRecomputeJob:
+    return CandleRollupRecomputeJob(
+        id=int(row["id"]),
+        invalidation_id=int(row["invalidation_id"]),
+        status=cast(Any, row["status"]),
+        market_id=int(row["market_id"]),
+        instrument_id=int(row["instrument_id"]),
+        candle_unit=str(row["candle_unit"]),
+        calculation_version=str(row["calculation_version"]),
+        range_start_at=cast(datetime, row["range_start_at"]),
+        range_end_at=cast(datetime, row["range_end_at"]),
+        source_revision_through_id=int(row["source_revision_through_id"]),
+        quality_event_through_id=(
+            int(row["quality_event_through_id"])
+            if row["quality_event_through_id"] is not None
+            else None
+        ),
+        attempt_count=int(row["attempt_count"]),
+        max_attempts=int(row["max_attempts"]),
+        next_retry_at=cast(datetime, row["next_retry_at"]),
+        lease_owner=cast(str | None, row["lease_owner"]),
+        lease_expires_at=cast(datetime | None, row["lease_expires_at"]),
+        rows_written=int(row["rows_written"]),
+        last_error_code=cast(str | None, row["last_error_code"]),
+        dead_letter_reason=cast(str | None, row["dead_letter_reason"]),
     )
 
 

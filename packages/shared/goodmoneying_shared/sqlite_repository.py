@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -18,6 +19,13 @@ from goodmoneying_shared.aggregation import (
     aggregate_candles,
     rollup_bucket_start,
 )
+from goodmoneying_shared.incremental_aggregation import (
+    affected_rollup_ranges,
+    affected_rollup_ranges_for_interval,
+    rollup_bucket_end,
+    rollup_result_content_hash,
+    rollup_result_content_hash_values,
+)
 from goodmoneying_shared.models import (
     AuditLogSummary,
     BackfillJob,
@@ -28,6 +36,7 @@ from goodmoneying_shared.models import (
     CandidateUniverseEntry,
     CandleAggregationJob,
     CandleAggregationJobTarget,
+    CandleRollupRecomputeJob,
     CandleView,
     CollectionActivityBucket,
     CollectionDashboardTarget,
@@ -120,6 +129,23 @@ def _source_candle_content_hash_values(*values: object) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _max_revision_id(values: object) -> int:
+    return max((int(value) for value in str(values or "").split(",") if value), default=0)
+
+
+def _coverage_snapshot_hash(coverage: list[CoverageSlice]) -> str:
+    payload = [
+        {
+            "startAt": item.start_at.astimezone(UTC).isoformat(),
+            "endAt": item.end_at.astimezone(UTC).isoformat(),
+            "status": item.status,
+        }
+        for item in coverage
+    ]
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 class SQLiteOperationsRepository:
     """테스트와 로컬 데모용 저장소.
 
@@ -145,6 +171,18 @@ class SQLiteOperationsRepository:
             "source_candle_content_hash",
             6,
             _source_candle_content_hash_values,
+            deterministic=True,
+        )
+        self._conn.create_function(
+            "rollup_result_content_hash",
+            9,
+            rollup_result_content_hash_values,
+            deterministic=True,
+        )
+        self._conn.create_function(
+            "max_revision_id",
+            1,
+            _max_revision_id,
             deterministic=True,
         )
         self._create_schema()
@@ -342,6 +380,61 @@ class SQLiteOperationsRepository:
                 BEFORE DELETE ON source_candle_revisions
                 BEGIN SELECT RAISE(ABORT, 'source_candle_revisions is append-only'); END;
 
+                CREATE TABLE IF NOT EXISTS candle_rollup_invalidations (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  idempotency_key TEXT NOT NULL UNIQUE,
+                  market_id INTEGER NOT NULL,
+                  instrument_id INTEGER NOT NULL,
+                  candle_unit TEXT NOT NULL,
+                  calculation_version TEXT NOT NULL,
+                  range_start_at TEXT NOT NULL,
+                  range_end_at TEXT NOT NULL,
+                  output_bucket_count INTEGER NOT NULL CHECK (
+                    output_bucket_count BETWEEN 1 AND 512
+                  ),
+                  source_revision_ids TEXT NOT NULL,
+                  source_revision_through_id INTEGER NOT NULL,
+                  quality_event_through_id INTEGER,
+                  coverage_snapshot TEXT NOT NULL,
+                  coverage_snapshot_hash TEXT NOT NULL,
+                  knowledge_at TEXT NOT NULL,
+                  created_at TEXT NOT NULL
+                );
+
+                CREATE TRIGGER IF NOT EXISTS candle_rollup_invalidations_append_only_update
+                BEFORE UPDATE ON candle_rollup_invalidations
+                BEGIN SELECT RAISE(ABORT, 'candle_rollup_invalidations is append-only'); END;
+                CREATE TRIGGER IF NOT EXISTS candle_rollup_invalidations_append_only_delete
+                BEFORE DELETE ON candle_rollup_invalidations
+                BEGIN SELECT RAISE(ABORT, 'candle_rollup_invalidations is append-only'); END;
+
+                CREATE TABLE IF NOT EXISTS candle_rollup_recompute_jobs (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  invalidation_id INTEGER NOT NULL UNIQUE,
+                  idempotency_key TEXT NOT NULL UNIQUE,
+                  status TEXT NOT NULL DEFAULT 'pending',
+                  priority INTEGER NOT NULL DEFAULT 100,
+                  attempt_count INTEGER NOT NULL DEFAULT 0,
+                  max_attempts INTEGER NOT NULL DEFAULT 5,
+                  next_retry_at TEXT NOT NULL,
+                  lease_owner TEXT,
+                  lease_expires_at TEXT,
+                  processing_source_revision_through_id INTEGER,
+                  processing_quality_event_through_id INTEGER,
+                  rows_written INTEGER NOT NULL DEFAULT 0,
+                  last_error_code TEXT,
+                  dead_letter_reason TEXT,
+                  started_at TEXT,
+                  finished_at TEXT,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS candle_rollup_recompute_jobs_claim_idx
+                  ON candle_rollup_recompute_jobs (
+                    status, next_retry_at, lease_expires_at, priority, created_at
+                  );
+
                 CREATE TABLE IF NOT EXISTS coverage_intervals (
                   instrument_id INTEGER NOT NULL,
                   candle_unit TEXT NOT NULL,
@@ -352,6 +445,7 @@ class SQLiteOperationsRepository:
                 );
 
                 CREATE TABLE IF NOT EXISTS candle_rollups (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                   instrument_id INTEGER NOT NULL,
                   candle_unit TEXT NOT NULL,
                   candle_start_at TEXT NOT NULL,
@@ -367,9 +461,17 @@ class SQLiteOperationsRepository:
                   knowledge_at TEXT,
                   input_content_hash TEXT NOT NULL DEFAULT '',
                   input_revision_ids TEXT NOT NULL DEFAULT '',
+                  source_revision_through_id INTEGER NOT NULL DEFAULT 0,
+                  quality_event_through_id INTEGER NOT NULL DEFAULT 0,
+                  coverage_snapshot_hash TEXT NOT NULL,
+                  result_content_hash TEXT NOT NULL,
                   quality TEXT NOT NULL DEFAULT 'unverified',
                   materialized_at TEXT NOT NULL,
-                  PRIMARY KEY (instrument_id, candle_unit, candle_start_at, calculation_version)
+                  UNIQUE (
+                    instrument_id, candle_unit, candle_start_at,
+                    calculation_version, input_content_hash, coverage_snapshot_hash,
+                    source_revision_through_id, quality_event_through_id
+                  )
                 );
 
                 CREATE TABLE IF NOT EXISTS candle_aggregation_jobs (
@@ -463,6 +565,81 @@ class SQLiteOperationsRepository:
                     self._conn.execute(f"ALTER TABLE {table_name} ADD COLUMN occurred_at TEXT")
                 if "received_at" not in snapshot_columns:
                     self._conn.execute(f"ALTER TABLE {table_name} ADD COLUMN received_at TEXT")
+            self._upgrade_candle_rollups_to_append_only()
+
+    def _upgrade_candle_rollups_to_append_only(self) -> None:
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(candle_rollups)")}
+        if "id" not in columns:
+            self._conn.executescript(
+                """
+                ALTER TABLE candle_rollups RENAME TO candle_rollups_legacy;
+                CREATE TABLE candle_rollups (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  instrument_id INTEGER NOT NULL,
+                  candle_unit TEXT NOT NULL,
+                  candle_start_at TEXT NOT NULL,
+                  open_price TEXT NOT NULL,
+                  high_price TEXT NOT NULL,
+                  low_price TEXT NOT NULL,
+                  close_price TEXT NOT NULL,
+                  trade_volume TEXT NOT NULL,
+                  trade_amount TEXT NOT NULL,
+                  completeness TEXT NOT NULL,
+                  calculation_version TEXT NOT NULL DEFAULT 'candle-rollup-v2',
+                  source_as_of TEXT,
+                  knowledge_at TEXT,
+                  input_content_hash TEXT NOT NULL DEFAULT '',
+                  input_revision_ids TEXT NOT NULL DEFAULT '',
+                  source_revision_through_id INTEGER NOT NULL DEFAULT 0,
+                  quality_event_through_id INTEGER NOT NULL DEFAULT 0,
+                  coverage_snapshot_hash TEXT NOT NULL,
+                  result_content_hash TEXT NOT NULL,
+                  quality TEXT NOT NULL DEFAULT 'unverified',
+                  materialized_at TEXT NOT NULL,
+                  UNIQUE (
+                    instrument_id, candle_unit, candle_start_at,
+                    calculation_version, input_content_hash, coverage_snapshot_hash,
+                    source_revision_through_id, quality_event_through_id
+                  )
+                );
+                INSERT INTO candle_rollups (
+                  instrument_id, candle_unit, candle_start_at, open_price, high_price,
+                  low_price, close_price, trade_volume, trade_amount, completeness,
+                  calculation_version, source_as_of, knowledge_at, input_content_hash,
+                  input_revision_ids, source_revision_through_id,
+                  coverage_snapshot_hash, result_content_hash,
+                  quality, materialized_at
+                )
+                SELECT instrument_id, candle_unit, candle_start_at, open_price, high_price,
+                       low_price, close_price, trade_volume, trade_amount, completeness,
+                       calculation_version, source_as_of, knowledge_at, input_content_hash,
+                       input_revision_ids, max_revision_id(input_revision_ids),
+                       '3d9a6f3d6f8b6d0dca2bff8a6dcb8cc2cebd52cb0d80bb11d5fe35a342e944c3',
+                       rollup_result_content_hash(
+                         calculation_version, open_price, high_price, low_price,
+                         close_price, trade_volume, trade_amount, completeness, quality
+                       ),
+                       quality, materialized_at
+                FROM candle_rollups_legacy;
+                DROP TABLE candle_rollups_legacy;
+                """
+            )
+        self._conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS candle_rollups_current_projection_idx
+              ON candle_rollups (
+                instrument_id, candle_unit, calculation_version, candle_start_at,
+                source_revision_through_id DESC,
+                quality_event_through_id DESC, knowledge_at DESC, id DESC
+              );
+            CREATE TRIGGER IF NOT EXISTS candle_rollups_append_only_update
+            BEFORE UPDATE ON candle_rollups
+            BEGIN SELECT RAISE(ABORT, 'candle_rollups is append-only'); END;
+            CREATE TRIGGER IF NOT EXISTS candle_rollups_append_only_delete
+            BEFORE DELETE ON candle_rollups
+            BEGIN SELECT RAISE(ABORT, 'candle_rollups is append-only'); END;
+            """
+        )
 
     def upsert_instrument(self, market_code: str, display_name: str) -> Instrument:
         quote_currency, base_asset = market_code.split("-", maxsplit=1)
@@ -1185,19 +1362,15 @@ class SQLiteOperationsRepository:
                            revision.knowledge_at AS revision_knowledge_at
                     FROM source_candles candle
                     LEFT JOIN source_candle_revisions revision
-                      ON revision.instrument_id = candle.instrument_id
-                     AND revision.candle_unit = candle.candle_unit
-                     AND revision.candle_start_at = candle.candle_start_at
-                     AND revision.revision_number = (
-                       SELECT MAX(latest.revision_number)
+                      ON revision.id = (
+                       SELECT latest.id
                        FROM source_candle_revisions latest
                        WHERE latest.instrument_id = candle.instrument_id
                          AND latest.candle_unit = candle.candle_unit
                          AND latest.candle_start_at = candle.candle_start_at
-                         AND latest.input_content_hash = source_candle_content_hash(
-                           candle.open_price, candle.high_price, candle.low_price,
-                           candle.close_price, candle.trade_volume, candle.trade_amount
-                         )
+                       ORDER BY latest.source_as_of DESC,
+                                latest.revision_number DESC, latest.id DESC
+                       LIMIT 1
                      )
                     WHERE candle.instrument_id = ?
                     ORDER BY candle.candle_start_at
@@ -1207,38 +1380,62 @@ class SQLiteOperationsRepository:
                 source: list[SourceCandle] = []
                 while rows := cursor.fetchmany(SOURCE_FETCH_BATCH_SIZE):
                     source.extend(self._candle_from_row(row) for row in rows)
-                rollups = aggregate_candles(
-                    unit, source, coverage=self._candle_coverage(instrument_id)
-                )
+                coverage = self._candle_coverage(instrument_id)
+                rollups = aggregate_candles(unit, source, coverage=coverage)
                 materialized_at = _to_db_time(now_kst())
                 for item in rollups:
+                    bucket_coverage = self._candle_coverage(
+                        instrument_id,
+                        item.started_at,
+                        rollup_bucket_end(unit, item.started_at),
+                    )
+                    coverage_hash = _coverage_snapshot_hash(bucket_coverage)
+                    quality_ceiling = self._execute(
+                        """
+                        SELECT MAX(quality_event_through_id) AS quality_event_through_id,
+                               MAX(knowledge_at) AS knowledge_at
+                        FROM candle_rollup_invalidations
+                        WHERE instrument_id = ? AND quality_event_through_id IS NOT NULL
+                          AND range_start_at < ? AND range_end_at > ?
+                        """,
+                        (
+                            instrument_id,
+                            _to_db_time(rollup_bucket_end(unit, item.started_at)),
+                            _to_db_time(item.started_at),
+                        ),
+                    ).fetchone()
+                    quality_event_through_id = (
+                        int(quality_ceiling["quality_event_through_id"])
+                        if quality_ceiling
+                        and quality_ceiling["quality_event_through_id"] is not None
+                        else None
+                    )
+                    quality_knowledge_at = (
+                        _from_db_time(quality_ceiling["knowledge_at"])
+                        if quality_ceiling and quality_ceiling["knowledge_at"] is not None
+                        else None
+                    )
+                    knowledge_at = max(
+                        item.knowledge_at or datetime.min.replace(tzinfo=UTC),
+                        quality_knowledge_at or datetime.min.replace(tzinfo=UTC),
+                    )
                     self._execute(
                         """
                         INSERT INTO candle_rollups (
                           instrument_id, candle_unit, candle_start_at, open_price, high_price,
                           low_price, close_price, trade_volume, trade_amount, completeness,
                           calculation_version, source_as_of, knowledge_at, input_content_hash,
-                          input_revision_ids, quality,
+                          input_revision_ids, source_revision_through_id,
+                          quality_event_through_id, coverage_snapshot_hash,
+                          result_content_hash, quality,
                           materialized_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(
-                          instrument_id, candle_unit, candle_start_at, calculation_version
-                        ) DO UPDATE SET
-                          open_price = excluded.open_price,
-                          high_price = excluded.high_price,
-                          low_price = excluded.low_price,
-                          close_price = excluded.close_price,
-                          trade_volume = excluded.trade_volume,
-                          trade_amount = excluded.trade_amount,
-                          completeness = excluded.completeness,
-                          calculation_version = excluded.calculation_version,
-                          source_as_of = excluded.source_as_of,
-                          knowledge_at = excluded.knowledge_at,
-                          input_content_hash = excluded.input_content_hash,
-                          input_revision_ids = excluded.input_revision_ids,
-                          quality = excluded.quality,
-                          materialized_at = excluded.materialized_at
+                          instrument_id, candle_unit, candle_start_at,
+                          calculation_version, input_content_hash, coverage_snapshot_hash,
+                          source_revision_through_id, quality_event_through_id
+                        ) DO NOTHING
                         """,
                         (
                             instrument_id,
@@ -1253,9 +1450,13 @@ class SQLiteOperationsRepository:
                             item.completeness,
                             item.calculation_version,
                             _to_db_time(item.source_as_of) if item.source_as_of else None,
-                            _to_db_time(item.knowledge_at) if item.knowledge_at else None,
+                            _to_db_time(knowledge_at),
                             item.input_content_hash,
                             ",".join(str(value) for value in item.input_revision_ids),
+                            max(item.input_revision_ids, default=0),
+                            quality_event_through_id or 0,
+                            coverage_hash,
+                            rollup_result_content_hash(item),
                             item.quality,
                             materialized_at,
                         ),
@@ -1267,20 +1468,41 @@ class SQLiteOperationsRepository:
                 self._conn.commit()
         return len(rollups)
 
-    def _candle_coverage(self, instrument_id: int) -> list[CoverageSlice]:
+    def _candle_coverage(
+        self,
+        instrument_id: int,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+    ) -> list[CoverageSlice]:
         rows = self._execute(
             """
             SELECT range_start_at, range_end_at, status
             FROM coverage_intervals
             WHERE instrument_id = ? AND candle_unit IN ('1m', '1d')
+              AND (? IS NULL OR range_end_at > ?)
+              AND (? IS NULL OR range_start_at < ?)
             ORDER BY range_start_at
             """,
-            (instrument_id,),
+            (
+                instrument_id,
+                _to_db_time(start_at) if start_at else None,
+                _to_db_time(start_at) if start_at else None,
+                _to_db_time(end_at) if end_at else None,
+                _to_db_time(end_at) if end_at else None,
+            ),
         ).fetchall()
         return [
             CoverageSlice(
-                _from_db_time(row["range_start_at"]),
-                _from_db_time(row["range_end_at"]),
+                (
+                    max(_from_db_time(row["range_start_at"]), start_at)
+                    if start_at
+                    else _from_db_time(row["range_start_at"])
+                ),
+                (
+                    min(_from_db_time(row["range_end_at"]), end_at)
+                    if end_at
+                    else _from_db_time(row["range_end_at"])
+                ),
                 cast(
                     Literal["available", "no_trade", "missing", "unavailable", "unverified"],
                     row["status"],
@@ -1289,15 +1511,213 @@ class SQLiteOperationsRepository:
             for row in rows
         ]
 
+    def replace_candle_coverage_classification(
+        self,
+        instrument_id: int,
+        start_at: datetime,
+        end_at: datetime,
+        status: Literal["available", "no_trade", "missing", "unavailable", "unverified"],
+    ) -> None:
+        """SQLite parity용 커버리지 전이와 품질 전용 재계산 전파다."""
+
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                overlaps = self._execute(
+                    """
+                    SELECT * FROM coverage_intervals
+                    WHERE instrument_id = ? AND candle_unit = '1m'
+                      AND range_start_at < ? AND range_end_at > ?
+                    ORDER BY range_start_at
+                    """,
+                    (instrument_id, _to_db_time(end_at), _to_db_time(start_at)),
+                ).fetchall()
+                if (
+                    len(overlaps) == 1
+                    and overlaps[0]["range_start_at"] == _to_db_time(start_at)
+                    and overlaps[0]["range_end_at"] == _to_db_time(end_at)
+                    and overlaps[0]["status"] == status
+                ):
+                    self._conn.commit()
+                    return
+                self._execute(
+                    """
+                    DELETE FROM coverage_intervals
+                    WHERE instrument_id = ? AND candle_unit = '1m'
+                      AND range_start_at < ? AND range_end_at > ?
+                    """,
+                    (instrument_id, _to_db_time(end_at), _to_db_time(start_at)),
+                )
+                for overlap in overlaps:
+                    overlap_start = _from_db_time(overlap["range_start_at"])
+                    overlap_end = _from_db_time(overlap["range_end_at"])
+                    for preserved_start, preserved_end in (
+                        (overlap_start, min(overlap_end, start_at)),
+                        (max(overlap_start, end_at), overlap_end),
+                    ):
+                        if preserved_start >= preserved_end:
+                            continue
+                        self._execute(
+                            """
+                            INSERT INTO coverage_intervals (
+                              instrument_id, candle_unit, range_start_at, range_end_at, status
+                            ) VALUES (?, '1m', ?, ?, ?)
+                            """,
+                            (
+                                instrument_id,
+                                _to_db_time(preserved_start),
+                                _to_db_time(preserved_end),
+                                overlap["status"],
+                            ),
+                        )
+                self._execute(
+                    """
+                    INSERT INTO coverage_intervals (
+                      instrument_id, candle_unit, range_start_at, range_end_at, status
+                    ) VALUES (?, '1m', ?, ?, ?)
+                    """,
+                    (instrument_id, _to_db_time(start_at), _to_db_time(end_at), status),
+                )
+                ceiling_row = self._execute(
+                    "SELECT MAX(id) AS id FROM source_candle_revisions WHERE instrument_id = ?",
+                    (instrument_id,),
+                ).fetchone()
+                if ceiling_row is None or ceiling_row["id"] is None:
+                    self._conn.commit()
+                    return
+                now = now_kst()
+                quality_event_id = int(
+                    self._execute(
+                        """
+                        SELECT COALESCE(MAX(quality_event_through_id), 0) + 1
+                        FROM candle_rollup_invalidations
+                        """
+                    ).fetchone()[0]
+                )
+                for affected in affected_rollup_ranges_for_interval(
+                    start_at.astimezone(UTC), end_at.astimezone(UTC)
+                ):
+                    contains_source = self._execute(
+                        """
+                        SELECT 1 FROM source_candle_revisions
+                        WHERE instrument_id = ?
+                          AND candle_start_at >= ? AND candle_start_at < ?
+                        LIMIT 1
+                        """,
+                        (
+                            instrument_id,
+                            _to_db_time(affected.start_at),
+                            _to_db_time(affected.end_at),
+                        ),
+                    ).fetchone()
+                    if contains_source is None:
+                        continue
+                    coverage = self._candle_coverage(
+                        instrument_id, affected.start_at, affected.end_at
+                    )
+                    coverage_hash = _coverage_snapshot_hash(coverage)
+                    coverage_payload = [
+                        {
+                            "startAt": item.start_at.astimezone(UTC).isoformat(),
+                            "endAt": item.end_at.astimezone(UTC).isoformat(),
+                            "status": item.status,
+                        }
+                        for item in coverage
+                    ]
+                    fingerprint = hashlib.sha256(
+                        "|".join(
+                            (
+                                "quality",
+                                str(instrument_id),
+                                affected.unit,
+                                affected.start_at.isoformat(),
+                                affected.end_at.isoformat(),
+                                coverage_hash,
+                            )
+                        ).encode()
+                    ).hexdigest()
+                    invalidation = self._execute(
+                        """
+                        INSERT INTO candle_rollup_invalidations (
+                          idempotency_key, market_id, instrument_id, candle_unit,
+                          calculation_version, range_start_at, range_end_at,
+                          output_bucket_count, source_revision_ids,
+                          source_revision_through_id, quality_event_through_id,
+                          coverage_snapshot, coverage_snapshot_hash, knowledge_at, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(idempotency_key) DO NOTHING
+                        """,
+                        (
+                            fingerprint,
+                            instrument_id,
+                            instrument_id,
+                            affected.unit,
+                            CALCULATION_VERSION,
+                            _to_db_time(affected.start_at),
+                            _to_db_time(affected.end_at),
+                            affected.output_bucket_count,
+                            int(ceiling_row["id"]),
+                            quality_event_id,
+                            json.dumps(coverage_payload, ensure_ascii=False, sort_keys=True),
+                            coverage_hash,
+                            _to_db_time(now),
+                            _to_db_time(now),
+                        ),
+                    )
+                    if invalidation.rowcount == 0:
+                        continue
+                    self._execute(
+                        """
+                        INSERT INTO candle_rollup_recompute_jobs (
+                          invalidation_id, idempotency_key, status, next_retry_at,
+                          created_at, updated_at
+                        ) VALUES (?, ?, 'pending', ?, ?, ?)
+                        """,
+                        (
+                            _required_lastrowid(invalidation),
+                            fingerprint,
+                            _to_db_time(now),
+                            _to_db_time(now),
+                            _to_db_time(now),
+                        ),
+                    )
+            except BaseException:
+                self._conn.rollback()
+                raise
+            else:
+                self._conn.commit()
+
     def candle_rollups(
-        self, instrument_id: int, unit: str, start_at: datetime, end_at: datetime
+        self,
+        instrument_id: int,
+        unit: str,
+        start_at: datetime,
+        end_at: datetime,
+        *,
+        knowledge_at: datetime | None = None,
+        source_revision_through_id: int | None = None,
+        quality_event_through_id: int | None = None,
     ) -> list[CandleView]:
         rows = self._execute(
             """
-            SELECT * FROM candle_rollups
-            WHERE instrument_id = ? AND candle_unit = ?
-              AND calculation_version = ?
-              AND candle_start_at >= ? AND candle_start_at < ?
+            SELECT * FROM (
+              SELECT rollup.*,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY instrument_id, candle_unit, candle_start_at,
+                                    calculation_version
+                       ORDER BY source_revision_through_id DESC,
+                                quality_event_through_id DESC,
+                                knowledge_at DESC, id DESC
+                     ) AS projection_rank
+              FROM candle_rollups rollup
+              WHERE instrument_id = ? AND candle_unit = ?
+                AND calculation_version = ?
+                AND candle_start_at >= ? AND candle_start_at < ?
+                AND (? IS NULL OR knowledge_at <= ?)
+                AND (? IS NULL OR source_revision_through_id <= ?)
+                AND (? IS NULL OR COALESCE(quality_event_through_id, 0) <= ?)
+            ) projection
+            WHERE projection_rank = 1
             ORDER BY candle_start_at
             """,
             (
@@ -1306,6 +1726,12 @@ class SQLiteOperationsRepository:
                 CALCULATION_VERSION,
                 _to_db_time(start_at),
                 _to_db_time(end_at),
+                _to_db_time(knowledge_at) if knowledge_at else None,
+                _to_db_time(knowledge_at) if knowledge_at else None,
+                source_revision_through_id,
+                source_revision_through_id,
+                quality_event_through_id,
+                quality_event_through_id,
             ),
         ).fetchall()
         return [
@@ -1332,6 +1758,390 @@ class SQLiteOperationsRepository:
             )
             for row in rows
         ]
+
+    def candle_rollup_recompute_job(self, job_id: int) -> CandleRollupRecomputeJob:
+        row = self._execute(
+            """
+            SELECT job.*, invalidation.market_id, invalidation.instrument_id,
+                   invalidation.candle_unit, invalidation.calculation_version,
+                   invalidation.range_start_at, invalidation.range_end_at,
+                   invalidation.source_revision_through_id,
+                   invalidation.quality_event_through_id
+            FROM candle_rollup_recompute_jobs job
+            JOIN candle_rollup_invalidations invalidation
+              ON invalidation.id = job.invalidation_id
+            WHERE job.id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"집계 재계산 작업을 찾을 수 없다: {job_id}")
+        return self._candle_rollup_recompute_job_from_row(row)
+
+    def latest_candle_rollup_recompute_job(self) -> CandleRollupRecomputeJob | None:
+        row = self._execute(
+            "SELECT id FROM candle_rollup_recompute_jobs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return self.candle_rollup_recompute_job(int(row["id"])) if row else None
+
+    def claim_next_candle_rollup_recompute_job(
+        self,
+        worker_id: str,
+        *,
+        now: datetime | None = None,
+        lease_seconds: int = 120,
+    ) -> CandleRollupRecomputeJob | None:
+        claimed_at = now or now_kst()
+        with self._lock, self._conn:
+            self._dead_letter_expired_candle_rollup_jobs_locked(claimed_at)
+            row = self._execute(
+                """
+                SELECT id FROM candle_rollup_recompute_jobs
+                WHERE (
+                  status IN ('pending', 'retry_wait') AND next_retry_at <= ?
+                  AND attempt_count < max_attempts
+                ) OR (
+                  status = 'running' AND lease_expires_at < ?
+                  AND attempt_count < max_attempts
+                )
+                ORDER BY priority DESC, created_at, id LIMIT 1
+                """,
+                (_to_db_time(claimed_at), _to_db_time(claimed_at)),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._claim_candle_rollup_recompute_job_locked(
+                int(row["id"]), worker_id, claimed_at, lease_seconds
+            )
+
+    def claim_candle_rollup_recompute_job(
+        self,
+        job_id: int,
+        worker_id: str,
+        *,
+        now: datetime | None = None,
+        lease_seconds: int = 120,
+    ) -> CandleRollupRecomputeJob | None:
+        claimed_at = now or now_kst()
+        with self._lock, self._conn:
+            self._dead_letter_expired_candle_rollup_jobs_locked(claimed_at, job_id=job_id)
+            return self._claim_candle_rollup_recompute_job_locked(
+                job_id, worker_id, claimed_at, lease_seconds
+            )
+
+    def _dead_letter_expired_candle_rollup_jobs_locked(
+        self, expired_at: datetime, *, job_id: int | None = None
+    ) -> None:
+        job_filter = "AND id = ?" if job_id is not None else ""
+        self._execute(
+            f"""
+            UPDATE candle_rollup_recompute_jobs
+            SET status = 'dead_letter', lease_owner = NULL, lease_expires_at = NULL,
+                last_error_code = COALESCE(last_error_code, 'LEASE_EXPIRED'),
+                dead_letter_reason = 'LEASE_EXPIRED', finished_at = ?, updated_at = ?
+            WHERE status = 'running' AND lease_expires_at < ?
+              AND attempt_count >= max_attempts {job_filter}
+            """,
+            (
+                _to_db_time(expired_at),
+                _to_db_time(expired_at),
+                _to_db_time(expired_at),
+                *(tuple([job_id]) if job_id is not None else ()),
+            ),
+        )
+
+    def _claim_candle_rollup_recompute_job_locked(
+        self, job_id: int, worker_id: str, claimed_at: datetime, lease_seconds: int
+    ) -> CandleRollupRecomputeJob | None:
+        cursor = self._execute(
+            """
+            UPDATE candle_rollup_recompute_jobs
+            SET status = 'running', lease_owner = ?, lease_expires_at = ?,
+                attempt_count = attempt_count + 1,
+                processing_source_revision_through_id = (
+                  SELECT source_revision_through_id FROM candle_rollup_invalidations
+                  WHERE id = candle_rollup_recompute_jobs.invalidation_id
+                ),
+                processing_quality_event_through_id = (
+                  SELECT quality_event_through_id FROM candle_rollup_invalidations
+                  WHERE id = candle_rollup_recompute_jobs.invalidation_id
+                ),
+                started_at = COALESCE(started_at, ?), updated_at = ?
+            WHERE id = ? AND (
+              (status IN ('pending', 'retry_wait') AND next_retry_at <= ?
+               AND attempt_count < max_attempts)
+              OR (status = 'running' AND lease_expires_at < ?
+                  AND attempt_count < max_attempts)
+            )
+            """,
+            (
+                worker_id,
+                _to_db_time(claimed_at + timedelta(seconds=lease_seconds)),
+                _to_db_time(claimed_at),
+                _to_db_time(claimed_at),
+                job_id,
+                _to_db_time(claimed_at),
+                _to_db_time(claimed_at),
+            ),
+        )
+        return self.candle_rollup_recompute_job(job_id) if cursor.rowcount == 1 else None
+
+    def run_candle_rollup_recompute_job(
+        self, job_id: int, worker_id: str, *, now: datetime | None = None
+    ) -> int:
+        completed_at = now or now_kst()
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._execute(
+                    """
+                    SELECT job.*, invalidation.*,
+                           job.id AS job_id, invalidation.id AS invalidation_id
+                    FROM candle_rollup_recompute_jobs job
+                    JOIN candle_rollup_invalidations invalidation
+                      ON invalidation.id = job.invalidation_id
+                    WHERE job.id = ?
+                    """,
+                    (job_id,),
+                ).fetchone()
+                if (
+                    row is None
+                    or row["status"] != "running"
+                    or row["lease_owner"] != worker_id
+                    or _from_db_time(row["lease_expires_at"]) < completed_at
+                ):
+                    raise RuntimeError("집계 재계산 작업의 유효한 임대가 아니다.")
+                source_unit_filter = (
+                    "revision.candle_unit IN ('1m', '1d')"
+                    if row["candle_unit"] in {"1d", "1w", "1M"}
+                    else "revision.candle_unit = '1m'"
+                )
+                source_rows = self._execute(
+                    f"""
+                    SELECT revision.*, revision.source_as_of AS collected_at,
+                           revision.id AS revision_id,
+                           revision.knowledge_at AS revision_knowledge_at
+                    FROM source_candle_revisions revision
+                    WHERE revision.instrument_id = ? AND {source_unit_filter}
+                      AND revision.candle_start_at >= ? AND revision.candle_start_at < ?
+                      AND revision.id <= ?
+                      AND revision.id = (
+                        SELECT latest.id
+                        FROM source_candle_revisions latest
+                        WHERE latest.instrument_id = revision.instrument_id
+                          AND latest.candle_unit = revision.candle_unit
+                          AND latest.candle_start_at = revision.candle_start_at
+                          AND latest.id <= ?
+                        ORDER BY latest.source_as_of DESC,
+                                 latest.revision_number DESC, latest.id DESC
+                        LIMIT 1
+                      )
+                    ORDER BY revision.candle_start_at
+                    """,
+                    (
+                        row["instrument_id"],
+                        row["range_start_at"],
+                        row["range_end_at"],
+                        row["source_revision_through_id"],
+                        row["source_revision_through_id"],
+                    ),
+                ).fetchall()
+                coverage = [
+                    CoverageSlice(
+                        datetime.fromisoformat(item["startAt"]),
+                        datetime.fromisoformat(item["endAt"]),
+                        cast(Any, item["status"]),
+                    )
+                    for item in json.loads(row["coverage_snapshot"])
+                ]
+                rollups = aggregate_candles(
+                    str(row["candle_unit"]),
+                    [self._candle_from_row(item) for item in source_rows],
+                    coverage=coverage,
+                )
+                rows_written = 0
+                for item in rollups:
+                    if not (
+                        _from_db_time(row["range_start_at"])
+                        <= item.started_at
+                        < _from_db_time(row["range_end_at"])
+                    ):
+                        continue
+                    existing = self._execute(
+                        """
+                        SELECT MAX(source_revision_through_id) FROM candle_rollups
+                        WHERE instrument_id = ? AND candle_unit = ?
+                          AND candle_start_at = ? AND calculation_version = ?
+                        """,
+                        (
+                            row["instrument_id"],
+                            row["candle_unit"],
+                            _to_db_time(item.started_at),
+                            row["calculation_version"],
+                        ),
+                    ).fetchone()
+                    existing_ceiling = int(existing[0] or 0) if existing else 0
+                    if existing_ceiling > int(row["source_revision_through_id"]):
+                        continue
+                    rows_written += self._insert_incremental_rollup(row, item, completed_at)
+                finished_at = now_kst()
+                cursor = self._execute(
+                    """
+                    UPDATE candle_rollup_recompute_jobs
+                    SET status = 'succeeded', rows_written = ?, lease_owner = NULL,
+                        lease_expires_at = NULL, finished_at = ?, updated_at = ?,
+                        last_error_code = NULL, dead_letter_reason = NULL
+                    WHERE id = ? AND status = 'running' AND lease_owner = ?
+                      AND lease_expires_at >= ?
+                    """,
+                    (
+                        rows_written,
+                        _to_db_time(finished_at),
+                        _to_db_time(finished_at),
+                        job_id,
+                        worker_id,
+                        _to_db_time(finished_at),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("집계 재계산 작업의 임대 fencing에 실패했다.")
+            except BaseException:
+                self._conn.rollback()
+                raise
+            else:
+                self._conn.commit()
+        return rows_written
+
+    def _insert_incremental_rollup(
+        self, invalidation: sqlite3.Row, item: CandleView, materialized_at: datetime
+    ) -> int:
+        cursor = self._execute(
+            """
+            INSERT INTO candle_rollups (
+              instrument_id, candle_unit, candle_start_at, open_price, high_price,
+              low_price, close_price, trade_volume, trade_amount, completeness,
+              calculation_version, source_as_of, knowledge_at, input_content_hash,
+              input_revision_ids, source_revision_through_id,
+              quality_event_through_id, coverage_snapshot_hash,
+              result_content_hash, quality, materialized_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(
+              instrument_id, candle_unit, candle_start_at,
+              calculation_version, input_content_hash, coverage_snapshot_hash,
+              source_revision_through_id, quality_event_through_id
+            ) DO NOTHING
+            """,
+            (
+                invalidation["instrument_id"], invalidation["candle_unit"],
+                _to_db_time(item.started_at), str(item.open), str(item.high), str(item.low),
+                str(item.close), str(item.volume), str(item.trade_amount), item.completeness,
+                invalidation["calculation_version"],
+                (
+                    _to_db_time(item.source_as_of)
+                    if item.source_as_of
+                    else invalidation["knowledge_at"]
+                ),
+                _to_db_time(
+                    max(
+                        item.knowledge_at or datetime.min.replace(tzinfo=UTC),
+                        _from_db_time(invalidation["knowledge_at"]),
+                    )
+                ),
+                item.input_content_hash,
+                ",".join(str(value) for value in item.input_revision_ids),
+                int(invalidation["source_revision_through_id"]),
+                invalidation["quality_event_through_id"] or 0,
+                invalidation["coverage_snapshot_hash"],
+                rollup_result_content_hash(item), item.quality,
+                _to_db_time(materialized_at),
+            ),
+        )
+        return cursor.rowcount
+
+    def fail_candle_rollup_recompute_job(
+        self,
+        job_id: int,
+        worker_id: str,
+        error_code: str,
+        *,
+        now: datetime | None = None,
+    ) -> CandleRollupRecomputeJob:
+        failed_at = now or now_kst()
+        with self._lock, self._conn:
+            row = self._execute(
+                "SELECT * FROM candle_rollup_recompute_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if (
+                row is None
+                or row["status"] != "running"
+                or row["lease_owner"] != worker_id
+            ):
+                raise RuntimeError("집계 재계산 작업의 유효한 임대가 아니다.")
+            attempts = int(row["attempt_count"])
+            exhausted = attempts >= int(row["max_attempts"])
+            retry_at = failed_at + timedelta(seconds=min(300, 5 * (2 ** (attempts - 1))))
+            fenced_at = now_kst()
+            cursor = self._execute(
+                """
+                UPDATE candle_rollup_recompute_jobs
+                SET status = ?, next_retry_at = ?, lease_owner = NULL,
+                    lease_expires_at = NULL, last_error_code = ?, dead_letter_reason = ?,
+                    finished_at = CASE WHEN ? THEN ? ELSE NULL END, updated_at = ?
+                WHERE id = ? AND status = 'running' AND lease_owner = ?
+                  AND lease_expires_at >= ?
+                """,
+                (
+                    "dead_letter" if exhausted else "retry_wait", _to_db_time(retry_at), error_code,
+                    error_code if exhausted else None, exhausted, _to_db_time(failed_at),
+                    _to_db_time(failed_at), job_id, worker_id, _to_db_time(fenced_at),
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("집계 재계산 작업의 유효한 임대가 아니다.")
+        return self.candle_rollup_recompute_job(job_id)
+
+    def safe_restart_candle_rollup_recompute_job(
+        self, job_id: int
+    ) -> CandleRollupRecomputeJob:
+        restarted_at = now_kst()
+        with self._lock, self._conn:
+            cursor = self._execute(
+                """
+                UPDATE candle_rollup_recompute_jobs
+                SET status = 'pending', attempt_count = 0, next_retry_at = ?,
+                    lease_owner = NULL, lease_expires_at = NULL, last_error_code = NULL,
+                    dead_letter_reason = NULL, started_at = NULL, finished_at = NULL,
+                    updated_at = ?
+                WHERE id = ? AND status = 'dead_letter'
+                """,
+                (_to_db_time(restarted_at), _to_db_time(restarted_at), job_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("dead_letter 작업만 safe-restart할 수 있다.")
+        return self.candle_rollup_recompute_job(job_id)
+
+    @staticmethod
+    def _candle_rollup_recompute_job_from_row(row: sqlite3.Row) -> CandleRollupRecomputeJob:
+        return CandleRollupRecomputeJob(
+            id=int(row["id"]), invalidation_id=int(row["invalidation_id"]),
+            status=cast(Any, row["status"]), market_id=int(row["market_id"]),
+            instrument_id=int(row["instrument_id"]), candle_unit=str(row["candle_unit"]),
+            calculation_version=str(row["calculation_version"]),
+            range_start_at=_from_db_time(row["range_start_at"]),
+            range_end_at=_from_db_time(row["range_end_at"]),
+            source_revision_through_id=int(row["source_revision_through_id"]),
+            quality_event_through_id=(
+                int(row["quality_event_through_id"])
+                if row["quality_event_through_id"] is not None else None
+            ),
+            attempt_count=int(row["attempt_count"]), max_attempts=int(row["max_attempts"]),
+            next_retry_at=_from_db_time(row["next_retry_at"]), lease_owner=row["lease_owner"],
+            lease_expires_at=(
+                _from_db_time(row["lease_expires_at"]) if row["lease_expires_at"] else None
+            ),
+            rows_written=int(row["rows_written"]), last_error_code=row["last_error_code"],
+            dead_letter_reason=row["dead_letter_reason"],
+        )
 
     def schedule_candle_aggregation(self) -> CandleAggregationJob | None:
         existing = self._execute(
@@ -3464,7 +4274,7 @@ class SQLiteOperationsRepository:
                   trade_volume = excluded.trade_volume,
                   trade_amount = excluded.trade_amount,
                   collected_at = excluded.collected_at
-                WHERE excluded.collected_at > source_candles.collected_at
+                WHERE excluded.collected_at >= source_candles.collected_at
                 """,
                 (
                     item.instrument_id,
@@ -3551,6 +4361,127 @@ class SQLiteOperationsRepository:
 
     def _source_candle_revisions_created(self, created: list[SourceCandleRevisionCreated]) -> None:
         """P2-2가 같은 트랜잭션에서 신규 개정을 소비하는 내부 훅이다."""
+
+        if not created:
+            return
+        by_instrument: dict[tuple[int, str], list[SourceCandleRevisionCreated]] = {}
+        for item in created:
+            row = self._execute(
+                "SELECT candle_unit FROM source_candle_revisions WHERE id = ?", (item.id,)
+            ).fetchone()
+            if row is not None and row["candle_unit"] in {"1m", "1d"}:
+                by_instrument.setdefault((item.market_id, str(row["candle_unit"])), []).append(item)
+        for (instrument_id, source_unit), revisions in by_instrument.items():
+            revision_ids = sorted(item.id for item in revisions)
+            revision_ids_text = ",".join(str(value) for value in revision_ids)
+            source_knowledge_at = max(item.knowledge_at for item in revisions)
+            created_at = _to_db_time(now_kst())
+            for affected in affected_rollup_ranges(
+                [item.candle_start_at.astimezone(UTC) for item in revisions],
+                units=("1d", "1w", "1M") if source_unit == "1d" else MATERIALIZED_AGGREGATION_UNITS,
+            ):
+                quality_ceiling = self._execute(
+                    """
+                    SELECT MAX(quality_event_through_id) AS quality_event_through_id,
+                           MAX(knowledge_at) AS knowledge_at
+                    FROM candle_rollup_invalidations
+                    WHERE instrument_id = ? AND quality_event_through_id IS NOT NULL
+                      AND range_start_at < ? AND range_end_at > ?
+                    """,
+                    (
+                        instrument_id,
+                        _to_db_time(affected.end_at),
+                        _to_db_time(affected.start_at),
+                    ),
+                ).fetchone()
+                quality_event_through_id = (
+                    int(quality_ceiling["quality_event_through_id"])
+                    if quality_ceiling
+                    and quality_ceiling["quality_event_through_id"] is not None
+                    else None
+                )
+                quality_knowledge_at = (
+                    _from_db_time(quality_ceiling["knowledge_at"])
+                    if quality_ceiling and quality_ceiling["knowledge_at"] is not None
+                    else source_knowledge_at
+                )
+                knowledge_at = max(source_knowledge_at, quality_knowledge_at)
+                coverage_payload = [
+                    {
+                        "startAt": item.start_at.astimezone(UTC).isoformat(),
+                        "endAt": item.end_at.astimezone(UTC).isoformat(),
+                        "status": item.status,
+                    }
+                    for item in self._candle_coverage(
+                        instrument_id, affected.start_at, affected.end_at
+                    )
+                ]
+                coverage_json = json.dumps(
+                    coverage_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                coverage_hash = hashlib.sha256(coverage_json.encode()).hexdigest()
+                fingerprint = hashlib.sha256(
+                    "|".join(
+                        (
+                            str(instrument_id),
+                            affected.unit,
+                            affected.start_at.isoformat(),
+                            affected.end_at.isoformat(),
+                            CALCULATION_VERSION,
+                            revision_ids_text,
+                            coverage_hash,
+                        )
+                    ).encode()
+                ).hexdigest()
+                cursor = self._execute(
+                    """
+                    INSERT OR IGNORE INTO candle_rollup_invalidations (
+                      idempotency_key, market_id, instrument_id, candle_unit,
+                      calculation_version, range_start_at, range_end_at,
+                      output_bucket_count, source_revision_ids,
+                      source_revision_through_id, quality_event_through_id,
+                      coverage_snapshot, coverage_snapshot_hash, knowledge_at, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        fingerprint,
+                        instrument_id,
+                        instrument_id,
+                        affected.unit,
+                        CALCULATION_VERSION,
+                        _to_db_time(affected.start_at),
+                        _to_db_time(affected.end_at),
+                        affected.output_bucket_count,
+                        revision_ids_text,
+                        max(revision_ids),
+                        quality_event_through_id,
+                        coverage_json,
+                        coverage_hash,
+                        _to_db_time(knowledge_at),
+                        created_at,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    continue
+                invalidation_id = _required_lastrowid(cursor)
+                self._execute(
+                    """
+                    INSERT INTO candle_rollup_recompute_jobs (
+                      invalidation_id, idempotency_key, status, next_retry_at,
+                      created_at, updated_at
+                    ) VALUES (?, ?, 'pending', ?, ?, ?)
+                    """,
+                    (
+                        invalidation_id,
+                        f"rollup:{fingerprint}",
+                        created_at,
+                        created_at,
+                        created_at,
+                    ),
+                )
 
     def _latest_candle_time(self, instrument_id: int) -> datetime | None:
         row = self._execute(

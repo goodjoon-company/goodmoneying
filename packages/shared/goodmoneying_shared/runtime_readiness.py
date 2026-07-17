@@ -5,7 +5,7 @@ from typing import Any
 import psycopg
 
 LATEST_P1_MIGRATION = "20260717000800"
-LATEST_PLATFORM_MIGRATION = "20260717000900"
+LATEST_PLATFORM_MIGRATION = "20260717001000"
 RUNTIME_READ_TABLES = frozenset(
     {
         "backfill_job_targets",
@@ -15,6 +15,8 @@ RUNTIME_READ_TABLES = frozenset(
         "candidate_universe_snapshots",
         "candle_aggregation_job_targets",
         "candle_aggregation_jobs",
+        "candle_rollup_invalidations",
+        "candle_rollup_recompute_jobs",
         "candle_rollups",
         "collection_plans",
         "collection_policies",
@@ -52,6 +54,8 @@ RUNTIME_INSERT_TABLES = frozenset(
         "candidate_universe_snapshots",
         "candle_aggregation_job_targets",
         "candle_aggregation_jobs",
+        "candle_rollup_invalidations",
+        "candle_rollup_recompute_jobs",
         "candle_rollups",
         "collection_plans",
         "collection_policies",
@@ -86,7 +90,7 @@ RUNTIME_UPDATE_TABLES = frozenset(
         "backfill_jobs",
         "candle_aggregation_job_targets",
         "candle_aggregation_jobs",
-        "candle_rollups",
+        "candle_rollup_recompute_jobs",
         "collection_plans",
         "collection_policies",
         "collection_runs",

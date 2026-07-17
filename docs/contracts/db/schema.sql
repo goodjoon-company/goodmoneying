@@ -30,6 +30,52 @@ COMMENT ON EXTENSION btree_gist IS 'support for indexing common datatypes in GiS
 
 
 --
+-- Name: current_rollup_quality_ceiling(bigint, timestamp with time zone, timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.current_rollup_quality_ceiling(p_market_id bigint, p_range_start_at timestamp with time zone, p_range_end_at timestamp with time zone) RETURNS TABLE(quality_event_through_id bigint, knowledge_at timestamp with time zone)
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public'
+    AS $$
+  SELECT MAX(event.id), MAX(event.detected_at)
+  FROM public.data_quality_events event
+  JOIN public.collection_target_specs specification
+    ON specification.id = event.target_spec_id
+  WHERE specification.market_id = p_market_id
+    AND specification.data_type = 'source_candle'
+    AND specification.candle_unit IN ('1m', '1d')
+    AND tstzrange(event.range_start_at, event.range_end_at, '[)')
+        && tstzrange(p_range_start_at, p_range_end_at, '[)')
+$$;
+
+
+--
+-- Name: reject_candle_rollup_invalidation_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_candle_rollup_invalidation_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'candle_rollup_invalidations is append-only';
+END;
+$$;
+
+
+--
+-- Name: reject_candle_rollup_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_candle_rollup_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'candle_rollups is append-only';
+END;
+$$;
+
+
+--
 -- Name: reject_source_candle_revision_mutation(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -274,6 +320,94 @@ ALTER TABLE public.candle_aggregation_jobs ALTER COLUMN id ADD GENERATED ALWAYS 
 
 
 --
+-- Name: candle_rollup_invalidations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.candle_rollup_invalidations (
+    id bigint NOT NULL,
+    idempotency_key text NOT NULL,
+    market_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    candle_unit text NOT NULL,
+    calculation_version text NOT NULL,
+    range_start_at timestamp with time zone NOT NULL,
+    range_end_at timestamp with time zone NOT NULL,
+    output_bucket_count integer NOT NULL,
+    source_revision_ids bigint[] NOT NULL,
+    source_revision_through_id bigint NOT NULL,
+    quality_event_through_id bigint,
+    coverage_snapshot jsonb DEFAULT '[]'::jsonb NOT NULL,
+    coverage_snapshot_hash text NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT candle_rollup_invalidations_candle_unit_check CHECK ((candle_unit = ANY (ARRAY['3m'::text, '5m'::text, '10m'::text, '15m'::text, '30m'::text, '1h'::text, '4h'::text, '1d'::text, '1w'::text, '1M'::text]))),
+    CONSTRAINT candle_rollup_invalidations_check CHECK ((range_start_at < range_end_at)),
+    CONSTRAINT candle_rollup_invalidations_coverage_snapshot_hash_check CHECK ((coverage_snapshot_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT candle_rollup_invalidations_output_bucket_count_check CHECK (((output_bucket_count >= 1) AND (output_bucket_count <= 512)))
+);
+
+
+--
+-- Name: candle_rollup_invalidations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.candle_rollup_invalidations ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.candle_rollup_invalidations_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: candle_rollup_recompute_jobs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.candle_rollup_recompute_jobs (
+    id bigint NOT NULL,
+    invalidation_id bigint NOT NULL,
+    idempotency_key text NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    priority integer DEFAULT 100 NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    max_attempts integer DEFAULT 5 NOT NULL,
+    next_retry_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    lease_owner text,
+    lease_expires_at timestamp with time zone,
+    processing_source_revision_through_id bigint,
+    processing_quality_event_through_id bigint,
+    rows_written integer DEFAULT 0 NOT NULL,
+    last_error_code text,
+    dead_letter_reason text,
+    started_at timestamp with time zone,
+    finished_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT candle_rollup_recompute_jobs_attempt_count_check CHECK ((attempt_count >= 0)),
+    CONSTRAINT candle_rollup_recompute_jobs_check CHECK (((status = 'running'::text) = ((lease_owner IS NOT NULL) AND (lease_expires_at IS NOT NULL)))),
+    CONSTRAINT candle_rollup_recompute_jobs_max_attempts_check CHECK ((max_attempts > 0)),
+    CONSTRAINT candle_rollup_recompute_jobs_rows_written_check CHECK ((rows_written >= 0)),
+    CONSTRAINT candle_rollup_recompute_jobs_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'running'::text, 'retry_wait'::text, 'succeeded'::text, 'dead_letter'::text, 'cancelled'::text])))
+);
+
+
+--
+-- Name: candle_rollup_recompute_jobs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.candle_rollup_recompute_jobs ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.candle_rollup_recompute_jobs_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: candle_rollups; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -295,10 +429,31 @@ CREATE TABLE public.candle_rollups (
     input_content_hash text NOT NULL,
     input_revision_ids bigint[] DEFAULT '{}'::bigint[] NOT NULL,
     quality text DEFAULT 'unverified'::text NOT NULL,
+    id bigint NOT NULL,
+    source_revision_through_id bigint DEFAULT 0 NOT NULL,
+    quality_event_through_id bigint,
+    coverage_snapshot_hash text NOT NULL,
+    result_content_hash text NOT NULL,
     CONSTRAINT candle_rollups_completeness_ck CHECK ((completeness = ANY (ARRAY['complete'::text, 'partial'::text, 'empty'::text]))),
+    CONSTRAINT candle_rollups_coverage_hash_ck CHECK ((coverage_snapshot_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT candle_rollups_hash_ck CHECK ((input_content_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT candle_rollups_quality_ck CHECK ((quality = ANY (ARRAY['available'::text, 'no_trade'::text, 'missing'::text, 'unavailable'::text, 'unverified'::text]))),
+    CONSTRAINT candle_rollups_result_hash_ck CHECK ((result_content_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT candle_rollups_unit_ck CHECK ((candle_unit = ANY (ARRAY['3m'::text, '5m'::text, '10m'::text, '15m'::text, '30m'::text, '1h'::text, '4h'::text, '1d'::text, '1w'::text, '1M'::text])))
+);
+
+
+--
+-- Name: candle_rollups_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.candle_rollups ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.candle_rollups_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
 );
 
 
@@ -1474,11 +1629,59 @@ ALTER TABLE ONLY public.candle_aggregation_jobs
 
 
 --
+-- Name: candle_rollup_invalidations candle_rollup_invalidations_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candle_rollup_invalidations
+    ADD CONSTRAINT candle_rollup_invalidations_idempotency_key_key UNIQUE (idempotency_key);
+
+
+--
+-- Name: candle_rollup_invalidations candle_rollup_invalidations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candle_rollup_invalidations
+    ADD CONSTRAINT candle_rollup_invalidations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: candle_rollup_recompute_jobs candle_rollup_recompute_jobs_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candle_rollup_recompute_jobs
+    ADD CONSTRAINT candle_rollup_recompute_jobs_idempotency_key_key UNIQUE (idempotency_key);
+
+
+--
+-- Name: candle_rollup_recompute_jobs candle_rollup_recompute_jobs_invalidation_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candle_rollup_recompute_jobs
+    ADD CONSTRAINT candle_rollup_recompute_jobs_invalidation_id_key UNIQUE (invalidation_id);
+
+
+--
+-- Name: candle_rollup_recompute_jobs candle_rollup_recompute_jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candle_rollup_recompute_jobs
+    ADD CONSTRAINT candle_rollup_recompute_jobs_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: candle_rollups candle_rollups_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.candle_rollups
-    ADD CONSTRAINT candle_rollups_pkey PRIMARY KEY (instrument_id, candle_unit, candle_start_at, calculation_version);
+    ADD CONSTRAINT candle_rollups_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: candle_rollups candle_rollups_revision_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candle_rollups
+    ADD CONSTRAINT candle_rollups_revision_uk UNIQUE NULLS NOT DISTINCT (instrument_id, candle_unit, candle_start_at, calculation_version, input_content_hash, coverage_snapshot_hash, source_revision_through_id, quality_event_through_id);
 
 
 --
@@ -1935,6 +2138,27 @@ CREATE INDEX backfill_jobs_status_idx ON public.backfill_jobs USING btree (statu
 
 
 --
+-- Name: candle_rollup_invalidations_range_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX candle_rollup_invalidations_range_idx ON public.candle_rollup_invalidations USING btree (instrument_id, candle_unit, calculation_version, range_start_at, range_end_at);
+
+
+--
+-- Name: candle_rollup_recompute_jobs_claim_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX candle_rollup_recompute_jobs_claim_idx ON public.candle_rollup_recompute_jobs USING btree (status, next_retry_at, lease_expires_at, priority DESC, created_at);
+
+
+--
+-- Name: candle_rollups_current_projection_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX candle_rollups_current_projection_idx ON public.candle_rollups USING btree (instrument_id, candle_unit, calculation_version, candle_start_at, source_revision_through_id DESC, quality_event_through_id DESC NULLS LAST, knowledge_at DESC, id DESC);
+
+
+--
 -- Name: candle_rollups_range_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2054,6 +2278,13 @@ CREATE INDEX orderbook_summaries_instrument_bucket_idx ON public.orderbook_summa
 
 
 --
+-- Name: source_candle_revisions_incremental_lookup_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX source_candle_revisions_incremental_lookup_idx ON public.source_candle_revisions USING btree (instrument_id, candle_unit, candle_start_at, id DESC);
+
+
+--
 -- Name: source_candle_revisions_lookup_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2121,6 +2352,34 @@ CREATE INDEX ticker_snapshots_instrument_bucket_idx ON public.ticker_snapshots U
 --
 
 CREATE INDEX trade_events_instrument_time_idx ON public.trade_events USING btree (instrument_id, trade_timestamp_at DESC);
+
+
+--
+-- Name: candle_rollup_invalidations candle_rollup_invalidations_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER candle_rollup_invalidations_append_only_delete BEFORE DELETE ON public.candle_rollup_invalidations FOR EACH ROW EXECUTE FUNCTION public.reject_candle_rollup_invalidation_mutation();
+
+
+--
+-- Name: candle_rollup_invalidations candle_rollup_invalidations_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER candle_rollup_invalidations_append_only_update BEFORE UPDATE ON public.candle_rollup_invalidations FOR EACH ROW EXECUTE FUNCTION public.reject_candle_rollup_invalidation_mutation();
+
+
+--
+-- Name: candle_rollups candle_rollups_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER candle_rollups_append_only_delete BEFORE DELETE ON public.candle_rollups FOR EACH ROW EXECUTE FUNCTION public.reject_candle_rollup_mutation();
+
+
+--
+-- Name: candle_rollups candle_rollups_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER candle_rollups_append_only_update BEFORE UPDATE ON public.candle_rollups FOR EACH ROW EXECUTE FUNCTION public.reject_candle_rollup_mutation();
 
 
 --
@@ -2202,11 +2461,75 @@ ALTER TABLE ONLY public.candle_aggregation_job_targets
 
 
 --
+-- Name: candle_rollup_invalidations candle_rollup_invalidations_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candle_rollup_invalidations
+    ADD CONSTRAINT candle_rollup_invalidations_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: candle_rollup_invalidations candle_rollup_invalidations_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candle_rollup_invalidations
+    ADD CONSTRAINT candle_rollup_invalidations_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
+
+
+--
+-- Name: candle_rollup_invalidations candle_rollup_invalidations_quality_event_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candle_rollup_invalidations
+    ADD CONSTRAINT candle_rollup_invalidations_quality_event_through_id_fkey FOREIGN KEY (quality_event_through_id) REFERENCES public.data_quality_events(id);
+
+
+--
+-- Name: candle_rollup_invalidations candle_rollup_invalidations_source_revision_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candle_rollup_invalidations
+    ADD CONSTRAINT candle_rollup_invalidations_source_revision_through_id_fkey FOREIGN KEY (source_revision_through_id) REFERENCES public.source_candle_revisions(id);
+
+
+--
+-- Name: candle_rollup_recompute_jobs candle_rollup_recompute_jobs_invalidation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candle_rollup_recompute_jobs
+    ADD CONSTRAINT candle_rollup_recompute_jobs_invalidation_id_fkey FOREIGN KEY (invalidation_id) REFERENCES public.candle_rollup_invalidations(id);
+
+
+--
+-- Name: candle_rollup_recompute_jobs candle_rollup_recompute_jobs_processing_quality_event_thro_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candle_rollup_recompute_jobs
+    ADD CONSTRAINT candle_rollup_recompute_jobs_processing_quality_event_thro_fkey FOREIGN KEY (processing_quality_event_through_id) REFERENCES public.data_quality_events(id);
+
+
+--
+-- Name: candle_rollup_recompute_jobs candle_rollup_recompute_jobs_processing_source_revision_th_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candle_rollup_recompute_jobs
+    ADD CONSTRAINT candle_rollup_recompute_jobs_processing_source_revision_th_fkey FOREIGN KEY (processing_source_revision_through_id) REFERENCES public.source_candle_revisions(id);
+
+
+--
 -- Name: candle_rollups candle_rollups_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.candle_rollups
     ADD CONSTRAINT candle_rollups_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: candle_rollups candle_rollups_quality_event_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candle_rollups
+    ADD CONSTRAINT candle_rollups_quality_event_through_id_fkey FOREIGN KEY (quality_event_through_id) REFERENCES public.data_quality_events(id);
 
 
 --
@@ -2606,4 +2929,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260717000600'),
     ('20260717000700'),
     ('20260717000800'),
-    ('20260717000900');
+    ('20260717000900'),
+    ('20260717001000');

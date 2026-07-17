@@ -12,6 +12,7 @@ from goodmoneying_shared.models import (
     CandidateUniverseEntry,
     CandleAggregationJob,
     CandleAggregationJobTarget,
+    CandleRollupRecomputeJob,
     CandleView,
     CollectionActivityBucket,
     CollectionDashboardTarget,
@@ -113,7 +114,15 @@ class OperationsRepository(Protocol):
     def materialize_candle_rollups(self, instrument_id: int, unit: str) -> int: ...
 
     def candle_rollups(
-        self, instrument_id: int, unit: str, start_at: datetime, end_at: datetime
+        self,
+        instrument_id: int,
+        unit: str,
+        start_at: datetime,
+        end_at: datetime,
+        *,
+        knowledge_at: datetime | None = None,
+        source_revision_through_id: int | None = None,
+        quality_event_through_id: int | None = None,
     ) -> list[CandleView]: ...
 
     def schedule_candle_aggregation(self) -> CandleAggregationJob | None: ...
@@ -127,6 +136,40 @@ class OperationsRepository(Protocol):
     ) -> None: ...
 
     def latest_candle_aggregation_job(self) -> CandleAggregationJob | None: ...
+
+    def candle_rollup_recompute_job(self, job_id: int) -> CandleRollupRecomputeJob: ...
+
+    def latest_candle_rollup_recompute_job(self) -> CandleRollupRecomputeJob | None: ...
+
+    def claim_next_candle_rollup_recompute_job(
+        self, worker_id: str, *, now: datetime | None = None, lease_seconds: int = 120
+    ) -> CandleRollupRecomputeJob | None: ...
+
+    def claim_candle_rollup_recompute_job(
+        self,
+        job_id: int,
+        worker_id: str,
+        *,
+        now: datetime | None = None,
+        lease_seconds: int = 120,
+    ) -> CandleRollupRecomputeJob | None: ...
+
+    def run_candle_rollup_recompute_job(
+        self, job_id: int, worker_id: str, *, now: datetime | None = None
+    ) -> int: ...
+
+    def fail_candle_rollup_recompute_job(
+        self,
+        job_id: int,
+        worker_id: str,
+        error_code: str,
+        *,
+        now: datetime | None = None,
+    ) -> CandleRollupRecomputeJob: ...
+
+    def safe_restart_candle_rollup_recompute_job(
+        self, job_id: int
+    ) -> CandleRollupRecomputeJob: ...
 
     def ticker_snapshots(
         self, instrument_id: int, start_at: datetime, end_at: datetime

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from time import perf_counter
@@ -422,8 +422,7 @@ def test_coin_analysis_websocket_sends_small_messages_for_a_watchlist_coin() -> 
         assert list(validator.iter_errors(message)) == []
 
 
-def test_coin_analysis_websocket_changes_watchlist_coin_and_all_units_with_independent_messages(
-) -> None:
+def test_coin_analysis_websocket_changes_coin_and_units_with_independent_messages() -> None:
     repository, client = seeded_repository_and_client()
     first_instrument, second_instrument = repository.list_active_targets()[:2]
     seed_distinct_analysis_history(repository, first_instrument.id, second_instrument.id)
@@ -564,7 +563,9 @@ def test_coin_analysis_websocket_rejects_an_incomplete_subscription_without_disc
 
 def test_candle_api_derives_daily_candle_from_collected_one_minute_candles() -> None:
     repository, client = seeded_repository_and_client()
-    instrument_id = repository.list_active_targets()[0].id
+    instrument_id = repository.refresh_candidate_universe(
+        [("KRW-P2-DERIVE", "일봉 파생 검증", "1")]
+    )[0].instrument.id
     day_start = now_kst().replace(hour=0, minute=0, second=0, microsecond=0)
     minute_candles = [
         SourceCandle(
@@ -1224,3 +1225,49 @@ def test_candle_endpoint_rejects_unsupported_unit_and_invalid_range() -> None:
     assert unsupported_unit.json()["code"] == "INVALID_CANDLE_QUERY"
     assert invalid_range.status_code == 400
     assert invalid_range.json()["code"] == "INVALID_CANDLE_QUERY"
+
+
+def test_candle_endpoint_pages_utc_lineage_metadata_and_rejects_oversized_ranges() -> None:
+    client = seeded_client()
+    instrument_id = client.get("/v1/market-list").json()["rows"][0]["instrument"]["id"]
+    end_at = now_kst().astimezone(UTC)
+    start_at = end_at - timedelta(days=1)
+
+    response = client.get(
+        f"/v1/instruments/{instrument_id}/candles",
+        params={
+            "unit": "1m",
+            "from": start_at.isoformat(),
+            "to": end_at.isoformat(),
+            "pageSize": 1,
+        },
+    )
+    oversized = client.get(
+        f"/v1/instruments/{instrument_id}/candles",
+        params={
+            "unit": "1d",
+            "from": (end_at - timedelta(days=1096)).isoformat(),
+            "to": end_at.isoformat(),
+        },
+    )
+    naive = TestClient(client.app, raise_server_exceptions=False).get(
+        f"/v1/instruments/{instrument_id}/candles",
+        params={"unit": "1m", "from": "2026-07-17T00:00:00", "to": end_at.isoformat()},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["candles"]) <= 1
+    assert "nextCursor" in body
+    candle = body["candles"][0]
+    assert {
+        "calculationVersion",
+        "sourceAsOf",
+        "knowledgeAt",
+        "inputContentHash",
+        "quality",
+        "completeness",
+    } <= set(candle)
+    assert candle["startedAt"].endswith("Z")
+    assert oversized.status_code == 400
+    assert naive.status_code == 400

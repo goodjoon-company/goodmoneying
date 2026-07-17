@@ -29,6 +29,28 @@ CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;
 COMMENT ON EXTENSION btree_gist IS 'support for indexing common datatypes in GiST';
 
 
+--
+-- Name: reject_source_candle_revision_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_source_candle_revision_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'source_candle_revisions is append-only';
+END;
+$$;
+
+
+--
+-- Name: source_candle_content_hash(numeric, numeric, numeric, numeric, numeric, numeric); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.source_candle_content_hash(p_open numeric, p_high numeric, p_low numeric, p_close numeric, p_volume numeric, p_trade_amount numeric) RETURNS text
+    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+    RETURN encode(sha256(convert_to(concat_ws('|'::text, (trim_scale(p_open))::text, (trim_scale(p_high))::text, (trim_scale(p_low))::text, (trim_scale(p_close))::text, (trim_scale(p_volume))::text, (trim_scale(p_trade_amount))::text), 'UTF8'::name)), 'hex'::text);
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -219,7 +241,7 @@ CREATE TABLE public.candle_aggregation_job_targets (
     error_message text,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT candle_aggregation_job_targets_status_ck CHECK ((status = ANY (ARRAY['pending'::text, 'running'::text, 'succeeded'::text, 'failed'::text]))),
-    CONSTRAINT candle_aggregation_job_targets_unit_ck CHECK ((candle_unit = ANY (ARRAY['5m'::text, '10m'::text, '30m'::text, '60m'::text, '1d'::text, '1w'::text, '1M'::text])))
+    CONSTRAINT candle_aggregation_job_targets_unit_ck CHECK ((candle_unit = ANY (ARRAY['3m'::text, '5m'::text, '10m'::text, '15m'::text, '30m'::text, '1h'::text, '4h'::text, '1d'::text, '1w'::text, '1M'::text])))
 );
 
 
@@ -267,8 +289,16 @@ CREATE TABLE public.candle_rollups (
     trade_amount numeric NOT NULL,
     completeness text NOT NULL,
     materialized_at timestamp with time zone DEFAULT now() NOT NULL,
+    calculation_version text DEFAULT 'candle-rollup-v2'::text NOT NULL,
+    source_as_of timestamp with time zone NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    input_content_hash text NOT NULL,
+    input_revision_ids bigint[] DEFAULT '{}'::bigint[] NOT NULL,
+    quality text DEFAULT 'unverified'::text NOT NULL,
     CONSTRAINT candle_rollups_completeness_ck CHECK ((completeness = ANY (ARRAY['complete'::text, 'partial'::text, 'empty'::text]))),
-    CONSTRAINT candle_rollups_unit_ck CHECK ((candle_unit = ANY (ARRAY['5m'::text, '10m'::text, '30m'::text, '60m'::text, '1d'::text, '1w'::text, '1M'::text])))
+    CONSTRAINT candle_rollups_hash_ck CHECK ((input_content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT candle_rollups_quality_ck CHECK ((quality = ANY (ARRAY['available'::text, 'no_trade'::text, 'missing'::text, 'unavailable'::text, 'unverified'::text]))),
+    CONSTRAINT candle_rollups_unit_ck CHECK ((candle_unit = ANY (ARRAY['3m'::text, '5m'::text, '10m'::text, '15m'::text, '30m'::text, '1h'::text, '4h'::text, '1d'::text, '1w'::text, '1M'::text])))
 );
 
 
@@ -1108,6 +1138,50 @@ CREATE TABLE public.schema_migrations (
 
 
 --
+-- Name: source_candle_revisions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.source_candle_revisions (
+    id bigint NOT NULL,
+    source_candle_id bigint NOT NULL,
+    revision_number integer NOT NULL,
+    market_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    source text NOT NULL,
+    candle_unit text NOT NULL,
+    candle_start_at timestamp with time zone NOT NULL,
+    open_price numeric NOT NULL,
+    high_price numeric NOT NULL,
+    low_price numeric NOT NULL,
+    close_price numeric NOT NULL,
+    trade_volume numeric NOT NULL,
+    trade_amount numeric NOT NULL,
+    source_as_of timestamp with time zone NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    input_content_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT source_candle_revisions_candle_unit_check CHECK ((candle_unit = ANY (ARRAY['1m'::text, '1d'::text]))),
+    CONSTRAINT source_candle_revisions_input_content_hash_check CHECK ((input_content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT source_candle_revisions_revision_number_check CHECK ((revision_number > 0)),
+    CONSTRAINT source_candle_revisions_source_check CHECK ((source = 'UPBIT'::text))
+);
+
+
+--
+-- Name: source_candle_revisions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.source_candle_revisions ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.source_candle_revisions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: source_candles; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1404,7 +1478,7 @@ ALTER TABLE ONLY public.candle_aggregation_jobs
 --
 
 ALTER TABLE ONLY public.candle_rollups
-    ADD CONSTRAINT candle_rollups_pkey PRIMARY KEY (instrument_id, candle_unit, candle_start_at);
+    ADD CONSTRAINT candle_rollups_pkey PRIMARY KEY (instrument_id, candle_unit, candle_start_at, calculation_version);
 
 
 --
@@ -1752,6 +1826,22 @@ ALTER TABLE ONLY public.schema_migrations
 
 
 --
+-- Name: source_candle_revisions source_candle_revisions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_candle_revisions
+    ADD CONSTRAINT source_candle_revisions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: source_candle_revisions source_candle_revisions_source_candle_id_revision_number_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_candle_revisions
+    ADD CONSTRAINT source_candle_revisions_source_candle_id_revision_number_key UNIQUE (source_candle_id, revision_number);
+
+
+--
 -- Name: source_candles source_candles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1842,6 +1932,13 @@ CREATE INDEX backfill_jobs_lease_idx ON public.backfill_jobs USING btree (status
 --
 
 CREATE INDEX backfill_jobs_status_idx ON public.backfill_jobs USING btree (status, created_at DESC);
+
+
+--
+-- Name: candle_rollups_range_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX candle_rollups_range_idx ON public.candle_rollups USING btree (instrument_id, candle_unit, calculation_version, candle_start_at DESC);
 
 
 --
@@ -1957,6 +2054,13 @@ CREATE INDEX orderbook_summaries_instrument_bucket_idx ON public.orderbook_summa
 
 
 --
+-- Name: source_candle_revisions_lookup_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX source_candle_revisions_lookup_idx ON public.source_candle_revisions USING btree (instrument_id, candle_unit, candle_start_at, revision_number DESC);
+
+
+--
 -- Name: source_candles_collected_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2017,6 +2121,20 @@ CREATE INDEX ticker_snapshots_instrument_bucket_idx ON public.ticker_snapshots U
 --
 
 CREATE INDEX trade_events_instrument_time_idx ON public.trade_events USING btree (instrument_id, trade_timestamp_at DESC);
+
+
+--
+-- Name: source_candle_revisions source_candle_revisions_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER source_candle_revisions_append_only_delete BEFORE DELETE ON public.source_candle_revisions FOR EACH ROW EXECUTE FUNCTION public.reject_source_candle_revision_mutation();
+
+
+--
+-- Name: source_candle_revisions source_candle_revisions_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER source_candle_revisions_append_only_update BEFORE UPDATE ON public.source_candle_revisions FOR EACH ROW EXECUTE FUNCTION public.reject_source_candle_revision_mutation();
 
 
 --
@@ -2308,6 +2426,30 @@ ALTER TABLE ONLY public.orderbook_summaries
 
 
 --
+-- Name: source_candle_revisions source_candle_revisions_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_candle_revisions
+    ADD CONSTRAINT source_candle_revisions_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: source_candle_revisions source_candle_revisions_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_candle_revisions
+    ADD CONSTRAINT source_candle_revisions_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
+
+
+--
+-- Name: source_candle_revisions source_candle_revisions_source_candle_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_candle_revisions
+    ADD CONSTRAINT source_candle_revisions_source_candle_id_fkey FOREIGN KEY (source_candle_id) REFERENCES public.source_candles(id);
+
+
+--
 -- Name: source_candles source_candles_collection_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2463,4 +2605,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260717000500'),
     ('20260717000600'),
     ('20260717000700'),
-    ('20260717000800');
+    ('20260717000800'),
+    ('20260717000900');

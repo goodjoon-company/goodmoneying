@@ -17,6 +17,11 @@ describe("코인 분석 WebSocket 메시지", () => {
           close: "105",
           volume: "12",
           tradeAmount: "1200",
+          calculationVersion: "candle-rollup-v2",
+          sourceAsOf: "2026-07-14T00:00:00Z",
+          knowledgeAt: "2026-07-14T00:00:01Z",
+          inputContentHash: "0".repeat(64),
+          quality: "available",
           completeness: "complete"
         }
       ]

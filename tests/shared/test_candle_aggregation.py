@@ -54,9 +54,9 @@ def test_5분_집계는_원천_1분봉을_하나의_ohlcv_봉으로_만든다() 
 
 def test_집계_테이블은_동일_원천봉을_다시_처리해도_중복_봉을_만들지_않는다() -> None:
     repository = SQLiteOperationsRepository()
-    instrument = repository.refresh_candidate_universe(
-        [("KRW-BTC", "비트코인", "100")]
-    )[0].instrument
+    instrument = repository.refresh_candidate_universe([("KRW-BTC", "비트코인", "100")])[
+        0
+    ].instrument
     repository.ensure_default_active_targets(limit=1)
     started_at = datetime(2026, 7, 14, 9, 0, tzinfo=KST)
     source = [
@@ -88,9 +88,9 @@ def test_집계_테이블은_동일_원천봉을_다시_처리해도_중복_봉�
 
 def test_오래된_집계는_활성_코인과_단위별_자동_집계_작업을_만든다() -> None:
     repository = SQLiteOperationsRepository()
-    instrument = repository.refresh_candidate_universe(
-        [("KRW-BTC", "비트코인", "100")]
-    )[0].instrument
+    instrument = repository.refresh_candidate_universe([("KRW-BTC", "비트코인", "100")])[
+        0
+    ].instrument
     repository.ensure_default_active_targets(limit=1)
     started_at = datetime(2026, 7, 14, 9, 0, tzinfo=KST)
     repository.record_incremental_collection(
@@ -115,17 +115,17 @@ def test_오래된_집계는_활성_코인과_단위별_자동_집계_작업을_
     job = repository.schedule_candle_aggregation()
 
     assert job is not None
-    assert job.total_target_count == 7
+    assert job.total_target_count == 10
     assert job.completed_target_count == 0
-    assert job.pending_target_count == 7
+    assert job.pending_target_count == 10
     assert job.progress_percent == Decimal("0")
 
 
 def test_집계_작업_혼합_상태의_전체_건수와_진행률은_상태별_합계와_일치한다() -> None:
     repository = SQLiteOperationsRepository()
-    instrument = repository.refresh_candidate_universe(
-        [("KRW-BTC", "비트코인", "100")]
-    )[0].instrument
+    instrument = repository.refresh_candidate_universe([("KRW-BTC", "비트코인", "100")])[
+        0
+    ].instrument
     repository.ensure_default_active_targets(limit=1)
     started_at = datetime(2026, 7, 14, 9, 0, tzinfo=KST)
     repository.record_incremental_collection(
@@ -164,10 +164,10 @@ def test_집계_작업_혼합_상태의_전체_건수와_진행률은_상태별_
     latest = repository.latest_candle_aggregation_job()
 
     assert latest is not None
-    assert latest.total_target_count == 7
+    assert latest.total_target_count == 10
     assert latest.completed_target_count == 1
     assert latest.running_target_count == 1
-    assert latest.pending_target_count == 4
+    assert latest.pending_target_count == 7
     assert latest.failed_target_count == 1
     assert latest.total_target_count == (
         latest.completed_target_count
@@ -175,14 +175,14 @@ def test_집계_작업_혼합_상태의_전체_건수와_진행률은_상태별_
         + latest.pending_target_count
         + latest.failed_target_count
     )
-    assert latest.progress_percent == Decimal("100") / Decimal("7")
+    assert latest.progress_percent == Decimal("100") / Decimal("10")
 
 
 def test_집계_워커는_자동_작업을_완료하고_진행률을_100으로_갱신한다() -> None:
     repository = SQLiteOperationsRepository()
-    instrument = repository.refresh_candidate_universe(
-        [("KRW-BTC", "비트코인", "100")]
-    )[0].instrument
+    instrument = repository.refresh_candidate_universe([("KRW-BTC", "비트코인", "100")])[
+        0
+    ].instrument
     repository.ensure_default_active_targets(limit=1)
     started_at = datetime(2026, 7, 14, 9, 0, tzinfo=KST)
     repository.record_incremental_collection(
@@ -207,10 +207,10 @@ def test_집계_워커는_자동_작업을_완료하고_진행률을_100으로_�
     completed = CandleAggregationWorker(repository).run_once()
     job = repository.latest_candle_aggregation_job()
 
-    assert completed == 7
+    assert completed == 10
     assert job is not None
     assert job.status == "succeeded"
-    assert job.completed_target_count == 7
+    assert job.completed_target_count == 10
     assert job.pending_target_count == 0
     assert job.progress_percent == Decimal("100")
 
@@ -221,9 +221,9 @@ def test_집계_워커는_첫_처리_구간이_32초_걸려도_31초_시점에_�
     database_path = tmp_path / "long-aggregation.sqlite3"
     repository = SQLiteOperationsRepository.from_path(database_path)
     observer = SQLiteOperationsRepository.from_path(database_path)
-    instrument = repository.refresh_candidate_universe(
-        [("KRW-BTC", "비트코인", "100")]
-    )[0].instrument
+    instrument = repository.refresh_candidate_universe([("KRW-BTC", "비트코인", "100")])[
+        0
+    ].instrument
     repository.ensure_default_active_targets(limit=1)
     started_at = datetime(2026, 7, 14, 9, 0, tzinfo=KST)
     repository.record_incremental_collection(
@@ -283,16 +283,16 @@ def test_집계_워커는_첫_처리_구간이_32초_걸려도_31초_시점에_�
     assert runtime.status_label == "동작 중"
     assert worker_thread.is_alive() is False
     assert errors == []
-    assert results == [7]
+    assert results == [10]
 
 
 def test_대량_집계의_heartbeat_쓰기는_처리량이_아닌_시간에_비례한다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = SQLiteOperationsRepository()
-    instrument = repository.refresh_candidate_universe(
-        [("KRW-BTC", "비트코인", "100")]
-    )[0].instrument
+    instrument = repository.refresh_candidate_universe([("KRW-BTC", "비트코인", "100")])[
+        0
+    ].instrument
     repository.ensure_default_active_targets(limit=1)
     started_at = datetime(2026, 7, 1, 0, 0, tzinfo=KST)
     repository.record_incremental_collection(
@@ -330,7 +330,7 @@ def test_대량_집계의_heartbeat_쓰기는_처리량이_아닌_시간에_비�
         completed = worker.run_once()
     elapsed = time.monotonic() - started
 
-    assert completed == 7
+    assert completed == 10
     assert heartbeat_count <= ceil(elapsed / HEARTBEAT_INTERVAL_SECONDS) + 1
 
 
@@ -338,9 +338,9 @@ def test_집계_실패_후에는_heartbeat_ticker_스레드가_남지_않는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = SQLiteOperationsRepository()
-    instrument = repository.refresh_candidate_universe(
-        [("KRW-BTC", "비트코인", "100")]
-    )[0].instrument
+    instrument = repository.refresh_candidate_universe([("KRW-BTC", "비트코인", "100")])[
+        0
+    ].instrument
     repository.ensure_default_active_targets(limit=1)
     started_at = datetime(2026, 7, 14, 9, 0, tzinfo=KST)
     repository.record_incremental_collection(
@@ -386,9 +386,9 @@ def test_sqlite_집계는_heartbeat가_교차된_뒤_실패해도_부분_커밋�
     database_path = tmp_path / "aggregation-rollback.sqlite3"
     repository = SQLiteOperationsRepository.from_path(database_path)
     observer = SQLiteOperationsRepository.from_path(database_path)
-    instrument = repository.refresh_candidate_universe(
-        [("KRW-BTC", "비트코인", "100")]
-    )[0].instrument
+    instrument = repository.refresh_candidate_universe([("KRW-BTC", "비트코인", "100")])[
+        0
+    ].instrument
     repository.ensure_default_active_targets(limit=1)
     started_at = datetime(2026, 7, 14, 9, 0, tzinfo=KST)
     repository.record_incremental_collection(
@@ -415,9 +415,7 @@ def test_sqlite_집계는_heartbeat가_교차된_뒤_실패해도_부분_커밋�
     heartbeat_attempted = threading.Event()
     rollup_write_count = 0
 
-    def fail_second_rollup_write(
-        sql: str, params: tuple[Any, ...] = ()
-    ) -> Any:
+    def fail_second_rollup_write(sql: str, params: tuple[Any, ...] = ()) -> Any:
         nonlocal rollup_write_count
         cursor = original_execute(sql, params)
         if "INSERT INTO candle_rollups" not in sql:
@@ -432,9 +430,7 @@ def test_sqlite_집계는_heartbeat가_교차된_뒤_실패해도_부분_커밋�
     def record_heartbeat() -> None:
         if first_rollup_written.is_set():
             heartbeat_attempted.set()
-        repository.record_collection_worker_heartbeat(
-            "candle_aggregation", "running"
-        )
+        repository.record_collection_worker_heartbeat("candle_aggregation", "running")
 
     monkeypatch.setattr(repository, "_execute", fail_second_rollup_write)
 
@@ -468,9 +464,9 @@ def test_sqlite_집계는_원천_조회_전에_쓰기_트랜잭션을_확보한�
         busy_timeout_seconds=0.02,
     )
     observer = SQLiteOperationsRepository.from_path(database_path)
-    instrument = repository.refresh_candidate_universe(
-        [("KRW-BTC", "비트코인", "100")]
-    )[0].instrument
+    instrument = repository.refresh_candidate_universe([("KRW-BTC", "비트코인", "100")])[
+        0
+    ].instrument
     repository.ensure_default_active_targets(limit=1)
     started_at = datetime(2026, 7, 14, 9, 0, tzinfo=KST)
 
@@ -509,9 +505,7 @@ def test_sqlite_집계는_원천_조회_전에_쓰기_트랜잭션을_확보한�
         finally:
             writer_finished.set()
 
-    def interleave_writer_before_first_rollup(
-        sql: str, params: tuple[Any, ...] = ()
-    ) -> Any:
+    def interleave_writer_before_first_rollup(sql: str, params: tuple[Any, ...] = ()) -> Any:
         nonlocal writer_thread
         if "INSERT INTO candle_rollups" in sql and not writer_start.is_set():
             writer_start.set()
@@ -571,13 +565,10 @@ def test_heartbeat_콜백이_막혀도_종료_유예_시간_안에_반환하고_
 
     assert elapsed < 0.25
     assert any(
-        message.startswith("aggregation_heartbeat_shutdown_timeout")
-        for message in caplog.messages
+        message.startswith("aggregation_heartbeat_shutdown_timeout") for message in caplog.messages
     )
     blocked_threads = [
-        thread
-        for thread in threading.enumerate()
-        if thread.name == HEARTBEAT_THREAD_NAME
+        thread for thread in threading.enumerate() if thread.name == HEARTBEAT_THREAD_NAME
     ]
     assert blocked_threads
     assert all(thread.daemon for thread in blocked_threads)

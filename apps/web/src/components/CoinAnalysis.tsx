@@ -19,9 +19,12 @@ const timeframes: { value: AnalysisUnit; label: string }[] = [
   { value: "1w", label: "주봉" },
   { value: "1d", label: "일봉" },
   { value: "1h", label: "시봉" },
+  { value: "4h", label: "4시간" },
   { value: "30m", label: "30분" },
   { value: "10m", label: "10분" },
+  { value: "15m", label: "15분" },
   { value: "5m", label: "5분" },
+  { value: "3m", label: "3분" },
   { value: "1m", label: "1분" }
 ];
 
@@ -61,6 +64,7 @@ export function CoinAnalysis({
   }
 
   const selected = rows.find((row) => row.instrument.id === instrumentId) ?? rows[0];
+  const latestCandle = analysis.candles.at(-1);
   return (
     <section className="analysis-page" aria-label="코인 분석 화면">
       <aside className="analysis-watchlist panel">
@@ -101,6 +105,10 @@ export function CoinAnalysis({
         <section className="analysis-chart-panel panel">
           <div className="panel-heading"><div><h2>가격 · 거래량 · 추세</h2><span>{timeframeLabel(unit)} · {rangeLabel(rangeDays)} 요청 · {analysis.candles.length.toLocaleString("ko-KR")}개 표시{isHighFrequency(unit) ? " (최근 1,000개 한도)" : ""}</span></div><strong>{analysis.market ? formatMoney(analysis.market.ticker.tradePrice, selected.instrument.quoteCurrency) : "연결 중"}</strong></div>
           <AnalysisChart candles={analysis.candles} indicators={analysis.indicators} quoteCurrency={selected.instrument.quoteCurrency} />
+          <div className="analysis-lineage" aria-label="집계 계보와 품질">
+            계산 {latestCandle?.calculationVersion ?? "대기"} · 품질 {latestCandle?.quality ?? "unverified"} · 완전성 {latestCandle?.completeness ?? "empty"}
+            {latestCandle ? <small>원천 기준 {formatKstDateTime(latestCandle.sourceAsOf)} · 지식 시각 {formatKstDateTime(latestCandle.knowledgeAt)}</small> : null}
+          </div>
           <div className="analysis-legend"><span>SMA 20</span><span>SMA 60</span><span>EMA 20</span><span>볼린저 밴드</span><span>거래량</span></div>
         </section>
         <section className="analysis-market-grid" aria-label="현재가 호가 체결">
@@ -168,7 +176,7 @@ function rangeLabel(rangeDays: AnalysisRangeDays): string {
 }
 
 function isHighFrequency(unit: AnalysisUnit): boolean {
-  return ["1m", "5m", "10m", "30m", "1h"].includes(unit);
+  return ["1m", "3m", "5m", "10m", "15m", "30m", "1h", "4h"].includes(unit);
 }
 
 function toTime(value: string): UTCTimestamp { return Math.floor(new Date(value).getTime() / 1000) as UTCTimestamp; }

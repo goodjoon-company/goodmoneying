@@ -211,6 +211,21 @@ class SourceCandle:
     trade_volume: Decimal
     trade_amount: Decimal
     collected_at: datetime
+    revision_id: int | None = None
+    input_content_hash: str | None = None
+    knowledge_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class SourceCandleRevisionCreated:
+    """같은 트랜잭션에서 새로 생성된 원천 캔들 개정만 나타낸다."""
+
+    id: int
+    revision_number: int
+    market_id: int
+    candle_start_at: datetime
+    knowledge_at: datetime
+    input_content_hash: str
 
 
 @dataclass(frozen=True)
@@ -263,6 +278,12 @@ class CandleView:
     volume: Decimal
     trade_amount: Decimal
     completeness: Literal["complete", "partial", "empty"]
+    calculation_version: str = "candle-rollup-v2"
+    source_as_of: datetime | None = None
+    knowledge_at: datetime | None = None
+    input_content_hash: str = ""
+    quality: Literal["available", "no_trade", "missing", "unavailable", "unverified"] = "available"
+    input_revision_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)

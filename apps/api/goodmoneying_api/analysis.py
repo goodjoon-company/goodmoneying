@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from goodmoneying_api.schemas import CandleResponse
@@ -21,7 +22,7 @@ def indicator_points(candles: list[CandleResponse]) -> list[dict[str, str | None
         rsi = _rsi(closes[index - 14 : index + 1]) if index >= 14 else None
         result.append(
             {
-                "startedAt": candle.startedAt.isoformat(),
+                "startedAt": _rfc3339_utc(candle.startedAt),
                 "sma20": _decimal_string(sma20),
                 "sma60": _decimal_string(sma60),
                 "ema20": _decimal_string(ema),
@@ -61,3 +62,7 @@ def _rsi(values: list[Decimal]) -> Decimal:
 
 def _decimal_string(value: Decimal | None) -> str | None:
     return format(value.normalize(), "f") if value is not None else None
+
+
+def _rfc3339_utc(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")

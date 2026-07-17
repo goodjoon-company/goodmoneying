@@ -291,6 +291,11 @@ export function createTestCandles(): Candle[] {
     close: "1000500",
     volume: "12.3",
     tradeAmount: "12300000",
+    calculationVersion: "candle-rollup-v2",
+    sourceAsOf: new Date(Date.parse("2026-01-01T00:00:00+09:00") + index * 60 * 1000).toISOString(),
+    knowledgeAt: new Date(Date.parse("2026-01-01T00:00:01+09:00") + index * 60 * 1000).toISOString(),
+    inputContentHash: "0".repeat(64),
+    quality: "available",
     completeness: "complete"
   }));
 }

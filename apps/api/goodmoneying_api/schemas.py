@@ -549,12 +549,18 @@ class CandleResponse(BaseModel):
     close: str
     volume: str
     tradeAmount: str
+    calculationVersion: str
+    sourceAsOf: datetime
+    knowledgeAt: datetime
+    inputContentHash: str
+    quality: Literal["available", "no_trade", "missing", "unavailable", "unverified"]
     completeness: Literal["complete", "partial", "empty"]
 
 
 class CandleSeriesResponse(BaseModel):
     unit: str
     candles: list[CandleResponse]
+    nextCursor: str | None = None
 
 
 class TickerSnapshotsResponse(BaseModel):

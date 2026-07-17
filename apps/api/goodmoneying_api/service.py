@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 
@@ -82,13 +82,16 @@ from goodmoneying_shared.models import (
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.time import now_kst
 
-CANDLE_UNITS = {"1m", "3m", "5m", "10m", "15m", "30m", "60m", "1h", "240m", "1d", "1w", "1M"}
+CANDLE_UNITS = {"1m", "3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"}
 ANALYSIS_UNITS = {
     "1m": "1m",
+    "3m": "3m",
     "5m": "5m",
     "10m": "10m",
+    "15m": "15m",
     "30m": "30m",
-    "1h": "60m",
+    "1h": "1h",
+    "4h": "4h",
     "1d": "1d",
     "1w": "1w",
     "1M": "1M",
@@ -403,20 +406,47 @@ class OperationsService:
         return current_volume, (current_volume - previous_volume) / previous_volume
 
     def candles(
-        self, instrument_id: int, unit: str, start_at: datetime, end_at: datetime
+        self,
+        instrument_id: int,
+        unit: str,
+        start_at: datetime,
+        end_at: datetime,
+        *,
+        page_size: int = 500,
+        cursor: datetime | None = None,
     ) -> CandleSeriesResponse:
         if unit not in CANDLE_UNITS:
             raise ValueError("지원하지 않는 캔들 단위다.")
+        if any(value.tzinfo is None or value.utcoffset() is None for value in (start_at, end_at)):
+            raise ValueError("캔들 조회 시각은 UTC 오프셋을 포함해야 한다.")
+        if cursor is not None and (cursor.tzinfo is None or cursor.utcoffset() is None):
+            raise ValueError("캔들 커서는 UTC 오프셋을 포함해야 한다.")
         if start_at >= end_at:
             raise ValueError("캔들 조회 종료 시각은 시작 시각보다 뒤여야 한다.")
+        if end_at - start_at > timedelta(days=1095):
+            raise ValueError("캔들 조회 범위는 최대 1095일이다.")
+        if not 1 <= page_size <= 500:
+            raise ValueError("페이지 크기는 1에서 500 사이여야 한다.")
+        start_at = start_at.astimezone(UTC)
+        end_at = end_at.astimezone(UTC)
+        cursor = cursor.astimezone(UTC) if cursor else None
+        page_reader = getattr(self._repository, "candle_page", None)
+        if callable(page_reader):
+            page, next_cursor = page_reader(
+                instrument_id, unit, start_at, end_at, page_size, cursor
+            )
+        else:
+            rows = self._repository.candles(instrument_id, unit, start_at, end_at)
+            if cursor is not None:
+                rows = [item for item in rows if item.started_at > cursor]
+            page = rows[:page_size]
+            next_cursor = page[-1].started_at if len(rows) > page_size and page else None
         return CandleSeriesResponse(
             unit=unit,
-            candles=[
-                candle_to_response(item)
-                for item in self._repository.candles(
-                    instrument_id, "60m" if unit == "1h" else unit, start_at, end_at
-                )
-            ],
+            candles=[candle_to_response(item) for item in page],
+            nextCursor=next_cursor.astimezone(UTC).isoformat().replace("+00:00", "Z")
+            if next_cursor
+            else None,
         )
 
     def analysis_snapshot(
@@ -441,7 +471,7 @@ class OperationsService:
         candles = self._repository.candles(
             instrument_id, repository_unit, end_at - timedelta(days=range_days), end_at
         )
-        if repository_unit in {"1m", "5m", "10m", "30m", "60m"}:
+        if repository_unit in {"1m", "3m", "5m", "10m", "15m", "30m", "1h", "4h"}:
             candles = candles[-1000:]
         responses = [candle_to_response(item) for item in candles]
         trade = self._repository.trade_summary(instrument_id, end_at - timedelta(minutes=1), end_at)
@@ -960,13 +990,18 @@ def orderbook_to_response(item: OrderbookSummary) -> OrderbookSummaryResponse:
 
 def candle_to_response(item: CandleView) -> CandleResponse:
     return CandleResponse(
-        startedAt=item.started_at,
+        startedAt=item.started_at.astimezone(UTC),
         open=decimal_string(item.open) or "0",
         high=decimal_string(item.high) or "0",
         low=decimal_string(item.low) or "0",
         close=decimal_string(item.close) or "0",
         volume=decimal_string(item.volume) or "0",
         tradeAmount=decimal_string(item.trade_amount) or "0",
+        calculationVersion=item.calculation_version,
+        sourceAsOf=(item.source_as_of or item.started_at).astimezone(UTC),
+        knowledgeAt=(item.knowledge_at or item.source_as_of or item.started_at).astimezone(UTC),
+        inputContentHash=item.input_content_hash,
+        quality=item.quality,
         completeness=item.completeness,
     )
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from calendar import monthrange
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -17,7 +16,10 @@ from psycopg.types.json import Jsonb
 
 from goodmoneying_shared.aggregation import (
     AGGREGATION_UNITS,
+    CALCULATION_VERSION,
+    MATERIALIZED_AGGREGATION_UNITS,
     SOURCE_FETCH_BATCH_SIZE,
+    CoverageSlice,
     aggregate_candles,
     rollup_bucket_start,
 )
@@ -68,6 +70,7 @@ from goodmoneying_shared.models import (
     RealtimeSourceFrame,
     RealtimeWorkerStatus,
     SourceCandle,
+    SourceCandleRevisionCreated,
     StorageBreakdownItem,
     TickerSnapshot,
     TradeEvent,
@@ -83,6 +86,54 @@ BACKFILL_RETRY_BASE_SECONDS = 5
 BACKFILL_RETRY_MAX_SECONDS = 300
 SOURCE_EVIDENCE_SCHEMA_VERSION = "20260717000300"
 SOURCE_EVIDENCE_COLLECTOR_VERSION = "postgres-repository-v2"
+
+
+def _source_candle_content_hash(item: SourceCandle) -> str:
+    payload = "|".join(
+        format(value.normalize(), "f")
+        for value in (
+            item.open_price,
+            item.high_price,
+            item.low_price,
+            item.close_price,
+            item.trade_volume,
+            item.trade_amount,
+        )
+    )
+    return sha256(payload.encode()).hexdigest()
+
+
+def _source_page_limit(unit: str, page_size: int, source_unit: str) -> int:
+    if source_unit == "1d":
+        return page_size + 1
+    rows_per_output = {
+        "3m": 3,
+        "5m": 5,
+        "10m": 10,
+        "15m": 15,
+        "30m": 30,
+        "1h": 60,
+        "4h": 240,
+        "1d": 24 * 60,
+        "1w": 7 * 24 * 60,
+        "1M": 31 * 24 * 60,
+    }[unit]
+    return page_size * rows_per_output + 1
+
+
+def _next_candle_bucket_start(started_at: datetime, unit: str) -> datetime:
+    if unit == "1M":
+        return (
+            started_at.replace(year=started_at.year + 1, month=1)
+            if started_at.month == 12
+            else started_at.replace(month=started_at.month + 1)
+        )
+    if unit == "1w":
+        return started_at + timedelta(days=7)
+    if unit == "1d":
+        return started_at + timedelta(days=1)
+    minutes = {"3m": 3, "5m": 5, "10m": 10, "15m": 15, "30m": 30, "1h": 60, "4h": 240}
+    return started_at + timedelta(minutes=minutes[unit])
 
 
 class BackfillTargetNotWritableError(RuntimeError):
@@ -1278,11 +1329,136 @@ class PostgresOperationsRepository:
                 return rollups
         return _derive_candles(unit, source)
 
+    def candle_page(
+        self,
+        instrument_id: int,
+        unit: str,
+        start_at: datetime,
+        end_at: datetime,
+        page_size: int,
+        cursor: datetime | None,
+    ) -> tuple[list[CandleView], datetime | None]:
+        lower_bound = max(start_at, cursor) if cursor is not None else start_at
+        comparator = ">" if cursor is not None else ">="
+        with self._connect() as conn:
+            if unit == "1m":
+                rows = conn.execute(
+                    f"""
+                    SELECT candle.*, revision.id AS revision_id,
+                           revision.input_content_hash,
+                           revision.knowledge_at AS revision_knowledge_at
+                    FROM source_candles candle
+                    LEFT JOIN LATERAL (
+                      SELECT id, input_content_hash, knowledge_at
+                      FROM source_candle_revisions
+                      WHERE source_candle_id = candle.id
+                        AND input_content_hash = source_candle_content_hash(
+                          candle.open_price, candle.high_price, candle.low_price,
+                          candle.close_price, candle.trade_volume, candle.trade_amount
+                        )
+                      ORDER BY revision_number DESC LIMIT 1
+                    ) revision ON true
+                    WHERE candle.instrument_id = %s AND candle.candle_unit = '1m'
+                      AND candle.candle_start_at {comparator} %s
+                      AND candle.candle_start_at < %s
+                    ORDER BY candle.candle_start_at
+                    LIMIT %s
+                    """,
+                    (instrument_id, lower_bound, end_at, page_size + 1),
+                ).fetchall()
+                candles = [_candle_view(_candle(row)) for row in rows]
+            else:
+                rows = conn.execute(
+                    f"""
+                    SELECT * FROM candle_rollups
+                    WHERE instrument_id = %s AND candle_unit = %s
+                      AND calculation_version = %s
+                      AND candle_start_at {comparator} %s AND candle_start_at < %s
+                    ORDER BY candle_start_at
+                    LIMIT %s
+                    """,
+                    (
+                        instrument_id,
+                        unit,
+                        CALCULATION_VERSION,
+                        lower_bound,
+                        end_at,
+                        page_size + 1,
+                    ),
+                ).fetchall()
+                candles = [_rollup_candle(row) for row in rows]
+        source_limit_hit = False
+        if not candles:
+            with self._connect() as conn:
+                source_unit = "1m"
+                if unit in {"1d", "1w", "1M"}:
+                    has_daily = conn.execute(
+                        """
+                        SELECT 1 FROM source_candles
+                        WHERE instrument_id = %s AND candle_unit = '1d'
+                          AND candle_start_at >= %s AND candle_start_at < %s
+                        LIMIT 1
+                        """,
+                        (instrument_id, start_at, end_at),
+                    ).fetchone()
+                    if has_daily is not None:
+                        source_unit = "1d"
+                source_lower_bound = (
+                    _next_candle_bucket_start(cursor, unit) if cursor is not None else start_at
+                )
+                source_limit = _source_page_limit(unit, page_size, source_unit)
+                source_rows = conn.execute(
+                    """
+                    SELECT candle.*, revision.id AS revision_id,
+                           revision.input_content_hash,
+                           revision.knowledge_at AS revision_knowledge_at
+                    FROM source_candles candle
+                    LEFT JOIN LATERAL (
+                      SELECT id, input_content_hash, knowledge_at
+                      FROM source_candle_revisions
+                      WHERE source_candle_id = candle.id
+                        AND input_content_hash = source_candle_content_hash(
+                          candle.open_price, candle.high_price, candle.low_price,
+                          candle.close_price, candle.trade_volume, candle.trade_amount
+                        )
+                      ORDER BY revision_number DESC LIMIT 1
+                    ) revision ON true
+                    WHERE candle.instrument_id = %s AND candle.candle_unit = %s
+                      AND candle.candle_start_at >= %s
+                      AND candle.candle_start_at < %s
+                    ORDER BY candle.candle_start_at
+                    LIMIT %s
+                    """,
+                    (instrument_id, source_unit, source_lower_bound, end_at, source_limit),
+                ).fetchall()
+            source_limit_hit = len(source_rows) == source_limit
+            candles = aggregate_candles(unit, [_candle(row) for row in source_rows])
+        page = candles[:page_size]
+        next_cursor = (
+            page[-1].started_at if page and (len(candles) > page_size or source_limit_hit) else None
+        )
+        return page, next_cursor
+
     def materialize_candle_rollups(self, instrument_id: int, unit: str) -> int:
         with self._connect() as conn:
             cursor = conn.execute(
                 """
-                SELECT * FROM source_candles WHERE instrument_id = %s
+                SELECT candle.*,
+                       revision.id AS revision_id,
+                       revision.input_content_hash,
+                       revision.knowledge_at AS revision_knowledge_at
+                FROM source_candles candle
+                LEFT JOIN LATERAL (
+                  SELECT id, input_content_hash, knowledge_at
+                  FROM source_candle_revisions
+                  WHERE source_candle_id = candle.id
+                    AND input_content_hash = source_candle_content_hash(
+                      candle.open_price, candle.high_price, candle.low_price,
+                      candle.close_price, candle.trade_volume, candle.trade_amount
+                    )
+                  ORDER BY revision_number DESC LIMIT 1
+                ) revision ON true
+                WHERE candle.instrument_id = %s
                 ORDER BY candle_start_at
                 """,
                 (instrument_id,),
@@ -1290,20 +1466,55 @@ class PostgresOperationsRepository:
             source: list[SourceCandle] = []
             while rows := cursor.fetchmany(SOURCE_FETCH_BATCH_SIZE):
                 source.extend(_candle(row) for row in rows)
-            rollups = aggregate_candles(unit, source)
+            coverage_rows = conn.execute(
+                """
+                SELECT coverage.range_start_at, coverage.range_end_at, coverage.status
+                FROM coverage_intervals coverage
+                JOIN collection_target_specs specification
+                  ON specification.id = coverage.target_spec_id
+                JOIN markets market ON market.id = specification.market_id
+                WHERE market.legacy_instrument_id = %s
+                  AND specification.data_type = 'source_candle'
+                  AND specification.candle_unit IN ('1m', '1d')
+                ORDER BY coverage.range_start_at
+                """,
+                (instrument_id,),
+            ).fetchall()
+            coverage = [
+                CoverageSlice(
+                    cast(datetime, row["range_start_at"]),
+                    cast(datetime, row["range_end_at"]),
+                    cast(
+                        Literal["available", "no_trade", "missing", "unavailable", "unverified"],
+                        row["status"],
+                    ),
+                )
+                for row in coverage_rows
+            ]
+            rollups = aggregate_candles(unit, source, coverage=coverage)
             for item in rollups:
                 conn.execute(
                     """
                     INSERT INTO candle_rollups (
                       instrument_id, candle_unit, candle_start_at, open_price, high_price,
                       low_price,
-                      close_price, trade_volume, trade_amount, completeness, materialized_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
-                    ON CONFLICT (instrument_id, candle_unit, candle_start_at) DO UPDATE SET
+                      close_price, trade_volume, trade_amount, completeness,
+                      calculation_version, source_as_of, knowledge_at, input_content_hash,
+                      input_revision_ids, quality, materialized_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                              %s, %s, %s, %s, %s, %s, now())
+                    ON CONFLICT (instrument_id, candle_unit, candle_start_at, calculation_version)
+                    DO UPDATE SET
                       open_price = excluded.open_price, high_price = excluded.high_price,
                       low_price = excluded.low_price, close_price = excluded.close_price,
                       trade_volume = excluded.trade_volume, trade_amount = excluded.trade_amount,
-                      completeness = excluded.completeness, materialized_at = now()
+                      completeness = excluded.completeness,
+                      source_as_of = excluded.source_as_of,
+                      knowledge_at = excluded.knowledge_at,
+                      input_content_hash = excluded.input_content_hash,
+                      input_revision_ids = excluded.input_revision_ids,
+                      quality = excluded.quality,
+                      materialized_at = now()
                     """,
                     (
                         instrument_id,
@@ -1316,6 +1527,12 @@ class PostgresOperationsRepository:
                         item.volume,
                         item.trade_amount,
                         item.completeness,
+                        item.calculation_version,
+                        item.source_as_of,
+                        item.knowledge_at,
+                        item.input_content_hash,
+                        list(item.input_revision_ids),
+                        item.quality,
                     ),
                 )
         return len(rollups)
@@ -1328,10 +1545,11 @@ class PostgresOperationsRepository:
                 """
                 SELECT * FROM candle_rollups
                 WHERE instrument_id = %s AND candle_unit = %s
+                  AND calculation_version = %s
                   AND candle_start_at >= %s AND candle_start_at < %s
                 ORDER BY candle_start_at
                 """,
-                (instrument_id, unit, start_at, end_at),
+                (instrument_id, unit, CALCULATION_VERSION, start_at, end_at),
             ).fetchall()
         return [_rollup_candle(row) for row in rows]
 
@@ -1357,14 +1575,15 @@ class PostgresOperationsRepository:
                 source_latest = source_row["candle_start_at"]
                 if source_latest is None:
                     continue
-                for unit in AGGREGATION_UNITS:
+                for unit in MATERIALIZED_AGGREGATION_UNITS:
                     rollup_row = _expect_row(
                         conn.execute(
                             """
                         SELECT MAX(candle_start_at) AS candle_start_at FROM candle_rollups
                         WHERE instrument_id = %s AND candle_unit = %s
+                          AND calculation_version = %s
                         """,
-                            (instrument.id, unit),
+                            (instrument.id, unit, CALCULATION_VERSION),
                         ).fetchone()
                     )
                     rollup_latest = rollup_row["candle_start_at"]
@@ -4617,8 +4836,12 @@ class PostgresOperationsRepository:
                 ),
             )
             counts[item.instrument_id] = counts.get(item.instrument_id, 0) + 1
+        created_revisions: list[SourceCandleRevisionCreated] = []
         with conn.cursor() as cursor:
-            cursor.executemany(sql, params)
+            for item, item_params in zip(candles, params, strict=True):
+                cursor.execute(sql, item_params)
+                created_revisions.extend(self._append_source_candle_revisions(conn, [item]))
+        self._source_candle_revisions_created(conn, created_revisions)
         observed_starts: dict[tuple[int, int, str], list[datetime]] = {}
         for item in candles:
             _market_id, target_spec_id, manifest_id = manifests[
@@ -4681,6 +4904,95 @@ class PostgresOperationsRepository:
                     },
                 )
         return counts
+
+    def _append_source_candle_revisions(
+        self,
+        conn: psycopg.Connection[Any],
+        candles: list[SourceCandle],
+    ) -> list[SourceCandleRevisionCreated]:
+        """현재 DB 트랜잭션에서 새로 생성된 개정만 반환한다."""
+        created: list[SourceCandleRevisionCreated] = []
+        for item in candles:
+            source_row = conn.execute(
+                """
+                SELECT id, market_id
+                FROM source_candles
+                WHERE instrument_id = %s AND source = 'UPBIT'
+                  AND candle_unit = %s AND candle_start_at = %s
+                  AND market_id IS NOT NULL
+                FOR UPDATE
+                """,
+                (item.instrument_id, item.candle_unit, item.candle_start_at),
+            ).fetchone()
+            if source_row is None:
+                continue
+            content_hash = _source_candle_content_hash(item)
+            latest = conn.execute(
+                """
+                SELECT revision_number, input_content_hash
+                FROM source_candle_revisions
+                WHERE source_candle_id = %s
+                ORDER BY revision_number DESC LIMIT 1
+                """,
+                (source_row["id"],),
+            ).fetchone()
+            if latest is not None and latest["input_content_hash"] == content_hash:
+                continue
+            revision_number = 1 if latest is None else int(latest["revision_number"]) + 1
+            row = conn.execute(
+                """
+                INSERT INTO source_candle_revisions (
+                  source_candle_id, revision_number, market_id, instrument_id, source,
+                  candle_unit, candle_start_at, open_price, high_price, low_price,
+                  close_price, trade_volume, trade_amount, source_as_of, knowledge_at,
+                  input_content_hash
+                )
+                VALUES (
+                  %s,
+                  %s,
+                  %s, %s, 'UPBIT', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                RETURNING id, revision_number, market_id, candle_start_at,
+                          knowledge_at, input_content_hash
+                """,
+                (
+                    source_row["id"],
+                    revision_number,
+                    source_row["market_id"],
+                    item.instrument_id,
+                    item.candle_unit,
+                    item.candle_start_at,
+                    item.open_price,
+                    item.high_price,
+                    item.low_price,
+                    item.close_price,
+                    item.trade_volume,
+                    item.trade_amount,
+                    item.collected_at,
+                    item.knowledge_at or item.collected_at,
+                    content_hash,
+                ),
+            ).fetchone()
+            if row is None:
+                continue
+            created.append(
+                SourceCandleRevisionCreated(
+                    id=int(row["id"]),
+                    revision_number=int(row["revision_number"]),
+                    market_id=int(row["market_id"]),
+                    candle_start_at=cast(datetime, row["candle_start_at"]),
+                    knowledge_at=cast(datetime, row["knowledge_at"]),
+                    input_content_hash=str(row["input_content_hash"]),
+                )
+            )
+        return created
+
+    def _source_candle_revisions_created(
+        self,
+        conn: psycopg.Connection[Any],
+        created: list[SourceCandleRevisionCreated],
+    ) -> None:
+        """P2-2가 같은 트랜잭션에서 신규 개정을 소비하는 내부 훅이다."""
 
     def _latest_candle_time(self, instrument_id: int) -> datetime | None:
         with self._connect() as conn:
@@ -4976,6 +5288,13 @@ def _candle(row: dict[str, Any]) -> SourceCandle:
         trade_volume=Decimal(row["trade_volume"]),
         trade_amount=Decimal(row["trade_amount"]),
         collected_at=cast(datetime, row["collected_at"]),
+        revision_id=int(row["revision_id"]) if row.get("revision_id") is not None else None,
+        input_content_hash=(
+            str(row["input_content_hash"]) if row.get("input_content_hash") else None
+        ),
+        knowledge_at=cast(
+            datetime | None, row.get("revision_knowledge_at") or row.get("knowledge_at")
+        ),
     )
 
 
@@ -4989,66 +5308,15 @@ def _candle_view(item: SourceCandle) -> CandleView:
         volume=item.trade_volume,
         trade_amount=item.trade_amount,
         completeness="complete",
+        source_as_of=item.collected_at,
+        knowledge_at=item.knowledge_at or item.collected_at,
+        input_content_hash=item.input_content_hash or _source_candle_content_hash(item),
+        input_revision_ids=((item.revision_id,) if item.revision_id is not None else ()),
     )
 
 
 def _derive_candles(unit: str, source: list[SourceCandle]) -> list[CandleView]:
-    minute_units = {"3m": 3, "5m": 5, "10m": 10, "15m": 15, "30m": 30, "60m": 60, "240m": 240}
-    bucket_size = minute_units.get(unit)
-    source_1m = [item for item in source if item.candle_unit == "1m"]
-    if unit == "1d":
-        direct_daily = [item for item in source if item.candle_unit == "1d"]
-        if direct_daily:
-            return [_candle_view(item) for item in direct_daily]
-        grouped_daily: dict[datetime, list[SourceCandle]] = {}
-        for item in source_1m:
-            bucket = item.candle_start_at.replace(hour=0, minute=0, second=0, microsecond=0)
-            grouped_daily.setdefault(bucket, []).append(item)
-        return _aggregate_candle_groups(grouped_daily, 24 * 60)
-    if unit in {"1w", "1M"}:
-        daily_groups: dict[datetime, list[SourceCandle]] = {}
-        for item in [item for item in source if item.candle_unit == "1d"]:
-            if unit == "1w":
-                week_start = item.candle_start_at - timedelta(days=item.candle_start_at.weekday())
-                bucket = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
-            else:
-                bucket = item.candle_start_at.replace(
-                    day=1, hour=0, minute=0, second=0, microsecond=0
-                )
-            daily_groups.setdefault(bucket, []).append(item)
-        return _aggregate_candle_groups(daily_groups, 7 if unit == "1w" else 0)
-    if bucket_size is None:
-        return [_candle_view(item) for item in source]
-    grouped: dict[datetime, list[SourceCandle]] = {}
-    for item in source_1m:
-        minute = item.candle_start_at.minute - (item.candle_start_at.minute % bucket_size)
-        bucket = item.candle_start_at.replace(minute=minute, second=0, microsecond=0)
-        grouped.setdefault(bucket, []).append(item)
-    return _aggregate_candle_groups(grouped, bucket_size)
-
-
-def _aggregate_candle_groups(
-    grouped: dict[datetime, list[SourceCandle]], expected_size: int
-) -> list[CandleView]:
-    result: list[CandleView] = []
-    for bucket, items in sorted(grouped.items()):
-        ordered = sorted(items, key=lambda item: item.candle_start_at)
-        required_size = (
-            monthrange(bucket.year, bucket.month)[1] if expected_size == 0 else expected_size
-        )
-        result.append(
-            CandleView(
-                started_at=bucket,
-                open=ordered[0].open_price,
-                high=max(item.high_price for item in ordered),
-                low=min(item.low_price for item in ordered),
-                close=ordered[-1].close_price,
-                volume=sum((item.trade_volume for item in ordered), Decimal("0")),
-                trade_amount=sum((item.trade_amount for item in ordered), Decimal("0")),
-                completeness="complete" if len(ordered) == required_size else "partial",
-            )
-        )
-    return result
+    return aggregate_candles(unit, source)
 
 
 def _rollup_candle(row: Row) -> CandleView:
@@ -5061,6 +5329,15 @@ def _rollup_candle(row: Row) -> CandleView:
         volume=Decimal(row["trade_volume"]),
         trade_amount=Decimal(row["trade_amount"]),
         completeness=cast(Literal["complete", "partial", "empty"], row["completeness"]),
+        calculation_version=str(row.get("calculation_version", "candle-rollup-v2")),
+        source_as_of=cast(datetime | None, row.get("source_as_of")),
+        knowledge_at=cast(datetime | None, row.get("knowledge_at")),
+        input_content_hash=str(row.get("input_content_hash", "")),
+        quality=cast(
+            Literal["available", "no_trade", "missing", "unavailable", "unverified"],
+            row.get("quality", "unverified"),
+        ),
+        input_revision_ids=tuple(int(value) for value in row.get("input_revision_ids", ())),
     )
 
 

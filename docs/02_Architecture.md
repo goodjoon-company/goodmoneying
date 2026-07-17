@@ -48,7 +48,7 @@
 | Realtime Worker | 체결·호가·티커·캔들 구독, 중복 제거, 원천 저장, 연결 복구 | PostgreSQL | 부분 구현 |
 | Backfill Scheduler/Worker | 커버리지 격차에서 작업 생성, 임대, 재시도, 200개 단위 역방향 백필 | PostgreSQL 큐 | 수동 흐름 부분 구현 |
 | Quality Worker | 구간 상태, 지연, 중복, 실패, 획득 불가 판정 | PostgreSQL | 미구현 |
-| Rollup Worker | 1분 원천 기반 다중 주기 증분 집계와 변경 전파 | PostgreSQL | 일부 주기 구현 |
+| Rollup Worker | 1분·일 원천 개정 기반 11개 주기 UTC 집계와 계보 저장 | PostgreSQL | P2-1 구현 |
 | Indicator Worker | 버전이 있는 지표 물질화(Materialization) | PostgreSQL | 미구현 |
 | Strategy Worker | Typed DAG 검증·평가·설명 이벤트 생성 | PostgreSQL | 미구현 |
 | Backtest Worker | 결정론적 사건 재생, 체결·비용 모델, 성과·산출물 생성 | PostgreSQL | 미구현 |
@@ -89,7 +89,7 @@ PostgreSQL ← worker role processes
 
 ### 6.3 집계·지표 계층
 
-집계·지표 계층은 원천 버전·계산 버전·최신성·재계산 범위를 기록한다. 원천 수정은 영향 구간만 무효화하고 증분 재계산한다.
+집계 계층은 최신 조회 투영 `source_candles`와 추가 전용 개정 원장 `source_candle_revisions`를 분리한다. 집계 결과는 계산 버전, 입력 개정 ID·내용 해시, `source_as_of`, `knowledge_at`, 5단계 품질과 완전성을 기록한다. `no_trade` 커버리지는 빈 슬롯을 완전하게 만들 수 있지만 미판정·누락 상태는 불완전하다. 원천 수정의 영향 구간 재계산은 P2-2 변경 전파가 같은 트랜잭션의 신규 개정 목록을 입력으로 사용한다.
 
 ### 6.4 연구·실행 계층
 

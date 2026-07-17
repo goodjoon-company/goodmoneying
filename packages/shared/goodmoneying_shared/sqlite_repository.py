@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import threading
 import uuid
-from calendar import monthrange
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -11,7 +11,10 @@ from typing import Any, Literal, cast
 
 from goodmoneying_shared.aggregation import (
     AGGREGATION_UNITS,
+    CALCULATION_VERSION,
+    MATERIALIZED_AGGREGATION_UNITS,
     SOURCE_FETCH_BATCH_SIZE,
+    CoverageSlice,
     aggregate_candles,
     rollup_bucket_start,
 )
@@ -53,6 +56,7 @@ from goodmoneying_shared.models import (
     RealtimeSourceFrame,
     RealtimeWorkerStatus,
     SourceCandle,
+    SourceCandleRevisionCreated,
     StorageBreakdownItem,
     TickerSnapshot,
     TradeEvent,
@@ -100,6 +104,22 @@ def _format_storage_bytes(value: int) -> str:
     return f"{value}B"
 
 
+def _source_candle_content_hash(item: SourceCandle) -> str:
+    return _source_candle_content_hash_values(
+        item.open_price,
+        item.high_price,
+        item.low_price,
+        item.close_price,
+        item.trade_volume,
+        item.trade_amount,
+    )
+
+
+def _source_candle_content_hash_values(*values: object) -> str:
+    payload = "|".join(format(Decimal(str(value)).normalize(), "f") for value in values)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 class SQLiteOperationsRepository:
     """테스트와 로컬 데모용 저장소.
 
@@ -121,6 +141,12 @@ class SQLiteOperationsRepository:
             timeout=busy_timeout_seconds,
         )
         self._conn.row_factory = sqlite3.Row
+        self._conn.create_function(
+            "source_candle_content_hash",
+            6,
+            _source_candle_content_hash_values,
+            deterministic=True,
+        )
         self._create_schema()
 
     @classmethod
@@ -291,6 +317,40 @@ class SQLiteOperationsRepository:
                   PRIMARY KEY (instrument_id, candle_unit, candle_start_at)
                 );
 
+                CREATE TABLE IF NOT EXISTS source_candle_revisions (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  instrument_id INTEGER NOT NULL,
+                  candle_unit TEXT NOT NULL,
+                  candle_start_at TEXT NOT NULL,
+                  revision_number INTEGER NOT NULL,
+                  open_price TEXT NOT NULL,
+                  high_price TEXT NOT NULL,
+                  low_price TEXT NOT NULL,
+                  close_price TEXT NOT NULL,
+                  trade_volume TEXT NOT NULL,
+                  trade_amount TEXT NOT NULL,
+                  source_as_of TEXT NOT NULL,
+                  knowledge_at TEXT NOT NULL,
+                  input_content_hash TEXT NOT NULL,
+                  UNIQUE (instrument_id, candle_unit, candle_start_at, revision_number)
+                );
+
+                CREATE TRIGGER IF NOT EXISTS source_candle_revisions_append_only_update
+                BEFORE UPDATE ON source_candle_revisions
+                BEGIN SELECT RAISE(ABORT, 'source_candle_revisions is append-only'); END;
+                CREATE TRIGGER IF NOT EXISTS source_candle_revisions_append_only_delete
+                BEFORE DELETE ON source_candle_revisions
+                BEGIN SELECT RAISE(ABORT, 'source_candle_revisions is append-only'); END;
+
+                CREATE TABLE IF NOT EXISTS coverage_intervals (
+                  instrument_id INTEGER NOT NULL,
+                  candle_unit TEXT NOT NULL,
+                  range_start_at TEXT NOT NULL,
+                  range_end_at TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  PRIMARY KEY (instrument_id, candle_unit, range_start_at, range_end_at, status)
+                );
+
                 CREATE TABLE IF NOT EXISTS candle_rollups (
                   instrument_id INTEGER NOT NULL,
                   candle_unit TEXT NOT NULL,
@@ -302,8 +362,14 @@ class SQLiteOperationsRepository:
                   trade_volume TEXT NOT NULL,
                   trade_amount TEXT NOT NULL,
                   completeness TEXT NOT NULL,
+                  calculation_version TEXT NOT NULL DEFAULT 'candle-rollup-v2',
+                  source_as_of TEXT,
+                  knowledge_at TEXT,
+                  input_content_hash TEXT NOT NULL DEFAULT '',
+                  input_revision_ids TEXT NOT NULL DEFAULT '',
+                  quality TEXT NOT NULL DEFAULT 'unverified',
                   materialized_at TEXT NOT NULL,
-                  PRIMARY KEY (instrument_id, candle_unit, candle_start_at)
+                  PRIMARY KEY (instrument_id, candle_unit, candle_start_at, calculation_version)
                 );
 
                 CREATE TABLE IF NOT EXISTS candle_aggregation_jobs (
@@ -1084,25 +1150,28 @@ class SQLiteOperationsRepository:
         ).fetchall()
         source = [self._candle_from_row(row) for row in rows]
         if unit == "1m":
-            return [
-                CandleView(
-                    started_at=item.candle_start_at,
-                    open=item.open_price,
-                    high=item.high_price,
-                    low=item.low_price,
-                    close=item.close_price,
-                    volume=item.trade_volume,
-                    trade_amount=item.trade_amount,
-                    completeness="complete",
-                )
-                for item in source
-                if item.candle_unit == unit
-            ]
+            return aggregate_candles("1m", source)
         if unit in AGGREGATION_UNITS:
             rollups = self.candle_rollups(instrument_id, unit, start_at, end_at)
             if rollups:
                 return rollups
         return self._derive_candles(unit, source)
+
+    def candle_page(
+        self,
+        instrument_id: int,
+        unit: str,
+        start_at: datetime,
+        end_at: datetime,
+        page_size: int,
+        cursor: datetime | None,
+    ) -> tuple[list[CandleView], datetime | None]:
+        rows = self.candles(instrument_id, unit, start_at, end_at)
+        if cursor is not None:
+            rows = [item for item in rows if item.started_at > cursor]
+        page = rows[:page_size]
+        next_cursor = page[-1].started_at if len(rows) > page_size and page else None
+        return page, next_cursor
 
     def materialize_candle_rollups(self, instrument_id: int, unit: str) -> int:
         with self._lock:
@@ -1110,16 +1179,37 @@ class SQLiteOperationsRepository:
             try:
                 cursor = self._execute(
                     """
-                    SELECT * FROM source_candles
-                    WHERE instrument_id = ?
-                    ORDER BY candle_start_at
+                    SELECT candle.*,
+                           revision.id AS revision_id,
+                           revision.input_content_hash,
+                           revision.knowledge_at AS revision_knowledge_at
+                    FROM source_candles candle
+                    LEFT JOIN source_candle_revisions revision
+                      ON revision.instrument_id = candle.instrument_id
+                     AND revision.candle_unit = candle.candle_unit
+                     AND revision.candle_start_at = candle.candle_start_at
+                     AND revision.revision_number = (
+                       SELECT MAX(latest.revision_number)
+                       FROM source_candle_revisions latest
+                       WHERE latest.instrument_id = candle.instrument_id
+                         AND latest.candle_unit = candle.candle_unit
+                         AND latest.candle_start_at = candle.candle_start_at
+                         AND latest.input_content_hash = source_candle_content_hash(
+                           candle.open_price, candle.high_price, candle.low_price,
+                           candle.close_price, candle.trade_volume, candle.trade_amount
+                         )
+                     )
+                    WHERE candle.instrument_id = ?
+                    ORDER BY candle.candle_start_at
                     """,
                     (instrument_id,),
                 )
                 source: list[SourceCandle] = []
                 while rows := cursor.fetchmany(SOURCE_FETCH_BATCH_SIZE):
                     source.extend(self._candle_from_row(row) for row in rows)
-                rollups = aggregate_candles(unit, source)
+                rollups = aggregate_candles(
+                    unit, source, coverage=self._candle_coverage(instrument_id)
+                )
                 materialized_at = _to_db_time(now_kst())
                 for item in rollups:
                     self._execute(
@@ -1127,10 +1217,14 @@ class SQLiteOperationsRepository:
                         INSERT INTO candle_rollups (
                           instrument_id, candle_unit, candle_start_at, open_price, high_price,
                           low_price, close_price, trade_volume, trade_amount, completeness,
+                          calculation_version, source_as_of, knowledge_at, input_content_hash,
+                          input_revision_ids, quality,
                           materialized_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(instrument_id, candle_unit, candle_start_at) DO UPDATE SET
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(
+                          instrument_id, candle_unit, candle_start_at, calculation_version
+                        ) DO UPDATE SET
                           open_price = excluded.open_price,
                           high_price = excluded.high_price,
                           low_price = excluded.low_price,
@@ -1138,6 +1232,12 @@ class SQLiteOperationsRepository:
                           trade_volume = excluded.trade_volume,
                           trade_amount = excluded.trade_amount,
                           completeness = excluded.completeness,
+                          calculation_version = excluded.calculation_version,
+                          source_as_of = excluded.source_as_of,
+                          knowledge_at = excluded.knowledge_at,
+                          input_content_hash = excluded.input_content_hash,
+                          input_revision_ids = excluded.input_revision_ids,
+                          quality = excluded.quality,
                           materialized_at = excluded.materialized_at
                         """,
                         (
@@ -1151,6 +1251,12 @@ class SQLiteOperationsRepository:
                             str(item.volume),
                             str(item.trade_amount),
                             item.completeness,
+                            item.calculation_version,
+                            _to_db_time(item.source_as_of) if item.source_as_of else None,
+                            _to_db_time(item.knowledge_at) if item.knowledge_at else None,
+                            item.input_content_hash,
+                            ",".join(str(value) for value in item.input_revision_ids),
+                            item.quality,
                             materialized_at,
                         ),
                     )
@@ -1161,6 +1267,28 @@ class SQLiteOperationsRepository:
                 self._conn.commit()
         return len(rollups)
 
+    def _candle_coverage(self, instrument_id: int) -> list[CoverageSlice]:
+        rows = self._execute(
+            """
+            SELECT range_start_at, range_end_at, status
+            FROM coverage_intervals
+            WHERE instrument_id = ? AND candle_unit IN ('1m', '1d')
+            ORDER BY range_start_at
+            """,
+            (instrument_id,),
+        ).fetchall()
+        return [
+            CoverageSlice(
+                _from_db_time(row["range_start_at"]),
+                _from_db_time(row["range_end_at"]),
+                cast(
+                    Literal["available", "no_trade", "missing", "unavailable", "unverified"],
+                    row["status"],
+                ),
+            )
+            for row in rows
+        ]
+
     def candle_rollups(
         self, instrument_id: int, unit: str, start_at: datetime, end_at: datetime
     ) -> list[CandleView]:
@@ -1168,10 +1296,17 @@ class SQLiteOperationsRepository:
             """
             SELECT * FROM candle_rollups
             WHERE instrument_id = ? AND candle_unit = ?
+              AND calculation_version = ?
               AND candle_start_at >= ? AND candle_start_at < ?
             ORDER BY candle_start_at
             """,
-            (instrument_id, unit, _to_db_time(start_at), _to_db_time(end_at)),
+            (
+                instrument_id,
+                unit,
+                CALCULATION_VERSION,
+                _to_db_time(start_at),
+                _to_db_time(end_at),
+            ),
         ).fetchall()
         return [
             CandleView(
@@ -1183,6 +1318,17 @@ class SQLiteOperationsRepository:
                 volume=_decimal(row["trade_volume"]),
                 trade_amount=_decimal(row["trade_amount"]),
                 completeness=cast(Literal["complete", "partial", "empty"], row["completeness"]),
+                calculation_version=str(row["calculation_version"]),
+                source_as_of=(_from_db_time(row["source_as_of"]) if row["source_as_of"] else None),
+                knowledge_at=(_from_db_time(row["knowledge_at"]) if row["knowledge_at"] else None),
+                input_content_hash=str(row["input_content_hash"]),
+                quality=cast(
+                    Literal["available", "no_trade", "missing", "unavailable", "unverified"],
+                    row["quality"],
+                ),
+                input_revision_ids=tuple(
+                    int(value) for value in str(row["input_revision_ids"]).split(",") if value
+                ),
             )
             for row in rows
         ]
@@ -1209,13 +1355,14 @@ class SQLiteOperationsRepository:
             if source_latest is None:
                 continue
             latest = _from_db_time(source_latest)
-            for unit in AGGREGATION_UNITS:
+            for unit in MATERIALIZED_AGGREGATION_UNITS:
                 rollup_latest = self._execute(
                     """
                     SELECT MAX(candle_start_at) AS candle_start_at
                     FROM candle_rollups WHERE instrument_id = ? AND candle_unit = ?
+                      AND calculation_version = ?
                     """,
-                    (instrument.id, unit),
+                    (instrument.id, unit, CALCULATION_VERSION),
                 ).fetchone()["candle_start_at"]
                 if rollup_latest is None or _from_db_time(rollup_latest) < rollup_bucket_start(
                     unit, latest
@@ -3299,6 +3446,7 @@ class SQLiteOperationsRepository:
 
     def _upsert_candles(self, candles: list[SourceCandle]) -> dict[int, int]:
         counts: dict[int, int] = {}
+        created_revisions: list[SourceCandleRevisionCreated] = []
         for item in candles:
             self._execute(
                 """
@@ -3332,7 +3480,77 @@ class SQLiteOperationsRepository:
                 ),
             )
             counts[item.instrument_id] = counts.get(item.instrument_id, 0) + 1
+            created_revisions.extend(self._append_source_candle_revisions([item]))
+        self._source_candle_revisions_created(created_revisions)
         return counts
+
+    def _append_source_candle_revisions(
+        self, candles: list[SourceCandle]
+    ) -> list[SourceCandleRevisionCreated]:
+        """현재 투영과 내용이 달라 새로 추가된 개정만 반환한다."""
+        created: list[SourceCandleRevisionCreated] = []
+        for item in candles:
+            row = self._execute(
+                """
+                SELECT * FROM source_candles
+                WHERE instrument_id = ? AND candle_unit = ? AND candle_start_at = ?
+                """,
+                (item.instrument_id, item.candle_unit, _to_db_time(item.candle_start_at)),
+            ).fetchone()
+            if row is None:
+                continue
+            content_hash = _source_candle_content_hash(item)
+            latest = self._execute(
+                """
+                SELECT revision_number, input_content_hash
+                FROM source_candle_revisions
+                WHERE instrument_id = ? AND candle_unit = ? AND candle_start_at = ?
+                ORDER BY revision_number DESC LIMIT 1
+                """,
+                (item.instrument_id, item.candle_unit, row["candle_start_at"]),
+            ).fetchone()
+            if latest is not None and latest["input_content_hash"] == content_hash:
+                continue
+            revision = 1 if latest is None else int(latest["revision_number"]) + 1
+            cursor = self._execute(
+                """
+                INSERT OR IGNORE INTO source_candle_revisions (
+                  instrument_id, candle_unit, candle_start_at, revision_number,
+                  open_price, high_price, low_price, close_price, trade_volume, trade_amount,
+                  source_as_of, knowledge_at, input_content_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item.instrument_id,
+                    item.candle_unit,
+                    row["candle_start_at"],
+                    revision,
+                    str(item.open_price),
+                    str(item.high_price),
+                    str(item.low_price),
+                    str(item.close_price),
+                    str(item.trade_volume),
+                    str(item.trade_amount),
+                    _to_db_time(item.collected_at),
+                    _to_db_time(item.knowledge_at or item.collected_at),
+                    content_hash,
+                ),
+            )
+            if cursor.rowcount == 1:
+                created.append(
+                    SourceCandleRevisionCreated(
+                        id=_required_lastrowid(cursor),
+                        revision_number=int(revision),
+                        market_id=item.instrument_id,
+                        candle_start_at=_from_db_time(row["candle_start_at"]),
+                        knowledge_at=item.knowledge_at or item.collected_at,
+                        input_content_hash=content_hash,
+                    )
+                )
+        return created
+
+    def _source_candle_revisions_created(self, created: list[SourceCandleRevisionCreated]) -> None:
+        """P2-2가 같은 트랜잭션에서 신규 개정을 소비하는 내부 훅이다."""
 
     def _latest_candle_time(self, instrument_id: int) -> datetime | None:
         row = self._execute(
@@ -3359,95 +3577,7 @@ class SQLiteOperationsRepository:
         )
 
     def _derive_candles(self, unit: str, source: list[SourceCandle]) -> list[CandleView]:
-        minute_units = {
-            "3m": 3,
-            "5m": 5,
-            "10m": 10,
-            "15m": 15,
-            "30m": 30,
-            "60m": 60,
-            "240m": 240,
-        }
-        bucket_size = minute_units.get(unit)
-        source_1m = [item for item in source if item.candle_unit == "1m"]
-        if unit == "1d":
-            direct_daily = [item for item in source if item.candle_unit == "1d"]
-            if direct_daily:
-                return [
-                    CandleView(
-                        started_at=item.candle_start_at,
-                        open=item.open_price,
-                        high=item.high_price,
-                        low=item.low_price,
-                        close=item.close_price,
-                        volume=item.trade_volume,
-                        trade_amount=item.trade_amount,
-                        completeness="complete",
-                    )
-                    for item in direct_daily
-                ]
-            grouped_daily: dict[datetime, list[SourceCandle]] = {}
-            for item in source_1m:
-                bucket = item.candle_start_at.replace(hour=0, minute=0, second=0, microsecond=0)
-                grouped_daily.setdefault(bucket, []).append(item)
-            return self._aggregate_candle_groups(grouped_daily, 24 * 60)
-        if unit in {"1w", "1M"}:
-            daily_groups: dict[datetime, list[SourceCandle]] = {}
-            for item in [item for item in source if item.candle_unit == "1d"]:
-                if unit == "1w":
-                    week_start = item.candle_start_at - timedelta(
-                        days=item.candle_start_at.weekday()
-                    )
-                    bucket = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
-                else:
-                    bucket = item.candle_start_at.replace(
-                        day=1, hour=0, minute=0, second=0, microsecond=0
-                    )
-                daily_groups.setdefault(bucket, []).append(item)
-            return self._aggregate_candle_groups(daily_groups, 7 if unit == "1w" else 0)
-        if bucket_size is None:
-            return [
-                CandleView(
-                    started_at=item.candle_start_at,
-                    open=item.open_price,
-                    high=item.high_price,
-                    low=item.low_price,
-                    close=item.close_price,
-                    volume=item.trade_volume,
-                    trade_amount=item.trade_amount,
-                    completeness="complete",
-                )
-                for item in source
-            ]
-        grouped: dict[datetime, list[SourceCandle]] = {}
-        for item in source_1m:
-            minute = item.candle_start_at.minute - (item.candle_start_at.minute % bucket_size)
-            bucket = item.candle_start_at.replace(minute=minute, second=0, microsecond=0)
-            grouped.setdefault(bucket, []).append(item)
-        return self._aggregate_candle_groups(grouped, bucket_size)
-
-    def _aggregate_candle_groups(
-        self, grouped: dict[datetime, list[SourceCandle]], expected_size: int
-    ) -> list[CandleView]:
-        result: list[CandleView] = []
-        for bucket, items in sorted(grouped.items()):
-            ordered = sorted(items, key=lambda item: item.candle_start_at)
-            required_size = (
-                monthrange(bucket.year, bucket.month)[1] if expected_size == 0 else expected_size
-            )
-            result.append(
-                CandleView(
-                    started_at=bucket,
-                    open=ordered[0].open_price,
-                    high=max(item.high_price for item in ordered),
-                    low=min(item.low_price for item in ordered),
-                    close=ordered[-1].close_price,
-                    volume=sum((item.trade_volume for item in ordered), Decimal("0")),
-                    trade_amount=sum((item.trade_amount for item in ordered), Decimal("0")),
-                    completeness="complete" if len(ordered) == required_size else "partial",
-                )
-            )
-        return result
+        return aggregate_candles(unit, source)
 
     def _backfill_job_by_id(self, job_id: int) -> BackfillJob:
         row = self._execute(
@@ -3567,6 +3697,7 @@ class SQLiteOperationsRepository:
         )
 
     def _candle_from_row(self, row: sqlite3.Row) -> SourceCandle:
+        columns = set(row.keys())
         return SourceCandle(
             instrument_id=int(row["instrument_id"]),
             candle_unit=cast(Literal["1m", "1d"], row["candle_unit"]),
@@ -3578,6 +3709,21 @@ class SQLiteOperationsRepository:
             trade_volume=_decimal(row["trade_volume"]),
             trade_amount=_decimal(row["trade_amount"]),
             collected_at=_from_db_time(row["collected_at"]),
+            revision_id=(
+                int(row["revision_id"])
+                if "revision_id" in columns and row["revision_id"] is not None
+                else None
+            ),
+            input_content_hash=(
+                str(row["input_content_hash"])
+                if "input_content_hash" in columns and row["input_content_hash"]
+                else None
+            ),
+            knowledge_at=(
+                _from_db_time(row["revision_knowledge_at"])
+                if "revision_knowledge_at" in columns and row["revision_knowledge_at"]
+                else None
+            ),
         )
 
     def _collection_run_from_row(self, row: sqlite3.Row) -> CollectionRun:

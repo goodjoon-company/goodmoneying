@@ -31,6 +31,7 @@
 | 품질 | `data_quality_events` | `(target_spec_id, event_type, detected_at, fingerprint)` |
 | 품질 | `fetch_manifests` | `(source, request_fingerprint, requested_at)` |
 | 원천 | `source_candles` | `(market_id, candle_unit, candle_start_at)` |
+| 원천 이력 | `source_candle_revisions` | `(source_candle_id, revision_number)` 및 내용 해시 멱등 키 |
 | 원천 | `trade_events` | `(market_id, exchange_trade_id)` |
 | 원천 | `orderbook_snapshots` | `(instrument_id, source, occurred_at, payload_checksum)`; 동일 시각의 내용 변경은 별도 사실로 보존 |
 | 원천 | `source_receipts` | `(connection_id, frame_sequence)`; 전체 원본 JSON과 수신 provenance를 append-only 보존 |

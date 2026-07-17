@@ -161,6 +161,22 @@ docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 \
    SET confirmed_at = now(), confirmed_by = NULL,
        backup_reference = NULL, updated_at = now()
    WHERE singleton;" >/dev/null
+docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 \
+  -U "$POSTGRES_USER" -d "$UPGRADE_DB" -c \
+  "WITH instrument AS (
+     INSERT INTO instruments (
+       exchange, market_code, quote_currency, base_asset, display_name
+     ) VALUES ('UPBIT', 'KRW-P2-UPGRADE', 'KRW', 'P2UPGRADE', 'P2 업그레이드')
+     RETURNING id
+   )
+   INSERT INTO source_candles (
+     instrument_id, source, candle_unit, candle_start_at,
+     open_price, high_price, low_price, close_price,
+     trade_volume, trade_amount, collected_at
+   )
+   SELECT id, 'UPBIT', '1m', '2026-07-17T07:00:00Z',
+          100, 101, 99, 100, 1, 100, '2026-07-17T07:00:01Z'
+   FROM instrument;" >/dev/null
 docker run --rm \
   --network "$NETWORK" \
   -e GOODMONEYING_DATABASE_URL="$UPGRADE_DATABASE_URL" \
@@ -173,13 +189,24 @@ upgrade_event_count="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" 
 upgrade_event_states="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" \
   -d "$UPGRADE_DB" -c \
   "SELECT string_agg(event_type || ':' || previous_status || '>' || new_status, ',' ORDER BY detected_at)
-   FROM data_quality_events WHERE fingerprint = 'same-fingerprint';")"
+  FROM data_quality_events WHERE fingerprint = 'same-fingerprint';")"
+upgrade_revision_state="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" \
+  -d "$UPGRADE_DB" -c \
+  "SELECT count(*)::text || ':' || bool_and(candle.market_id IS NOT NULL)::text
+   FROM source_candles candle
+   JOIN source_candle_revisions revision ON revision.source_candle_id = candle.id
+   JOIN instruments instrument ON instrument.id = candle.instrument_id
+   WHERE instrument.market_code = 'KRW-P2-UPGRADE';")"
 [[ "$upgrade_event_count" == "1" ]] || {
   printf '오류: 구버전 004 적용 뒤 남은 품질 이벤트 행 수=%s\n' "$upgrade_event_count" >&2
   exit 1
 }
 [[ "$upgrade_event_states" == "first-event:available>missing" ]] || {
   printf '오류: 구버전 004 품질 이벤트 상태 변환=%s\n' "$upgrade_event_states" >&2
+  exit 1
+}
+[[ "$upgrade_revision_state" == "1:true" ]] || {
+  printf '오류: 009 업그레이드 원천 개정 백필 상태=%s\n' "$upgrade_revision_state" >&2
   exit 1
 }
 
@@ -328,8 +355,8 @@ host_port="${host_binding##*:}"
   GOODMONEYING_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${host_port}/${POSTGRES_DB}?sslmode=disable" \
   GOODMONEYING_LIVE_POSTGRES_TEST=1 \
     uv run pytest -q \
-      tests/e2e/test_live_postgres_candle_aggregation.py \
       tests/e2e/test_live_postgres_data_foundation.py \
+      tests/e2e/test_live_postgres_candle_aggregation.py \
       tests/e2e/test_live_postgres_source_evidence.py
 )
 GOODMONEYING_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${host_port}/${POSTGRES_DB}?sslmode=disable" \

@@ -24,7 +24,7 @@ def _database_tables() -> set[str]:
         tables.update(
             table.lower()
             for table in re.findall(
-                r"CREATE TABLE IF NOT EXISTS ([a-z_][a-z0-9_]*)",
+                r"CREATE TABLE(?: IF NOT EXISTS)? ([a-z_][a-z0-9_]*)",
                 migration.read_text(),
                 flags=re.IGNORECASE,
             )
@@ -109,13 +109,10 @@ def _literal_call_bindings(tree: ast.Module) -> dict[str, dict[str, tuple[str, .
             continue
         for name, argument in zip(parameters[function_name], node.args, strict=False):
             if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
-                values.setdefault(function_name, {}).setdefault(name, set()).add(
-                    argument.value
-                )
+                values.setdefault(function_name, {}).setdefault(name, set()).add(argument.value)
     return {
         function_name: {
-            name: tuple(sorted(literal_values))
-            for name, literal_values in bindings.items()
+            name: tuple(sorted(literal_values)) for name, literal_values in bindings.items()
         }
         for function_name, bindings in values.items()
     }
@@ -126,10 +123,7 @@ def _literal_loop_bindings(node: ast.For) -> list[dict[str, tuple[str, ...]]]:
         node.iter, (ast.Tuple, ast.List)
     ):
         return []
-    names = [
-        element.id if isinstance(element, ast.Name) else None
-        for element in node.target.elts
-    ]
+    names = [element.id if isinstance(element, ast.Name) else None for element in node.target.elts]
     if any(name is None for name in names):
         return []
     bindings: list[dict[str, tuple[str, ...]]] = []
@@ -165,9 +159,7 @@ def _record_sql_privileges(
 ) -> None:
     relations = _sql_relations(sql, database_tables)
     operations["read"].update(table for table, _alias in relations)
-    for table in re.findall(
-        r"\bINSERT\s+INTO\s+([a-z_][a-z0-9_]*)", sql, re.IGNORECASE
-    ):
+    for table in re.findall(r"\bINSERT\s+INTO\s+([a-z_][a-z0-9_]*)", sql, re.IGNORECASE):
         table = table.lower()
         if table not in database_tables:
             continue
@@ -188,15 +180,11 @@ def _record_sql_privileges(
             operations["read"].add(table)
         if conflict is not None and conflict.group("action").upper() == "UPDATE":
             operations["update"].add(table)
-    for table in re.findall(
-        r"\bUPDATE\s+([a-z_][a-z0-9_]*)", sql, re.IGNORECASE
-    ):
+    for table in re.findall(r"\bUPDATE\s+([a-z_][a-z0-9_]*)", sql, re.IGNORECASE):
         if table.lower() in database_tables:
             operations["update"].add(table.lower())
             operations["read"].add(table.lower())
-    for table in re.findall(
-        r"\bDELETE\s+FROM\s+([a-z_][a-z0-9_]*)", sql, re.IGNORECASE
-    ):
+    for table in re.findall(r"\bDELETE\s+FROM\s+([a-z_][a-z0-9_]*)", sql, re.IGNORECASE):
         if table.lower() in database_tables:
             operations["delete"].add(table.lower())
             operations["read"].add(table.lower())
@@ -275,9 +263,7 @@ def test_runtime_privilege_sets_match_every_postgres_sql_target() -> None:
         ("DELETE FROM coverage_intervals WHERE id = 1 RETURNING id", "coverage_intervals"),
     ],
 )
-def test_postgres_implicit_select_targets_are_classified_as_read(
-    sql: str, table: str
-) -> None:
+def test_postgres_implicit_select_targets_are_classified_as_read(sql: str, table: str) -> None:
     operations: dict[str, set[str]] = {
         operation: set() for operation in ("read", "insert", "update", "delete")
     }
@@ -348,18 +334,14 @@ def test_insert_read_classification_distinguishes_unqualified_do_nothing(
 
 
 def test_dynamic_runtime_sql_literals_expand_each_known_table_binding() -> None:
-    literals = _sql_literals(
-        Path("packages/shared/goodmoneying_shared/postgres_repository.py")
-    )
+    literals = _sql_literals(Path("packages/shared/goodmoneying_shared/postgres_repository.py"))
 
     for table in ("source_candles", "ticker_snapshots", "orderbook_summaries"):
         assert any(
             f"FROM {table}" in statement and "date_trunc('day'" in statement
             for statement in literals
         ), table
-        assert any(
-            f"COUNT(*) AS count FROM {table}" in statement for statement in literals
-        ), table
+        assert any(f"COUNT(*) AS count FROM {table}" in statement for statement in literals), table
 
 
 def test_all_runtime_returning_update_and_delete_targets_require_read() -> None:
@@ -444,9 +426,7 @@ class _ReadyConnection:
         self.sequence_query: str | None = None
         self.sequence_tables: frozenset[str] = frozenset()
 
-    def execute(
-        self, query: str, params: tuple[object, ...] | None = None
-    ) -> _Result:
+    def execute(self, query: str, params: tuple[object, ...] | None = None) -> _Result:
         if "schema_migrations" in query:
             return _Result({"version": 1})
         if "p1_audit_recovery_gate" in query:

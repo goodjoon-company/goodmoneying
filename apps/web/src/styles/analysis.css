@@ -22,6 +22,8 @@
 .analysis-chart-canvas { min-height: 450px; margin-top: 8px; }
 .analysis-chart-canvas > span { display: grid; min-height: 450px; place-items: center; color: #819086; }
 .analysis-legend { display: flex; flex-wrap: wrap; gap: 12px; border-top: 1px solid rgb(255 255 255 / .06); padding-top: 10px; color: #87958b; font-size: 12px; }
+.analysis-lineage { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; border: 1px solid rgb(255 255 255 / .08); border-radius: 8px; padding: 9px 11px; color: #b7c7bc; font: 12px "JetBrains Mono", ui-monospace, monospace; }
+.analysis-lineage small { color: #7f9185; font: inherit; }
 .analysis-market-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .analysis-market-card { display: grid; gap: 8px; min-height: 116px; padding: 15px; }
 .analysis-market-card > span, .analysis-market-card small { color: #849188; font-size: 12px; }

@@ -5,6 +5,7 @@ from typing import Any
 import psycopg
 
 LATEST_P1_MIGRATION = "20260717000800"
+LATEST_PLATFORM_MIGRATION = "20260717000900"
 RUNTIME_READ_TABLES = frozenset(
     {
         "backfill_job_targets",
@@ -35,6 +36,7 @@ RUNTIME_READ_TABLES = frozenset(
         "p1_audit_recovery_gate",
         "schema_migrations",
         "source_candles",
+        "source_candle_revisions",
         "source_receipts",
         "target_collection_results",
         "ticker_snapshots",
@@ -71,6 +73,7 @@ RUNTIME_INSERT_TABLES = frozenset(
         "orderbook_snapshots",
         "orderbook_summaries",
         "source_candles",
+        "source_candle_revisions",
         "source_receipts",
         "target_collection_results",
         "ticker_snapshots",
@@ -116,10 +119,10 @@ RUNTIME_DELETE_TABLES = frozenset(
 def assert_p1_runtime_ready(connection: psycopg.Connection[Any]) -> None:
     version = connection.execute(
         "SELECT 1 FROM schema_migrations WHERE version = %s",
-        (LATEST_P1_MIGRATION,),
+        (LATEST_PLATFORM_MIGRATION,),
     ).fetchone()
     if version is None:
-        raise RuntimeError("P1 최신 DB 마이그레이션이 적용되지 않았다.")
+        raise RuntimeError("최신 플랫폼 DB 마이그레이션이 적용되지 않았다.")
     recovery = connection.execute(
         """
         SELECT recovery_required, confirmed_at, confirmed_by, backup_reference
@@ -140,10 +143,7 @@ def assert_p1_runtime_ready(connection: psycopg.Connection[Any]) -> None:
     if recovery_required and not recovery_confirmed:
         raise RuntimeError("P1 감사 백업 비교와 복구 확인이 완료되지 않았다.")
     runtime_tables = (
-        RUNTIME_READ_TABLES
-        | RUNTIME_INSERT_TABLES
-        | RUNTIME_UPDATE_TABLES
-        | RUNTIME_DELETE_TABLES
+        RUNTIME_READ_TABLES | RUNTIME_INSERT_TABLES | RUNTIME_UPDATE_TABLES | RUNTIME_DELETE_TABLES
     )
     for table in sorted(runtime_tables):
         privileges = connection.execute(
@@ -170,13 +170,10 @@ def assert_p1_runtime_ready(connection: psycopg.Connection[Any]) -> None:
         missing = [
             privilege
             for privilege, required in required_privileges.items()
-            if required
-            and (privileges is None or not privileges[privilege_columns[privilege]])
+            if required and (privileges is None or not privileges[privilege_columns[privilege]])
         ]
         if missing:
-            raise RuntimeError(
-                f"P1 런타임 테이블 권한이 부족하다: {table} ({', '.join(missing)})"
-            )
+            raise RuntimeError(f"P1 런타임 테이블 권한이 부족하다: {table} ({', '.join(missing)})")
     sequence_privileges = connection.execute(
         """
         SELECT COALESCE(bool_and(

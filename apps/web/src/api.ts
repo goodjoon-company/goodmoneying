@@ -351,6 +351,11 @@ export type Candle = {
   close: string;
   volume: string;
   tradeAmount: string;
+  calculationVersion: string;
+  sourceAsOf: string;
+  knowledgeAt: string;
+  inputContentHash: string;
+  quality: "available" | "no_trade" | "missing" | "unavailable" | "unverified";
   completeness: "complete" | "partial" | "empty";
 };
 

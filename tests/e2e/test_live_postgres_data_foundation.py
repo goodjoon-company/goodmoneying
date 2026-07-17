@@ -4,6 +4,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import psycopg
 import pytest
@@ -36,6 +37,82 @@ UNUSED_RUNTIME_SEQUENCE_TABLES = {
     "missing_ranges",
     "raw_response_samples",
 }
+
+
+def test_runtime_role_can_lock_coverage_interval_for_update() -> None:
+    if os.getenv("GOODMONEYING_LIVE_POSTGRES_TEST") != "1":
+        pytest.skip("실제 PostgreSQL 검증에서만 실행한다")
+    role = f"p1_runtime_coverage_lock_{os.getpid()}"
+    connection = psycopg.connect(
+        os.environ["GOODMONEYING_DATABASE_URL"], autocommit=True, row_factory=dict_row
+    )
+    fixture = _create_runtime_privilege_fixture(connection, role)
+    try:
+        _grant_runtime_privileges(connection, role)
+
+        connection.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role)))
+        assert_p1_runtime_ready(connection)
+        locked = connection.execute(
+            "SELECT id FROM coverage_intervals WHERE id = %s FOR UPDATE",
+            (fixture["coverage_id"],),
+        ).fetchone()
+
+        assert locked == {"id": fixture["coverage_id"]}
+    finally:
+        _drop_runtime_privilege_fixture(connection, role, fixture)
+
+
+def test_runtime_data_quality_insert_do_nothing_needs_no_select() -> None:
+    if os.getenv("GOODMONEYING_LIVE_POSTGRES_TEST") != "1":
+        pytest.skip("실제 PostgreSQL 검증에서만 실행한다")
+    role = f"p1_runtime_quality_insert_{os.getpid()}"
+    connection = psycopg.connect(
+        os.environ["GOODMONEYING_DATABASE_URL"], autocommit=True, row_factory=dict_row
+    )
+    fixture = _create_runtime_privilege_fixture(connection, role)
+    fingerprint = f"quality-insert-{os.getpid()}"
+    try:
+        _grant_runtime_privileges(connection, role)
+        connection.execute(
+            sql.SQL("REVOKE SELECT ON TABLE data_quality_events FROM {}").format(
+                sql.Identifier(role)
+            )
+        )
+        privilege = connection.execute(
+            "SELECT has_table_privilege(%s, 'data_quality_events', 'SELECT') AS can_read",
+            (role,),
+        ).fetchone()
+        assert privilege == {"can_read": False}
+
+        connection.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role)))
+        assert_p1_runtime_ready(connection)
+        for _ in range(2):
+            connection.execute(
+                """
+                INSERT INTO data_quality_events (
+                  target_spec_id, event_type, previous_status, new_status,
+                  range_start_at, range_end_at, fingerprint, evidence, detected_at
+                )
+                VALUES (%s, 'runtime_probe', NULL, 'unverified', %s, %s, %s, '{}'::jsonb, %s)
+                ON CONFLICT DO NOTHING
+                """,
+                (
+                    fixture["target_spec_id"],
+                    datetime(2026, 7, 17, tzinfo=UTC),
+                    datetime(2026, 7, 17, 0, 1, tzinfo=UTC),
+                    fingerprint,
+                    datetime(2026, 7, 17, tzinfo=UTC),
+                ),
+            )
+        connection.execute("RESET ROLE")
+        count = connection.execute(
+            "SELECT count(*) AS count FROM data_quality_events WHERE fingerprint = %s",
+            (fingerprint,),
+        ).fetchone()
+
+        assert count == {"count": 1}
+    finally:
+        _drop_runtime_privilege_fixture(connection, role, fixture)
 
 
 def test_runtime_readiness_ignores_sequences_owned_by_unused_tables() -> None:
@@ -115,6 +192,144 @@ def test_runtime_readiness_ignores_sequences_owned_by_unused_tables() -> None:
         connection.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role)))
         connection.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
         connection.close()
+
+
+def _grant_runtime_privileges(connection: psycopg.Connection[dict[str, Any]], role: str) -> None:
+    for privilege, tables in (
+        ("SELECT", RUNTIME_READ_TABLES),
+        ("INSERT", RUNTIME_INSERT_TABLES),
+        ("UPDATE", RUNTIME_UPDATE_TABLES),
+        ("DELETE", RUNTIME_DELETE_TABLES),
+    ):
+        connection.execute(
+            sql.SQL("GRANT {} ON TABLE {} TO {}").format(
+                sql.SQL(privilege),
+                sql.SQL(", ").join(sql.Identifier(table) for table in sorted(tables)),
+                sql.Identifier(role),
+            )
+        )
+    sequences = connection.execute(
+        """
+        SELECT DISTINCT sequence.relname AS sequence_name
+        FROM pg_class AS sequence
+        JOIN pg_depend AS dependency
+          ON dependency.classid = 'pg_class'::regclass
+         AND dependency.objid = sequence.oid
+         AND dependency.refclassid = 'pg_class'::regclass
+         AND dependency.deptype IN ('a', 'i')
+        JOIN pg_class AS owner_table ON owner_table.oid = dependency.refobjid
+        JOIN pg_namespace AS owner_namespace
+          ON owner_namespace.oid = owner_table.relnamespace
+        WHERE sequence.relkind = 'S'
+          AND owner_namespace.nspname = current_schema()
+          AND owner_table.relname = ANY(%s)
+        """,
+        (sorted(RUNTIME_INSERT_TABLES),),
+    ).fetchall()
+    for sequence in sequences:
+        connection.execute(
+            sql.SQL("GRANT USAGE ON SEQUENCE {} TO {}").format(
+                sql.Identifier(str(sequence["sequence_name"])), sql.Identifier(role)
+            )
+        )
+
+
+def _create_runtime_privilege_fixture(
+    connection: psycopg.Connection[dict[str, Any]], role: str
+) -> dict[str, int]:
+    connection.execute(sql.SQL("CREATE ROLE {}").format(sql.Identifier(role)))
+    suffix = role.removeprefix("p1_runtime_").upper()
+    policy = connection.execute(
+        """
+        INSERT INTO collection_policies (
+          exchange, quote_currency, name, default_start_at, priority
+        )
+        VALUES ('UPBIT', 'KRW', %s, '2024-01-01T00:00:00Z', 100)
+        RETURNING id
+        """,
+        (role,),
+    ).fetchone()
+    market = connection.execute(
+        """
+        INSERT INTO markets (
+          exchange, market_code, quote_currency, base_asset,
+          korean_name, english_name, first_observed_at, last_observed_at
+        )
+        VALUES ('UPBIT', %s, 'KRW', %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            f"KRW-{suffix}",
+            suffix,
+            role,
+            role,
+            datetime(2026, 7, 17, tzinfo=UTC),
+            datetime(2026, 7, 17, tzinfo=UTC),
+        ),
+    ).fetchone()
+    assert policy is not None
+    assert market is not None
+    target = connection.execute(
+        """
+        INSERT INTO collection_target_specs (
+          policy_id, market_id, data_type, candle_unit, range_start_at,
+          priority, continuous, status
+        )
+        VALUES (%s, %s, 'source_candle', '1m', '2024-01-01T00:00:00Z', 100, true, 'active')
+        RETURNING id
+        """,
+        (policy["id"], market["id"]),
+    ).fetchone()
+    assert target is not None
+    coverage = connection.execute(
+        """
+        INSERT INTO coverage_intervals (
+          target_spec_id, range_start_at, range_end_at, status, evidence, assessed_at
+        )
+        VALUES (%s, %s, %s, 'unverified', '{}'::jsonb, %s)
+        RETURNING id
+        """,
+        (
+            target["id"],
+            datetime(2026, 7, 17, tzinfo=UTC),
+            datetime(2026, 7, 17, 0, 1, tzinfo=UTC),
+            datetime(2026, 7, 17, tzinfo=UTC),
+        ),
+    ).fetchone()
+    assert coverage is not None
+    return {
+        "policy_id": int(policy["id"]),
+        "market_id": int(market["id"]),
+        "target_spec_id": int(target["id"]),
+        "coverage_id": int(coverage["id"]),
+    }
+
+
+def _drop_runtime_privilege_fixture(
+    connection: psycopg.Connection[dict[str, Any]],
+    role: str,
+    fixture: dict[str, int],
+) -> None:
+    connection.execute("RESET ROLE")
+    connection.execute(
+        "DELETE FROM data_quality_events WHERE target_spec_id = %s",
+        (fixture["target_spec_id"],),
+    )
+    connection.execute(
+        "DELETE FROM coverage_intervals WHERE target_spec_id = %s",
+        (fixture["target_spec_id"],),
+    )
+    connection.execute(
+        "DELETE FROM collection_target_specs WHERE id = %s",
+        (fixture["target_spec_id"],),
+    )
+    connection.execute("DELETE FROM markets WHERE id = %s", (fixture["market_id"],))
+    connection.execute(
+        "DELETE FROM collection_policies WHERE id = %s", (fixture["policy_id"],)
+    )
+    connection.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role)))
+    connection.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
+    connection.close()
 
 
 def test_market_sync_is_idempotent_and_creates_default_krw_work() -> None:

@@ -1,7 +1,7 @@
 # 시스템 트레이딩 도메인 설계(Module Design)
 
-상태: 승인된 목표 설계(Accepted Target), P1·P2-1·P2-2 기계 계약 구현됨
-버전: 1.2.0
+상태: 승인된 목표 설계(Accepted Target), P1·P2-1·P2-2·P2-3 기계 계약 구현됨
+버전: 1.3.0
 날짜: 2026-07-17
 
 ## 1. 목적
@@ -39,10 +39,12 @@
 | 파생 이력 | `candle_rollups` | 대리 ID, `(instrument_id, candle_unit, candle_start_at, calculation_version, input_content_hash, coverage_snapshot_hash, source_revision_through_id, quality_event_through_id)` 고유, 추가 전용 |
 | 파생 전파 | `candle_rollup_invalidations` | 범위·원천 개정 상한·품질 이벤트 상한·커버리지 스냅샷 해시를 가진 멱등 키 |
 | 파생 작업 | `candle_rollup_recompute_jobs` | 무효화당 하나, 임대·fencing·재시도·dead-letter·safe-restart |
-| 파생 | `market_statistics` | `(market_id, interval, calculated_at, calculation_version)` |
-| 지표 | `indicator_definitions` | `(owner_id, name)` |
-| 지표 | `indicator_definition_versions` | `(definition_id, version)`, 계산 graph·parameter 불변 |
-| 지표 | `indicator_materializations` | `(definition_version_id, dataset_version_id, market_id, occurred_at)` |
+| 파생 통계 | `market_statistics` | 시장·주기·발생 시각·계산 버전·현재 입력·프런티어·내용 해시, 추가 전용 부모 계보 |
+| 지표 | `indicator_definitions` | `indicator_key` 고유 |
+| 지표 | `indicator_definition_versions` | `(definition_id, version)`, 알고리즘·파라미터·정밀도·반올림·정의 해시 불변 |
+| 지표 | `indicator_materializations` | 상품·주기·발생 시각·정의 집합 해시·현재 입력·프런티어·내용 해시, 추가 전용 부모 계보 |
+| 지표 | `indicator_values` | `(materialization_id, definition_version_id, value_name)`, 부모 값 계보 |
+| 지표 작업 | `indicator_invalidations` | 원천 개정·집계 개정·품질 이벤트·집계 무효화 중 정확히 하나의 원인, DB 시계 임대·generation fencing |
 | 연구 | `dataset_versions` | content hash 불변·고유 |
 | 전략 | `strategy_definitions` | `(owner_id, name)` |
 | 전략 | `strategy_versions` | `(strategy_id, version)`, graph hash 불변 |

@@ -6,6 +6,7 @@ SUFFIX="${RANDOM}-$$"
 NETWORK="goodmoneying-migration-e2e-${SUFFIX}"
 DB_CONTAINER="goodmoneying-migration-db-${SUFFIX}"
 API_CONTAINER="goodmoneying-migration-api-${SUFFIX}"
+UPGRADE_API_CONTAINER="goodmoneying-upgrade-api-${SUFFIX}"
 MIGRATION_IMAGE="goodmoneying-migrations:e2e-${SUFFIX}"
 API_IMAGE="goodmoneying-api:migration-e2e-${SUFFIX}"
 POSTGRES_IMAGE="postgres:17.10"
@@ -24,6 +25,7 @@ export POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB
 
 cleanup() {
   docker rm -f "$API_CONTAINER" >/dev/null 2>&1 || true
+  docker rm -f "$UPGRADE_API_CONTAINER" >/dev/null 2>&1 || true
   docker rm -fv "$DB_CONTAINER" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
   docker image rm "$MIGRATION_IMAGE" >/dev/null 2>&1 || true
@@ -243,6 +245,56 @@ docker run --rm --network "$NETWORK" \
   -e GOODMONEYING_DATABASE_URL="$UPGRADE_DATABASE_URL" "$API_IMAGE" \
   uv run --no-sync python -c "from goodmoneying_shared.data_foundation_repository import PostgresDataFoundationRepository; import os; PostgresDataFoundationRepository(os.environ['GOODMONEYING_DATABASE_URL']).assert_runtime_ready()"
 
+upgrade_seed_count="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" \
+  -d "$UPGRADE_DB" -c \
+  "SELECT count(*) FROM indicator_invalidations invalidation
+   JOIN instruments instrument ON instrument.id=invalidation.instrument_id
+   WHERE instrument.market_code='KRW-P2-UPGRADE';")"
+[[ "$upgrade_seed_count" == "1" ]] || {
+  printf '오류: P2-3 업그레이드 bounded 초기 invalidation 수=%s\n' "$upgrade_seed_count" >&2
+  exit 1
+}
+upgrade_indicator_processed="$(docker run --rm --network "$NETWORK" \
+  -e GOODMONEYING_DATABASE_URL="$UPGRADE_DATABASE_URL" "$API_IMAGE" \
+  uv run --no-sync python -c \
+  "import os; from goodmoneying_shared.indicator_store import run_next_indicator_invalidation; from goodmoneying_shared.postgres_repository import PostgresOperationsRepository; repository=PostgresOperationsRepository(os.environ['GOODMONEYING_DATABASE_URL']); print(run_next_indicator_invalidation(repository, 'migration-upgrade-worker'))")"
+[[ "$upgrade_indicator_processed" -gt 0 ]] || {
+  printf '오류: P2-3 업그레이드 초기 지표 처리 행 수=%s\n' "$upgrade_indicator_processed" >&2
+  exit 1
+}
+upgrade_instrument_id="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" \
+  -d "$UPGRADE_DB" -c \
+  "SELECT id FROM instruments WHERE market_code='KRW-P2-UPGRADE';")"
+docker run -d \
+  --name "$UPGRADE_API_CONTAINER" \
+  --network "$NETWORK" \
+  -e GOODMONEYING_DATABASE_URL="$UPGRADE_DATABASE_URL" \
+  -e GOODMONEYING_RUNTIME_MODE=production \
+  -e GOODMONEYING_OPERATOR_TOKEN=migration-e2e-token \
+  "$API_IMAGE" >/dev/null
+upgrade_api_ready=0
+for _ in {1..30}; do
+  if docker exec "$UPGRADE_API_CONTAINER" python -c \
+    "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)" \
+    >/dev/null 2>&1; then
+    upgrade_api_ready=1
+    break
+  fi
+  sleep 1
+done
+[[ "$upgrade_api_ready" == "1" ]] || {
+  printf '오류: P2-3 업그레이드 API가 준비되지 않았습니다.\n' >&2
+  docker logs "$UPGRADE_API_CONTAINER" >&2 || true
+  exit 1
+}
+upgrade_indicator_items="$(docker exec "$UPGRADE_API_CONTAINER" python -c \
+  "import json, urllib.parse, urllib.request; query=urllib.parse.urlencode({'unit':'1m','from':'2026-07-17T06:59:00Z','to':'2026-07-17T07:01:00Z','asOf':'2026-07-18T00:00:00Z'}); response=json.load(urllib.request.urlopen('http://127.0.0.1:8000/v1/instruments/${upgrade_instrument_id}/indicators?'+query, timeout=5)); print(len(response['items']))")"
+[[ "$upgrade_indicator_items" == "1" ]] || {
+  printf '오류: P2-3 업그레이드 REST 지표 행 수=%s\n' "$upgrade_indicator_items" >&2
+  exit 1
+}
+docker rm -f "$UPGRADE_API_CONTAINER" >/dev/null
+
 docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 \
   -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
   "INSERT INTO instruments (exchange, market_code, quote_currency, base_asset, display_name) VALUES ('UPBIT', 'KRW-E2E', 'KRW', 'E2E', '마이그레이션 E2E');" \
@@ -358,6 +410,7 @@ host_port="${host_binding##*:}"
       tests/e2e/test_live_postgres_data_foundation.py \
       tests/e2e/test_live_postgres_candle_aggregation.py \
       tests/e2e/test_live_postgres_incremental_candle_aggregation.py \
+      tests/e2e/test_live_postgres_versioned_indicators.py \
       tests/e2e/test_live_postgres_source_evidence.py
 )
 GOODMONEYING_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${host_port}/${POSTGRES_DB}?sslmode=disable" \

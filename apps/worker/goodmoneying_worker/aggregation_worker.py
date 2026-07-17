@@ -5,6 +5,7 @@ import threading
 import uuid
 from collections.abc import Callable
 
+from goodmoneying_shared.indicator_store import run_next_indicator_invalidation
 from goodmoneying_shared.models import CollectionWorkerHeartbeatStatus
 from goodmoneying_shared.repository import OperationsRepository
 
@@ -89,7 +90,7 @@ class CandleAggregationWorker:
         self._repository.schedule_candle_aggregation()
         job = self._repository.claim_next_candle_aggregation_job()
         if job is None:
-            return 0
+            return run_next_indicator_invalidation(self._repository, self._worker_id)
         completed = 0
         for target in self._repository.candle_aggregation_job_targets(job.id):
             self._repository.mark_candle_aggregation_target(

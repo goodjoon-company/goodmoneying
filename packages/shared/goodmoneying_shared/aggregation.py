@@ -120,6 +120,7 @@ def _to_candle_view(item: SourceCandle) -> CandleView:
         knowledge_at=item.knowledge_at or item.collected_at,
         input_content_hash=item.input_content_hash or _hash_inputs([item]),
         input_revision_ids=((item.revision_id,) if item.revision_id is not None else ()),
+        source_revision_through_id=item.revision_id or 0,
     )
 
 

@@ -330,7 +330,14 @@ test("관심 코인 분석 화면이 WebSocket 메시지로 실시간 정보를 
       .flatMap((message) => message.candles as Array<{ startedAt: string; open: string }>);
     const indicatorPoints = received
       .filter((message) => message.type === "analysis.indicators")
-      .flatMap((message) => message.points as Array<{ startedAt: string; ema20: string | null }>);
+      .flatMap(
+        (message) =>
+          message.points as Array<{
+            startedAt: string;
+            ema20: string | null;
+            calculationStatus: { ema20: "warming_up" | "ready" | "missing" };
+          }>
+      );
     const marketMessages = received.filter((message) => message.type === "analysis.market");
     const marketTradePrice = String(
       (marketMessages.at(-1)?.ticker as { tradePrice?: string } | undefined)?.tradePrice ?? ""
@@ -341,7 +348,11 @@ test("관심 코인 분석 화면이 WebSocket 메시지로 실시간 정보를 
     expect(indicatorPoints.map((point) => point.startedAt)).toEqual(
       candles.map((candle) => candle.startedAt)
     );
-    expect(indicatorPoints.every((point) => point.ema20 !== null)).toBeTruthy();
+    expect(
+      indicatorPoints.every(
+        (point) => (point.ema20 === null) === (point.calculationStatus.ema20 !== "ready")
+      )
+    ).toBeTruthy();
     expect(marketTradePrice).not.toBe("");
     return { candles, indicatorPoints, marketTradePrice };
   };

@@ -422,6 +422,46 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /v1/instruments/{instrumentId}/indicators:
+    get:
+      tags: [상품(Instrument)]
+      summary: 불변 정의 버전 지표 조회
+      operationId: getIndicators
+      parameters:
+        - $ref: "#/components/parameters/InstrumentId"
+        - {name: unit, in: query, required: true, schema: {type: string, enum: [1m, 3m, 5m, 10m, 15m, 30m, 1h, 4h, 1d, 1w, 1M]}}
+        - {name: from, in: query, required: true, schema: {type: string, format: date-time}}
+        - {name: to, in: query, required: true, schema: {type: string, format: date-time}}
+        - {name: asOf, in: query, required: true, schema: {type: string, format: date-time}}
+        - {name: definitionSetHash, in: query, required: false, schema: {type: [string, "null"], pattern: "^[0-9a-f]{64}$"}}
+        - {name: pageSize, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 500, default: 500}}
+        - {name: cursor, in: query, required: false, description: asOf·정의·물질화 ID 상한·상품·주기·조회 범위를 고정한 불투명 커서, schema: {type: [string, "null"]}}
+      responses:
+        "200":
+          description: 시점 기준과 정의 버전이 고정된 지표 물질화 투영
+          content: {application/json: {schema: {$ref: "#/components/schemas/IndicatorSeriesResponse"}}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "422": {$ref: "#/components/responses/ValidationError"}
+  /v1/instruments/{instrumentId}/market-statistics:
+    get:
+      tags: [상품(Instrument)]
+      summary: 지표 물질화 기반 시장 통계 조회
+      operationId: getMarketStatistics
+      parameters:
+        - $ref: "#/components/parameters/InstrumentId"
+        - {name: unit, in: query, required: true, schema: {type: string, enum: [1m, 3m, 5m, 10m, 15m, 30m, 1h, 4h, 1d, 1w, 1M]}}
+        - {name: from, in: query, required: true, schema: {type: string, format: date-time}}
+        - {name: to, in: query, required: true, schema: {type: string, format: date-time}}
+        - {name: asOf, in: query, required: true, schema: {type: string, format: date-time}}
+        - {name: calculationVersion, in: query, required: false, schema: {type: [string, "null"]}}
+        - {name: pageSize, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 500, default: 500}}
+        - {name: cursor, in: query, required: false, description: asOf·계산 버전·물질화 ID 상한·상품·주기·조회 범위를 고정한 불투명 커서, schema: {type: [string, "null"]}}
+      responses:
+        "200":
+          description: 불변 캔들 계보에서 독립적으로 파생한 수익률·변동성·거래량·완전성 통계
+          content: {application/json: {schema: {$ref: "#/components/schemas/MarketStatisticsResponse"}}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "422": {$ref: "#/components/responses/ValidationError"}
   /v1/instruments/{instrumentId}/ticker-snapshots:
     get:
       tags:
@@ -1991,6 +2031,67 @@ components:
         completeness:
           type: string
           enum: [complete, partial, empty]
+    IndicatorPoint:
+      description: 불변 지표 정의 버전과 사용 가능한 시점 계보를 포함한 한 구간의 지표 투영.
+      type: object
+      required: [startedAt, values, statuses, definitionVersions, materializationId, sourceRevisionThroughId, qualityEventThroughId, knowledgeAt, sourceAsOf]
+      properties:
+        startedAt: {type: string, format: date-time}
+        values:
+          type: object
+          additionalProperties: {type: [string, "null"]}
+        statuses:
+          type: object
+          additionalProperties: {type: string, enum: [warming_up, ready, missing]}
+        definitionVersions:
+          type: object
+          additionalProperties: {type: string, pattern: "^[0-9a-f]{64}$"}
+        materializationId: {type: [integer, "null"]}
+        sourceRevisionThroughId: {type: integer, minimum: 0}
+        qualityEventThroughId: {type: [integer, "null"]}
+        knowledgeAt: {type: string, format: date-time}
+        sourceAsOf: {type: string, format: date-time}
+    IndicatorSeriesResponse:
+      description: PostgreSQL 운영 저장소에서 고정 asOf·정의 집합·물질화 ID 상한으로 페이지가 안정된 저장 전용 지표 시계열 응답. SQLite는 테스트 호환 폴백이다.
+      type: object
+      required: [unit, asOf, definitionSetHash, items, nextCursor]
+      properties:
+        unit: {type: string, enum: [1m, 3m, 5m, 10m, 15m, 30m, 1h, 4h, 1d, 1w, 1M]}
+        asOf: {type: string, format: date-time}
+        definitionSetHash: {type: string, pattern: "^[0-9a-f]{64}$"}
+        items: {type: array, items: {$ref: "#/components/schemas/IndicatorPoint"}}
+        nextCursor: {type: [string, "null"]}
+    MarketStatistic:
+      description: 지표 정의와 독립된 계산 버전과 입력 계보를 가진 한 구간의 시장 통계.
+      type: object
+      required: [startedAt, calculationVersion, closeReturn1, realizedVolatility20, tradeVolume, tradeAmount, volatilitySampleCount, inputCompletenessRatio, returnStatus, volatilityStatus, tradeStatus, materializationId, sourceRevisionThroughId, qualityEventThroughId, sourceAsOf, knowledgeAt, contentHash]
+      properties:
+        startedAt: {type: string, format: date-time}
+        calculationVersion: {type: string, const: market-statistics-v1}
+        closeReturn1: {type: [string, "null"]}
+        realizedVolatility20: {type: [string, "null"]}
+        tradeVolume: {type: [string, "null"]}
+        tradeAmount: {type: [string, "null"]}
+        volatilitySampleCount: {type: integer, minimum: 0, maximum: 20}
+        inputCompletenessRatio: {type: string}
+        returnStatus: {type: string, enum: [warming_up, ready, missing]}
+        volatilityStatus: {type: string, enum: [warming_up, ready, missing]}
+        tradeStatus: {type: string, enum: [warming_up, ready, missing]}
+        materializationId: {type: [integer, "null"]}
+        sourceRevisionThroughId: {type: integer, minimum: 0}
+        qualityEventThroughId: {type: [integer, "null"]}
+        sourceAsOf: {type: string, format: date-time}
+        knowledgeAt: {type: string, format: date-time}
+        contentHash: {type: string, pattern: "^[0-9a-f]{64}$"}
+    MarketStatisticsResponse:
+      description: PostgreSQL 운영 저장소에서 고정 asOf·계산 버전·물질화 ID 상한으로 페이지가 안정된 저장 전용 시장 통계 응답. SQLite는 테스트 호환 폴백이다.
+      type: object
+      required: [unit, asOf, items, nextCursor]
+      properties:
+        unit: {type: string, enum: [1m, 3m, 5m, 10m, 15m, 30m, 1h, 4h, 1d, 1w, 1M]}
+        asOf: {type: string, format: date-time}
+        items: {type: array, items: {$ref: "#/components/schemas/MarketStatistic"}}
+        nextCursor: {type: [string, "null"]}
     TickerSnapshotsResponse:
       description: 거래 상품의 현재가 스냅샷 시계열 목록 응답.
       type: object

@@ -15,7 +15,7 @@
 | 시스템 관리 실시간 메시지 | `api/realtime-system-management-websocket.md` | 시스템 관리 화면, 운영 서버 | API·프론트엔드 메시지 테스트 |
 | 미래 내부 이벤트 | `protobuf/` | 승인된 메시지 큐 소비자 | 스키마별 테스트 |
 
-P1 데이터 기반 계약은 `db/migrations/20260717000100_system_trading_data_foundation.sql`과 `api/openapi.yaml`의 `/v1/data-foundation` 경로로 구현됐다. 현재 별도 메시지 브로커 계약은 없다. 내부 실시간 envelope의 목표 의미는 [도메인 설계](../02_Architecture/system-trading-domain.md)를 따르며 Issue #29에서 JSON Schema를 이 디렉터리에 추가한 시점부터 그 파일이 기계 계약의 단일 기준이다. `protobuf/`는 브로커 도입 결정 이후에만 기계 검증 스키마를 추가하는 예약 경계다.
+P1 데이터 기반 계약은 `db/migrations/20260717000100_system_trading_data_foundation.sql`과 `api/openapi.yaml`의 `/v1/data-foundation` 경로로 구현됐다. P2-3 버전 지표·시장 통계는 `db/migrations/20260717001100_p2_versioned_indicators.sql`, OpenAPI의 `/v1/instruments/{instrumentId}/indicators`·`/market-statistics`, `api/realtime-analysis-websocket.schema.json`을 함께 단일 기준으로 사용한다. 현재 별도 메시지 브로커 계약은 없다. 내부 실시간 envelope의 목표 의미는 [도메인 설계](../02_Architecture/system-trading-domain.md)를 따르며 Issue #29에서 JSON Schema를 이 디렉터리에 추가한 시점부터 그 파일이 기계 계약의 단일 기준이다. `protobuf/`는 브로커 도입 결정 이후에만 기계 검증 스키마를 추가하는 예약 경계다.
 
 ## 구조
 

@@ -10,7 +10,11 @@ import pytest
 from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator, FormatChecker  # type: ignore[import-untyped]
 
-from goodmoneying_api.main import create_app, create_repository_from_environment
+from goodmoneying_api.main import (
+    _classify_indicator_stream_update,
+    create_app,
+    create_repository_from_environment,
+)
 from goodmoneying_shared.data_foundation_repository import PostgresDataFoundationRepository
 from goodmoneying_shared.models import SourceCandle
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
@@ -309,7 +313,16 @@ def test_시스템_관리_웹소켓은_수집대상과_집계_진행률_상태�
     assert message["payload"]["aggregation"]["pendingTargetCount"] >= 7
     assert message["payload"]["incrementalAggregation"]["status"] == "pending"
     assert message["payload"]["incrementalAggregation"]["unit"] in {
-        "3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"
+        "3m",
+        "5m",
+        "10m",
+        "15m",
+        "30m",
+        "1h",
+        "4h",
+        "1d",
+        "1w",
+        "1M",
     }
 
 
@@ -426,6 +439,66 @@ def test_coin_analysis_websocket_sends_small_messages_for_a_watchlist_coin() -> 
         assert list(validator.iter_errors(message)) == []
 
 
+def test_버전_지표_REST는_저장_물질화_id와_고정_frontier_cursor를_반환한다() -> None:
+    repository, client = seeded_repository_and_client()
+    instrument_id = repository.list_active_targets()[0].id
+    as_of = now_kst()
+    parameters = {
+        "unit": "1m",
+        "from": (as_of - timedelta(days=1)).isoformat(),
+        "to": as_of.isoformat(),
+        "asOf": as_of.isoformat(),
+        "pageSize": 1,
+    }
+
+    first = client.get(f"/v1/instruments/{instrument_id}/indicators", params=parameters)
+
+    assert first.status_code == 200
+    payload = first.json()
+    assert payload["items"]
+    assert payload["items"][0]["materializationId"] > 0
+    assert payload["items"][0]["definitionVersions"]
+    if payload["nextCursor"] is not None:
+        second = client.get(
+            f"/v1/instruments/{instrument_id}/indicators",
+            params={**parameters, "cursor": payload["nextCursor"]},
+        )
+        assert second.status_code == 200
+        drift = client.get(
+            f"/v1/instruments/{instrument_id}/indicators",
+            params={
+                **parameters,
+                "asOf": (as_of + timedelta(seconds=1)).isoformat(),
+                "cursor": payload["nextCursor"],
+            },
+        )
+        assert drift.status_code == 400
+        assert "frontier" in drift.json()["message"]
+        other_instrument_id = repository.list_active_targets()[1].id
+        cross_context = client.get(
+            f"/v1/instruments/{other_instrument_id}/indicators",
+            params={**parameters, "cursor": payload["nextCursor"]},
+        )
+        assert cross_context.status_code == 400
+        assert "조회 문맥" in cross_context.json()["message"]
+
+    statistics = client.get(f"/v1/instruments/{instrument_id}/market-statistics", params=parameters)
+    assert statistics.status_code == 200
+    assert statistics.json()["items"][0]["materializationId"] > 0
+    statistics_cursor = statistics.json()["nextCursor"]
+    if statistics_cursor is not None:
+        changed_range = client.get(
+            f"/v1/instruments/{instrument_id}/market-statistics",
+            params={
+                **parameters,
+                "from": (as_of - timedelta(hours=12)).isoformat(),
+                "cursor": statistics_cursor,
+            },
+        )
+        assert changed_range.status_code == 400
+        assert "조회 문맥" in changed_range.json()["message"]
+
+
 def test_coin_analysis_websocket_changes_coin_and_units_with_independent_messages() -> None:
     repository, client = seeded_repository_and_client()
     first_instrument, second_instrument = repository.list_active_targets()[:2]
@@ -463,7 +536,10 @@ def test_coin_analysis_websocket_changes_coin_and_units_with_independent_message
             assert [point["startedAt"] for point in indicator_points] == [
                 candle["startedAt"] for candle in candles
             ]
-            assert all(point["ema20"] is not None for point in indicator_points)
+            assert all(
+                (point["ema20"] is None) == (point["calculationStatus"]["ema20"] != "ready")
+                for point in indicator_points
+            )
             one_year_candle_counts[unit] = len(candles)
             assert "candles" not in messages_by_type["analysis.market"]
 
@@ -490,7 +566,9 @@ def test_coin_analysis_websocket_changes_coin_and_units_with_independent_message
             now_kst() - timedelta(days=365)
         )
         assert len(three_year_indicators) == len(three_year_candles)
-        assert three_year_indicators[-1]["ema20"] is not None
+        assert (three_year_indicators[-1]["ema20"] is None) == (
+            three_year_indicators[-1]["calculationStatus"]["ema20"] != "ready"
+        )
         assert any(
             Decimal("1000000") <= Decimal(candle["open"]) < Decimal("2000000")
             for candle in three_year_candles
@@ -520,7 +598,9 @@ def test_coin_analysis_websocket_changes_coin_and_units_with_independent_message
         for candle in changed_candles
     )
     assert len(changed_indicators) == len(changed_candles)
-    assert changed_indicators[-1]["ema20"] is not None
+    assert (changed_indicators[-1]["ema20"] is None) == (
+        changed_indicators[-1]["calculationStatus"]["ema20"] != "ready"
+    )
     assert changed_by_type["analysis.market"]["ticker"]["tradePrice"] == "50000000.0000"
     assert set(changed_by_type) == {
         "analysis.session",
@@ -684,6 +764,104 @@ def test_coin_analysis_websocket_splits_three_year_indicators_into_small_chunks(
     assert len(indicator_messages) == 3
     assert all(len(message["points"]) <= 500 for message in indicator_messages)
     assert [message["chunkIndex"] for message in indicator_messages] == [0, 1, 2]
+
+
+def test_coin_analysis_websocket_aligns_intraday_1000_points() -> None:
+    repository, client = seeded_repository_and_client()
+    instrument_id = repository.list_active_targets()[0].id
+    end_at = now_kst().replace(second=0, microsecond=0)
+    start_at = end_at - timedelta(minutes=1000)
+    repository.record_incremental_collection(
+        [],
+        [],
+        [
+            SourceCandle(
+                instrument_id=instrument_id,
+                candle_unit="1m",
+                candle_start_at=start_at + timedelta(minutes=index),
+                open_price=Decimal("100") + index,
+                high_price=Decimal("102") + index,
+                low_price=Decimal("99") + index,
+                close_price=Decimal("101") + index,
+                trade_volume=Decimal("10"),
+                trade_amount=Decimal("1000"),
+                collected_at=end_at,
+            )
+            for index in range(1001)
+        ],
+    )
+
+    with client.websocket_connect("/v1/realtime/analysis") as websocket:
+        websocket.send_json(
+            {
+                "version": "1",
+                "type": "analysis.subscribe",
+                "sentAt": now_kst().isoformat(),
+                "instrumentId": instrument_id,
+                "unit": "1m",
+                "rangeDays": 7,
+            }
+        )
+        messages = [websocket.receive_json() for _ in range(7)]
+
+    candles = [
+        candle
+        for message in messages
+        if message["type"] == "analysis.chart"
+        for candle in message["candles"]
+    ]
+    indicators = [
+        point
+        for message in messages
+        if message["type"] == "analysis.indicators"
+        for point in message["points"]
+    ]
+    assert len(candles) == len(indicators) == 1000
+    assert [item["startedAt"] for item in candles] == [
+        item["startedAt"] for item in indicators
+    ]
+
+
+def test_coin_analysis_websocket_uses_upsert_only_for_latest_point() -> None:
+    first = {"startedAt": "2026-07-17T00:00:00+09:00", "sma20": "1"}
+    previous_latest = {"startedAt": "2026-07-18T00:00:00+09:00", "sma20": "2"}
+    current_latest = {"startedAt": "2026-07-19T00:00:00+09:00", "sma20": "3"}
+    candle = {"startedAt": current_latest["startedAt"]}
+
+    assert (
+        _classify_indicator_stream_update(
+            [first, previous_latest], [first, previous_latest, current_latest], candle
+        )
+        == "upsert"
+    )
+    assert (
+        _classify_indicator_stream_update(
+            [first, current_latest], [first, {**current_latest, "sma20": "4"}], candle
+        )
+        == "upsert"
+    )
+
+
+def test_coin_analysis_websocket_refreshes_only_for_historical_indicator_revision() -> None:
+    first = {"startedAt": "2026-07-17T00:00:00+09:00", "sma20": "1"}
+    revised_first = {**first, "sma20": "9"}
+    latest = {"startedAt": "2026-07-18T00:00:00+09:00", "sma20": "2"}
+    candle = {"startedAt": latest["startedAt"]}
+
+    assert _classify_indicator_stream_update([first, latest], [revised_first, latest], candle) == (
+        "refresh"
+    )
+
+
+def test_coin_analysis_websocket_does_not_upsert_a_stale_indicator_when_worker_lags() -> None:
+    previous = [{"startedAt": "2026-07-17T00:00:00+09:00", "sma20": "1"}]
+    stale_latest = {"startedAt": "2026-07-18T00:00:00+09:00", "sma20": "2"}
+    newest_candle = {"startedAt": "2026-07-19T00:00:00+09:00"}
+
+    update = _classify_indicator_stream_update(
+        previous, [*previous, stale_latest], newest_candle
+    )
+    assert update == "cache"
 
 
 def test_dashboard_summary_exposes_collection_worker_status() -> None:

@@ -85,7 +85,10 @@ def test_runtime_data_quality_insert_do_nothing_needs_no_select() -> None:
         assert privilege == {"can_read": False}
 
         connection.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role)))
-        assert_p1_runtime_ready(connection)
+        # 이 시험은 INSERT ... ON CONFLICT DO NOTHING 자체의 최소 권한만 격리해
+        # 검증한다. P2-3 런타임 전체 준비도는 지표 워커의 품질 조회 때문에
+        # data_quality_events SELECT를 요구하므로 의도적으로 축소한 역할에는
+        # assert_p1_runtime_ready를 적용하지 않는다.
         for _ in range(2):
             connection.execute(
                 """

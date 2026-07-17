@@ -224,6 +224,26 @@ def _enqueue_quality_transition_recomputation(
         or bounds["source_revision_through_id"] is None
     ):
         return
+    if context["candle_unit"] == "1m":
+        connection.execute(
+            """
+            INSERT INTO indicator_invalidations (
+              instrument_id, candle_unit, changed_quality_event_id,
+              impact_start_at, impact_end_at, source_revision_through_id,
+              quality_event_through_id, knowledge_at
+            ) VALUES (%s, '1m', %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (changed_quality_event_id) DO NOTHING
+            """,
+            (
+                instrument_id,
+                quality_event_id,
+                event_start_at,
+                event_end_at,
+                bounds["source_revision_through_id"],
+                quality_event_id,
+                knowledge_at,
+            ),
+        )
     affected_start = max(event_start_at, bounds["first_at"] - timedelta(days=32))
     affected_end = min(event_end_at, bounds["last_at"] + timedelta(days=32))
     affected_units = (

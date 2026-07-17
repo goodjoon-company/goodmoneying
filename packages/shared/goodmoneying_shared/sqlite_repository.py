@@ -1755,6 +1755,14 @@ class SQLiteOperationsRepository:
                 input_revision_ids=tuple(
                     int(value) for value in str(row["input_revision_ids"]).split(",") if value
                 ),
+                rollup_id=int(row["id"]),
+                source_revision_through_id=int(row["source_revision_through_id"]),
+                quality_event_through_id=(
+                    int(row["quality_event_through_id"])
+                    if row["quality_event_through_id"] is not None
+                    else None
+                ),
+                coverage_snapshot_hash=str(row["coverage_snapshot_hash"]),
             )
             for row in rows
         ]

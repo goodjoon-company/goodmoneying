@@ -5,7 +5,7 @@ from typing import Any
 import psycopg
 
 LATEST_P1_MIGRATION = "20260717000800"
-LATEST_PLATFORM_MIGRATION = "20260717001000"
+LATEST_PLATFORM_MIGRATION = "20260717001100"
 RUNTIME_READ_TABLES = frozenset(
     {
         "backfill_job_targets",
@@ -28,9 +28,16 @@ RUNTIME_READ_TABLES = frozenset(
         "collection_worker_heartbeats",
         "command_idempotency_records",
         "coverage_intervals",
+        "data_quality_events",
         "fetch_manifests",
+        "indicator_definition_versions",
+        "indicator_definitions",
         "instruments",
+        "indicator_invalidations",
+        "indicator_materializations",
+        "indicator_values",
         "market_status_history",
+        "market_statistics",
         "markets",
         "notification_events",
         "orderbook_snapshots",
@@ -70,7 +77,12 @@ RUNTIME_INSERT_TABLES = frozenset(
         "data_quality_events",
         "fetch_manifests",
         "instruments",
+        "indicator_invalidations",
+        "indicator_materializations",
+        "indicator_value_rollups",
+        "indicator_values",
         "market_status_history",
+        "market_statistics",
         "markets",
         "notification_events",
         "orderbook_snapshot_levels",
@@ -102,6 +114,7 @@ RUNTIME_UPDATE_TABLES = frozenset(
         "coverage_intervals",
         "fetch_manifests",
         "instruments",
+        "indicator_invalidations",
         "market_status_history",
         "markets",
         "orderbook_summaries",

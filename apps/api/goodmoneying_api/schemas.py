@@ -563,6 +563,53 @@ class CandleSeriesResponse(BaseModel):
     nextCursor: str | None = None
 
 
+class IndicatorPointResponse(BaseModel):
+    startedAt: datetime
+    values: dict[str, str | None]
+    statuses: dict[str, Literal["warming_up", "ready", "missing"]]
+    definitionVersions: dict[str, str]
+    materializationId: int | None
+    sourceRevisionThroughId: int
+    qualityEventThroughId: int | None
+    knowledgeAt: datetime
+    sourceAsOf: datetime
+
+
+class IndicatorSeriesResponse(BaseModel):
+    unit: str
+    asOf: datetime
+    definitionSetHash: str
+    items: list[IndicatorPointResponse]
+    nextCursor: str | None = None
+
+
+class MarketStatisticResponse(BaseModel):
+    startedAt: datetime
+    calculationVersion: Literal["market-statistics-v1"]
+    closeReturn1: str | None
+    realizedVolatility20: str | None
+    tradeVolume: str | None
+    tradeAmount: str | None
+    volatilitySampleCount: int
+    inputCompletenessRatio: str
+    returnStatus: Literal["warming_up", "ready", "missing"]
+    volatilityStatus: Literal["warming_up", "ready", "missing"]
+    tradeStatus: Literal["warming_up", "ready", "missing"]
+    materializationId: int | None
+    sourceRevisionThroughId: int
+    qualityEventThroughId: int | None
+    sourceAsOf: datetime
+    knowledgeAt: datetime
+    contentHash: str
+
+
+class MarketStatisticsResponse(BaseModel):
+    unit: str
+    asOf: datetime
+    items: list[MarketStatisticResponse]
+    nextCursor: str | None = None
+
+
 class TickerSnapshotsResponse(BaseModel):
     items: list[TickerSnapshotResponse]
 

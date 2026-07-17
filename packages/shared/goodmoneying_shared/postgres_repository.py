@@ -5916,6 +5916,7 @@ def _candle_view(item: SourceCandle) -> CandleView:
         knowledge_at=item.knowledge_at or item.collected_at,
         input_content_hash=item.input_content_hash or _source_candle_content_hash(item),
         input_revision_ids=((item.revision_id,) if item.revision_id is not None else ()),
+        source_revision_through_id=item.revision_id or 0,
     )
 
 
@@ -5942,6 +5943,14 @@ def _rollup_candle(row: Row) -> CandleView:
             row.get("quality", "unverified"),
         ),
         input_revision_ids=tuple(int(value) for value in row.get("input_revision_ids", ())),
+        rollup_id=int(row["id"]) if row.get("id") is not None else None,
+        source_revision_through_id=int(row.get("source_revision_through_id", 0)),
+        quality_event_through_id=(
+            int(row["quality_event_through_id"])
+            if row.get("quality_event_through_id") is not None
+            else None
+        ),
+        coverage_snapshot_hash=str(row.get("coverage_snapshot_hash", "")),
     )
 
 

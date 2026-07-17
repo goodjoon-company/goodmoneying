@@ -4,7 +4,7 @@ import builtins
 import os
 import time
 from asyncio import wait_for
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Annotated, Protocol, cast
 from uuid import uuid4
@@ -52,9 +52,11 @@ from goodmoneying_api.schemas import (
     DataFoundationResponse,
     DataFoundationSummaryResponse,
     HealthResponse,
+    IndicatorSeriesResponse,
     InstrumentDetailResponse,
     MarketCollectionPolicyResponse,
     MarketListResponse,
+    MarketStatisticsResponse,
     NotificationEventsResponse,
     OrderbookSummariesResponse,
     TickerSnapshotsResponse,
@@ -417,6 +419,7 @@ def create_app(
         await websocket.accept()
         latest_subscription: dict[str, object] | None = None
         latest_candle: dict[str, object] | None = None
+        latest_indicator_points: list[object] = []
 
         async def send_message(message_type: str, **payload: object) -> None:
             await websocket.send_json(
@@ -424,7 +427,7 @@ def create_app(
             )
 
         async def send_snapshot(subscription: dict[str, object]) -> None:
-            nonlocal latest_candle
+            nonlocal latest_candle, latest_indicator_points
             try:
                 snapshot = service.analysis_snapshot(
                     int(cast(int | str, subscription["instrumentId"])),
@@ -457,6 +460,7 @@ def create_app(
                 )
             await send_message("analysis.market", **cast(dict[str, object], snapshot["market"]))
             latest_candle = cast(dict[str, object], candles[-1]) if candles else None
+            latest_indicator_points = indicator_points
 
         try:
             while True:
@@ -473,15 +477,36 @@ def create_app(
                         except AnalysisSubscriptionError:
                             continue
                         candles = cast(list[dict[str, object]], snapshot["candles"])
+                        indicator_points = cast(list[object], snapshot["indicatorPoints"])
                         if candles and candles[-1] != latest_candle:
                             await send_message("analysis.candle.upsert", candle=candles[-1])
-                            indicator_points = cast(list[object], snapshot["indicatorPoints"])
-                            if indicator_points:
-                                await send_message(
-                                    "analysis.indicator.upsert",
-                                    point=indicator_points[-1],
-                                )
                             latest_candle = candles[-1]
+                        indicator_update = _classify_indicator_stream_update(
+                            latest_indicator_points,
+                            indicator_points,
+                            candles[-1] if candles else None,
+                        )
+                        if indicator_update == "upsert":
+                            await send_message(
+                                "analysis.indicator.upsert",
+                                point=indicator_points[-1],
+                            )
+                            latest_indicator_points = indicator_points
+                        elif indicator_update == "cache":
+                            latest_indicator_points = indicator_points
+                        elif indicator_update == "refresh":
+                            chunk_count = max(1, (len(indicator_points) + 499) // 500)
+                            for chunk_index in range(chunk_count):
+                                await send_message(
+                                    "analysis.indicators",
+                                    chunkIndex=chunk_index,
+                                    chunkCount=chunk_count,
+                                    revisionRefresh=True,
+                                    points=indicator_points[
+                                        chunk_index * 500 : (chunk_index + 1) * 500
+                                    ],
+                                )
+                            latest_indicator_points = indicator_points
                         market = cast(dict[str, object], snapshot["market"])
                         await send_message("analysis.market", **market)
                     continue
@@ -562,6 +587,68 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={"code": "INVALID_CANDLE_QUERY", "message": str(exc)},
+            ) from exc
+
+    @app.get(
+        "/v1/instruments/{instrumentId}/indicators",
+        response_model=IndicatorSeriesResponse,
+    )
+    def get_indicators(
+        instrumentId: int,
+        unit: str,
+        from_: Annotated[datetime, Query(alias="from")],
+        to: datetime,
+        asOf: datetime,
+        definitionSetHash: str | None = None,
+        pageSize: Annotated[int, Query(ge=1, le=500)] = 500,
+        cursor: str | None = None,
+    ) -> IndicatorSeriesResponse:
+        try:
+            return service.indicator_points(
+                instrumentId,
+                unit,
+                from_,
+                to,
+                as_of=asOf,
+                page_size=pageSize,
+                cursor=cursor,
+                definition_version=definitionSetHash,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "INVALID_INDICATOR_QUERY", "message": str(exc)},
+            ) from exc
+
+    @app.get(
+        "/v1/instruments/{instrumentId}/market-statistics",
+        response_model=MarketStatisticsResponse,
+    )
+    def get_market_statistics(
+        instrumentId: int,
+        unit: str,
+        from_: Annotated[datetime, Query(alias="from")],
+        to: datetime,
+        asOf: datetime,
+        calculationVersion: str | None = None,
+        pageSize: Annotated[int, Query(ge=1, le=500)] = 500,
+        cursor: str | None = None,
+    ) -> MarketStatisticsResponse:
+        try:
+            return service.market_statistics(
+                instrumentId,
+                unit,
+                from_,
+                to,
+                as_of=asOf,
+                page_size=pageSize,
+                cursor=cursor,
+                calculation_version=calculationVersion,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "INVALID_INDICATOR_QUERY", "message": str(exc)},
             ) from exc
 
     @app.get(
@@ -674,6 +761,25 @@ def create_app(
         return service.notifications()
 
     return app
+
+
+def _classify_indicator_stream_update(
+    previous: Sequence[object],
+    current: Sequence[object],
+    latest_candle: Mapping[str, object] | None,
+) -> str:
+    if current == previous:
+        return "none"
+    if not current:
+        return "refresh"
+    latest_point = current[-1]
+    if not isinstance(latest_point, Mapping) or latest_candle is None:
+        return "refresh"
+    appended_latest = len(current) == len(previous) + 1 and current[:-1] == previous
+    replaced_latest = len(current) == len(previous) and current[:-1] == previous[:-1]
+    if latest_point.get("startedAt") != latest_candle.get("startedAt"):
+        return "cache" if appended_latest else "refresh"
+    return "upsert" if appended_latest or replaced_latest else "refresh"
 
 
 def _coverage_counts_response(

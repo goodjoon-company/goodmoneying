@@ -50,6 +50,85 @@ $$;
 
 
 --
+-- Name: enqueue_completed_rollup_indicator_invalidation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enqueue_completed_rollup_indicator_invalidation() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public'
+    AS $$
+DECLARE changed candle_rollup_invalidations%ROWTYPE;
+BEGIN
+  IF NEW.status <> 'succeeded' OR OLD.status = 'succeeded' THEN RETURN NEW; END IF;
+  SELECT invalidation.* INTO changed
+  FROM candle_rollup_invalidations invalidation
+  WHERE invalidation.id = NEW.invalidation_id;
+  INSERT INTO indicator_invalidations (
+    instrument_id, candle_unit, changed_rollup_invalidation_id,
+    impact_start_at, impact_end_at, source_revision_through_id,
+    quality_event_through_id, knowledge_at
+  ) VALUES (
+    changed.instrument_id, changed.candle_unit, changed.id,
+    changed.range_start_at, changed.range_end_at, changed.source_revision_through_id,
+    changed.quality_event_through_id, changed.knowledge_at
+  ) ON CONFLICT (changed_rollup_invalidation_id) DO NOTHING;
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: enqueue_indicator_invalidation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enqueue_indicator_invalidation() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public'
+    AS $$
+BEGIN
+  INSERT INTO indicator_invalidations (
+    instrument_id, candle_unit, changed_rollup_id, impact_start_at,
+    source_revision_through_id, quality_event_through_id, knowledge_at
+  ) VALUES (
+    NEW.instrument_id, NEW.candle_unit, NEW.id, NEW.candle_start_at,
+    NEW.source_revision_through_id, NEW.quality_event_through_id, NEW.knowledge_at
+  ) ON CONFLICT (changed_rollup_id) DO NOTHING;
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: enqueue_source_indicator_invalidation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enqueue_source_indicator_invalidation() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public'
+    AS $$
+DECLARE latest_quality_event_id BIGINT;
+BEGIN
+  IF NEW.candle_unit <> '1m' THEN RETURN NEW; END IF;
+  SELECT MAX(event.id) INTO latest_quality_event_id
+  FROM data_quality_events event
+  JOIN collection_target_specs specification ON specification.id=event.target_spec_id
+  WHERE specification.market_id=NEW.market_id
+    AND specification.data_type='source_candle'
+    AND specification.candle_unit='1m'
+    AND event.detected_at <= NEW.knowledge_at;
+  INSERT INTO indicator_invalidations (
+    instrument_id, candle_unit, changed_source_revision_id, impact_start_at,
+    source_revision_through_id, quality_event_through_id, knowledge_at
+  ) VALUES (
+    NEW.instrument_id, NEW.candle_unit, NEW.id, NEW.candle_start_at,
+    NEW.id, latest_quality_event_id, NEW.knowledge_at
+  ) ON CONFLICT (changed_source_revision_id) DO NOTHING;
+  RETURN NEW;
+END;
+$$;
+
+
+--
 -- Name: reject_candle_rollup_invalidation_mutation(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -72,6 +151,17 @@ CREATE FUNCTION public.reject_candle_rollup_mutation() RETURNS trigger
 BEGIN
   RAISE EXCEPTION 'candle_rollups is append-only';
 END;
+$$;
+
+
+--
+-- Name: reject_indicator_immutable_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_indicator_immutable_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN RAISE EXCEPTION '% is append-only', TG_TABLE_NAME; END;
 $$;
 
 
@@ -953,6 +1043,208 @@ ALTER TABLE public.fetch_manifests ALTER COLUMN id ADD GENERATED ALWAYS AS IDENT
 
 
 --
+-- Name: indicator_definition_versions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.indicator_definition_versions (
+    id bigint NOT NULL,
+    definition_id bigint NOT NULL,
+    version integer NOT NULL,
+    definition_hash text NOT NULL,
+    algorithm text NOT NULL,
+    parameters jsonb NOT NULL,
+    decimal_precision integer NOT NULL,
+    rounding text NOT NULL,
+    implementation_version text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT indicator_definition_versions_decimal_precision_check CHECK ((decimal_precision = 50)),
+    CONSTRAINT indicator_definition_versions_definition_hash_check CHECK ((definition_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT indicator_definition_versions_rounding_check CHECK ((rounding = 'ROUND_HALF_EVEN'::text)),
+    CONSTRAINT indicator_definition_versions_version_check CHECK ((version > 0))
+);
+
+
+--
+-- Name: indicator_definition_versions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.indicator_definition_versions ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.indicator_definition_versions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: indicator_definitions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.indicator_definitions (
+    id bigint NOT NULL,
+    indicator_key text NOT NULL,
+    display_name text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
+);
+
+
+--
+-- Name: indicator_definitions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.indicator_definitions ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.indicator_definitions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: indicator_invalidations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.indicator_invalidations (
+    id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    candle_unit text NOT NULL,
+    changed_rollup_id bigint,
+    changed_source_revision_id bigint,
+    changed_quality_event_id bigint,
+    changed_rollup_invalidation_id bigint,
+    impact_start_at timestamp with time zone NOT NULL,
+    impact_end_at timestamp with time zone,
+    progress_at timestamp with time zone,
+    indicator_checkpoint_state jsonb,
+    statistic_checkpoint_state jsonb,
+    source_revision_through_id bigint NOT NULL,
+    quality_event_through_id bigint,
+    knowledge_at timestamp with time zone NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    max_attempts integer DEFAULT 5 NOT NULL,
+    next_retry_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    lease_owner text,
+    lease_expires_at timestamp with time zone,
+    lease_generation integer DEFAULT 0 NOT NULL,
+    last_error_code text,
+    finished_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT indicator_invalidations_check CHECK (((status = 'running'::text) = ((lease_owner IS NOT NULL) AND (lease_expires_at IS NOT NULL)))),
+    CONSTRAINT indicator_invalidations_check1 CHECK (((indicator_checkpoint_state IS NULL) = (statistic_checkpoint_state IS NULL))),
+    CONSTRAINT indicator_invalidations_check2 CHECK (((progress_at IS NULL) = (indicator_checkpoint_state IS NULL))),
+    CONSTRAINT indicator_invalidations_check3 CHECK (((((((changed_rollup_id IS NOT NULL))::integer + ((changed_source_revision_id IS NOT NULL))::integer) + ((changed_quality_event_id IS NOT NULL))::integer) + ((changed_rollup_invalidation_id IS NOT NULL))::integer) = 1)),
+    CONSTRAINT indicator_invalidations_lease_generation_check CHECK ((lease_generation >= 0)),
+    CONSTRAINT indicator_invalidations_max_attempts_check CHECK ((max_attempts > 0)),
+    CONSTRAINT indicator_invalidations_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'running'::text, 'succeeded'::text, 'retry_wait'::text, 'dead_letter'::text])))
+);
+
+
+--
+-- Name: indicator_invalidations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.indicator_invalidations ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.indicator_invalidations_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: indicator_materializations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.indicator_materializations (
+    id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    market_id bigint NOT NULL,
+    candle_unit text NOT NULL,
+    occurred_at timestamp with time zone NOT NULL,
+    definition_set_hash text NOT NULL,
+    parent_materialization_id bigint,
+    current_rollup_id bigint,
+    current_source_revision_id bigint,
+    lineage_hash text NOT NULL,
+    source_revision_through_id bigint NOT NULL,
+    quality_event_through_id bigint,
+    knowledge_at timestamp with time zone NOT NULL,
+    source_as_of timestamp with time zone NOT NULL,
+    calculation_status text NOT NULL,
+    checkpoint_state jsonb NOT NULL,
+    content_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT indicator_materializations_calculation_status_check CHECK ((calculation_status = ANY (ARRAY['warming_up'::text, 'ready'::text, 'missing'::text]))),
+    CONSTRAINT indicator_materializations_check CHECK (((((current_rollup_id IS NOT NULL))::integer + ((current_source_revision_id IS NOT NULL))::integer) = 1)),
+    CONSTRAINT indicator_materializations_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT indicator_materializations_definition_set_hash_check CHECK ((definition_set_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT indicator_materializations_lineage_hash_check CHECK ((lineage_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT indicator_materializations_source_revision_through_id_check CHECK ((source_revision_through_id >= 0))
+);
+
+
+--
+-- Name: indicator_materializations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.indicator_materializations ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.indicator_materializations_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: indicator_value_rollups; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.indicator_value_rollups (
+    indicator_value_id bigint NOT NULL,
+    candle_rollup_id bigint NOT NULL
+);
+
+
+--
+-- Name: indicator_values; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.indicator_values (
+    id bigint NOT NULL,
+    materialization_id bigint NOT NULL,
+    definition_version_id bigint NOT NULL,
+    value_name text NOT NULL,
+    value numeric,
+    calculation_status text NOT NULL,
+    parent_value_id bigint,
+    CONSTRAINT indicator_values_calculation_status_check CHECK ((calculation_status = ANY (ARRAY['warming_up'::text, 'ready'::text, 'missing'::text])))
+);
+
+
+--
+-- Name: indicator_values_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.indicator_values ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.indicator_values_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: instruments; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -976,6 +1268,63 @@ CREATE TABLE public.instruments (
 
 ALTER TABLE public.instruments ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
     SEQUENCE NAME public.instruments_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: market_statistics; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.market_statistics (
+    id bigint NOT NULL,
+    market_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    "interval" text NOT NULL,
+    occurred_at timestamp with time zone NOT NULL,
+    calculation_version text NOT NULL,
+    close_return_1 numeric,
+    realized_volatility_20 numeric,
+    trade_volume numeric,
+    trade_amount numeric,
+    volatility_sample_count integer NOT NULL,
+    input_completeness_ratio numeric NOT NULL,
+    return_status text NOT NULL,
+    volatility_status text NOT NULL,
+    trade_status text NOT NULL,
+    parent_statistic_id bigint,
+    current_rollup_id bigint,
+    current_source_revision_id bigint,
+    source_revision_through_id bigint NOT NULL,
+    quality_event_through_id bigint,
+    source_as_of timestamp with time zone NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    lineage_hash text NOT NULL,
+    checkpoint_state jsonb NOT NULL,
+    content_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT market_statistics_check CHECK (((((current_rollup_id IS NOT NULL))::integer + ((current_source_revision_id IS NOT NULL))::integer) = 1)),
+    CONSTRAINT market_statistics_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT market_statistics_input_completeness_ratio_check CHECK (((input_completeness_ratio >= (0)::numeric) AND (input_completeness_ratio <= (1)::numeric))),
+    CONSTRAINT market_statistics_lineage_hash_check CHECK ((lineage_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT market_statistics_return_status_check CHECK ((return_status = ANY (ARRAY['warming_up'::text, 'ready'::text, 'missing'::text]))),
+    CONSTRAINT market_statistics_source_revision_through_id_check CHECK ((source_revision_through_id >= 0)),
+    CONSTRAINT market_statistics_trade_status_check CHECK ((trade_status = ANY (ARRAY['warming_up'::text, 'ready'::text, 'missing'::text]))),
+    CONSTRAINT market_statistics_volatility_sample_count_check CHECK (((volatility_sample_count >= 0) AND (volatility_sample_count <= 20))),
+    CONSTRAINT market_statistics_volatility_status_check CHECK ((volatility_status = ANY (ARRAY['warming_up'::text, 'ready'::text, 'missing'::text])))
+);
+
+
+--
+-- Name: market_statistics_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.market_statistics ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.market_statistics_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -1877,6 +2226,134 @@ ALTER TABLE ONLY public.fetch_manifests
 
 
 --
+-- Name: indicator_definition_versions indicator_definition_versions_definition_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_definition_versions
+    ADD CONSTRAINT indicator_definition_versions_definition_hash_key UNIQUE (definition_hash);
+
+
+--
+-- Name: indicator_definition_versions indicator_definition_versions_definition_id_implementation__key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_definition_versions
+    ADD CONSTRAINT indicator_definition_versions_definition_id_implementation__key UNIQUE (definition_id, implementation_version);
+
+
+--
+-- Name: indicator_definition_versions indicator_definition_versions_definition_id_version_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_definition_versions
+    ADD CONSTRAINT indicator_definition_versions_definition_id_version_key UNIQUE (definition_id, version);
+
+
+--
+-- Name: indicator_definition_versions indicator_definition_versions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_definition_versions
+    ADD CONSTRAINT indicator_definition_versions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: indicator_definitions indicator_definitions_indicator_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_definitions
+    ADD CONSTRAINT indicator_definitions_indicator_key_key UNIQUE (indicator_key);
+
+
+--
+-- Name: indicator_definitions indicator_definitions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_definitions
+    ADD CONSTRAINT indicator_definitions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: indicator_invalidations indicator_invalidations_changed_quality_event_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_invalidations
+    ADD CONSTRAINT indicator_invalidations_changed_quality_event_id_key UNIQUE (changed_quality_event_id);
+
+
+--
+-- Name: indicator_invalidations indicator_invalidations_changed_rollup_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_invalidations
+    ADD CONSTRAINT indicator_invalidations_changed_rollup_id_key UNIQUE (changed_rollup_id);
+
+
+--
+-- Name: indicator_invalidations indicator_invalidations_changed_rollup_invalidation_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_invalidations
+    ADD CONSTRAINT indicator_invalidations_changed_rollup_invalidation_id_key UNIQUE (changed_rollup_invalidation_id);
+
+
+--
+-- Name: indicator_invalidations indicator_invalidations_changed_source_revision_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_invalidations
+    ADD CONSTRAINT indicator_invalidations_changed_source_revision_id_key UNIQUE (changed_source_revision_id);
+
+
+--
+-- Name: indicator_invalidations indicator_invalidations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_invalidations
+    ADD CONSTRAINT indicator_invalidations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: indicator_materializations indicator_materializations_instrument_id_candle_unit_occurr_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_materializations
+    ADD CONSTRAINT indicator_materializations_instrument_id_candle_unit_occurr_key UNIQUE NULLS NOT DISTINCT (instrument_id, candle_unit, occurred_at, definition_set_hash, current_rollup_id, current_source_revision_id, source_revision_through_id, quality_event_through_id, content_hash);
+
+
+--
+-- Name: indicator_materializations indicator_materializations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_materializations
+    ADD CONSTRAINT indicator_materializations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: indicator_value_rollups indicator_value_rollups_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_value_rollups
+    ADD CONSTRAINT indicator_value_rollups_pkey PRIMARY KEY (indicator_value_id, candle_rollup_id);
+
+
+--
+-- Name: indicator_values indicator_values_materialization_id_definition_version_id_v_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_values
+    ADD CONSTRAINT indicator_values_materialization_id_definition_version_id_v_key UNIQUE (materialization_id, definition_version_id, value_name);
+
+
+--
+-- Name: indicator_values indicator_values_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_values
+    ADD CONSTRAINT indicator_values_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: instruments instruments_exchange_market_code_uk; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1890,6 +2367,22 @@ ALTER TABLE ONLY public.instruments
 
 ALTER TABLE ONLY public.instruments
     ADD CONSTRAINT instruments_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: market_statistics market_statistics_market_id_interval_occurred_at_calculatio_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_statistics
+    ADD CONSTRAINT market_statistics_market_id_interval_occurred_at_calculatio_key UNIQUE NULLS NOT DISTINCT (market_id, "interval", occurred_at, calculation_version, current_rollup_id, current_source_revision_id, source_revision_through_id, quality_event_through_id, content_hash);
+
+
+--
+-- Name: market_statistics market_statistics_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_statistics
+    ADD CONSTRAINT market_statistics_pkey PRIMARY KEY (id);
 
 
 --
@@ -2229,6 +2722,20 @@ CREATE INDEX coverage_intervals_target_time_idx ON public.coverage_intervals USI
 
 
 --
+-- Name: indicator_invalidations_claim_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX indicator_invalidations_claim_idx ON public.indicator_invalidations USING btree (status, impact_start_at, created_at);
+
+
+--
+-- Name: indicator_materializations_projection_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX indicator_materializations_projection_idx ON public.indicator_materializations USING btree (instrument_id, candle_unit, occurred_at, knowledge_at, source_revision_through_id DESC, quality_event_through_id DESC NULLS LAST, id DESC);
+
+
+--
 -- Name: market_status_history_point_in_time_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2355,6 +2862,13 @@ CREATE INDEX trade_events_instrument_time_idx ON public.trade_events USING btree
 
 
 --
+-- Name: candle_rollups candle_rollup_indicator_invalidation; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER candle_rollup_indicator_invalidation AFTER INSERT ON public.candle_rollups FOR EACH ROW EXECUTE FUNCTION public.enqueue_indicator_invalidation();
+
+
+--
 -- Name: candle_rollup_invalidations candle_rollup_invalidations_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -2383,6 +2897,55 @@ CREATE TRIGGER candle_rollups_append_only_update BEFORE UPDATE ON public.candle_
 
 
 --
+-- Name: candle_rollup_recompute_jobs completed_rollup_indicator_invalidation; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER completed_rollup_indicator_invalidation AFTER UPDATE OF status ON public.candle_rollup_recompute_jobs FOR EACH ROW EXECUTE FUNCTION public.enqueue_completed_rollup_indicator_invalidation();
+
+
+--
+-- Name: indicator_definition_versions indicator_definition_versions_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER indicator_definition_versions_append_only BEFORE DELETE OR UPDATE ON public.indicator_definition_versions FOR EACH ROW EXECUTE FUNCTION public.reject_indicator_immutable_mutation();
+
+
+--
+-- Name: indicator_definitions indicator_definitions_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER indicator_definitions_append_only BEFORE DELETE OR UPDATE ON public.indicator_definitions FOR EACH ROW EXECUTE FUNCTION public.reject_indicator_immutable_mutation();
+
+
+--
+-- Name: indicator_materializations indicator_materializations_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER indicator_materializations_append_only BEFORE DELETE OR UPDATE ON public.indicator_materializations FOR EACH ROW EXECUTE FUNCTION public.reject_indicator_immutable_mutation();
+
+
+--
+-- Name: indicator_value_rollups indicator_value_rollups_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER indicator_value_rollups_append_only BEFORE DELETE OR UPDATE ON public.indicator_value_rollups FOR EACH ROW EXECUTE FUNCTION public.reject_indicator_immutable_mutation();
+
+
+--
+-- Name: indicator_values indicator_values_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER indicator_values_append_only BEFORE DELETE OR UPDATE ON public.indicator_values FOR EACH ROW EXECUTE FUNCTION public.reject_indicator_immutable_mutation();
+
+
+--
+-- Name: market_statistics market_statistics_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER market_statistics_append_only BEFORE DELETE OR UPDATE ON public.market_statistics FOR EACH ROW EXECUTE FUNCTION public.reject_indicator_immutable_mutation();
+
+
+--
 -- Name: source_candle_revisions source_candle_revisions_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -2394,6 +2957,13 @@ CREATE TRIGGER source_candle_revisions_append_only_delete BEFORE DELETE ON publi
 --
 
 CREATE TRIGGER source_candle_revisions_append_only_update BEFORE UPDATE ON public.source_candle_revisions FOR EACH ROW EXECUTE FUNCTION public.reject_source_candle_revision_mutation();
+
+
+--
+-- Name: source_candle_revisions source_revision_indicator_invalidation; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER source_revision_indicator_invalidation AFTER INSERT ON public.source_candle_revisions FOR EACH ROW EXECUTE FUNCTION public.enqueue_source_indicator_invalidation();
 
 
 --
@@ -2650,6 +3220,190 @@ ALTER TABLE ONLY public.fetch_manifests
 
 ALTER TABLE ONLY public.fetch_manifests
     ADD CONSTRAINT fetch_manifests_target_spec_id_fkey FOREIGN KEY (target_spec_id) REFERENCES public.collection_target_specs(id);
+
+
+--
+-- Name: indicator_definition_versions indicator_definition_versions_definition_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_definition_versions
+    ADD CONSTRAINT indicator_definition_versions_definition_id_fkey FOREIGN KEY (definition_id) REFERENCES public.indicator_definitions(id);
+
+
+--
+-- Name: indicator_invalidations indicator_invalidations_changed_quality_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_invalidations
+    ADD CONSTRAINT indicator_invalidations_changed_quality_event_id_fkey FOREIGN KEY (changed_quality_event_id) REFERENCES public.data_quality_events(id);
+
+
+--
+-- Name: indicator_invalidations indicator_invalidations_changed_rollup_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_invalidations
+    ADD CONSTRAINT indicator_invalidations_changed_rollup_id_fkey FOREIGN KEY (changed_rollup_id) REFERENCES public.candle_rollups(id);
+
+
+--
+-- Name: indicator_invalidations indicator_invalidations_changed_rollup_invalidation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_invalidations
+    ADD CONSTRAINT indicator_invalidations_changed_rollup_invalidation_id_fkey FOREIGN KEY (changed_rollup_invalidation_id) REFERENCES public.candle_rollup_invalidations(id);
+
+
+--
+-- Name: indicator_invalidations indicator_invalidations_changed_source_revision_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_invalidations
+    ADD CONSTRAINT indicator_invalidations_changed_source_revision_id_fkey FOREIGN KEY (changed_source_revision_id) REFERENCES public.source_candle_revisions(id);
+
+
+--
+-- Name: indicator_invalidations indicator_invalidations_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_invalidations
+    ADD CONSTRAINT indicator_invalidations_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: indicator_materializations indicator_materializations_current_rollup_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_materializations
+    ADD CONSTRAINT indicator_materializations_current_rollup_id_fkey FOREIGN KEY (current_rollup_id) REFERENCES public.candle_rollups(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: indicator_materializations indicator_materializations_current_source_revision_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_materializations
+    ADD CONSTRAINT indicator_materializations_current_source_revision_id_fkey FOREIGN KEY (current_source_revision_id) REFERENCES public.source_candle_revisions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: indicator_materializations indicator_materializations_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_materializations
+    ADD CONSTRAINT indicator_materializations_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: indicator_materializations indicator_materializations_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_materializations
+    ADD CONSTRAINT indicator_materializations_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
+
+
+--
+-- Name: indicator_materializations indicator_materializations_parent_materialization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_materializations
+    ADD CONSTRAINT indicator_materializations_parent_materialization_id_fkey FOREIGN KEY (parent_materialization_id) REFERENCES public.indicator_materializations(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: indicator_materializations indicator_materializations_quality_event_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_materializations
+    ADD CONSTRAINT indicator_materializations_quality_event_through_id_fkey FOREIGN KEY (quality_event_through_id) REFERENCES public.data_quality_events(id);
+
+
+--
+-- Name: indicator_value_rollups indicator_value_rollups_candle_rollup_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_value_rollups
+    ADD CONSTRAINT indicator_value_rollups_candle_rollup_id_fkey FOREIGN KEY (candle_rollup_id) REFERENCES public.candle_rollups(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: indicator_value_rollups indicator_value_rollups_indicator_value_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_value_rollups
+    ADD CONSTRAINT indicator_value_rollups_indicator_value_id_fkey FOREIGN KEY (indicator_value_id) REFERENCES public.indicator_values(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: indicator_values indicator_values_definition_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_values
+    ADD CONSTRAINT indicator_values_definition_version_id_fkey FOREIGN KEY (definition_version_id) REFERENCES public.indicator_definition_versions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: indicator_values indicator_values_materialization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_values
+    ADD CONSTRAINT indicator_values_materialization_id_fkey FOREIGN KEY (materialization_id) REFERENCES public.indicator_materializations(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: indicator_values indicator_values_parent_value_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.indicator_values
+    ADD CONSTRAINT indicator_values_parent_value_id_fkey FOREIGN KEY (parent_value_id) REFERENCES public.indicator_values(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: market_statistics market_statistics_current_rollup_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_statistics
+    ADD CONSTRAINT market_statistics_current_rollup_id_fkey FOREIGN KEY (current_rollup_id) REFERENCES public.candle_rollups(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: market_statistics market_statistics_current_source_revision_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_statistics
+    ADD CONSTRAINT market_statistics_current_source_revision_id_fkey FOREIGN KEY (current_source_revision_id) REFERENCES public.source_candle_revisions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: market_statistics market_statistics_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_statistics
+    ADD CONSTRAINT market_statistics_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: market_statistics market_statistics_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_statistics
+    ADD CONSTRAINT market_statistics_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
+
+
+--
+-- Name: market_statistics market_statistics_parent_statistic_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_statistics
+    ADD CONSTRAINT market_statistics_parent_statistic_id_fkey FOREIGN KEY (parent_statistic_id) REFERENCES public.market_statistics(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: market_statistics market_statistics_quality_event_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_statistics
+    ADD CONSTRAINT market_statistics_quality_event_through_id_fkey FOREIGN KEY (quality_event_through_id) REFERENCES public.data_quality_events(id);
 
 
 --
@@ -2930,4 +3684,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260717000700'),
     ('20260717000800'),
     ('20260717000900'),
-    ('20260717001000');
+    ('20260717001000'),
+    ('20260717001100');

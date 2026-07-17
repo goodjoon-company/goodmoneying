@@ -284,6 +284,10 @@ class CandleView:
     input_content_hash: str = ""
     quality: Literal["available", "no_trade", "missing", "unavailable", "unverified"] = "available"
     input_revision_ids: tuple[int, ...] = ()
+    rollup_id: int | None = None
+    source_revision_through_id: int = 0
+    quality_event_through_id: int | None = None
+    coverage_snapshot_hash: str = ""
 
 
 @dataclass(frozen=True)

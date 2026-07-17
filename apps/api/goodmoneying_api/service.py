@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import base64
+import json
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from hashlib import sha256
 from typing import Literal
 
-from goodmoneying_api.analysis import indicator_points
 from goodmoneying_api.dashboard_refresh import DEFAULT_DASHBOARD_REFRESH_SECONDS
 from goodmoneying_api.schemas import (
     AuditLogSummaryResponse,
@@ -41,10 +43,14 @@ from goodmoneying_api.schemas import (
     DashboardTargetsResponse,
     DashboardTotalsResponse,
     HealthCheckResponse,
+    IndicatorPointResponse,
+    IndicatorSeriesResponse,
     InstrumentDetailResponse,
     InstrumentResponse,
     MarketListResponse,
     MarketListRowResponse,
+    MarketStatisticResponse,
+    MarketStatisticsResponse,
     MetricPrincipleResponse,
     MissingRangeSummaryResponse,
     NotificationEventResponse,
@@ -59,6 +65,16 @@ from goodmoneying_api.schemas import (
     StorageBreakdownItemResponse,
     TickerSnapshotResponse,
     TickerSnapshotsResponse,
+)
+from goodmoneying_shared.indicator_store import (
+    StoredIndicatorPoint,
+    StoredMarketStatistic,
+    indicator_projection_ceiling,
+    market_statistic_projection_ceiling,
+    materialize_indicator_points,
+    materialize_market_statistics,
+    read_indicator_points,
+    read_market_statistics,
 )
 from goodmoneying_shared.models import (
     BackfillJob,
@@ -81,6 +97,17 @@ from goodmoneying_shared.models import (
 )
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.time import now_kst
+from goodmoneying_shared.versioned_indicators import (
+    INDICATOR_DEFINITION_VERSIONS,
+    IndicatorPoint,
+    calculate_indicator_series,
+)
+from goodmoneying_shared.versioned_market_statistics import (
+    CALCULATION_VERSION as MARKET_STATISTICS_VERSION,
+)
+from goodmoneying_shared.versioned_market_statistics import (
+    calculate_market_statistics,
+)
 
 CANDLE_UNITS = {"1m", "3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"}
 ANALYSIS_UNITS = {
@@ -468,18 +495,52 @@ class OperationsService:
         if instrument is None or ticker is None or orderbook is None:
             raise AnalysisSubscriptionError("NOT_FOUND", "분석할 시장 데이터가 없습니다.")
         end_at = now_kst()
-        candles = self._repository.candles(
-            instrument_id, repository_unit, end_at - timedelta(days=range_days), end_at
+        range_start = end_at - timedelta(days=range_days)
+        candles = self._indicator_source_candles(
+            instrument_id, repository_unit, end_at, knowledge_at=end_at
         )
+        candles = [
+            item for item in candles if range_start <= item.started_at < end_at
+        ]
         if repository_unit in {"1m", "3m", "5m", "10m", "15m", "30m", "1h", "4h"}:
             candles = candles[-1000:]
         responses = [candle_to_response(item) for item in candles]
+        indicator_start = candles[0].started_at if candles else range_start
+        indicator_series = self.indicator_points(
+            instrument_id,
+            repository_unit,
+            indicator_start,
+            end_at,
+            as_of=end_at,
+            page_size=500,
+            cursor=None,
+            definition_version=None,
+        )
+        stored_points = list(indicator_series.items)
+        while indicator_series.nextCursor is not None:
+            indicator_series = self.indicator_points(
+                instrument_id,
+                repository_unit,
+                indicator_start,
+                end_at,
+                as_of=end_at,
+                page_size=500,
+                cursor=indicator_series.nextCursor,
+                definition_version=None,
+            )
+            stored_points.extend(indicator_series.items)
+        points_by_started_at = {item.startedAt.astimezone(UTC): item for item in stored_points}
+        stored_points = [
+            points_by_started_at[item.started_at.astimezone(UTC)]
+            for item in candles
+            if item.started_at.astimezone(UTC) in points_by_started_at
+        ]
         trade = self._repository.trade_summary(instrument_id, end_at - timedelta(minutes=1), end_at)
         return {
             "instrument": instrument_to_response(instrument).model_dump(mode="json"),
             "unit": unit,
             "candles": [item.model_dump(mode="json") for item in responses],
-            "indicatorPoints": indicator_points(responses),
+            "indicatorPoints": [_indicator_point_legacy(item) for item in stored_points],
             "market": {
                 "ticker": ticker_to_response(ticker).model_dump(mode="json"),
                 "orderbook": orderbook_to_response(orderbook).model_dump(mode="json"),
@@ -491,6 +552,224 @@ class OperationsService:
                 },
             },
         }
+
+    def indicator_points(
+        self,
+        instrument_id: int,
+        unit: str,
+        start_at: datetime,
+        end_at: datetime,
+        *,
+        as_of: datetime,
+        page_size: int,
+        cursor: str | None,
+        definition_version: str | None,
+    ) -> IndicatorSeriesResponse:
+        _validate_indicator_query(unit, start_at, end_at, as_of, page_size)
+        hashes = {item.definition_hash for item in INDICATOR_DEFINITION_VERSIONS.values()}
+        definition_set_hash = sha256("|".join(sorted(hashes)).encode()).hexdigest()
+        if definition_version is not None and definition_version != definition_set_hash:
+            raise ValueError("요청한 지표 정의 집합 해시가 현재 물질화와 다르다.")
+        decoded = (
+            _decode_indicator_cursor(
+                cursor, as_of, definition_set_hash, instrument_id, unit, start_at, end_at
+            )
+            if cursor
+            else None
+        )
+        cursor_at = decoded[0] if decoded else None
+        ceiling_id = decoded[1] if decoded else None
+        if callable(getattr(self._repository, "_connect", None)):
+            if ceiling_id is None:
+                ceiling_id = indicator_projection_ceiling(
+                    self._repository, instrument_id, unit, as_of, definition_set_hash
+                )
+            stored = list(
+                read_indicator_points(
+                    self._repository,
+                    instrument_id,
+                    unit,
+                    start_at.astimezone(UTC),
+                    end_at.astimezone(UTC),
+                    as_of.astimezone(UTC),
+                    definition_set_hash,
+                    after_at=cursor_at,
+                    ceiling_id=ceiling_id,
+                    limit=page_size + 1,
+                )
+            )
+        else:
+            source = self._indicator_source_candles(
+                instrument_id, unit, end_at.astimezone(UTC), knowledge_at=as_of.astimezone(UTC)
+            )
+            calculated = calculate_indicator_series(source, unit=unit)
+            stored = list(
+                materialize_indicator_points(
+                    self._repository, instrument_id, unit, calculated, source, definition_set_hash
+                )
+            )
+            if ceiling_id is None:
+                ceiling_id = indicator_projection_ceiling(
+                    self._repository, instrument_id, unit, as_of, definition_set_hash
+                )
+            stored = [item for item in stored if item.materialization_id <= ceiling_id]
+        stored = [
+            item
+            for item in stored
+            if start_at.astimezone(UTC) <= item.point.started_at < end_at.astimezone(UTC)
+        ]
+        if cursor_at is not None:
+            stored = [item for item in stored if item.point.started_at > cursor_at]
+        page = stored[:page_size]
+        next_item = page[-1] if len(stored) > page_size and page else None
+        return IndicatorSeriesResponse(
+            unit=unit,
+            asOf=as_of.astimezone(UTC),
+            definitionSetHash=definition_set_hash,
+            items=[_indicator_point_response(item.point, item.materialization_id) for item in page],
+            nextCursor=(
+                _encode_indicator_cursor(
+                    next_item,
+                    as_of,
+                    definition_set_hash,
+                    ceiling_id,
+                    instrument_id,
+                    unit,
+                    start_at,
+                    end_at,
+                )
+                if next_item
+                else None
+            ),
+        )
+
+    def market_statistics(
+        self,
+        instrument_id: int,
+        unit: str,
+        start_at: datetime,
+        end_at: datetime,
+        *,
+        as_of: datetime,
+        page_size: int,
+        cursor: str | None,
+        calculation_version: str | None,
+    ) -> MarketStatisticsResponse:
+        _validate_indicator_query(unit, start_at, end_at, as_of, page_size)
+        if calculation_version not in {None, MARKET_STATISTICS_VERSION}:
+            raise ValueError("알 수 없는 시장 통계 계산 버전이다.")
+        version_hash = sha256(MARKET_STATISTICS_VERSION.encode()).hexdigest()
+        decoded = (
+            _decode_indicator_cursor(
+                cursor, as_of, version_hash, instrument_id, unit, start_at, end_at
+            )
+            if cursor
+            else None
+        )
+        cursor_at = decoded[0] if decoded else None
+        ceiling_id = decoded[1] if decoded else None
+        if callable(getattr(self._repository, "_connect", None)):
+            if ceiling_id is None:
+                ceiling_id = market_statistic_projection_ceiling(
+                    self._repository, instrument_id, unit, as_of
+                )
+            stored = list(
+                read_market_statistics(
+                    self._repository,
+                    instrument_id,
+                    unit,
+                    start_at.astimezone(UTC),
+                    end_at.astimezone(UTC),
+                    as_of.astimezone(UTC),
+                    after_at=cursor_at,
+                    ceiling_id=ceiling_id,
+                    limit=page_size + 1,
+                )
+            )
+        else:
+            source = self._indicator_source_candles(
+                instrument_id, unit, end_at.astimezone(UTC), knowledge_at=as_of.astimezone(UTC)
+            )
+            calculated = calculate_market_statistics(source, unit)
+            stored = list(
+                materialize_market_statistics(self._repository, instrument_id, unit, calculated)
+            )
+            if ceiling_id is None:
+                ceiling_id = market_statistic_projection_ceiling(
+                    self._repository, instrument_id, unit, as_of
+                )
+            stored = [item for item in stored if item.materialization_id <= ceiling_id]
+        stored = [
+            item
+            for item in stored
+            if start_at.astimezone(UTC) <= item.point.started_at < end_at.astimezone(UTC)
+        ]
+        if cursor_at is not None:
+            stored = [item for item in stored if item.point.started_at > cursor_at]
+        page = stored[:page_size]
+        next_item = page[-1] if len(stored) > page_size and page else None
+        return MarketStatisticsResponse(
+            unit=unit,
+            asOf=as_of.astimezone(UTC),
+            items=[
+                MarketStatisticResponse(
+                    startedAt=item.point.started_at,
+                    calculationVersion=MARKET_STATISTICS_VERSION,
+                    closeReturn1=decimal_string(item.point.close_return_1),
+                    realizedVolatility20=decimal_string(item.point.realized_volatility_20),
+                    tradeVolume=decimal_string(item.point.trade_volume),
+                    tradeAmount=decimal_string(item.point.trade_amount),
+                    volatilitySampleCount=item.point.volatility_sample_count,
+                    inputCompletenessRatio=decimal_string(item.point.input_completeness_ratio)
+                    or "0",
+                    returnStatus=item.point.return_status,
+                    volatilityStatus=item.point.volatility_status,
+                    tradeStatus=item.point.trade_status,
+                    materializationId=item.materialization_id,
+                    sourceRevisionThroughId=item.point.source_revision_through_id,
+                    qualityEventThroughId=item.point.quality_event_through_id,
+                    sourceAsOf=item.point.source_as_of or item.point.started_at,
+                    knowledgeAt=item.point.knowledge_at or item.point.started_at,
+                    contentHash=item.point.content_hash,
+                )
+                for item in page
+            ],
+            nextCursor=(
+                _encode_market_statistic_cursor(
+                    next_item,
+                    as_of,
+                    version_hash,
+                    ceiling_id,
+                    instrument_id,
+                    unit,
+                    start_at,
+                    end_at,
+                )
+                if next_item
+                else None
+            ),
+        )
+
+    def _indicator_source_candles(
+        self, instrument_id: int, unit: str, end_at: datetime, *, knowledge_at: datetime
+    ) -> list[CandleView]:
+        beginning = datetime(1970, 1, 1, tzinfo=UTC)
+        if unit != "1m":
+            rows = self._repository.candle_rollups(
+                instrument_id,
+                unit,
+                beginning,
+                end_at,
+                knowledge_at=knowledge_at,
+            )
+            if rows:
+                return rows
+        rows = self._repository.candles(instrument_id, unit, beginning, end_at)
+        return [
+            item
+            for item in rows
+            if (item.knowledge_at or item.source_as_of or item.started_at) <= knowledge_at
+        ]
 
     def ticker_snapshots(
         self, instrument_id: int, start_at: datetime, end_at: datetime
@@ -1021,6 +1300,155 @@ def candle_to_response(item: CandleView) -> CandleResponse:
         quality=item.quality,
         completeness=item.completeness,
     )
+
+
+def _indicator_point_response(
+    item: IndicatorPoint, materialization_id: int
+) -> IndicatorPointResponse:
+    knowledge_at = item.knowledge_at or item.started_at
+    source_as_of = item.source_as_of or knowledge_at
+    return IndicatorPointResponse(
+        startedAt=item.started_at.astimezone(UTC),
+        values={key: decimal_string(value) for key, value in item.values.items()},
+        statuses=dict(item.statuses),
+        definitionVersions=dict(item.definition_version_hashes),
+        materializationId=materialization_id,
+        sourceRevisionThroughId=item.source_revision_through_id,
+        qualityEventThroughId=item.quality_event_through_id,
+        knowledgeAt=knowledge_at.astimezone(UTC),
+        sourceAsOf=source_as_of.astimezone(UTC),
+    )
+
+
+def _indicator_point_legacy(item: IndicatorPointResponse) -> dict[str, object]:
+    return {
+        "startedAt": item.startedAt.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        **item.values,
+        "calculationStatus": item.statuses,
+        "definitionVersions": item.definitionVersions,
+        "materializationId": item.materializationId,
+        "sourceRevisionThroughId": item.sourceRevisionThroughId,
+        "qualityEventThroughId": item.qualityEventThroughId,
+        "knowledgeAt": item.knowledgeAt.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        "sourceAsOf": item.sourceAsOf.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _validate_indicator_query(
+    unit: str,
+    start_at: datetime,
+    end_at: datetime,
+    as_of: datetime,
+    page_size: int,
+) -> None:
+    if unit not in CANDLE_UNITS:
+        raise ValueError("지원하지 않는 지표 캔들 단위다.")
+    values = [start_at, end_at, as_of]
+    if any(value.tzinfo is None or value.utcoffset() is None for value in values):
+        raise ValueError("지표 조회 시각은 UTC 오프셋을 포함해야 한다.")
+    if start_at >= end_at:
+        raise ValueError("지표 조회는 UTC 반개방 구간 [from,to)이어야 한다.")
+    if as_of < start_at:
+        raise ValueError("asOf는 조회 시작 시각보다 빠를 수 없다.")
+    if not 1 <= page_size <= 500:
+        raise ValueError("페이지 크기는 1에서 500 사이여야 한다.")
+
+
+def _encode_indicator_cursor(
+    item: StoredIndicatorPoint,
+    as_of: datetime,
+    definition_set_hash: str,
+    snapshot_ceiling_id: int,
+    instrument_id: int,
+    unit: str,
+    start_at: datetime,
+    end_at: datetime,
+) -> str:
+    payload = json.dumps(
+        {
+            "asOf": as_of.astimezone(UTC).isoformat(),
+            "definitionSetHash": definition_set_hash,
+            "instrumentId": instrument_id,
+            "unit": unit,
+            "from": start_at.astimezone(UTC).isoformat(),
+            "to": end_at.astimezone(UTC).isoformat(),
+            "materializationId": item.materialization_id,
+            "snapshotCeilingId": snapshot_ceiling_id,
+            "startedAt": item.point.started_at.astimezone(UTC).isoformat(),
+            "sourceRevisionThroughId": item.point.source_revision_through_id,
+            "qualityEventThroughId": item.point.quality_event_through_id,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _encode_market_statistic_cursor(
+    item: StoredMarketStatistic,
+    as_of: datetime,
+    calculation_version_hash: str,
+    snapshot_ceiling_id: int,
+    instrument_id: int,
+    unit: str,
+    start_at: datetime,
+    end_at: datetime,
+) -> str:
+    payload = json.dumps(
+        {
+            "asOf": as_of.astimezone(UTC).isoformat(),
+            "definitionSetHash": calculation_version_hash,
+            "instrumentId": instrument_id,
+            "unit": unit,
+            "from": start_at.astimezone(UTC).isoformat(),
+            "to": end_at.astimezone(UTC).isoformat(),
+            "materializationId": item.materialization_id,
+            "snapshotCeilingId": snapshot_ceiling_id,
+            "startedAt": item.point.started_at.astimezone(UTC).isoformat(),
+            "sourceRevisionThroughId": item.point.source_revision_through_id,
+            "qualityEventThroughId": item.point.quality_event_through_id,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _decode_indicator_cursor(
+    cursor: str,
+    as_of: datetime,
+    definition_set_hash: str,
+    instrument_id: int,
+    unit: str,
+    start_at: datetime,
+    end_at: datetime,
+) -> tuple[datetime, int]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode())
+        if payload["asOf"] != as_of.astimezone(UTC).isoformat():
+            raise ValueError("cursor의 asOf frontier가 현재 요청과 다르다.")
+        if payload["definitionSetHash"] != definition_set_hash:
+            raise ValueError("cursor의 지표 정의 버전이 현재 요청과 다르다.")
+        expected_context = {
+            "instrumentId": instrument_id,
+            "unit": unit,
+            "from": start_at.astimezone(UTC).isoformat(),
+            "to": end_at.astimezone(UTC).isoformat(),
+        }
+        if any(payload[key] != value for key, value in expected_context.items()):
+            raise ValueError("cursor의 조회 문맥이 현재 요청과 다르다.")
+        started_at = datetime.fromisoformat(str(payload["startedAt"]))
+        if started_at.tzinfo is None:
+            raise ValueError
+        ceiling_id = int(payload["snapshotCeilingId"])
+        if ceiling_id < int(payload["materializationId"]):
+            raise ValueError
+        return started_at.astimezone(UTC), ceiling_id
+    except (KeyError, TypeError, json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("cursor"):
+            raise
+        raise ValueError("유효하지 않은 지표 cursor다.") from exc
 
 
 def backfill_plan_to_response(item: BackfillPlan) -> BackfillPlanResponse:

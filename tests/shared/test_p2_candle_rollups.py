@@ -15,6 +15,7 @@ from goodmoneying_shared.aggregation import (
 from goodmoneying_shared.models import SourceCandle
 from goodmoneying_shared.postgres_repository import _derive_candles as derive_postgres_candles
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
+from goodmoneying_shared.time import KST
 
 ALL_CANDLE_UNITS = ("1m", "3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d", "1w", "1M")
 
@@ -311,8 +312,8 @@ def test_sqlite_materialized_completeness_uses_coverage_status(
         """,
         (
             instrument.id,
-            missing_start.astimezone().isoformat(),
-            (missing_start + timedelta(minutes=1)).astimezone().isoformat(),
+            missing_start.astimezone(KST).isoformat(),
+            (missing_start + timedelta(minutes=1)).astimezone(KST).isoformat(),
             status,
         ),
     )

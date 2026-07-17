@@ -149,10 +149,14 @@ class RealtimeStreamBuffer:
         payload_checksum = _payload_checksum(raw_payload)
         snapshot: OrderbookSnapshot | None = None
         summary: OrderbookSummary | None = None
+        ticker: TickerSnapshot | None = None
+        trade: TradeEvent | None = None
+        candle: SourceCandle | None = None
         if message_type == "ticker":
-            self._tickers[instrument.id] = self._ticker_snapshot(
+            ticker = self._ticker_snapshot(
                 instrument.id, payload, occurred_at=occurred_at, received_at=received_at
             )
+            self._tickers[instrument.id] = ticker
         elif message_type == "trade":
             trade = self._trade_event(instrument.id, payload, received_at=received_at)
             self._trades[(instrument.id, trade.sequential_id)] = trade
@@ -186,6 +190,9 @@ class RealtimeStreamBuffer:
                 ),
                 snapshot=snapshot,
                 summary=summary,
+                ticker=ticker,
+                trade=trade,
+                candle=candle,
             )
         )
 
@@ -198,9 +205,9 @@ class RealtimeStreamBuffer:
         if row_count == 0:
             return 0
         repository.record_realtime_source_frames(source_frames)
-        if tickers or candles:
+        if not isinstance(repository, PostgresOperationsRepository) and (tickers or candles):
             repository.record_incremental_collection(tickers, [], candles)
-        if trades:
+        if not isinstance(repository, PostgresOperationsRepository) and trades:
             repository.record_trade_events(trades)
         self._tickers.clear()
         self._candles.clear()
@@ -346,6 +353,7 @@ def run_realtime_stream_collection(
     now_monotonic: Callable[[], float] = time.monotonic,
     now: Callable[[], datetime] = now_kst,
     purge_retention: bool = True,
+    subscription_generation: int = 0,
 ) -> int:
     active_targets = repository.list_active_targets()
     buffer = RealtimeStreamBuffer(
@@ -356,6 +364,33 @@ def run_realtime_stream_collection(
     last_flush_at = now_monotonic()
     total_rows = 0
     resolved_connection_id = connection_id or str(uuid4())
+    connected_at = now()
+    stream_failure: BaseException | None = None
+    if isinstance(repository, PostgresOperationsRepository):
+        selected_market_codes = (
+            {market_code for market_code, _message_type in allowed_market_types}
+            if allowed_market_types is not None
+            else {target.market_code for target in active_targets}
+        )
+        selected_data_types = (
+            {
+                MESSAGE_TYPE_TO_DATA_TYPE[message_type]
+                for _market_code, message_type in allowed_market_types
+            }
+            if allowed_market_types is not None
+            else set(MESSAGE_TYPE_TO_DATA_TYPE.values())
+        )
+        repository.open_realtime_connection_session(
+            resolved_connection_id,
+            subscription_generation=subscription_generation,
+            instrument_ids=[
+                target.id
+                for target in active_targets
+                if target.market_code in selected_market_codes
+            ],
+            data_types=sorted(selected_data_types),
+            connected_at=connected_at,
+        )
 
     def flush_buffer() -> int:
         rows = buffer.flush(repository)
@@ -373,10 +408,25 @@ def run_realtime_stream_collection(
             if now_monotonic() - last_flush_at >= flush_interval_seconds:
                 total_rows += flush_buffer()
                 last_flush_at = now_monotonic()
+    except BaseException as exc:
+        stream_failure = exc
+        raise
     finally:
-        total_rows += flush_buffer()
-        if purge_retention:
-            repository.purge_expired_source_evidence()
+        try:
+            total_rows += flush_buffer()
+            if purge_retention:
+                repository.purge_expired_source_evidence()
+        except BaseException as exc:
+            stream_failure = exc
+            raise
+        finally:
+            if isinstance(repository, PostgresOperationsRepository):
+                repository.close_realtime_connection_session(
+                    resolved_connection_id,
+                    disconnected_at=now(),
+                    failed=stream_failure is not None,
+                    reason=(type(stream_failure).__name__ if stream_failure is not None else None),
+                )
     return total_rows
 
 
@@ -449,9 +499,7 @@ def load_subscription_plan(repository: OperationsRepository) -> SubscriptionPlan
     return SubscriptionPlan(
         market_codes=tuple(market_codes),
         generation=max((desire.generation for desire in desires), default=0),
-        target_versions=tuple(
-            (desire.target_spec_id, desire.generation) for desire in desires
-        ),
+        target_versions=tuple((desire.target_spec_id, desire.generation) for desire in desires),
         market_codes_by_type=codes_by_type,
     )
 
@@ -509,6 +557,7 @@ def run_realtime_subscription_loop(
             messages,
             connection_id=connection_id,
             allowed_market_types=allowed_market_types or None,
+            subscription_generation=plan.generation,
         )
         connection_count += 1
     return total_rows

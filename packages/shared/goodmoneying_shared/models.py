@@ -197,6 +197,9 @@ class RealtimeSourceFrame:
     receipt: SourceReceipt
     snapshot: OrderbookSnapshot | None = None
     summary: OrderbookSummary | None = None
+    ticker: TickerSnapshot | None = None
+    trade: TradeEvent | None = None
+    candle: SourceCandle | None = None
 
 
 @dataclass(frozen=True)
@@ -316,9 +319,7 @@ class CandleAggregationJobTarget:
 class CandleRollupRecomputeJob:
     id: int
     invalidation_id: int
-    status: Literal[
-        "pending", "running", "retry_wait", "succeeded", "dead_letter", "cancelled"
-    ]
+    status: Literal["pending", "running", "retry_wait", "succeeded", "dead_letter", "cancelled"]
     market_id: int
     instrument_id: int
     candle_unit: str

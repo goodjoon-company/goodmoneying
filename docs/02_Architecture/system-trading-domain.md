@@ -1,7 +1,7 @@
 # 시스템 트레이딩 도메인 설계(Module Design)
 
-상태: 승인된 목표 설계(Accepted Target), P1·P2-1·P2-2·P2-3 기계 계약 구현됨
-버전: 1.3.0
+상태: 승인된 목표 설계(Accepted Target), P1·P2-1·P2-2·P2-3·P2-4 기계 계약 구현됨
+버전: 1.4.0
 날짜: 2026-07-17
 
 ## 1. 목적
@@ -45,6 +45,10 @@
 | 지표 | `indicator_materializations` | 상품·주기·발생 시각·정의 집합 해시·현재 입력·프런티어·내용 해시, 추가 전용 부모 계보 |
 | 지표 | `indicator_values` | `(materialization_id, definition_version_id, value_name)`, 부모 값 계보 |
 | 지표 작업 | `indicator_invalidations` | 원천 개정·집계 개정·품질 이벤트·집계 무효화 중 정확히 하나의 원인, DB 시계 임대·generation fencing |
+| 미시구조 정의 | `microstructure_definition_versions` | 계산 버전·공식·Decimal 정밀도·반올림·정의 해시 불변 |
+| 미시구조 결과 | `microstructure_materializations` | 상품·1분 구간·원천 프런티어·지식 시각·입력 계보 해시, 추가 전용 부모 계보 |
+| 미시구조 값 | `microstructure_statistics` | 물질화당 하나, 계산 상태와 5단계 호가·체결 품질 분리, 원천 캔들 대사 계보 |
+| 미시구조 작업 | `microstructure_invalidations` | 상품별 닫힌 1분 범위 병합, DB 임대·세대 fencing·재시도·dead-letter |
 | 연구 | `dataset_versions` | content hash 불변·고유 |
 | 전략 | `strategy_definitions` | `(owner_id, name)` |
 | 전략 | `strategy_versions` | `(strategy_id, version)`, graph hash 불변 |
@@ -74,6 +78,8 @@
 | 감사 | `audit_events` | append-only, `(occurred_at, sequence)` |
 
 Upbit 호가 payload에는 거래소 전역 sequence가 없다. 공식 payload의 millisecond `timestamp`를 사건 시각으로, 정규화 전 전체 JSON의 결정적 직렬화 SHA-256을 `payload_checksum`으로 사용한다. 전역 고유 `connection_id`와 연결 내부 `frame_sequence`는 같은 연결 안의 전달 provenance와 재처리 멱등 키이며, 재연결 시 frame sequence가 초기화되므로 연결 간 사건 순서나 snapshot 자연키로 사용하지 않는다. `source_receipts.id`는 PostgreSQL이 영속화 시 부여하는 단조 증가 identity이며 거래소 sequence가 아니라 같은 수신 시각의 안정적 tie-breaker다. 같은 instrument·source·사건 시각·checksum의 snapshot은 한 경제적 상태로 흡수하되 A-B-A 재등장과 재연결 중복을 포함한 모든 수신은 별도 `source_receipts` 행으로 보존한다. 같은 timestamp에 내용이 다르면 두 snapshot을 모두 보존한다. 감사 재생은 receipt의 원본 JSON을 `(received_at, source_receipts.id)`로 정렬하고 snapshot·summary는 instrument·사건 시각·checksum으로 연결한다.
+
+P2-4부터 새 체결과 호가 정규화 행은 해당 `source_receipts.id`를 직접 참조하며 receipt·정규화 행·미시구조 더티 범위를 하나의 트랜잭션에서 확정한다. 체결의 `BID`는 공식 문서의 매수, `ASK`는 매도 표시만 뜻하며 공격자(aggressor)·메이커/테이커를 추론하지 않는다. 미시구조 v1은 UTC 1분 반개방 구간만 지원한다. 호가는 `level=0`인 마지막 유효 스냅숏의 상위 10단계, 체결은 같은 구간 원천을 사용하고 원천 캔들 개정의 거래량·거래대금과 대사한다. 계산 불능과 원천 품질은 별도 필드이며 임의 0, 무한대, 상한값 또는 전방 채움을 만들지 않는다. 정확한 공식과 wire 필드는 ADR-0020과 기계 계약을 따른다.
 
 ### 3.1 기존 DB 무손실 전환
 

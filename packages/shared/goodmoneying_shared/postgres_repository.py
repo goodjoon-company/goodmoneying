@@ -241,6 +241,324 @@ class PostgresOperationsRepository:
         except Exception as exc:
             raise RuntimeError("P1 PostgreSQL 런타임 계약을 초기화할 수 없다.") from exc
 
+    def open_realtime_connection_session(
+        self,
+        connection_id: str,
+        *,
+        subscription_generation: int,
+        instrument_ids: list[int],
+        data_types: list[str],
+        connected_at: datetime,
+    ) -> None:
+        """원문 receipt보다 먼저 불변 연결 세션과 구독 범위를 기록한다."""
+        with self._connect() as connection:
+            market_rows = connection.execute(
+                """
+                SELECT id
+                FROM markets
+                WHERE legacy_instrument_id = ANY(%s)
+                ORDER BY id
+                """,
+                (instrument_ids,),
+            ).fetchall()
+            subscription_scope = {
+                "marketIds": [int(row["id"]) for row in market_rows],
+                "dataTypes": sorted(set(data_types)),
+            }
+            connection.execute(
+                """
+                INSERT INTO realtime_connection_sessions (
+                  connection_id, subscription_generation, subscription_scope,
+                  connected_at, status
+                )
+                VALUES (%s, %s, %s, %s, 'active')
+                ON CONFLICT (connection_id) DO NOTHING
+                """,
+                (
+                    connection_id,
+                    subscription_generation,
+                    Jsonb(subscription_scope),
+                    connected_at,
+                ),
+            )
+            current_market_ids = set(cast(list[int], subscription_scope["marketIds"]))
+            for data_type in cast(list[str], subscription_scope["dataTypes"]):
+                unresolved_market_ids = set(current_market_ids)
+                previous_sessions = connection.execute(
+                    """
+                    SELECT connection_id::text, disconnected_at, subscription_scope
+                    FROM realtime_connection_sessions
+                    WHERE connection_id<>%s
+                      AND status IN ('failed','disconnected')
+                      AND disconnected_at IS NOT NULL AND disconnected_at < %s
+                    ORDER BY disconnected_at DESC
+                    LIMIT 100
+                    """,
+                    (connection_id, connected_at),
+                ).fetchall()
+                for previous in previous_sessions:
+                    previous_scope = cast(dict[str, Any], previous["subscription_scope"])
+                    if data_type not in cast(list[str], previous_scope.get("dataTypes", [])):
+                        continue
+                    shared_market_ids = unresolved_market_ids & set(
+                        cast(list[int], previous_scope.get("marketIds", []))
+                    )
+                    if not shared_market_ids:
+                        continue
+                    gap_start = minute_bucket(cast(datetime, previous["disconnected_at"]))
+                    gap_end = minute_bucket(connected_at)
+                    if connected_at > gap_end:
+                        gap_end += timedelta(minutes=1)
+                    if gap_start < gap_end:
+                        for market_id in sorted(shared_market_ids):
+                            self._insert_realtime_connection_quality(
+                                connection,
+                                connection_id=str(previous["connection_id"]),
+                                market_id=market_id,
+                                data_type=data_type,
+                                range_start_at=gap_start,
+                                range_end_at=gap_end,
+                                quality="missing",
+                                reason_code="reconnection_gap",
+                                detected_at=connected_at,
+                            )
+                    unresolved_market_ids -= shared_market_ids
+                    if not unresolved_market_ids:
+                        break
+
+    def close_realtime_connection_session(
+        self,
+        connection_id: str,
+        *,
+        disconnected_at: datetime,
+        failed: bool,
+        reason: str | None,
+    ) -> None:
+        with self._connect() as connection:
+            session = connection.execute(
+                """
+                SELECT connected_at, subscription_scope
+                FROM realtime_connection_sessions
+                WHERE connection_id=%s AND status='active'
+                FOR UPDATE
+                """,
+                (connection_id,),
+            ).fetchone()
+            if session is not None:
+                connected_at = cast(datetime, session["connected_at"])
+                scope = cast(dict[str, Any], session["subscription_scope"])
+                first_full_minute = minute_bucket(connected_at)
+                if connected_at > first_full_minute:
+                    first_full_minute += timedelta(minutes=1)
+                completed_through = minute_bucket(disconnected_at)
+                for data_type in cast(list[str], scope.get("dataTypes", [])):
+                    first_partial_start = minute_bucket(connected_at)
+                    if connected_at > first_partial_start and connected_at < disconnected_at:
+                        first_partial_end = min(first_full_minute, disconnected_at)
+                        aligned_first_partial_end = minute_bucket(first_partial_end)
+                        if first_partial_end > aligned_first_partial_end:
+                            aligned_first_partial_end += timedelta(minutes=1)
+                        if first_partial_start < aligned_first_partial_end:
+                            self._insert_realtime_connection_quality(
+                                connection,
+                                connection_id=connection_id,
+                                data_type=data_type,
+                                range_start_at=first_partial_start,
+                                range_end_at=aligned_first_partial_end,
+                                quality="unverified",
+                                reason_code=(reason or "partial_connection_interval"),
+                                detected_at=disconnected_at,
+                            )
+                    latest = connection.execute(
+                        """
+                        SELECT MAX(range_end_at) AS range_end_at
+                        FROM realtime_connection_quality_intervals
+                        WHERE connection_id=%s AND data_type=%s
+                        """,
+                        (connection_id, data_type),
+                    ).fetchone()
+                    latest_end = (
+                        cast(datetime, latest["range_end_at"])
+                        if latest is not None and latest["range_end_at"] is not None
+                        else first_full_minute
+                    )
+                    missing_start = max(first_full_minute, latest_end)
+                    if failed and missing_start < completed_through:
+                        self._insert_realtime_connection_quality(
+                            connection,
+                            connection_id=connection_id,
+                            data_type=data_type,
+                            range_start_at=missing_start,
+                            range_end_at=completed_through,
+                            quality="missing",
+                            reason_code=reason or "connection_failed",
+                            detected_at=disconnected_at,
+                        )
+                    partial_start = max(connected_at, completed_through, latest_end)
+                    if partial_start < disconnected_at:
+                        aligned_partial_start = minute_bucket(partial_start)
+                        aligned_partial_end = minute_bucket(disconnected_at)
+                        if disconnected_at > aligned_partial_end:
+                            aligned_partial_end += timedelta(minutes=1)
+                        self._insert_realtime_connection_quality(
+                            connection,
+                            connection_id=connection_id,
+                            data_type=data_type,
+                            range_start_at=aligned_partial_start,
+                            range_end_at=aligned_partial_end,
+                            quality="unverified",
+                            reason_code=(reason or "partial_connection_interval"),
+                            detected_at=disconnected_at,
+                        )
+            connection.execute(
+                """
+                UPDATE realtime_connection_sessions
+                SET disconnected_at=%s,
+                    status=CASE WHEN %s THEN 'failed' ELSE 'closed' END,
+                    disconnect_reason=%s,
+                    updated_at=clock_timestamp()
+                WHERE connection_id=%s AND status='active'
+                """,
+                (disconnected_at, failed, reason, connection_id),
+            )
+
+    @staticmethod
+    def _insert_realtime_connection_quality(
+        connection: psycopg.Connection[Any],
+        *,
+        connection_id: str,
+        data_type: str,
+        range_start_at: datetime,
+        range_end_at: datetime,
+        quality: str,
+        reason_code: str,
+        detected_at: datetime,
+        market_id: int | None = None,
+    ) -> None:
+        fingerprint = sha256(
+            (
+                f"{connection_id}|{market_id}|{data_type}|{range_start_at.isoformat()}|"
+                f"{range_end_at.isoformat()}|{quality}|{reason_code}"
+            ).encode()
+        ).hexdigest()
+        connection.execute(
+            """
+            INSERT INTO realtime_connection_quality_intervals (
+              connection_id, market_id, data_type, range_start_at, range_end_at,
+              quality, reason_code, fingerprint, evidence, detected_at
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'{}'::jsonb,%s)
+            ON CONFLICT (connection_id, fingerprint) DO NOTHING
+            """,
+            (
+                connection_id,
+                market_id,
+                data_type,
+                range_start_at,
+                range_end_at,
+                quality,
+                reason_code,
+                fingerprint,
+                detected_at,
+            ),
+        )
+
+    @staticmethod
+    def _record_realtime_session_progress(
+        connection: psycopg.Connection[Any], frames: list[RealtimeSourceFrame]
+    ) -> None:
+        by_connection: dict[str, list[RealtimeSourceFrame]] = {}
+        for frame in frames:
+            by_connection.setdefault(frame.receipt.connection_id, []).append(frame)
+        for connection_id, connection_frames in by_connection.items():
+            first_sequence = min(frame.receipt.frame_sequence for frame in connection_frames)
+            last_sequence = max(frame.receipt.frame_sequence for frame in connection_frames)
+            last_received_at = max(frame.receipt.received_at for frame in connection_frames)
+            session = connection.execute(
+                """
+                UPDATE realtime_connection_sessions
+                SET first_frame_sequence=LEAST(
+                      COALESCE(first_frame_sequence, %s), %s
+                    ),
+                    last_frame_sequence=GREATEST(last_frame_sequence, %s),
+                    last_received_at=GREATEST(
+                      COALESCE(last_received_at, %s), %s
+                    ),
+                    updated_at=clock_timestamp()
+                WHERE connection_id=%s
+                RETURNING connected_at, subscription_scope
+                """,
+                (
+                    first_sequence,
+                    first_sequence,
+                    last_sequence,
+                    last_received_at,
+                    last_received_at,
+                    connection_id,
+                ),
+            ).fetchone()
+            if session is None:
+                raise RuntimeError("실시간 원문 receipt에 대응하는 연결 세션이 없다.")
+            scope = cast(dict[str, Any], session["subscription_scope"])
+            connected_at = cast(datetime, session["connected_at"])
+            first_full_minute = minute_bucket(connected_at)
+            if connected_at > first_full_minute:
+                first_full_minute += timedelta(minutes=1)
+            completed_through = minute_bucket(last_received_at)
+            for data_type in cast(list[str], scope.get("dataTypes", [])):
+                latest_quality = connection.execute(
+                    """
+                    SELECT MAX(range_end_at) AS range_end_at
+                    FROM realtime_connection_quality_intervals
+                    WHERE connection_id=%s AND data_type=%s
+                      AND quality='available'
+                    """,
+                    (connection_id, data_type),
+                ).fetchone()
+                latest_quality_end = (
+                    cast(datetime, latest_quality["range_end_at"])
+                    if latest_quality is not None and latest_quality["range_end_at"] is not None
+                    else first_full_minute
+                )
+                bucket_start = max(first_full_minute, latest_quality_end)
+                while bucket_start < completed_through:
+                    bucket_end = bucket_start + timedelta(minutes=1)
+                    fingerprint = sha256(
+                        (
+                            f"{connection_id}|{data_type}|{bucket_start.isoformat()}|"
+                            f"{bucket_end.isoformat()}|available"
+                        ).encode()
+                    ).hexdigest()
+                    connection.execute(
+                        """
+                        INSERT INTO realtime_connection_quality_intervals (
+                          connection_id, market_id, data_type,
+                          range_start_at, range_end_at, quality, reason_code,
+                          fingerprint, evidence, detected_at
+                        )
+                        VALUES (
+                          %s, NULL, %s, %s, %s, 'available',
+                          'continuous_connection', %s,
+                          jsonb_build_object(
+                            'firstFrameSequence', %s,
+                            'lastFrameSequence', %s
+                          ),
+                          %s
+                        )
+                        ON CONFLICT (connection_id, fingerprint) DO NOTHING
+                        """,
+                        (
+                            connection_id,
+                            data_type,
+                            bucket_start,
+                            bucket_end,
+                            fingerprint,
+                            first_sequence,
+                            last_sequence,
+                            last_received_at,
+                        ),
+                    )
+                    bucket_start = bucket_end
+
     def upsert_instrument(self, market_code: str, display_name: str) -> Instrument:
         quote_currency, base_asset = market_code.split("-", maxsplit=1)
         with self._connect() as conn:
@@ -624,6 +942,24 @@ class PostgresOperationsRepository:
             )
             for trade in trades:
                 market_id, target_spec_id, manifest_id = manifests[trade.instrument_id]
+                receipt_row = conn.execute(
+                    """
+                    SELECT id
+                    FROM source_receipts
+                    WHERE instrument_id=%s
+                      AND data_type='trade_event'
+                      AND received_at=%s
+                      AND raw_payload ->> 'sequential_id'=%s
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (
+                        trade.instrument_id,
+                        trade.collected_at,
+                        str(trade.sequential_id),
+                    ),
+                ).fetchone()
+                source_receipt_id = int(receipt_row["id"]) if receipt_row is not None else None
                 row = conn.execute(
                     """
                     INSERT INTO trade_events (
@@ -631,10 +967,11 @@ class PostgresOperationsRepository:
                       trade_price, trade_volume, trade_amount, ask_bid,
                       collected_at, collection_run_id, market_id, occurred_at,
                       received_at, stored_at, knowledge_at, fetch_manifest_id
+                      , source_receipt_id
                     )
                     VALUES (
                       %s, 'UPBIT', %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, clock_timestamp(), %s, %s
+                      %s, %s, %s, clock_timestamp(), %s, %s, %s
                     )
                     ON CONFLICT (instrument_id, source, sequential_id) DO NOTHING
                     RETURNING instrument_id
@@ -654,6 +991,7 @@ class PostgresOperationsRepository:
                         trade.collected_at,
                         trade.collected_at,
                         manifest_id,
+                        source_receipt_id,
                     ),
                 ).fetchone()
                 conn.execute(
@@ -664,7 +1002,8 @@ class PostgresOperationsRepository:
                         received_at = COALESCE(received_at, %s),
                         stored_at = COALESCE(stored_at, clock_timestamp()),
                         knowledge_at = COALESCE(knowledge_at, %s),
-                        fetch_manifest_id = COALESCE(fetch_manifest_id, %s)
+                        fetch_manifest_id = COALESCE(fetch_manifest_id, %s),
+                        source_receipt_id = COALESCE(source_receipt_id, %s)
                     WHERE instrument_id = %s AND source = 'UPBIT' AND sequential_id = %s
                     """,
                     (
@@ -673,6 +1012,7 @@ class PostgresOperationsRepository:
                         trade.collected_at,
                         trade.collected_at,
                         manifest_id,
+                        source_receipt_id,
                         trade.instrument_id,
                         trade.sequential_id,
                     ),
@@ -720,8 +1060,48 @@ class PostgresOperationsRepository:
             return 0
         started_at = now_kst()
         summaries: list[OrderbookSummary] = []
+        tickers_by_key: dict[tuple[int, datetime], tuple[TickerSnapshot, int]] = {}
+        candles_by_key: dict[tuple[int, str, datetime], tuple[SourceCandle, int]] = {}
+        trade_items = [frame.trade for frame in frames if frame.trade is not None]
+        run_data_types = {
+            *("ticker_snapshot" for frame in frames if frame.ticker is not None),
+            *("trade_event" for frame in frames if frame.trade is not None),
+            *("source_candle" for frame in frames if frame.candle is not None),
+            *("orderbook_summary" for frame in frames if frame.summary is not None),
+        }
         inserted_receipts = 0
         with self._connect() as conn:
+            run_ids: dict[str, int] = {}
+            for data_type in sorted(run_data_types):
+                run_ids[data_type] = int(
+                    _expect_row(
+                        conn.execute(
+                            """
+                        INSERT INTO collection_runs (
+                          run_type, data_type, status, trigger_type, started_at
+                        )
+                        VALUES ('incremental', %s, 'running', 'schedule', %s)
+                        RETURNING id
+                        """,
+                            (data_type, started_at),
+                        ).fetchone()
+                    )["id"]
+                )
+            trade_manifests = (
+                self._source_manifests_by_instrument(
+                    conn,
+                    run_id=run_ids["trade_event"],
+                    data_type="trade_event",
+                    candle_unit=None,
+                    endpoint="/websocket/v1/trade",
+                    items=trade_items,
+                    requested_at=started_at,
+                )
+                if trade_items
+                else {}
+            )
+            inserted_trades: dict[int, int] = {}
+            self._record_realtime_session_progress(conn, frames)
             for frame in frames:
                 receipt = frame.receipt
                 market_row = _expect_row(
@@ -740,9 +1120,13 @@ class PostgresOperationsRepository:
                     INSERT INTO source_receipts (
                       data_type, market_id, instrument_id, connection_id,
                       frame_sequence, occurred_at, received_at, payload_checksum,
-                      raw_payload, fetch_manifest_id
+                      raw_payload, fetch_manifest_id, knowledge_at,
+                      collector_version, schema_version
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                      %s, %s, %s
+                    )
                     ON CONFLICT (connection_id, frame_sequence) DO NOTHING
                     RETURNING id
                     """,
@@ -757,6 +1141,9 @@ class PostgresOperationsRepository:
                         receipt.payload_checksum,
                         Jsonb(receipt.raw_payload),
                         receipt.fetch_manifest_id,
+                        receipt.received_at,
+                        SOURCE_EVIDENCE_COLLECTOR_VERSION,
+                        SOURCE_EVIDENCE_SCHEMA_VERSION,
                     ),
                 ).fetchone()
                 if receipt_row is None:
@@ -781,8 +1168,83 @@ class PostgresOperationsRepository:
                         )
                     continue
                 inserted_receipts += 1
+                source_receipt_id = int(receipt_row["id"])
                 if frame.summary is not None:
                     summaries.append(frame.summary)
+                if frame.ticker is not None:
+                    ticker_key = (
+                        frame.ticker.instrument_id,
+                        minute_bucket(frame.ticker.bucket_at),
+                    )
+                    current_ticker = tickers_by_key.get(ticker_key)
+                    if (
+                        current_ticker is None
+                        or frame.ticker.received_at >= current_ticker[0].received_at
+                    ):
+                        tickers_by_key[ticker_key] = (frame.ticker, source_receipt_id)
+                if frame.candle is not None:
+                    candle_key = (
+                        frame.candle.instrument_id,
+                        frame.candle.candle_unit,
+                        frame.candle.candle_start_at,
+                    )
+                    current_candle = candles_by_key.get(candle_key)
+                    if (
+                        current_candle is None
+                        or frame.candle.collected_at >= current_candle[0].collected_at
+                    ):
+                        candles_by_key[candle_key] = (frame.candle, source_receipt_id)
+                if frame.trade is not None:
+                    trade = frame.trade
+                    trade_market_id, target_spec_id, manifest_id = trade_manifests[
+                        trade.instrument_id
+                    ]
+                    inserted_trade = conn.execute(
+                        """
+                        INSERT INTO trade_events (
+                          instrument_id, source, sequential_id, trade_timestamp_at,
+                          trade_price, trade_volume, trade_amount, ask_bid,
+                          collected_at, collection_run_id, market_id, occurred_at,
+                          received_at, stored_at, knowledge_at, fetch_manifest_id,
+                          source_receipt_id
+                        ) VALUES (
+                          %s, 'UPBIT', %s, %s, %s, %s, %s, %s, %s, %s,
+                          %s, %s, %s, clock_timestamp(), %s, %s, %s
+                        )
+                        ON CONFLICT (instrument_id, source, sequential_id) DO NOTHING
+                        RETURNING id
+                        """,
+                        (
+                            trade.instrument_id,
+                            trade.sequential_id,
+                            trade.trade_timestamp_at,
+                            trade.trade_price,
+                            trade.trade_volume,
+                            trade.trade_amount,
+                            trade.ask_bid,
+                            trade.collected_at,
+                            run_ids["trade_event"],
+                            trade_market_id,
+                            trade.trade_timestamp_at,
+                            trade.collected_at,
+                            trade.collected_at,
+                            manifest_id,
+                            source_receipt_id,
+                        ),
+                    ).fetchone()
+                    if inserted_trade is not None:
+                        inserted_trades[trade.instrument_id] = (
+                            inserted_trades.get(trade.instrument_id, 0) + 1
+                        )
+                    if target_spec_id is not None:
+                        self._replace_coverage_with_observed(
+                            conn,
+                            target_spec_id=target_spec_id,
+                            range_start_at=trade.trade_timestamp_at,
+                            range_end_at=trade.trade_timestamp_at + timedelta(microseconds=1),
+                            manifest_id=manifest_id,
+                            natural_key={"sequentialId": trade.sequential_id},
+                        )
                 snapshot = frame.snapshot
                 if snapshot is None:
                     continue
@@ -791,11 +1253,12 @@ class PostgresOperationsRepository:
                     INSERT INTO orderbook_snapshots (
                       market_id, instrument_id, source, occurred_at, received_at,
                       stored_at, knowledge_at, total_ask_size, total_bid_size,
-                      level_count, level, stream_type, payload_checksum, fetch_manifest_id
+                      level_count, level, stream_type, payload_checksum, fetch_manifest_id,
+                      source_receipt_id
                     )
                     VALUES (
                       %s, %s, %s, %s, %s, clock_timestamp(), %s, %s, %s, %s,
-                      %s, %s, %s, %s
+                      %s, %s, %s, %s, %s
                     )
                     ON CONFLICT (
                       instrument_id, source, occurred_at, payload_checksum
@@ -816,6 +1279,7 @@ class PostgresOperationsRepository:
                         snapshot.stream_type,
                         snapshot.payload_checksum,
                         snapshot.fetch_manifest_id,
+                        source_receipt_id,
                     ),
                 ).fetchone()
                 if snapshot_row is None:
@@ -840,23 +1304,9 @@ class PostgresOperationsRepository:
                         ),
                     )
             if summaries:
-                run_id = int(
-                    _expect_row(
-                        conn.execute(
-                            """
-                            INSERT INTO collection_runs (
-                              run_type, data_type, status, trigger_type, started_at
-                            )
-                            VALUES (
-                              'incremental', 'orderbook_summary', 'running', 'schedule', %s
-                            )
-                            RETURNING id
-                            """,
-                            (started_at,),
-                        ).fetchone()
-                    )["id"]
+                counts = self._upsert_orderbooks(
+                    conn, run_ids["orderbook_summary"], summaries, requested_at=started_at
                 )
-                counts = self._upsert_orderbooks(conn, run_id, summaries, requested_at=started_at)
                 for instrument_id, rows_written in counts.items():
                     conn.execute(
                         """
@@ -866,21 +1316,127 @@ class PostgresOperationsRepository:
                         )
                         VALUES (%s, %s, 'orderbook_summary', 'succeeded', 0, %s)
                         """,
-                        (run_id, instrument_id, rows_written),
+                        (run_ids["orderbook_summary"], instrument_id, rows_written),
                     )
+            ticker_pairs = list(tickers_by_key.values())
+            candle_pairs = list(candles_by_key.values())
+            if ticker_pairs:
+                ticker_counts = self._upsert_tickers(
+                    conn,
+                    run_ids["ticker_snapshot"],
+                    [ticker for ticker, _receipt_id in ticker_pairs],
+                    requested_at=started_at,
+                )
+                for instrument_id, rows_written in ticker_counts.items():
+                    conn.execute(
+                        """
+                        INSERT INTO target_collection_results (
+                          collection_run_id, instrument_id, data_type, status,
+                          latency_ms, rows_written
+                        ) VALUES (%s, %s, 'ticker_snapshot', 'succeeded', 0, %s)
+                        """,
+                        (run_ids["ticker_snapshot"], instrument_id, rows_written),
+                    )
+                for ticker, source_receipt_id in ticker_pairs:
+                    conn.execute(
+                        """
+                        UPDATE ticker_snapshots
+                        SET source_receipt_id=%s
+                        WHERE instrument_id=%s AND source='UPBIT' AND bucket_at=%s
+                        """,
+                        (
+                            source_receipt_id,
+                            ticker.instrument_id,
+                            minute_bucket(ticker.bucket_at),
+                        ),
+                    )
+            if candle_pairs:
+                candle_counts = self._upsert_candles(
+                    conn,
+                    run_ids["source_candle"],
+                    [candle for candle, _receipt_id in candle_pairs],
+                    requested_at=started_at,
+                )
+                for instrument_id, rows_written in candle_counts.items():
+                    conn.execute(
+                        """
+                        INSERT INTO target_collection_results (
+                          collection_run_id, instrument_id, data_type, status,
+                          latency_ms, rows_written
+                        ) VALUES (%s, %s, 'source_candle', 'succeeded', 0, %s)
+                        """,
+                        (run_ids["source_candle"], instrument_id, rows_written),
+                    )
+                for candle, source_receipt_id in candle_pairs:
+                    conn.execute(
+                        """
+                        UPDATE source_candles
+                        SET source_receipt_id=%s
+                        WHERE instrument_id=%s AND source='UPBIT'
+                          AND candle_unit=%s AND candle_start_at=%s
+                        """,
+                        (
+                            source_receipt_id,
+                            candle.instrument_id,
+                            candle.candle_unit,
+                            candle.candle_start_at,
+                        ),
+                    )
+            for instrument_id, rows_written in inserted_trades.items():
                 conn.execute(
                     """
-                    UPDATE collection_runs
-                    SET status = 'succeeded', finished_at = clock_timestamp()
-                    WHERE id = %s
+                    INSERT INTO target_collection_results (
+                      collection_run_id, instrument_id, data_type, status,
+                      latency_ms, rows_written
+                    ) VALUES (%s, %s, 'trade_event', 'succeeded', 0, %s)
                     """,
-                    (run_id,),
+                    (run_ids["trade_event"], instrument_id, rows_written),
                 )
+            conn.execute(
+                """
+                UPDATE collection_runs
+                SET status = 'succeeded', finished_at = clock_timestamp()
+                WHERE id = ANY(%s)
+                """,
+                (list(run_ids.values()),),
+            )
         return inserted_receipts
 
     def purge_expired_source_evidence(self, *, as_of: datetime | None = None) -> tuple[int, int]:
         retention_as_of = as_of or now_kst()
         with self._connect() as conn:
+            snapshot_result = conn.execute(
+                """
+                WITH effective_retention AS (
+                  SELECT
+                    market_id,
+                    CASE
+                      WHEN bool_or(retention_days IS NULL) THEN NULL
+                      ELSE max(retention_days)
+                    END AS retention_days
+                  FROM collection_target_specs
+                  WHERE data_type = 'orderbook_snapshot'
+                  GROUP BY market_id
+                )
+                DELETE FROM orderbook_snapshots snapshot
+                USING effective_retention retention
+                WHERE retention.market_id = snapshot.market_id
+                  AND retention.retention_days IS NOT NULL
+                  AND snapshot.occurred_at
+                      < %s - make_interval(days => retention.retention_days)
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM microstructure_materialization_orderbooks materialized
+                    WHERE materialized.orderbook_snapshot_id=snapshot.id
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM microstructure_invalidations invalidation
+                    WHERE invalidation.changed_orderbook_snapshot_id=snapshot.id
+                  )
+                """,
+                (retention_as_of,),
+            )
             receipt_result = conn.execute(
                 """
                 WITH effective_retention AS (
@@ -902,28 +1458,15 @@ class PostgresOperationsRepository:
                   AND retention.retention_days IS NOT NULL
                   AND receipt.occurred_at
                       < %s - make_interval(days => retention.retention_days)
-                """,
-                (retention_as_of,),
-            )
-            snapshot_result = conn.execute(
-                """
-                WITH effective_retention AS (
-                  SELECT
-                    market_id,
-                    CASE
-                      WHEN bool_or(retention_days IS NULL) THEN NULL
-                      ELSE max(retention_days)
-                    END AS retention_days
-                  FROM collection_target_specs
-                  WHERE data_type = 'orderbook_snapshot'
-                  GROUP BY market_id
-                )
-                DELETE FROM orderbook_snapshots snapshot
-                USING effective_retention retention
-                WHERE retention.market_id = snapshot.market_id
-                  AND retention.retention_days IS NOT NULL
-                  AND snapshot.occurred_at
-                      < %s - make_interval(days => retention.retention_days)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM orderbook_snapshots snapshot
+                    WHERE snapshot.source_receipt_id=receipt.id
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM microstructure_materialization_orderbooks materialized
+                    WHERE materialized.source_receipt_id=receipt.id
+                  )
                 """,
                 (retention_as_of,),
             )
@@ -1505,18 +2048,12 @@ class PostgresOperationsRepository:
             source_limit_hit = len(source_rows) == source_limit
             derived_candles = aggregate_candles(unit, [_candle(row) for row in source_rows])
             candles_by_start = {item.started_at: item for item in derived_candles}
-            candles_by_start.update(
-                {item.started_at: item for item in materialized_candles}
-            )
+            candles_by_start.update({item.started_at: item for item in materialized_candles})
             candles = [
                 candles_by_start[started_at]
                 for started_at in sorted(candles_by_start)
                 if started_at < end_at
-                and (
-                    started_at > lower_bound
-                    if cursor is not None
-                    else started_at >= lower_bound
-                )
+                and (started_at > lower_bound if cursor is not None else started_at >= lower_bound)
             ]
         page = candles[:page_size]
         next_cursor = (
@@ -1715,10 +2252,17 @@ class PostgresOperationsRepository:
                 ORDER BY candle_start_at
                 """,
                 (
-                    instrument_id, unit, CALCULATION_VERSION, start_at, end_at,
-                    knowledge_at, knowledge_at,
-                    source_revision_through_id, source_revision_through_id,
-                    quality_event_through_id, quality_event_through_id,
+                    instrument_id,
+                    unit,
+                    CALCULATION_VERSION,
+                    start_at,
+                    end_at,
+                    knowledge_at,
+                    knowledge_at,
+                    source_revision_through_id,
+                    source_revision_through_id,
+                    quality_event_through_id,
+                    quality_event_through_id,
                 ),
             ).fetchall()
         return [_rollup_candle(row) for row in rows]
@@ -1783,8 +2327,12 @@ class PostgresOperationsRepository:
                 RETURNING job.id
                 """,
                 (
-                    claimed_at, claimed_at, worker_id,
-                    claimed_at + timedelta(seconds=lease_seconds), claimed_at, claimed_at,
+                    claimed_at,
+                    claimed_at,
+                    worker_id,
+                    claimed_at + timedelta(seconds=lease_seconds),
+                    claimed_at,
+                    claimed_at,
                 ),
             ).fetchone()
         return self.candle_rollup_recompute_job(int(row["id"])) if row else None
@@ -1819,8 +2367,13 @@ class PostgresOperationsRepository:
                 RETURNING job.id
                 """,
                 (
-                    worker_id, claimed_at + timedelta(seconds=lease_seconds),
-                    claimed_at, claimed_at, job_id, claimed_at, claimed_at,
+                    worker_id,
+                    claimed_at + timedelta(seconds=lease_seconds),
+                    claimed_at,
+                    claimed_at,
+                    job_id,
+                    claimed_at,
+                    claimed_at,
                 ),
             ).fetchone()
         return self.candle_rollup_recompute_job(job_id) if row else None
@@ -1893,8 +2446,11 @@ class PostgresOperationsRepository:
                 ORDER BY revision.candle_start_at
                 """,
                 (
-                    row["instrument_id"], row["range_start_at"], row["range_end_at"],
-                    row["source_revision_through_id"], row["source_revision_through_id"],
+                    row["instrument_id"],
+                    row["range_start_at"],
+                    row["range_end_at"],
+                    row["source_revision_through_id"],
+                    row["source_revision_through_id"],
                 ),
             ).fetchall()
             coverage = [
@@ -1936,19 +2492,30 @@ class PostgresOperationsRepository:
                     ) DO NOTHING
                     """,
                     (
-                        row["instrument_id"], row["candle_unit"], item.started_at,
-                        item.open, item.high, item.low, item.close, item.volume,
-                        item.trade_amount, item.completeness, row["calculation_version"],
+                        row["instrument_id"],
+                        row["candle_unit"],
+                        item.started_at,
+                        item.open,
+                        item.high,
+                        item.low,
+                        item.close,
+                        item.volume,
+                        item.trade_amount,
+                        item.completeness,
+                        row["calculation_version"],
                         item.source_as_of or row["knowledge_at"],
                         max(
                             item.knowledge_at or datetime.min.replace(tzinfo=UTC),
                             cast(datetime, row["knowledge_at"]),
                         ),
                         item.input_content_hash,
-                        list(item.input_revision_ids), row["source_revision_through_id"],
+                        list(item.input_revision_ids),
+                        row["source_revision_through_id"],
                         row["quality_event_through_id"],
-                        row["coverage_snapshot_hash"], rollup_result_content_hash(item),
-                        item.quality, completed_at,
+                        row["coverage_snapshot_hash"],
+                        rollup_result_content_hash(item),
+                        item.quality,
+                        completed_at,
                     ),
                 )
                 rows_written += result.rowcount
@@ -1980,9 +2547,7 @@ class PostgresOperationsRepository:
                 """,
                 (job_id,),
             ).fetchone()
-            if (
-                row is None or row["status"] != "running" or row["lease_owner"] != worker_id
-            ):
+            if row is None or row["status"] != "running" or row["lease_owner"] != worker_id:
                 raise RuntimeError("집계 재계산 작업의 유효한 임대가 아니다.")
             failed_at = cast(datetime, row["db_failed_at"])
             attempts = int(row["attempt_count"])
@@ -1999,18 +2564,21 @@ class PostgresOperationsRepository:
                 RETURNING id
                 """,
                 (
-                    "dead_letter" if exhausted else "retry_wait", retry_at,
-                    error_code, error_code if exhausted else None,
-                    failed_at if exhausted else None, failed_at, job_id, worker_id,
+                    "dead_letter" if exhausted else "retry_wait",
+                    retry_at,
+                    error_code,
+                    error_code if exhausted else None,
+                    failed_at if exhausted else None,
+                    failed_at,
+                    job_id,
+                    worker_id,
                 ),
             ).fetchone()
             if result is None:
                 raise RuntimeError("집계 재계산 작업의 유효한 임대가 아니다.")
         return self.candle_rollup_recompute_job(job_id)
 
-    def safe_restart_candle_rollup_recompute_job(
-        self, job_id: int
-    ) -> CandleRollupRecomputeJob:
+    def safe_restart_candle_rollup_recompute_job(self, job_id: int) -> CandleRollupRecomputeJob:
         restarted_at = datetime.now(UTC)
         with self._connect() as conn:
             row = conn.execute(
@@ -5497,9 +6065,7 @@ class PostgresOperationsRepository:
             source_knowledge_at = max(item.knowledge_at for item in revisions)
             for affected in affected_rollup_ranges(
                 [item.candle_start_at.astimezone(UTC) for item in revisions],
-                units=("1d", "1w", "1M")
-                if source_unit == "1d"
-                else MATERIALIZED_AGGREGATION_UNITS,
+                units=("1d", "1w", "1M") if source_unit == "1d" else MATERIALIZED_AGGREGATION_UNITS,
             ):
                 quality_ceiling = conn.execute(
                     """
@@ -5535,8 +6101,11 @@ class PostgresOperationsRepository:
                              specification.id, coverage.id
                     """,
                     (
-                        affected.start_at, affected.end_at, market_id,
-                        affected.start_at, affected.end_at,
+                        affected.start_at,
+                        affected.end_at,
+                        market_id,
+                        affected.start_at,
+                        affected.end_at,
                     ),
                 ).fetchall()
                 coverage_payload = [
@@ -5544,9 +6113,7 @@ class PostgresOperationsRepository:
                         "startAt": cast(datetime, row["range_start_at"])
                         .astimezone(UTC)
                         .isoformat(),
-                        "endAt": cast(datetime, row["range_end_at"])
-                        .astimezone(UTC)
-                        .isoformat(),
+                        "endAt": cast(datetime, row["range_end_at"]).astimezone(UTC).isoformat(),
                         "status": str(row["status"]),
                     }
                     for row in coverage_rows
@@ -5561,9 +6128,13 @@ class PostgresOperationsRepository:
                 fingerprint = sha256(
                     "|".join(
                         (
-                            str(market_id), affected.unit, affected.start_at.isoformat(),
-                            affected.end_at.isoformat(), CALCULATION_VERSION,
-                            ",".join(str(value) for value in revision_ids), coverage_hash,
+                            str(market_id),
+                            affected.unit,
+                            affected.start_at.isoformat(),
+                            affected.end_at.isoformat(),
+                            CALCULATION_VERSION,
+                            ",".join(str(value) for value in revision_ids),
+                            coverage_hash,
                         )
                     ).encode()
                 ).hexdigest()
@@ -5580,11 +6151,20 @@ class PostgresOperationsRepository:
                     ) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id
                     """,
                     (
-                        fingerprint, market_id, instrument_id, affected.unit,
-                        CALCULATION_VERSION, affected.start_at, affected.end_at,
-                        affected.output_bucket_count, revision_ids, max(revision_ids),
+                        fingerprint,
+                        market_id,
+                        instrument_id,
+                        affected.unit,
+                        CALCULATION_VERSION,
+                        affected.start_at,
+                        affected.end_at,
+                        affected.output_bucket_count,
+                        revision_ids,
+                        max(revision_ids),
                         quality_event_through_id,
-                        Jsonb(coverage_payload), coverage_hash, knowledge_at,
+                        Jsonb(coverage_payload),
+                        coverage_hash,
+                        knowledge_at,
                     ),
                 ).fetchone()
                 if invalidation is None:

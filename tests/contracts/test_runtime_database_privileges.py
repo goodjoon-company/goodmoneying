@@ -15,6 +15,7 @@ RUNTIME_SQL_SOURCES = (
     Path("packages/shared/goodmoneying_shared/data_foundation_repository.py"),
     Path("packages/shared/goodmoneying_shared/coverage_transition.py"),
     Path("packages/shared/goodmoneying_shared/indicator_store.py"),
+    Path("packages/shared/goodmoneying_shared/microstructure_store.py"),
 )
 MIGRATIONS_DIR = Path("docs/contracts/db/migrations")
 

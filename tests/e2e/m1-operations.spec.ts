@@ -301,6 +301,7 @@ test("관심 코인 분석 화면이 WebSocket 메시지로 실시간 정보를 
         "analysis.instrument",
         "analysis.chart",
         "analysis.indicators",
+        "analysis.microstructure",
         "analysis.market"
       ].every((type) => types.has(type)) && received.some((message) =>
         message.type === "analysis.chart" &&

@@ -57,6 +57,7 @@ from goodmoneying_api.schemas import (
     MarketCollectionPolicyResponse,
     MarketListResponse,
     MarketStatisticsResponse,
+    MicrostructureStatisticsResponse,
     NotificationEventsResponse,
     OrderbookSummariesResponse,
     TickerSnapshotsResponse,
@@ -420,6 +421,7 @@ def create_app(
         latest_subscription: dict[str, object] | None = None
         latest_candle: dict[str, object] | None = None
         latest_indicator_points: list[object] = []
+        latest_microstructure_points: list[object] = []
 
         async def send_message(message_type: str, **payload: object) -> None:
             await websocket.send_json(
@@ -427,7 +429,7 @@ def create_app(
             )
 
         async def send_snapshot(subscription: dict[str, object]) -> None:
-            nonlocal latest_candle, latest_indicator_points
+            nonlocal latest_candle, latest_indicator_points, latest_microstructure_points
             try:
                 snapshot = service.analysis_snapshot(
                     int(cast(int | str, subscription["instrumentId"])),
@@ -458,9 +460,19 @@ def create_app(
                     chunkCount=indicator_chunk_count,
                     points=indicator_points[chunk_index * 500 : (chunk_index + 1) * 500],
                 )
+            microstructure_points = cast(list[object], snapshot["microstructurePoints"])
+            microstructure_chunk_count = max(1, (len(microstructure_points) + 499) // 500)
+            for chunk_index in range(microstructure_chunk_count):
+                await send_message(
+                    "analysis.microstructure",
+                    chunkIndex=chunk_index,
+                    chunkCount=microstructure_chunk_count,
+                    points=microstructure_points[chunk_index * 500 : (chunk_index + 1) * 500],
+                )
             await send_message("analysis.market", **cast(dict[str, object], snapshot["market"]))
             latest_candle = cast(dict[str, object], candles[-1]) if candles else None
             latest_indicator_points = indicator_points
+            latest_microstructure_points = microstructure_points
 
         try:
             while True:
@@ -478,6 +490,7 @@ def create_app(
                             continue
                         candles = cast(list[dict[str, object]], snapshot["candles"])
                         indicator_points = cast(list[object], snapshot["indicatorPoints"])
+                        microstructure_points = cast(list[object], snapshot["microstructurePoints"])
                         if candles and candles[-1] != latest_candle:
                             await send_message("analysis.candle.upsert", candle=candles[-1])
                             latest_candle = candles[-1]
@@ -507,6 +520,32 @@ def create_app(
                                     ],
                                 )
                             latest_indicator_points = indicator_points
+                        microstructure_update = _classify_microstructure_stream_update(
+                            latest_microstructure_points,
+                            microstructure_points,
+                            candles[-1] if candles else None,
+                        )
+                        if microstructure_update == "upsert":
+                            await send_message(
+                                "analysis.microstructure.upsert",
+                                point=microstructure_points[-1],
+                            )
+                            latest_microstructure_points = microstructure_points
+                        elif microstructure_update == "cache":
+                            latest_microstructure_points = microstructure_points
+                        elif microstructure_update == "refresh":
+                            chunk_count = max(1, (len(microstructure_points) + 499) // 500)
+                            for chunk_index in range(chunk_count):
+                                await send_message(
+                                    "analysis.microstructure",
+                                    chunkIndex=chunk_index,
+                                    chunkCount=chunk_count,
+                                    revisionRefresh=True,
+                                    points=microstructure_points[
+                                        chunk_index * 500 : (chunk_index + 1) * 500
+                                    ],
+                                )
+                            latest_microstructure_points = microstructure_points
                         market = cast(dict[str, object], snapshot["market"])
                         await send_message("analysis.market", **market)
                     continue
@@ -652,6 +691,37 @@ def create_app(
             ) from exc
 
     @app.get(
+        "/v1/instruments/{instrumentId}/microstructure-statistics",
+        response_model=MicrostructureStatisticsResponse,
+    )
+    def get_microstructure_statistics(
+        instrumentId: int,
+        unit: str,
+        from_: Annotated[datetime, Query(alias="from")],
+        to: datetime,
+        asOf: datetime,
+        calculationVersion: str | None = None,
+        pageSize: Annotated[int, Query(ge=1, le=500)] = 500,
+        cursor: str | None = None,
+    ) -> MicrostructureStatisticsResponse:
+        try:
+            return service.microstructure_statistics(
+                instrumentId,
+                unit,
+                from_,
+                to,
+                as_of=asOf,
+                page_size=pageSize,
+                cursor=cursor,
+                calculation_version=calculationVersion,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "INVALID_MICROSTRUCTURE_QUERY", "message": str(exc)},
+            ) from exc
+
+    @app.get(
         "/v1/instruments/{instrumentId}/ticker-snapshots",
         response_model=TickerSnapshotsResponse,
     )
@@ -780,6 +850,16 @@ def _classify_indicator_stream_update(
     if latest_point.get("startedAt") != latest_candle.get("startedAt"):
         return "cache" if appended_latest else "refresh"
     return "upsert" if appended_latest or replaced_latest else "refresh"
+
+
+def _classify_microstructure_stream_update(
+    previous: Sequence[object],
+    current: Sequence[object],
+    latest_candle: Mapping[str, object] | None,
+) -> str:
+    """저장된 1분 미시구조 시계열의 최신 갱신과 과거 정정을 구분한다."""
+
+    return _classify_indicator_stream_update(previous, current, latest_candle)
 
 
 def _coverage_counts_response(

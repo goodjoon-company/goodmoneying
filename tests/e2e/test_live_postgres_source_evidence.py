@@ -1718,7 +1718,7 @@ def test_raw_source_retention_removes_only_rows_strictly_before_boundary() -> No
             "UPDATE collection_target_specs SET retention_days = 1 WHERE id = %s",
             (secondary_spec_id,),
         )
-    assert repository.purge_expired_source_evidence(as_of=as_of) == (1, 1)
+    assert repository.purge_expired_source_evidence(as_of=as_of) == (0, 0)
 
     with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
         receipt_times = connection.execute(
@@ -1753,9 +1753,9 @@ def test_raw_source_retention_removes_only_rows_strictly_before_boundary() -> No
             (manifest_id,),
         ).fetchone()
 
-    assert receipt_times == [(moments[1],), (moments[2],)]
-    assert snapshot_times == [(moments[1],), (moments[2],)]
-    assert level_count == (60,)
+    assert receipt_times == [(moments[0],), (moments[1],), (moments[2],)]
+    assert snapshot_times == [(moments[0],), (moments[1],), (moments[2],)]
+    assert level_count == (90,)
     assert preserved_non_orderbook_receipts == (1,)
     assert summary_count == (3,)
     assert manifest_count == (1,)

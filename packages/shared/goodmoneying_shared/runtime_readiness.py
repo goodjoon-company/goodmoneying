@@ -5,7 +5,7 @@ from typing import Any
 import psycopg
 
 LATEST_P1_MIGRATION = "20260717000800"
-LATEST_PLATFORM_MIGRATION = "20260717001100"
+LATEST_PLATFORM_MIGRATION = "20260717001200"
 RUNTIME_READ_TABLES = frozenset(
     {
         "backfill_job_targets",
@@ -39,14 +39,22 @@ RUNTIME_READ_TABLES = frozenset(
         "market_status_history",
         "market_statistics",
         "markets",
+        "microstructure_definition_versions",
+        "microstructure_invalidations",
+        "microstructure_materialization_orderbooks",
+        "microstructure_materializations",
+        "microstructure_statistics",
         "notification_events",
         "orderbook_snapshots",
+        "orderbook_snapshot_levels",
         "orderbook_summaries",
         "p1_audit_recovery_gate",
         "schema_migrations",
         "source_candles",
         "source_candle_revisions",
         "source_receipts",
+        "realtime_connection_quality_intervals",
+        "realtime_connection_sessions",
         "target_collection_results",
         "ticker_snapshots",
         "trade_events",
@@ -84,6 +92,10 @@ RUNTIME_INSERT_TABLES = frozenset(
         "market_status_history",
         "market_statistics",
         "markets",
+        "microstructure_materialization_orderbooks",
+        "microstructure_materialization_trades",
+        "microstructure_materializations",
+        "microstructure_statistics",
         "notification_events",
         "orderbook_snapshot_levels",
         "orderbook_snapshots",
@@ -91,6 +103,8 @@ RUNTIME_INSERT_TABLES = frozenset(
         "source_candles",
         "source_candle_revisions",
         "source_receipts",
+        "realtime_connection_quality_intervals",
+        "realtime_connection_sessions",
         "target_collection_results",
         "ticker_snapshots",
         "trade_events",
@@ -115,8 +129,10 @@ RUNTIME_UPDATE_TABLES = frozenset(
         "fetch_manifests",
         "instruments",
         "indicator_invalidations",
+        "microstructure_invalidations",
         "market_status_history",
         "markets",
+        "realtime_connection_sessions",
         "orderbook_summaries",
         "source_candles",
         "ticker_snapshots",

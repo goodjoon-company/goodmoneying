@@ -610,6 +610,54 @@ class MarketStatisticsResponse(BaseModel):
     nextCursor: str | None = None
 
 
+MicrostructureCalculationStatus = Literal["ready", "missing", "partial", "invalid", "undefined"]
+
+
+class MicrostructureStatisticResponse(BaseModel):
+    startedAt: datetime
+    calculationVersion: Literal["microstructure-v1"]
+    closingOrderbookSnapshotId: int | None
+    closingOrderbookSourceReceiptId: int | None
+    spread: str | None
+    spreadBps: str | None
+    bidDepth10: str | None
+    askDepth10: str | None
+    orderbookImbalance10: str | None
+    tradeCount: int | None
+    tradeIntensityPerMinute: str | None
+    volumeIntensityPerMinute: str | None
+    buyCount: int | None
+    sellCount: int | None
+    buyVolume: str | None
+    sellVolume: str | None
+    buySellImbalance: str | None
+    executionStrength: str | None
+    orderbookStatus: MicrostructureCalculationStatus
+    tradeStatus: MicrostructureCalculationStatus
+    executionStrengthStatus: MicrostructureCalculationStatus
+    materializationId: int
+    sourceCandleRevisionId: int | None
+    orderbookSnapshotThroughId: int
+    tradeEventThroughId: int
+    sourceReceiptThroughId: int
+    connectionQualityThroughId: int
+    qualityEventThroughId: int | None
+    orderbookQuality: Literal["available", "no_trade", "missing", "unavailable", "unverified"]
+    tradeQuality: Literal["available", "no_trade", "missing", "unavailable", "unverified"]
+    sourceAsOf: datetime
+    knowledgeAt: datetime
+    inputLineageHash: str
+    contentHash: str
+
+
+class MicrostructureStatisticsResponse(BaseModel):
+    unit: Literal["1m"]
+    asOf: datetime
+    calculationVersion: Literal["microstructure-v1"]
+    items: list[MicrostructureStatisticResponse]
+    nextCursor: str | None = None
+
+
 class TickerSnapshotsResponse(BaseModel):
     items: list[TickerSnapshotResponse]
 

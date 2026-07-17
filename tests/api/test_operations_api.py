@@ -12,9 +12,11 @@ from jsonschema import Draft202012Validator, FormatChecker  # type: ignore[impor
 
 from goodmoneying_api.main import (
     _classify_indicator_stream_update,
+    _classify_microstructure_stream_update,
     create_app,
     create_repository_from_environment,
 )
+from goodmoneying_api.schemas import MicrostructureStatisticResponse
 from goodmoneying_shared.data_foundation_repository import PostgresDataFoundationRepository
 from goodmoneying_shared.models import SourceCandle
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
@@ -413,7 +415,7 @@ def test_coin_analysis_websocket_sends_small_messages_for_a_watchlist_coin() -> 
                 "rangeDays": 365,
             }
         )
-        messages = [websocket.receive_json() for _ in range(5)]
+        messages = [websocket.receive_json() for _ in range(6)]
 
     messages_by_type = {message["type"]: message for message in messages}
     validator = Draft202012Validator(
@@ -425,6 +427,7 @@ def test_coin_analysis_websocket_sends_small_messages_for_a_watchlist_coin() -> 
         "analysis.instrument",
         "analysis.chart",
         "analysis.indicators",
+        "analysis.microstructure",
         "analysis.market",
     }
     assert len(messages_by_type["analysis.chart"]["candles"]) <= 500
@@ -437,6 +440,65 @@ def test_coin_analysis_websocket_sends_small_messages_for_a_watchlist_coin() -> 
     }
     for message in messages:
         assert list(validator.iter_errors(message)) == []
+
+
+def test_미시구조_REST는_1분_저장_물질화만_조회한다() -> None:
+    repository, client = seeded_repository_and_client()
+    instrument_id = repository.list_active_targets()[0].id
+    as_of = now_kst()
+    parameters = {
+        "unit": "1m",
+        "from": (as_of - timedelta(minutes=5)).isoformat(),
+        "to": as_of.isoformat(),
+        "asOf": as_of.isoformat(),
+        "calculationVersion": "microstructure-v1",
+        "pageSize": 10,
+    }
+
+    response = client.get(
+        f"/v1/instruments/{instrument_id}/microstructure-statistics",
+        params=parameters,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "unit": "1m",
+        "asOf": as_of.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        "calculationVersion": "microstructure-v1",
+        "items": [],
+        "nextCursor": None,
+    }
+
+    unsupported = client.get(
+        f"/v1/instruments/{instrument_id}/microstructure-statistics",
+        params={**parameters, "unit": "5m"},
+    )
+    assert unsupported.status_code == 400
+    assert unsupported.json()["code"] == "INVALID_MICROSTRUCTURE_QUERY"
+
+
+def test_미시구조_API는_연결_품질_frontier를_필수_계보로_노출한다() -> None:
+    schema = MicrostructureStatisticResponse.model_json_schema()
+
+    assert "connectionQualityThroughId" in schema["required"]
+
+
+def test_coin_analysis_websocket_microstructure_uses_upsert_and_historical_refresh() -> None:
+    first = {"startedAt": "2026-07-17T00:00:00Z", "spread": "1"}
+    latest = {"startedAt": "2026-07-17T00:01:00Z", "spread": "2"}
+    appended = {"startedAt": "2026-07-17T00:02:00Z", "spread": "3"}
+    candle = {"startedAt": appended["startedAt"]}
+
+    assert (
+        _classify_microstructure_stream_update([first, latest], [first, latest, appended], candle)
+        == "upsert"
+    )
+    assert (
+        _classify_microstructure_stream_update(
+            [first, latest], [{**first, "spread": "9"}, latest], {"startedAt": latest["startedAt"]}
+        )
+        == "refresh"
+    )
 
 
 def test_버전_지표_REST는_저장_물질화_id와_고정_frontier_cursor를_반환한다() -> None:
@@ -518,7 +580,7 @@ def test_coin_analysis_websocket_changes_coin_and_units_with_independent_message
                     "rangeDays": 365,
                 }
             )
-            messages = [websocket.receive_json() for _ in range(5)]
+            messages = [websocket.receive_json() for _ in range(6)]
             messages_by_type = {message["type"]: message for message in messages}
 
             assert set(messages_by_type) == {
@@ -526,6 +588,7 @@ def test_coin_analysis_websocket_changes_coin_and_units_with_independent_message
                 "analysis.instrument",
                 "analysis.chart",
                 "analysis.indicators",
+                "analysis.microstructure",
                 "analysis.market",
             }
             assert messages_by_type["analysis.chart"]["unit"] == unit
@@ -553,7 +616,7 @@ def test_coin_analysis_websocket_changes_coin_and_units_with_independent_message
                 "rangeDays": 1095,
             }
         )
-        three_year_messages = [websocket.receive_json() for _ in range(5)]
+        three_year_messages = [websocket.receive_json() for _ in range(6)]
         three_year_by_type = {message["type"]: message for message in three_year_messages}
         three_year_candles = three_year_by_type["analysis.chart"]["candles"]
         three_year_indicators = three_year_by_type["analysis.indicators"]["points"]
@@ -585,7 +648,7 @@ def test_coin_analysis_websocket_changes_coin_and_units_with_independent_message
                 "rangeDays": 1095,
             }
         )
-        changed_messages = [websocket.receive_json() for _ in range(5)]
+        changed_messages = [websocket.receive_json() for _ in range(6)]
 
     changed_by_type = {message["type"]: message for message in changed_messages}
     assert changed_by_type["analysis.instrument"]["instrument"]["id"] == second_instrument.id
@@ -607,6 +670,7 @@ def test_coin_analysis_websocket_changes_coin_and_units_with_independent_message
         "analysis.instrument",
         "analysis.chart",
         "analysis.indicators",
+        "analysis.microstructure",
         "analysis.market",
     }
 
@@ -756,7 +820,7 @@ def test_coin_analysis_websocket_splits_three_year_indicators_into_small_chunks(
                 "rangeDays": 1095,
             }
         )
-        messages = [websocket.receive_json() for _ in range(9)]
+        messages = [websocket.receive_json() for _ in range(10)]
 
     indicator_messages = [
         message for message in messages if message["type"] == "analysis.indicators"
@@ -802,7 +866,7 @@ def test_coin_analysis_websocket_aligns_intraday_1000_points() -> None:
                 "rangeDays": 7,
             }
         )
-        messages = [websocket.receive_json() for _ in range(7)]
+        messages = [websocket.receive_json() for _ in range(8)]
 
     candles = [
         candle
@@ -817,9 +881,7 @@ def test_coin_analysis_websocket_aligns_intraday_1000_points() -> None:
         for point in message["points"]
     ]
     assert len(candles) == len(indicators) == 1000
-    assert [item["startedAt"] for item in candles] == [
-        item["startedAt"] for item in indicators
-    ]
+    assert [item["startedAt"] for item in candles] == [item["startedAt"] for item in indicators]
 
 
 def test_coin_analysis_websocket_uses_upsert_only_for_latest_point() -> None:
@@ -858,9 +920,7 @@ def test_coin_analysis_websocket_does_not_upsert_a_stale_indicator_when_worker_l
     stale_latest = {"startedAt": "2026-07-18T00:00:00+09:00", "sma20": "2"}
     newest_candle = {"startedAt": "2026-07-19T00:00:00+09:00"}
 
-    update = _classify_indicator_stream_update(
-        previous, [*previous, stale_latest], newest_candle
-    )
+    update = _classify_indicator_stream_update(previous, [*previous, stale_latest], newest_candle)
     assert update == "cache"
 
 

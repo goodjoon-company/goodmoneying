@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Callable
 
 from goodmoneying_shared.indicator_store import run_next_indicator_invalidation
+from goodmoneying_shared.microstructure_store import run_next_microstructure_invalidation
 from goodmoneying_shared.models import CollectionWorkerHeartbeatStatus
 from goodmoneying_shared.repository import OperationsRepository
 
@@ -90,7 +91,10 @@ class CandleAggregationWorker:
         self._repository.schedule_candle_aggregation()
         job = self._repository.claim_next_candle_aggregation_job()
         if job is None:
-            return run_next_indicator_invalidation(self._repository, self._worker_id)
+            indicator_rows = run_next_indicator_invalidation(self._repository, self._worker_id)
+            if indicator_rows > 0:
+                return indicator_rows
+            return run_next_microstructure_invalidation(self._repository, self._worker_id)
         completed = 0
         for target in self._repository.candle_aggregation_job_targets(job.id):
             self._repository.mark_candle_aggregation_target(
@@ -132,9 +136,7 @@ class CandleAggregationWorker:
 
     def _record_running_heartbeat(self) -> None:
         if not self.record_heartbeat("running"):
-            logger.error(
-                "aggregation_running_heartbeat_skipped reason=in_flight"
-            )
+            logger.error("aggregation_running_heartbeat_skipped reason=in_flight")
 
     def record_heartbeat(
         self,

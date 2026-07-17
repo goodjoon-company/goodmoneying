@@ -99,6 +99,338 @@ $$;
 
 
 --
+-- Name: enqueue_microstructure_invalidation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enqueue_microstructure_invalidation() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public'
+    AS $$
+DECLARE
+  v_market_id BIGINT;
+  v_instrument_id BIGINT;
+  v_occurred_at TIMESTAMPTZ;
+  v_knowledge_at TIMESTAMPTZ;
+  v_receipt_id BIGINT;
+  v_snapshot_id BIGINT;
+  v_trade_id BIGINT;
+  v_snapshot_through BIGINT;
+  v_trade_through BIGINT;
+  v_receipt_through BIGINT;
+  v_candle_revision_id BIGINT;
+  v_quality_event_id BIGINT;
+  v_connection_quality_id BIGINT;
+BEGIN
+  -- 자문 잠금 namespace: microstructure-invalidations-active-bucket
+  v_market_id := NEW.market_id;
+  v_instrument_id := NEW.instrument_id;
+  v_occurred_at := NEW.occurred_at;
+  v_knowledge_at := NEW.knowledge_at;
+  v_receipt_id := NEW.source_receipt_id;
+  IF TG_TABLE_NAME = 'orderbook_snapshots' THEN
+    v_snapshot_id := NEW.id;
+  ELSE
+    v_trade_id := NEW.id;
+  END IF;
+  SELECT COALESCE(MAX(id),0) INTO v_snapshot_through FROM orderbook_snapshots
+    WHERE instrument_id=v_instrument_id;
+  SELECT COALESCE(MAX(id),0) INTO v_trade_through FROM trade_events
+    WHERE instrument_id=v_instrument_id;
+  SELECT COALESCE(MAX(id),0) INTO v_receipt_through FROM source_receipts
+    WHERE instrument_id=v_instrument_id;
+  SELECT COALESCE(MAX(id),0) INTO v_connection_quality_id
+  FROM realtime_connection_quality_intervals
+  WHERE detected_at <= v_knowledge_at;
+  SELECT id INTO v_candle_revision_id
+  FROM source_candle_revisions
+  WHERE instrument_id=v_instrument_id AND candle_unit='1m'
+    AND candle_start_at=date_trunc('minute',v_occurred_at)
+    AND knowledge_at <= v_knowledge_at
+  ORDER BY knowledge_at DESC, revision_number DESC, id DESC LIMIT 1;
+  SELECT event.id INTO v_quality_event_id
+  FROM data_quality_events event
+  JOIN collection_target_specs specification ON specification.id=event.target_spec_id
+  WHERE specification.market_id=v_market_id
+    AND specification.data_type='source_candle'
+    AND specification.candle_unit='1m'
+    AND event.detected_at <= v_knowledge_at
+    AND tstzrange(event.range_start_at,event.range_end_at,'[)')
+        @> date_trunc('minute',v_occurred_at)
+  ORDER BY event.id DESC LIMIT 1;
+
+  INSERT INTO microstructure_invalidations (
+    instrument_id, market_id, bucket_start_at,
+    changed_orderbook_snapshot_id, changed_trade_event_id,
+    orderbook_snapshot_through_id, trade_event_through_id,
+    source_receipt_through_id, source_candle_revision_id,
+    quality_event_through_id, connection_quality_through_id,
+    knowledge_at, source_as_of
+  ) VALUES (
+    v_instrument_id, v_market_id, date_trunc('minute', v_occurred_at),
+    v_snapshot_id, v_trade_id, v_snapshot_through, v_trade_through,
+    GREATEST(v_receipt_through, COALESCE(v_receipt_id,0)),
+    v_candle_revision_id, v_quality_event_id, v_connection_quality_id,
+    v_knowledge_at, v_occurred_at
+  )
+  ON CONFLICT (
+    instrument_id, bucket_start_at, source_candle_revision_id,
+    quality_event_through_id, connection_quality_through_id
+  ) WHERE status IN ('pending','retry_wait')
+  DO UPDATE SET
+    changed_orderbook_snapshot_id=COALESCE(
+      EXCLUDED.changed_orderbook_snapshot_id,
+      microstructure_invalidations.changed_orderbook_snapshot_id
+    ),
+    changed_trade_event_id=COALESCE(
+      EXCLUDED.changed_trade_event_id,
+      microstructure_invalidations.changed_trade_event_id
+    ),
+    orderbook_snapshot_through_id=GREATEST(
+      microstructure_invalidations.orderbook_snapshot_through_id,
+      EXCLUDED.orderbook_snapshot_through_id
+    ),
+    trade_event_through_id=GREATEST(
+      microstructure_invalidations.trade_event_through_id,
+      EXCLUDED.trade_event_through_id
+    ),
+    source_receipt_through_id=GREATEST(
+      microstructure_invalidations.source_receipt_through_id,
+      EXCLUDED.source_receipt_through_id
+    ),
+    knowledge_at=GREATEST(
+      microstructure_invalidations.knowledge_at, EXCLUDED.knowledge_at
+    ),
+    source_as_of=GREATEST(
+      microstructure_invalidations.source_as_of, EXCLUDED.source_as_of
+    ),
+    status='pending', next_retry_at=clock_timestamp(), updated_at=clock_timestamp();
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: enqueue_quality_microstructure_invalidation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enqueue_quality_microstructure_invalidation() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public'
+    AS $$
+DECLARE
+  v_market RECORD;
+  v_bucket_start TIMESTAMPTZ;
+  v_snapshot_through BIGINT;
+  v_trade_through BIGINT;
+  v_receipt_through BIGINT;
+  v_candle_revision_id BIGINT;
+  v_quality_event_id BIGINT;
+BEGIN
+  IF NEW.data_type NOT IN ('trade_event','orderbook_snapshot') THEN
+    RETURN NEW;
+  END IF;
+
+  FOR v_market IN
+    SELECT market.id AS market_id, market.legacy_instrument_id AS instrument_id
+    FROM markets market
+    JOIN realtime_connection_sessions session
+      ON session.connection_id=NEW.connection_id
+    WHERE (
+      NEW.market_id=market.id
+      OR (
+        NEW.market_id IS NULL
+        AND session.subscription_scope @> jsonb_build_object(
+          'marketIds', jsonb_build_array(market.id)
+        )
+        AND session.subscription_scope @> jsonb_build_object(
+          'dataTypes', jsonb_build_array(NEW.data_type)
+        )
+      )
+    )
+  LOOP
+    SELECT COALESCE(MAX(id),0) INTO v_snapshot_through FROM orderbook_snapshots
+      WHERE instrument_id=v_market.instrument_id;
+    SELECT COALESCE(MAX(id),0) INTO v_trade_through FROM trade_events
+      WHERE instrument_id=v_market.instrument_id;
+    SELECT COALESCE(MAX(id),0) INTO v_receipt_through FROM source_receipts
+      WHERE instrument_id=v_market.instrument_id;
+
+    FOR v_bucket_start IN
+      SELECT bucket_start
+      FROM (
+        SELECT generate_series(
+          date_trunc('minute', NEW.range_start_at),
+          date_trunc('minute', NEW.range_end_at - interval '1 microsecond'),
+          interval '1 minute'
+        ) AS bucket_start
+        WHERE NEW.range_end_at - NEW.range_start_at <= interval '1 day'
+        UNION
+        SELECT revision.candle_start_at
+        FROM source_candle_revisions revision
+        WHERE revision.instrument_id=v_market.instrument_id
+          AND revision.candle_unit='1m'
+          AND revision.candle_start_at >= NEW.range_start_at
+          AND revision.candle_start_at < NEW.range_end_at
+        UNION
+        SELECT date_trunc('minute',snapshot.occurred_at)
+        FROM orderbook_snapshots snapshot
+        WHERE snapshot.instrument_id=v_market.instrument_id
+          AND snapshot.occurred_at >= NEW.range_start_at
+          AND snapshot.occurred_at < NEW.range_end_at
+        UNION
+        SELECT date_trunc('minute',trade.occurred_at)
+        FROM trade_events trade
+        WHERE trade.instrument_id=v_market.instrument_id
+          AND trade.occurred_at >= NEW.range_start_at
+          AND trade.occurred_at < NEW.range_end_at
+        UNION
+        SELECT invalidation.bucket_start_at
+        FROM microstructure_invalidations invalidation
+        WHERE invalidation.instrument_id=v_market.instrument_id
+          AND invalidation.bucket_start_at >= NEW.range_start_at
+          AND invalidation.bucket_start_at < NEW.range_end_at
+      ) affected
+    LOOP
+      SELECT id INTO v_candle_revision_id
+      FROM source_candle_revisions
+      WHERE instrument_id=v_market.instrument_id AND candle_unit='1m'
+        AND candle_start_at=v_bucket_start AND knowledge_at <= NEW.detected_at
+      ORDER BY knowledge_at DESC, revision_number DESC, id DESC LIMIT 1;
+      SELECT event.id INTO v_quality_event_id
+      FROM data_quality_events event
+      JOIN collection_target_specs specification
+        ON specification.id=event.target_spec_id
+      WHERE specification.market_id=v_market.market_id
+        AND specification.data_type='source_candle'
+        AND specification.candle_unit='1m'
+        AND event.detected_at <= NEW.detected_at
+        AND tstzrange(event.range_start_at,event.range_end_at,'[)') @> v_bucket_start
+      ORDER BY event.id DESC LIMIT 1;
+      INSERT INTO microstructure_invalidations (
+        instrument_id, market_id, bucket_start_at,
+        changed_connection_quality_interval_id,
+        orderbook_snapshot_through_id, trade_event_through_id,
+        source_receipt_through_id, source_candle_revision_id,
+        quality_event_through_id, connection_quality_through_id,
+        knowledge_at, source_as_of
+      ) VALUES (
+        v_market.instrument_id, v_market.market_id, v_bucket_start, NEW.id,
+        v_snapshot_through, v_trade_through, v_receipt_through,
+        v_candle_revision_id, v_quality_event_id, NEW.id,
+        NEW.detected_at, NEW.range_end_at
+      )
+      ON CONFLICT DO NOTHING;
+    END LOOP;
+  END LOOP;
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: enqueue_source_candle_microstructure_invalidation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enqueue_source_candle_microstructure_invalidation() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public'
+    AS $$
+DECLARE
+  v_instrument_id BIGINT;
+  v_market_id BIGINT;
+  v_started_at TIMESTAMPTZ;
+  v_ended_at TIMESTAMPTZ;
+  v_revision_id BIGINT;
+  v_quality_id BIGINT;
+  v_knowledge_at TIMESTAMPTZ;
+  v_snapshot_through BIGINT;
+  v_trade_through BIGINT;
+  v_receipt_through BIGINT;
+  v_connection_quality_id BIGINT;
+BEGIN
+  IF TG_TABLE_NAME = 'source_candle_revisions' THEN
+    IF NEW.candle_unit <> '1m' THEN RETURN NEW; END IF;
+    v_instrument_id := NEW.instrument_id;
+    v_market_id := NEW.market_id;
+    v_started_at := NEW.candle_start_at;
+    v_ended_at := NEW.candle_start_at + interval '1 minute';
+    v_revision_id := NEW.id;
+    v_knowledge_at := NEW.knowledge_at;
+  ELSE
+    SELECT market.legacy_instrument_id, specification.market_id
+      INTO v_instrument_id, v_market_id
+    FROM collection_target_specs specification
+    JOIN markets market ON market.id=specification.market_id
+    WHERE specification.id=NEW.target_spec_id
+      AND specification.data_type='source_candle'
+      AND specification.candle_unit='1m';
+    IF v_instrument_id IS NULL THEN RETURN NEW; END IF;
+    v_started_at := date_trunc('minute', NEW.range_start_at);
+    v_ended_at := NEW.range_end_at;
+    v_quality_id := NEW.id;
+    v_knowledge_at := NEW.detected_at;
+  END IF;
+  SELECT COALESCE(MAX(id),0) INTO v_snapshot_through FROM orderbook_snapshots
+    WHERE instrument_id=v_instrument_id;
+  SELECT COALESCE(MAX(id),0) INTO v_trade_through FROM trade_events
+    WHERE instrument_id=v_instrument_id;
+  SELECT COALESCE(MAX(id),0) INTO v_receipt_through FROM source_receipts
+    WHERE instrument_id=v_instrument_id;
+  SELECT COALESCE(MAX(id),0) INTO v_connection_quality_id
+  FROM realtime_connection_quality_intervals
+  WHERE detected_at <= v_knowledge_at;
+  FOR v_started_at IN
+    SELECT bucket_start
+    FROM (
+      SELECT generate_series(
+        date_trunc('minute',v_started_at),
+        date_trunc('minute',v_ended_at - interval '1 microsecond'),
+        interval '1 minute'
+      ) AS bucket_start
+      WHERE v_ended_at - v_started_at <= interval '1 day'
+      UNION
+      SELECT revision.candle_start_at
+      FROM source_candle_revisions revision
+      WHERE revision.instrument_id=v_instrument_id
+        AND revision.candle_unit='1m'
+        AND revision.candle_start_at >= v_started_at
+        AND revision.candle_start_at < v_ended_at
+      UNION
+      SELECT invalidation.bucket_start_at
+      FROM microstructure_invalidations invalidation
+      WHERE invalidation.instrument_id=v_instrument_id
+        AND invalidation.bucket_start_at >= v_started_at
+        AND invalidation.bucket_start_at < v_ended_at
+    ) affected
+  LOOP
+    IF TG_TABLE_NAME <> 'source_candle_revisions' THEN
+      SELECT id INTO v_revision_id
+      FROM source_candle_revisions
+      WHERE instrument_id=v_instrument_id AND candle_unit='1m'
+        AND candle_start_at=v_started_at AND knowledge_at <= v_knowledge_at
+      ORDER BY knowledge_at DESC, revision_number DESC, id DESC LIMIT 1;
+    END IF;
+  INSERT INTO microstructure_invalidations (
+    instrument_id, market_id, bucket_start_at,
+    changed_source_candle_revision_id, changed_quality_event_id,
+    orderbook_snapshot_through_id, trade_event_through_id,
+    source_receipt_through_id, source_candle_revision_id,
+    quality_event_through_id, connection_quality_through_id,
+    knowledge_at, source_as_of
+  ) VALUES (
+    v_instrument_id, v_market_id, v_started_at, v_revision_id, v_quality_id,
+    v_snapshot_through, v_trade_through, v_receipt_through,
+    v_revision_id, v_quality_id, v_connection_quality_id,
+    v_knowledge_at, v_knowledge_at
+  )
+  ON CONFLICT DO NOTHING;
+  END LOOP;
+  RETURN NEW;
+END;
+$$;
+
+
+--
 -- Name: enqueue_source_indicator_invalidation(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -123,6 +455,31 @@ BEGIN
     NEW.instrument_id, NEW.candle_unit, NEW.id, NEW.candle_start_at,
     NEW.id, latest_quality_event_id, NEW.knowledge_at
   ) ON CONFLICT (changed_source_revision_id) DO NOTHING;
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: prepare_realtime_source_receipt(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.prepare_realtime_source_receipt() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public'
+    AS $$
+BEGIN
+  INSERT INTO realtime_connection_sessions (
+    connection_id, connected_at, status, first_frame_sequence,
+    last_frame_sequence, last_received_at
+  ) VALUES (
+    NEW.connection_id, NEW.received_at, 'active', NEW.frame_sequence,
+    NEW.frame_sequence, NEW.received_at
+  )
+  ON CONFLICT (connection_id) DO NOTHING;
+  NEW.knowledge_at := COALESCE(NEW.knowledge_at, NEW.received_at);
+  NEW.collector_version := COALESCE(NEW.collector_version, 'realtime-collector-v1');
+  NEW.schema_version := COALESCE(NEW.schema_version, 'upbit-websocket-default-v1');
   RETURN NEW;
 END;
 $$;
@@ -155,10 +512,49 @@ $$;
 
 
 --
+-- Name: reject_conflicting_trade_event(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_conflicting_trade_event() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE existing trade_events%ROWTYPE;
+BEGIN
+  SELECT * INTO existing
+  FROM trade_events
+  WHERE instrument_id=NEW.instrument_id AND source=NEW.source
+    AND sequential_id=NEW.sequential_id;
+  IF FOUND AND (
+    existing.trade_timestamp_at IS DISTINCT FROM NEW.trade_timestamp_at OR
+    existing.trade_price IS DISTINCT FROM NEW.trade_price OR
+    existing.trade_volume IS DISTINCT FROM NEW.trade_volume OR
+    existing.trade_amount IS DISTINCT FROM NEW.trade_amount OR
+    existing.ask_bid IS DISTINCT FROM NEW.ask_bid
+  ) THEN
+    RAISE EXCEPTION 'conflicting trade duplicate: instrument %, sequential_id %',
+      NEW.instrument_id, NEW.sequential_id;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+--
 -- Name: reject_indicator_immutable_mutation(); Type: FUNCTION; Schema: public; Owner: -
 --
 
 CREATE FUNCTION public.reject_indicator_immutable_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN RAISE EXCEPTION '% is append-only', TG_TABLE_NAME; END;
+$$;
+
+
+--
+-- Name: reject_microstructure_immutable_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_microstructure_immutable_mutation() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN RAISE EXCEPTION '% is append-only', TG_TABLE_NAME; END;
@@ -1405,6 +1801,223 @@ ALTER TABLE public.markets ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
 
 
 --
+-- Name: microstructure_definition_versions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.microstructure_definition_versions (
+    id bigint NOT NULL,
+    calculation_version text NOT NULL,
+    definition_hash text NOT NULL,
+    bucket_unit text NOT NULL,
+    algorithms jsonb NOT NULL,
+    decimal_precision integer NOT NULL,
+    rounding text NOT NULL,
+    implementation_version text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT microstructure_definition_versions_bucket_unit_check CHECK ((bucket_unit = '1m'::text)),
+    CONSTRAINT microstructure_definition_versions_decimal_precision_check CHECK ((decimal_precision = 50)),
+    CONSTRAINT microstructure_definition_versions_definition_hash_check CHECK ((definition_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT microstructure_definition_versions_rounding_check CHECK ((rounding = 'ROUND_HALF_EVEN'::text))
+);
+
+
+--
+-- Name: microstructure_definition_versions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.microstructure_definition_versions ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.microstructure_definition_versions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: microstructure_invalidations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.microstructure_invalidations (
+    id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    market_id bigint NOT NULL,
+    bucket_start_at timestamp with time zone NOT NULL,
+    changed_orderbook_snapshot_id bigint,
+    changed_trade_event_id bigint,
+    changed_source_candle_revision_id bigint,
+    changed_quality_event_id bigint,
+    changed_connection_quality_interval_id bigint,
+    orderbook_snapshot_through_id bigint NOT NULL,
+    trade_event_through_id bigint NOT NULL,
+    source_receipt_through_id bigint NOT NULL,
+    source_candle_revision_id bigint,
+    quality_event_through_id bigint,
+    connection_quality_through_id bigint DEFAULT 0 NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    source_as_of timestamp with time zone NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    max_attempts integer DEFAULT 5 NOT NULL,
+    next_retry_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    lease_owner text,
+    lease_expires_at timestamp with time zone,
+    lease_generation integer DEFAULT 0 NOT NULL,
+    last_error_code text,
+    finished_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT microstructure_invalidations_attempt_count_check CHECK ((attempt_count >= 0)),
+    CONSTRAINT microstructure_invalidations_check CHECK (((status = 'running'::text) = ((lease_owner IS NOT NULL) AND (lease_expires_at IS NOT NULL)))),
+    CONSTRAINT microstructure_invalidations_check1 CHECK ((((((((changed_orderbook_snapshot_id IS NOT NULL))::integer + ((changed_trade_event_id IS NOT NULL))::integer) + ((changed_source_candle_revision_id IS NOT NULL))::integer) + ((changed_quality_event_id IS NOT NULL))::integer) + ((changed_connection_quality_interval_id IS NOT NULL))::integer) >= 1)),
+    CONSTRAINT microstructure_invalidations_connection_quality_through_i_check CHECK ((connection_quality_through_id >= 0)),
+    CONSTRAINT microstructure_invalidations_lease_generation_check CHECK ((lease_generation >= 0)),
+    CONSTRAINT microstructure_invalidations_max_attempts_check CHECK ((max_attempts > 0)),
+    CONSTRAINT microstructure_invalidations_orderbook_snapshot_through_i_check CHECK ((orderbook_snapshot_through_id >= 0)),
+    CONSTRAINT microstructure_invalidations_source_receipt_through_id_check CHECK ((source_receipt_through_id >= 0)),
+    CONSTRAINT microstructure_invalidations_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'running'::text, 'succeeded'::text, 'retry_wait'::text, 'dead_letter'::text]))),
+    CONSTRAINT microstructure_invalidations_trade_event_through_id_check CHECK ((trade_event_through_id >= 0))
+);
+
+
+--
+-- Name: microstructure_invalidations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.microstructure_invalidations ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.microstructure_invalidations_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: microstructure_materialization_orderbooks; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.microstructure_materialization_orderbooks (
+    materialization_id bigint NOT NULL,
+    orderbook_snapshot_id bigint NOT NULL,
+    source_receipt_id bigint NOT NULL
+);
+
+
+--
+-- Name: microstructure_materialization_trades; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.microstructure_materialization_trades (
+    materialization_id bigint NOT NULL,
+    trade_event_id bigint NOT NULL,
+    source_receipt_id bigint NOT NULL
+);
+
+
+--
+-- Name: microstructure_materializations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.microstructure_materializations (
+    id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    market_id bigint NOT NULL,
+    definition_version_id bigint NOT NULL,
+    bucket_start_at timestamp with time zone NOT NULL,
+    parent_materialization_id bigint,
+    source_candle_revision_id bigint,
+    orderbook_snapshot_through_id bigint NOT NULL,
+    trade_event_through_id bigint NOT NULL,
+    source_receipt_through_id bigint NOT NULL,
+    quality_event_through_id bigint,
+    connection_quality_through_id bigint NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    source_as_of timestamp with time zone NOT NULL,
+    input_lineage_hash text NOT NULL,
+    content_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT microstructure_materializati_orderbook_snapshot_through_i_check CHECK ((orderbook_snapshot_through_id >= 0)),
+    CONSTRAINT microstructure_materializations_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT microstructure_materializations_input_lineage_hash_check CHECK ((input_lineage_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT microstructure_materializations_source_receipt_through_id_check CHECK ((source_receipt_through_id >= 0)),
+    CONSTRAINT microstructure_materializations_trade_event_through_id_check CHECK ((trade_event_through_id >= 0))
+);
+
+
+--
+-- Name: microstructure_materializations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.microstructure_materializations ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.microstructure_materializations_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: microstructure_statistics; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.microstructure_statistics (
+    id bigint NOT NULL,
+    materialization_id bigint NOT NULL,
+    parent_statistic_id bigint,
+    closing_orderbook_snapshot_id bigint,
+    spread numeric,
+    spread_bps numeric,
+    bid_depth_10 numeric,
+    ask_depth_10 numeric,
+    orderbook_imbalance_10 numeric,
+    trade_count integer,
+    trade_intensity_per_minute numeric,
+    volume_intensity_per_minute numeric,
+    bid_count integer,
+    ask_count integer,
+    bid_volume numeric,
+    ask_volume numeric,
+    bid_ask_imbalance numeric,
+    execution_strength numeric,
+    orderbook_status text NOT NULL,
+    orderbook_quality text NOT NULL,
+    trade_status text NOT NULL,
+    trade_quality text NOT NULL,
+    execution_strength_status text NOT NULL,
+    content_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT microstructure_statistics_ask_count_check CHECK (((ask_count IS NULL) OR (ask_count >= 0))),
+    CONSTRAINT microstructure_statistics_bid_count_check CHECK (((bid_count IS NULL) OR (bid_count >= 0))),
+    CONSTRAINT microstructure_statistics_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT microstructure_statistics_execution_strength_status_check CHECK ((execution_strength_status = ANY (ARRAY['ready'::text, 'missing'::text, 'partial'::text, 'invalid'::text, 'undefined'::text]))),
+    CONSTRAINT microstructure_statistics_orderbook_quality_check CHECK ((orderbook_quality = ANY (ARRAY['available'::text, 'no_trade'::text, 'missing'::text, 'unavailable'::text, 'unverified'::text]))),
+    CONSTRAINT microstructure_statistics_orderbook_status_check CHECK ((orderbook_status = ANY (ARRAY['ready'::text, 'missing'::text, 'partial'::text, 'invalid'::text, 'undefined'::text]))),
+    CONSTRAINT microstructure_statistics_trade_count_check CHECK (((trade_count IS NULL) OR (trade_count >= 0))),
+    CONSTRAINT microstructure_statistics_trade_quality_check CHECK ((trade_quality = ANY (ARRAY['available'::text, 'no_trade'::text, 'missing'::text, 'unavailable'::text, 'unverified'::text]))),
+    CONSTRAINT microstructure_statistics_trade_status_check CHECK ((trade_status = ANY (ARRAY['ready'::text, 'missing'::text, 'partial'::text, 'invalid'::text, 'undefined'::text])))
+);
+
+
+--
+-- Name: microstructure_statistics_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.microstructure_statistics ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.microstructure_statistics_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: missing_ranges; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1514,6 +2127,7 @@ CREATE TABLE public.orderbook_snapshots (
     payload_checksum text NOT NULL,
     fetch_manifest_id bigint,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    source_receipt_id bigint,
     CONSTRAINT orderbook_snapshots_level_count_ck CHECK ((level_count > 0)),
     CONSTRAINT orderbook_snapshots_payload_checksum_ck CHECK ((length(payload_checksum) = 64)),
     CONSTRAINT orderbook_snapshots_source_ck CHECK ((source = 'UPBIT'::text)),
@@ -1633,6 +2247,69 @@ ALTER TABLE public.raw_response_samples ALTER COLUMN id ADD GENERATED ALWAYS AS 
 
 
 --
+-- Name: realtime_connection_quality_intervals; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.realtime_connection_quality_intervals (
+    id bigint NOT NULL,
+    connection_id uuid NOT NULL,
+    market_id bigint,
+    data_type text NOT NULL,
+    range_start_at timestamp with time zone NOT NULL,
+    range_end_at timestamp with time zone NOT NULL,
+    quality text NOT NULL,
+    reason_code text NOT NULL,
+    fingerprint text NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    detected_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT realtime_connection_quality_intervals_check CHECK ((range_start_at < range_end_at)),
+    CONSTRAINT realtime_connection_quality_intervals_data_type_check CHECK ((data_type = ANY (ARRAY['trade_event'::text, 'orderbook_snapshot'::text, 'ticker_snapshot'::text, 'source_candle'::text]))),
+    CONSTRAINT realtime_connection_quality_intervals_fingerprint_check CHECK ((fingerprint ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT realtime_connection_quality_intervals_quality_check CHECK ((quality = ANY (ARRAY['available'::text, 'missing'::text, 'unavailable'::text, 'unverified'::text])))
+);
+
+
+--
+-- Name: realtime_connection_quality_intervals_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.realtime_connection_quality_intervals ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.realtime_connection_quality_intervals_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: realtime_connection_sessions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.realtime_connection_sessions (
+    connection_id uuid NOT NULL,
+    subscription_generation bigint DEFAULT 0 NOT NULL,
+    subscription_scope jsonb DEFAULT '{}'::jsonb NOT NULL,
+    connected_at timestamp with time zone NOT NULL,
+    disconnected_at timestamp with time zone,
+    status text DEFAULT 'active'::text NOT NULL,
+    first_frame_sequence bigint,
+    last_frame_sequence bigint DEFAULT 0 NOT NULL,
+    last_received_at timestamp with time zone,
+    disconnect_reason text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT realtime_connection_sessions_check CHECK (((disconnected_at IS NULL) OR (disconnected_at >= connected_at))),
+    CONSTRAINT realtime_connection_sessions_first_frame_sequence_check CHECK (((first_frame_sequence IS NULL) OR (first_frame_sequence > 0))),
+    CONSTRAINT realtime_connection_sessions_last_frame_sequence_check CHECK ((last_frame_sequence >= 0)),
+    CONSTRAINT realtime_connection_sessions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'closed'::text, 'disconnected'::text, 'failed'::text]))),
+    CONSTRAINT realtime_connection_sessions_subscription_generation_check CHECK ((subscription_generation >= 0))
+);
+
+
+--
 -- Name: schema_migrations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1712,6 +2389,7 @@ CREATE TABLE public.source_candles (
     stored_at timestamp with time zone,
     knowledge_at timestamp with time zone,
     fetch_manifest_id bigint,
+    source_receipt_id bigint,
     CONSTRAINT source_candles_candle_unit_ck CHECK ((candle_unit = ANY (ARRAY['1m'::text, '1d'::text]))),
     CONSTRAINT source_candles_source_ck CHECK ((source = 'UPBIT'::text))
 );
@@ -1748,6 +2426,9 @@ CREATE TABLE public.source_receipts (
     raw_payload jsonb NOT NULL,
     fetch_manifest_id bigint,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    collector_version text NOT NULL,
+    schema_version text NOT NULL,
     CONSTRAINT source_receipts_data_type_ck CHECK ((data_type = ANY (ARRAY['source_candle'::text, 'trade_event'::text, 'orderbook_snapshot'::text, 'ticker_snapshot'::text]))),
     CONSTRAINT source_receipts_frame_sequence_ck CHECK ((frame_sequence > 0)),
     CONSTRAINT source_receipts_payload_checksum_ck CHECK ((length(payload_checksum) = 64))
@@ -1837,6 +2518,7 @@ CREATE TABLE public.ticker_snapshots (
     stored_at timestamp with time zone,
     knowledge_at timestamp with time zone,
     fetch_manifest_id bigint,
+    source_receipt_id bigint,
     CONSTRAINT ticker_snapshots_source_ck CHECK ((source = 'UPBIT'::text))
 );
 
@@ -1878,6 +2560,7 @@ CREATE TABLE public.trade_events (
     stored_at timestamp with time zone,
     knowledge_at timestamp with time zone,
     fetch_manifest_id bigint,
+    source_receipt_id bigint,
     CONSTRAINT trade_events_ask_bid_ck CHECK ((ask_bid = ANY (ARRAY['ASK'::text, 'BID'::text]))),
     CONSTRAINT trade_events_source_ck CHECK ((source = 'UPBIT'::text))
 );
@@ -2434,6 +3117,86 @@ ALTER TABLE ONLY public.markets
 
 
 --
+-- Name: microstructure_definition_versions microstructure_definition_versions_calculation_version_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_definition_versions
+    ADD CONSTRAINT microstructure_definition_versions_calculation_version_key UNIQUE (calculation_version);
+
+
+--
+-- Name: microstructure_definition_versions microstructure_definition_versions_definition_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_definition_versions
+    ADD CONSTRAINT microstructure_definition_versions_definition_hash_key UNIQUE (definition_hash);
+
+
+--
+-- Name: microstructure_definition_versions microstructure_definition_versions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_definition_versions
+    ADD CONSTRAINT microstructure_definition_versions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: microstructure_invalidations microstructure_invalidations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_invalidations
+    ADD CONSTRAINT microstructure_invalidations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: microstructure_materializations microstructure_materializatio_instrument_id_definition_vers_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materializations
+    ADD CONSTRAINT microstructure_materializatio_instrument_id_definition_vers_key UNIQUE NULLS NOT DISTINCT (instrument_id, definition_version_id, bucket_start_at, orderbook_snapshot_through_id, trade_event_through_id, source_receipt_through_id, source_candle_revision_id, quality_event_through_id, connection_quality_through_id, content_hash);
+
+
+--
+-- Name: microstructure_materialization_orderbooks microstructure_materialization_orderbooks_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materialization_orderbooks
+    ADD CONSTRAINT microstructure_materialization_orderbooks_pkey PRIMARY KEY (materialization_id, orderbook_snapshot_id);
+
+
+--
+-- Name: microstructure_materialization_trades microstructure_materialization_trades_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materialization_trades
+    ADD CONSTRAINT microstructure_materialization_trades_pkey PRIMARY KEY (materialization_id, trade_event_id);
+
+
+--
+-- Name: microstructure_materializations microstructure_materializations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materializations
+    ADD CONSTRAINT microstructure_materializations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: microstructure_statistics microstructure_statistics_materialization_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_statistics
+    ADD CONSTRAINT microstructure_statistics_materialization_id_key UNIQUE (materialization_id);
+
+
+--
+-- Name: microstructure_statistics microstructure_statistics_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_statistics
+    ADD CONSTRAINT microstructure_statistics_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: missing_ranges missing_ranges_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2511,6 +3274,30 @@ ALTER TABLE ONLY public.p1_audit_recovery_gate
 
 ALTER TABLE ONLY public.raw_response_samples
     ADD CONSTRAINT raw_response_samples_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: realtime_connection_quality_intervals realtime_connection_quality_inter_connection_id_fingerprint_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.realtime_connection_quality_intervals
+    ADD CONSTRAINT realtime_connection_quality_inter_connection_id_fingerprint_key UNIQUE (connection_id, fingerprint);
+
+
+--
+-- Name: realtime_connection_quality_intervals realtime_connection_quality_intervals_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.realtime_connection_quality_intervals
+    ADD CONSTRAINT realtime_connection_quality_intervals_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: realtime_connection_sessions realtime_connection_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.realtime_connection_sessions
+    ADD CONSTRAINT realtime_connection_sessions_pkey PRIMARY KEY (connection_id);
 
 
 --
@@ -2750,6 +3537,27 @@ CREATE INDEX markets_quote_status_idx ON public.markets USING btree (exchange, q
 
 
 --
+-- Name: microstructure_invalidations_claim_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX microstructure_invalidations_claim_idx ON public.microstructure_invalidations USING btree (status, next_retry_at, bucket_start_at, id);
+
+
+--
+-- Name: microstructure_invalidations_pending_bucket_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX microstructure_invalidations_pending_bucket_uk ON public.microstructure_invalidations USING btree (instrument_id, bucket_start_at, source_candle_revision_id, quality_event_through_id, connection_quality_through_id) NULLS NOT DISTINCT WHERE (status = ANY (ARRAY['pending'::text, 'retry_wait'::text]));
+
+
+--
+-- Name: microstructure_materializations_projection_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX microstructure_materializations_projection_idx ON public.microstructure_materializations USING btree (instrument_id, bucket_start_at, knowledge_at, orderbook_snapshot_through_id DESC, trade_event_through_id DESC, source_receipt_through_id DESC, id DESC);
+
+
+--
 -- Name: missing_ranges_status_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2768,6 +3576,13 @@ CREATE INDEX notification_events_status_idx ON public.notification_events USING 
 --
 
 CREATE INDEX orderbook_snapshots_market_occurred_idx ON public.orderbook_snapshots USING btree (market_id, occurred_at DESC);
+
+
+--
+-- Name: orderbook_snapshots_source_receipt_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX orderbook_snapshots_source_receipt_uk ON public.orderbook_snapshots USING btree (source_receipt_id) WHERE (source_receipt_id IS NOT NULL);
 
 
 --
@@ -2813,6 +3628,13 @@ CREATE INDEX source_candles_instrument_time_idx ON public.source_candles USING b
 
 
 --
+-- Name: source_candles_source_receipt_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX source_candles_source_receipt_idx ON public.source_candles USING btree (source_receipt_id) WHERE (source_receipt_id IS NOT NULL);
+
+
+--
 -- Name: source_receipts_market_occurred_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2855,10 +3677,24 @@ CREATE INDEX ticker_snapshots_instrument_bucket_idx ON public.ticker_snapshots U
 
 
 --
+-- Name: ticker_snapshots_source_receipt_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ticker_snapshots_source_receipt_idx ON public.ticker_snapshots USING btree (source_receipt_id) WHERE (source_receipt_id IS NOT NULL);
+
+
+--
 -- Name: trade_events_instrument_time_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX trade_events_instrument_time_idx ON public.trade_events USING btree (instrument_id, trade_timestamp_at DESC);
+
+
+--
+-- Name: trade_events_source_receipt_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX trade_events_source_receipt_uk ON public.trade_events USING btree (source_receipt_id) WHERE (source_receipt_id IS NOT NULL);
 
 
 --
@@ -2946,6 +3782,76 @@ CREATE TRIGGER market_statistics_append_only BEFORE DELETE OR UPDATE ON public.m
 
 
 --
+-- Name: microstructure_definition_versions microstructure_definition_versions_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER microstructure_definition_versions_append_only BEFORE DELETE OR UPDATE ON public.microstructure_definition_versions FOR EACH ROW EXECUTE FUNCTION public.reject_microstructure_immutable_mutation();
+
+
+--
+-- Name: microstructure_materialization_orderbooks microstructure_materialization_orderbooks_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER microstructure_materialization_orderbooks_append_only BEFORE DELETE OR UPDATE ON public.microstructure_materialization_orderbooks FOR EACH ROW EXECUTE FUNCTION public.reject_microstructure_immutable_mutation();
+
+
+--
+-- Name: microstructure_materialization_trades microstructure_materialization_trades_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER microstructure_materialization_trades_append_only BEFORE DELETE OR UPDATE ON public.microstructure_materialization_trades FOR EACH ROW EXECUTE FUNCTION public.reject_microstructure_immutable_mutation();
+
+
+--
+-- Name: microstructure_materializations microstructure_materializations_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER microstructure_materializations_append_only BEFORE DELETE OR UPDATE ON public.microstructure_materializations FOR EACH ROW EXECUTE FUNCTION public.reject_microstructure_immutable_mutation();
+
+
+--
+-- Name: microstructure_statistics microstructure_statistics_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER microstructure_statistics_append_only BEFORE DELETE OR UPDATE ON public.microstructure_statistics FOR EACH ROW EXECUTE FUNCTION public.reject_microstructure_immutable_mutation();
+
+
+--
+-- Name: orderbook_snapshots orderbook_snapshot_microstructure_invalidation; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER orderbook_snapshot_microstructure_invalidation AFTER INSERT ON public.orderbook_snapshots FOR EACH ROW WHEN ((new.source_receipt_id IS NOT NULL)) EXECUTE FUNCTION public.enqueue_microstructure_invalidation();
+
+
+--
+-- Name: realtime_connection_quality_intervals realtime_connection_quality_intervals_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER realtime_connection_quality_intervals_append_only BEFORE DELETE OR UPDATE ON public.realtime_connection_quality_intervals FOR EACH ROW EXECUTE FUNCTION public.reject_microstructure_immutable_mutation();
+
+
+--
+-- Name: realtime_connection_quality_intervals realtime_quality_microstructure_invalidation; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER realtime_quality_microstructure_invalidation AFTER INSERT ON public.realtime_connection_quality_intervals FOR EACH ROW EXECUTE FUNCTION public.enqueue_quality_microstructure_invalidation();
+
+
+--
+-- Name: data_quality_events source_candle_quality_microstructure_invalidation; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER source_candle_quality_microstructure_invalidation AFTER INSERT ON public.data_quality_events FOR EACH ROW EXECUTE FUNCTION public.enqueue_source_candle_microstructure_invalidation();
+
+
+--
+-- Name: source_candle_revisions source_candle_revision_microstructure_invalidation; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER source_candle_revision_microstructure_invalidation AFTER INSERT ON public.source_candle_revisions FOR EACH ROW EXECUTE FUNCTION public.enqueue_source_candle_microstructure_invalidation();
+
+
+--
 -- Name: source_candle_revisions source_candle_revisions_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -2960,10 +3866,31 @@ CREATE TRIGGER source_candle_revisions_append_only_update BEFORE UPDATE ON publi
 
 
 --
+-- Name: source_receipts source_receipts_prepare_realtime_evidence; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER source_receipts_prepare_realtime_evidence BEFORE INSERT ON public.source_receipts FOR EACH ROW EXECUTE FUNCTION public.prepare_realtime_source_receipt();
+
+
+--
 -- Name: source_candle_revisions source_revision_indicator_invalidation; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER source_revision_indicator_invalidation AFTER INSERT ON public.source_candle_revisions FOR EACH ROW EXECUTE FUNCTION public.enqueue_source_indicator_invalidation();
+
+
+--
+-- Name: trade_events trade_event_microstructure_invalidation; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trade_event_microstructure_invalidation AFTER INSERT ON public.trade_events FOR EACH ROW WHEN ((new.source_receipt_id IS NOT NULL)) EXECUTE FUNCTION public.enqueue_microstructure_invalidation();
+
+
+--
+-- Name: trade_events trade_events_conflicting_duplicate_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trade_events_conflicting_duplicate_guard BEFORE INSERT ON public.trade_events FOR EACH ROW EXECUTE FUNCTION public.reject_conflicting_trade_event();
 
 
 --
@@ -3431,6 +4358,206 @@ ALTER TABLE ONLY public.markets
 
 
 --
+-- Name: microstructure_invalidations microstructure_invalidations_changed_connection_quality_in_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_invalidations
+    ADD CONSTRAINT microstructure_invalidations_changed_connection_quality_in_fkey FOREIGN KEY (changed_connection_quality_interval_id) REFERENCES public.realtime_connection_quality_intervals(id);
+
+
+--
+-- Name: microstructure_invalidations microstructure_invalidations_changed_orderbook_snapshot_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_invalidations
+    ADD CONSTRAINT microstructure_invalidations_changed_orderbook_snapshot_id_fkey FOREIGN KEY (changed_orderbook_snapshot_id) REFERENCES public.orderbook_snapshots(id);
+
+
+--
+-- Name: microstructure_invalidations microstructure_invalidations_changed_quality_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_invalidations
+    ADD CONSTRAINT microstructure_invalidations_changed_quality_event_id_fkey FOREIGN KEY (changed_quality_event_id) REFERENCES public.data_quality_events(id);
+
+
+--
+-- Name: microstructure_invalidations microstructure_invalidations_changed_source_candle_revisio_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_invalidations
+    ADD CONSTRAINT microstructure_invalidations_changed_source_candle_revisio_fkey FOREIGN KEY (changed_source_candle_revision_id) REFERENCES public.source_candle_revisions(id);
+
+
+--
+-- Name: microstructure_invalidations microstructure_invalidations_changed_trade_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_invalidations
+    ADD CONSTRAINT microstructure_invalidations_changed_trade_event_id_fkey FOREIGN KEY (changed_trade_event_id) REFERENCES public.trade_events(id);
+
+
+--
+-- Name: microstructure_invalidations microstructure_invalidations_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_invalidations
+    ADD CONSTRAINT microstructure_invalidations_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: microstructure_invalidations microstructure_invalidations_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_invalidations
+    ADD CONSTRAINT microstructure_invalidations_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
+
+
+--
+-- Name: microstructure_invalidations microstructure_invalidations_quality_event_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_invalidations
+    ADD CONSTRAINT microstructure_invalidations_quality_event_through_id_fkey FOREIGN KEY (quality_event_through_id) REFERENCES public.data_quality_events(id);
+
+
+--
+-- Name: microstructure_invalidations microstructure_invalidations_source_candle_revision_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_invalidations
+    ADD CONSTRAINT microstructure_invalidations_source_candle_revision_id_fkey FOREIGN KEY (source_candle_revision_id) REFERENCES public.source_candle_revisions(id);
+
+
+--
+-- Name: microstructure_materializations microstructure_materializatio_connection_quality_through_i_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materializations
+    ADD CONSTRAINT microstructure_materializatio_connection_quality_through_i_fkey FOREIGN KEY (connection_quality_through_id) REFERENCES public.realtime_connection_quality_intervals(id);
+
+
+--
+-- Name: microstructure_materialization_orderbooks microstructure_materialization_order_orderbook_snapshot_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materialization_orderbooks
+    ADD CONSTRAINT microstructure_materialization_order_orderbook_snapshot_id_fkey FOREIGN KEY (orderbook_snapshot_id) REFERENCES public.orderbook_snapshots(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: microstructure_materialization_orderbooks microstructure_materialization_orderboo_materialization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materialization_orderbooks
+    ADD CONSTRAINT microstructure_materialization_orderboo_materialization_id_fkey FOREIGN KEY (materialization_id) REFERENCES public.microstructure_materializations(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: microstructure_materialization_orderbooks microstructure_materialization_orderbook_source_receipt_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materialization_orderbooks
+    ADD CONSTRAINT microstructure_materialization_orderbook_source_receipt_id_fkey FOREIGN KEY (source_receipt_id) REFERENCES public.source_receipts(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: microstructure_materialization_trades microstructure_materialization_trades_materialization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materialization_trades
+    ADD CONSTRAINT microstructure_materialization_trades_materialization_id_fkey FOREIGN KEY (materialization_id) REFERENCES public.microstructure_materializations(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: microstructure_materialization_trades microstructure_materialization_trades_source_receipt_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materialization_trades
+    ADD CONSTRAINT microstructure_materialization_trades_source_receipt_id_fkey FOREIGN KEY (source_receipt_id) REFERENCES public.source_receipts(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: microstructure_materialization_trades microstructure_materialization_trades_trade_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materialization_trades
+    ADD CONSTRAINT microstructure_materialization_trades_trade_event_id_fkey FOREIGN KEY (trade_event_id) REFERENCES public.trade_events(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: microstructure_materializations microstructure_materializations_definition_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materializations
+    ADD CONSTRAINT microstructure_materializations_definition_version_id_fkey FOREIGN KEY (definition_version_id) REFERENCES public.microstructure_definition_versions(id);
+
+
+--
+-- Name: microstructure_materializations microstructure_materializations_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materializations
+    ADD CONSTRAINT microstructure_materializations_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: microstructure_materializations microstructure_materializations_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materializations
+    ADD CONSTRAINT microstructure_materializations_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
+
+
+--
+-- Name: microstructure_materializations microstructure_materializations_parent_materialization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materializations
+    ADD CONSTRAINT microstructure_materializations_parent_materialization_id_fkey FOREIGN KEY (parent_materialization_id) REFERENCES public.microstructure_materializations(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: microstructure_materializations microstructure_materializations_quality_event_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materializations
+    ADD CONSTRAINT microstructure_materializations_quality_event_through_id_fkey FOREIGN KEY (quality_event_through_id) REFERENCES public.data_quality_events(id);
+
+
+--
+-- Name: microstructure_materializations microstructure_materializations_source_candle_revision_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_materializations
+    ADD CONSTRAINT microstructure_materializations_source_candle_revision_id_fkey FOREIGN KEY (source_candle_revision_id) REFERENCES public.source_candle_revisions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: microstructure_statistics microstructure_statistics_closing_orderbook_snapshot_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_statistics
+    ADD CONSTRAINT microstructure_statistics_closing_orderbook_snapshot_id_fkey FOREIGN KEY (closing_orderbook_snapshot_id) REFERENCES public.orderbook_snapshots(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: microstructure_statistics microstructure_statistics_materialization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_statistics
+    ADD CONSTRAINT microstructure_statistics_materialization_id_fkey FOREIGN KEY (materialization_id) REFERENCES public.microstructure_materializations(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: microstructure_statistics microstructure_statistics_parent_statistic_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.microstructure_statistics
+    ADD CONSTRAINT microstructure_statistics_parent_statistic_id_fkey FOREIGN KEY (parent_statistic_id) REFERENCES public.microstructure_statistics(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: missing_ranges missing_ranges_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3471,6 +4598,14 @@ ALTER TABLE ONLY public.orderbook_snapshots
 
 
 --
+-- Name: orderbook_snapshots orderbook_snapshots_source_receipt_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orderbook_snapshots
+    ADD CONSTRAINT orderbook_snapshots_source_receipt_id_fkey FOREIGN KEY (source_receipt_id) REFERENCES public.source_receipts(id);
+
+
+--
 -- Name: orderbook_summaries orderbook_summaries_collection_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3500,6 +4635,22 @@ ALTER TABLE ONLY public.orderbook_summaries
 
 ALTER TABLE ONLY public.orderbook_summaries
     ADD CONSTRAINT orderbook_summaries_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
+
+
+--
+-- Name: realtime_connection_quality_intervals realtime_connection_quality_intervals_connection_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.realtime_connection_quality_intervals
+    ADD CONSTRAINT realtime_connection_quality_intervals_connection_id_fkey FOREIGN KEY (connection_id) REFERENCES public.realtime_connection_sessions(connection_id);
+
+
+--
+-- Name: realtime_connection_quality_intervals realtime_connection_quality_intervals_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.realtime_connection_quality_intervals
+    ADD CONSTRAINT realtime_connection_quality_intervals_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
 
 
 --
@@ -3556,6 +4707,22 @@ ALTER TABLE ONLY public.source_candles
 
 ALTER TABLE ONLY public.source_candles
     ADD CONSTRAINT source_candles_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
+
+
+--
+-- Name: source_candles source_candles_source_receipt_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_candles
+    ADD CONSTRAINT source_candles_source_receipt_id_fkey FOREIGN KEY (source_receipt_id) REFERENCES public.source_receipts(id);
+
+
+--
+-- Name: source_receipts source_receipts_connection_session_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_receipts
+    ADD CONSTRAINT source_receipts_connection_session_fk FOREIGN KEY (connection_id) REFERENCES public.realtime_connection_sessions(connection_id);
 
 
 --
@@ -3631,6 +4798,14 @@ ALTER TABLE ONLY public.ticker_snapshots
 
 
 --
+-- Name: ticker_snapshots ticker_snapshots_source_receipt_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ticker_snapshots
+    ADD CONSTRAINT ticker_snapshots_source_receipt_id_fkey FOREIGN KEY (source_receipt_id) REFERENCES public.source_receipts(id);
+
+
+--
 -- Name: trade_events trade_events_collection_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3663,6 +4838,14 @@ ALTER TABLE ONLY public.trade_events
 
 
 --
+-- Name: trade_events trade_events_source_receipt_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.trade_events
+    ADD CONSTRAINT trade_events_source_receipt_id_fkey FOREIGN KEY (source_receipt_id) REFERENCES public.source_receipts(id);
+
+
+--
 -- PostgreSQL database dump complete
 --
 
@@ -3685,4 +4868,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260717000800'),
     ('20260717000900'),
     ('20260717001000'),
-    ('20260717001100');
+    ('20260717001100'),
+    ('20260717001200');

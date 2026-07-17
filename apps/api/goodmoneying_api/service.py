@@ -52,6 +52,8 @@ from goodmoneying_api.schemas import (
     MarketStatisticResponse,
     MarketStatisticsResponse,
     MetricPrincipleResponse,
+    MicrostructureStatisticResponse,
+    MicrostructureStatisticsResponse,
     MissingRangeSummaryResponse,
     NotificationEventResponse,
     NotificationEventsResponse,
@@ -75,6 +77,11 @@ from goodmoneying_shared.indicator_store import (
     materialize_market_statistics,
     read_indicator_points,
     read_market_statistics,
+)
+from goodmoneying_shared.microstructure_store import (
+    StoredMicrostructureStatistic,
+    microstructure_projection_ceiling,
+    read_microstructure_statistics,
 )
 from goodmoneying_shared.models import (
     BackfillJob,
@@ -107,6 +114,12 @@ from goodmoneying_shared.versioned_market_statistics import (
 )
 from goodmoneying_shared.versioned_market_statistics import (
     calculate_market_statistics,
+)
+from goodmoneying_shared.versioned_microstructure import (
+    CALCULATION_VERSION as MICROSTRUCTURE_VERSION,
+)
+from goodmoneying_shared.versioned_microstructure import (
+    MicrostructurePoint,
 )
 
 CANDLE_UNITS = {"1m", "3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"}
@@ -499,9 +512,7 @@ class OperationsService:
         candles = self._indicator_source_candles(
             instrument_id, repository_unit, end_at, knowledge_at=end_at
         )
-        candles = [
-            item for item in candles if range_start <= item.started_at < end_at
-        ]
+        candles = [item for item in candles if range_start <= item.started_at < end_at]
         if repository_unit in {"1m", "3m", "5m", "10m", "15m", "30m", "1h", "4h"}:
             candles = candles[-1000:]
         responses = [candle_to_response(item) for item in candles]
@@ -535,12 +546,40 @@ class OperationsService:
             for item in candles
             if item.started_at.astimezone(UTC) in points_by_started_at
         ]
+        microstructure_points: list[MicrostructureStatisticResponse] = []
+        if repository_unit == "1m":
+            microstructure_series = self.microstructure_statistics(
+                instrument_id,
+                "1m",
+                indicator_start,
+                end_at,
+                as_of=end_at,
+                page_size=500,
+                cursor=None,
+                calculation_version=None,
+            )
+            microstructure_points.extend(microstructure_series.items)
+            while microstructure_series.nextCursor is not None:
+                microstructure_series = self.microstructure_statistics(
+                    instrument_id,
+                    "1m",
+                    indicator_start,
+                    end_at,
+                    as_of=end_at,
+                    page_size=500,
+                    cursor=microstructure_series.nextCursor,
+                    calculation_version=None,
+                )
+                microstructure_points.extend(microstructure_series.items)
         trade = self._repository.trade_summary(instrument_id, end_at - timedelta(minutes=1), end_at)
         return {
             "instrument": instrument_to_response(instrument).model_dump(mode="json"),
             "unit": unit,
             "candles": [item.model_dump(mode="json") for item in responses],
             "indicatorPoints": [_indicator_point_legacy(item) for item in stored_points],
+            "microstructurePoints": [
+                item.model_dump(mode="json") for item in microstructure_points
+            ],
             "market": {
                 "ticker": ticker_to_response(ticker).model_dump(mode="json"),
                 "orderbook": orderbook_to_response(orderbook).model_dump(mode="json"),
@@ -746,6 +785,80 @@ class OperationsService:
                     end_at,
                 )
                 if next_item
+                else None
+            ),
+        )
+
+    def microstructure_statistics(
+        self,
+        instrument_id: int,
+        unit: str,
+        start_at: datetime,
+        end_at: datetime,
+        *,
+        as_of: datetime,
+        page_size: int,
+        cursor: str | None,
+        calculation_version: str | None,
+    ) -> MicrostructureStatisticsResponse:
+        _validate_microstructure_query(unit, start_at, end_at, as_of, page_size)
+        if calculation_version not in {None, MICROSTRUCTURE_VERSION}:
+            raise ValueError("알 수 없는 미시구조 계산 버전이다.")
+        decoded = (
+            _decode_microstructure_cursor(
+                cursor,
+                as_of,
+                instrument_id,
+                unit,
+                start_at,
+                end_at,
+                MICROSTRUCTURE_VERSION,
+            )
+            if cursor is not None
+            else None
+        )
+        cursor_at = decoded[0] if decoded else None
+        ceiling_id = decoded[1] if decoded else None
+        stored: list[StoredMicrostructureStatistic] = []
+        if callable(getattr(self._repository, "_connect", None)):
+            if ceiling_id is None:
+                ceiling_id = microstructure_projection_ceiling(
+                    self._repository, instrument_id, as_of.astimezone(UTC)
+                )
+            stored = read_microstructure_statistics(
+                self._repository,
+                instrument_id,
+                start_at.astimezone(UTC),
+                end_at.astimezone(UTC),
+                as_of.astimezone(UTC),
+                after_at=cursor_at,
+                ceiling_id=ceiling_id,
+                limit=page_size + 1,
+                calculation_version=MICROSTRUCTURE_VERSION,
+            )
+        # SQLite는 프로세스 내 테스트 호환 저장소다. 내구성 물질화가 없으므로
+        # 요청 시 계산하거나 원천값을 가장하지 않고 빈 저장 투영을 반환한다.
+        page = stored[:page_size]
+        next_item = page[-1] if len(stored) > page_size and page else None
+        return MicrostructureStatisticsResponse(
+            unit="1m",
+            asOf=as_of.astimezone(UTC),
+            calculationVersion="microstructure-v1",
+            items=[
+                _microstructure_statistic_response(item.point, item.materialization_id)
+                for item in page
+            ],
+            nextCursor=(
+                _encode_microstructure_cursor(
+                    next_item,
+                    as_of,
+                    ceiling_id,
+                    instrument_id,
+                    unit,
+                    start_at,
+                    end_at,
+                )
+                if next_item is not None and ceiling_id is not None
                 else None
             ),
         )
@@ -1352,6 +1465,131 @@ def _validate_indicator_query(
         raise ValueError("asOf는 조회 시작 시각보다 빠를 수 없다.")
     if not 1 <= page_size <= 500:
         raise ValueError("페이지 크기는 1에서 500 사이여야 한다.")
+
+
+def _validate_microstructure_query(
+    unit: str,
+    start_at: datetime,
+    end_at: datetime,
+    as_of: datetime,
+    page_size: int,
+) -> None:
+    if unit != "1m":
+        raise ValueError("P2-4 미시구조 통계는 1m 단위만 지원한다.")
+    values = [start_at, end_at, as_of]
+    if any(value.tzinfo is None or value.utcoffset() is None for value in values):
+        raise ValueError("미시구조 조회 시각은 UTC 오프셋을 포함해야 한다.")
+    if start_at >= end_at:
+        raise ValueError("미시구조 조회는 UTC 반개방 구간 [from,to)이어야 한다.")
+    if as_of < start_at:
+        raise ValueError("asOf는 조회 시작 시각보다 빠를 수 없다.")
+    if not 1 <= page_size <= 500:
+        raise ValueError("페이지 크기는 1에서 500 사이여야 한다.")
+
+
+def _decode_microstructure_cursor(
+    cursor: str,
+    as_of: datetime,
+    instrument_id: int,
+    unit: str,
+    start_at: datetime,
+    end_at: datetime,
+    calculation_version: str,
+) -> tuple[datetime, int]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode())
+        expected = {
+            "asOf": as_of.astimezone(UTC).isoformat(),
+            "calculationVersion": calculation_version,
+            "instrumentId": instrument_id,
+            "unit": unit,
+            "from": start_at.astimezone(UTC).isoformat(),
+            "to": end_at.astimezone(UTC).isoformat(),
+        }
+        if any(payload[key] != value for key, value in expected.items()):
+            raise ValueError("cursor의 미시구조 조회 문맥이 현재 요청과 다르다.")
+        started_at = datetime.fromisoformat(str(payload["startedAt"]))
+        if started_at.tzinfo is None:
+            raise ValueError
+        ceiling_id = int(payload["snapshotCeilingId"])
+        if ceiling_id < int(payload["materializationId"]):
+            raise ValueError
+        return started_at.astimezone(UTC), ceiling_id
+    except (KeyError, TypeError, json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("cursor"):
+            raise
+        raise ValueError("유효하지 않은 미시구조 cursor다.") from exc
+
+
+def _encode_microstructure_cursor(
+    item: StoredMicrostructureStatistic,
+    as_of: datetime,
+    snapshot_ceiling_id: int,
+    instrument_id: int,
+    unit: str,
+    start_at: datetime,
+    end_at: datetime,
+) -> str:
+    payload = json.dumps(
+        {
+            "asOf": as_of.astimezone(UTC).isoformat(),
+            "calculationVersion": MICROSTRUCTURE_VERSION,
+            "instrumentId": instrument_id,
+            "unit": unit,
+            "from": start_at.astimezone(UTC).isoformat(),
+            "to": end_at.astimezone(UTC).isoformat(),
+            "startedAt": item.point.started_at.astimezone(UTC).isoformat(),
+            "materializationId": item.materialization_id,
+            "snapshotCeilingId": snapshot_ceiling_id,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _microstructure_statistic_response(
+    item: MicrostructurePoint, materialization_id: int
+) -> MicrostructureStatisticResponse:
+    if item.source_as_of is None or item.knowledge_at is None:
+        raise ValueError("저장 미시구조 물질화에는 sourceAsOf와 knowledgeAt이 필요하다.")
+    return MicrostructureStatisticResponse(
+        startedAt=item.started_at.astimezone(UTC),
+        calculationVersion="microstructure-v1",
+        closingOrderbookSnapshotId=item.closing_orderbook_snapshot_id,
+        closingOrderbookSourceReceiptId=item.closing_orderbook_source_receipt_id,
+        spread=decimal_string(item.spread),
+        spreadBps=decimal_string(item.spread_bps),
+        bidDepth10=decimal_string(item.bid_depth_10),
+        askDepth10=decimal_string(item.ask_depth_10),
+        orderbookImbalance10=decimal_string(item.orderbook_imbalance_10),
+        tradeCount=item.trade_count,
+        tradeIntensityPerMinute=decimal_string(item.trade_intensity_per_minute),
+        volumeIntensityPerMinute=decimal_string(item.volume_intensity_per_minute),
+        buyCount=item.buy_count,
+        sellCount=item.sell_count,
+        buyVolume=decimal_string(item.buy_volume),
+        sellVolume=decimal_string(item.sell_volume),
+        buySellImbalance=decimal_string(item.buy_sell_imbalance),
+        executionStrength=decimal_string(item.execution_strength),
+        orderbookStatus=item.orderbook_status,
+        tradeStatus=item.trade_status,
+        executionStrengthStatus=item.execution_strength_status,
+        materializationId=materialization_id,
+        sourceCandleRevisionId=item.source_candle_revision_id,
+        orderbookSnapshotThroughId=item.orderbook_snapshot_through_id,
+        tradeEventThroughId=item.trade_event_through_id,
+        sourceReceiptThroughId=item.source_receipt_through_id,
+        connectionQualityThroughId=item.connection_quality_through_id,
+        qualityEventThroughId=item.quality_event_through_id,
+        orderbookQuality=item.orderbook_quality,
+        tradeQuality=item.trade_quality,
+        sourceAsOf=item.source_as_of.astimezone(UTC),
+        knowledgeAt=item.knowledge_at.astimezone(UTC),
+        inputLineageHash=item.input_lineage_hash,
+        contentHash=item.content_hash,
+    )
 
 
 def _encode_indicator_cursor(

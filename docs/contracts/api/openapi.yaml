@@ -462,6 +462,26 @@ paths:
           content: {application/json: {schema: {$ref: "#/components/schemas/MarketStatisticsResponse"}}}
         "400": {$ref: "#/components/responses/BadRequest"}
         "422": {$ref: "#/components/responses/ValidationError"}
+  /v1/instruments/{instrumentId}/microstructure-statistics:
+    get:
+      tags: [상품(Instrument)]
+      summary: 불변 1분 호가·체결 미시구조 통계 조회
+      operationId: getMicrostructureStatistics
+      parameters:
+        - $ref: "#/components/parameters/InstrumentId"
+        - {name: unit, in: query, required: true, schema: {type: string, const: 1m}}
+        - {name: from, in: query, required: true, schema: {type: string, format: date-time}}
+        - {name: to, in: query, required: true, schema: {type: string, format: date-time}}
+        - {name: asOf, in: query, required: true, schema: {type: string, format: date-time}}
+        - {name: calculationVersion, in: query, required: false, schema: {type: [string, "null"], const: microstructure-v1}}
+        - {name: pageSize, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 500, default: 500}}
+        - {name: cursor, in: query, required: false, description: asOf·계산 버전·최초 물질화 ID 상한·상품·1분 단위·조회 범위를 고정한 불투명 커서, schema: {type: [string, "null"]}}
+      responses:
+        "200":
+          description: 저장된 원천 receipt와 정규화 호가·체결 계보에서 파생한 불변 1분 미시구조 통계
+          content: {application/json: {schema: {$ref: "#/components/schemas/MicrostructureStatisticsResponse"}}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "422": {$ref: "#/components/responses/ValidationError"}
   /v1/instruments/{instrumentId}/ticker-snapshots:
     get:
       tags:
@@ -2091,6 +2111,97 @@ components:
         unit: {type: string, enum: [1m, 3m, 5m, 10m, 15m, 30m, 1h, 4h, 1d, 1w, 1M]}
         asOf: {type: string, format: date-time}
         items: {type: array, items: {$ref: "#/components/schemas/MarketStatistic"}}
+        nextCursor: {type: [string, "null"]}
+    MicrostructureStatistic:
+      description: 불변 계산 버전, 원천 프런티어와 품질을 가진 1분 호가·체결 미시구조 통계.
+      type: object
+      required:
+        - startedAt
+        - calculationVersion
+        - closingOrderbookSnapshotId
+        - closingOrderbookSourceReceiptId
+        - spread
+        - spreadBps
+        - bidDepth10
+        - askDepth10
+        - orderbookImbalance10
+        - tradeCount
+        - tradeIntensityPerMinute
+        - volumeIntensityPerMinute
+        - buyCount
+        - sellCount
+        - buyVolume
+        - sellVolume
+        - buySellImbalance
+        - executionStrength
+        - orderbookStatus
+        - tradeStatus
+        - executionStrengthStatus
+        - materializationId
+        - sourceCandleRevisionId
+        - orderbookSnapshotThroughId
+        - tradeEventThroughId
+        - sourceReceiptThroughId
+        - connectionQualityThroughId
+        - qualityEventThroughId
+        - orderbookQuality
+        - tradeQuality
+        - sourceAsOf
+        - knowledgeAt
+        - inputLineageHash
+        - contentHash
+      properties:
+        startedAt: {type: string, format: date-time}
+        calculationVersion: {type: string, const: microstructure-v1}
+        closingOrderbookSnapshotId: {type: [integer, "null"]}
+        closingOrderbookSourceReceiptId: {type: [integer, "null"]}
+        spread: {type: [string, "null"]}
+        spreadBps: {type: [string, "null"]}
+        bidDepth10: {type: [string, "null"]}
+        askDepth10: {type: [string, "null"]}
+        orderbookImbalance10: {type: [string, "null"]}
+        tradeCount: {type: [integer, "null"], minimum: 0}
+        tradeIntensityPerMinute: {type: [string, "null"]}
+        volumeIntensityPerMinute: {type: [string, "null"]}
+        buyCount: {type: [integer, "null"], minimum: 0}
+        sellCount: {type: [integer, "null"], minimum: 0}
+        buyVolume: {type: [string, "null"]}
+        sellVolume: {type: [string, "null"]}
+        buySellImbalance: {type: [string, "null"]}
+        executionStrength: {type: [string, "null"]}
+        orderbookStatus: {$ref: "#/components/schemas/MicrostructureCalculationStatus"}
+        tradeStatus: {$ref: "#/components/schemas/MicrostructureCalculationStatus"}
+        executionStrengthStatus: {$ref: "#/components/schemas/MicrostructureCalculationStatus"}
+        materializationId: {type: integer, minimum: 1}
+        sourceCandleRevisionId: {type: [integer, "null"]}
+        orderbookSnapshotThroughId: {type: integer, minimum: 0}
+        tradeEventThroughId: {type: integer, minimum: 0}
+        sourceReceiptThroughId: {type: integer, minimum: 0}
+        connectionQualityThroughId: {type: integer, minimum: 1}
+        qualityEventThroughId: {type: [integer, "null"]}
+        orderbookQuality: {$ref: "#/components/schemas/SourceQuality"}
+        tradeQuality: {$ref: "#/components/schemas/SourceQuality"}
+        sourceAsOf: {type: string, format: date-time}
+        knowledgeAt: {type: string, format: date-time}
+        inputLineageHash: {type: string, pattern: "^[0-9a-f]{64}$"}
+        contentHash: {type: string, pattern: "^[0-9a-f]{64}$"}
+    MicrostructureCalculationStatus:
+      description: 공식 계산 가능성, 불완전 입력, 잘못된 입력과 0 분모 정의 불가를 구분하는 상태.
+      type: string
+      enum: [ready, missing, partial, invalid, undefined]
+    SourceQuality:
+      description: 원천 수집 증거가 판정한 공통 5단계 데이터 품질.
+      type: string
+      enum: [available, no_trade, missing, unavailable, unverified]
+    MicrostructureStatisticsResponse:
+      description: PostgreSQL 저장 물질화만 읽는 안정된 1분 미시구조 통계 페이지. SQLite는 빈 test-only 호환 응답이다.
+      type: object
+      required: [unit, asOf, calculationVersion, items, nextCursor]
+      properties:
+        unit: {type: string, const: 1m}
+        asOf: {type: string, format: date-time}
+        calculationVersion: {type: string, const: microstructure-v1}
+        items: {type: array, items: {$ref: "#/components/schemas/MicrostructureStatistic"}}
         nextCursor: {type: [string, "null"]}
     TickerSnapshotsResponse:
       description: 거래 상품의 현재가 스냅샷 시계열 목록 응답.

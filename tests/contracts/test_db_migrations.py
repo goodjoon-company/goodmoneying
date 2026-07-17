@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 MIGRATIONS_DIR = Path("docs/contracts/db/migrations")
 INITIAL_MIGRATION = MIGRATIONS_DIR / "20260715000100_initial_schema.sql"
+P1_APPLIED_MIGRATION_DIGESTS = {
+    "20260717000400_coverage_five_states_quality_events.sql": (
+        "0dc4ea6c6a9bc2d72d51513b463a77bfcc7041c3c4a384dadce4c8d2a3c28f8b"
+    ),
+    "20260717000700_p1_recovery_readiness.sql": (
+        "7e3bcfe98da77a18ddf9bd12e7731b0cfbcd39ca96914f00ce54bad057f7a7e8"
+    ),
+}
 
 
 def test_dbmate_is_pinned_and_initial_migration_is_the_db_change_source() -> None:
@@ -21,6 +30,28 @@ def test_dbmate_is_pinned_and_initial_migration_is_the_db_change_source() -> Non
     assert "단일 기준(source of truth)" in contract
     assert "schema.sql" in contract
     assert "직접 수정하지 않는다" in contract
+
+
+def test_applied_p1_migrations_keep_their_original_bytes() -> None:
+    for filename, expected_digest in P1_APPLIED_MIGRATION_DIGESTS.items():
+        migration = MIGRATIONS_DIR / filename
+
+        assert hashlib.sha256(migration.read_bytes()).hexdigest() == expected_digest
+
+
+def test_recovery_confirmation_is_fixed_only_by_forward_migration() -> None:
+    migration = (
+        MIGRATIONS_DIR / "20260717000800_p1_recovery_confirmation_integrity.sql"
+    )
+
+    assert migration.is_file()
+    sql = migration.read_text()
+    assert "confirmed_at IS NOT NULL" in sql
+    assert "confirmed_by IS NOT NULL" in sql
+    assert "backup_reference IS NOT NULL" in sql
+    assert "btrim(confirmed_by) <> ''" in sql
+    assert "btrim(backup_reference) <> ''" in sql
+    assert "DROP CONSTRAINT IF EXISTS p1_audit_recovery_gate_confirmation_ck" in sql
 
 
 def test_initial_migration_contains_current_schema_and_non_destructive_baseline() -> None:

@@ -1060,7 +1060,7 @@ CREATE TABLE public.p1_audit_recovery_gate (
     backup_reference text,
     reason text,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT p1_audit_recovery_gate_confirmation_ck CHECK (((confirmed_at IS NULL) OR (recovery_required AND (btrim(confirmed_by) <> ''::text) AND (btrim(backup_reference) <> ''::text)))),
+    CONSTRAINT p1_audit_recovery_gate_confirmation_ck CHECK ((((confirmed_at IS NULL) AND (confirmed_by IS NULL) AND (backup_reference IS NULL)) OR (recovery_required AND (confirmed_at IS NOT NULL) AND (confirmed_by IS NOT NULL) AND (btrim(confirmed_by) <> ''::text) AND (backup_reference IS NOT NULL) AND (btrim(backup_reference) <> ''::text)))),
     CONSTRAINT p1_audit_recovery_gate_singleton_check CHECK (singleton)
 );
 
@@ -2462,4 +2462,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260717000400'),
     ('20260717000500'),
     ('20260717000600'),
-    ('20260717000700');
+    ('20260717000700'),
+    ('20260717000800');

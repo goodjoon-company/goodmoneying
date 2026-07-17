@@ -19,6 +19,9 @@ FETCH_MANIFEST_MIGRATION = Path(
 FINAL_FIXES_MIGRATION = Path(
     "docs/contracts/db/migrations/20260717000600_p1_review_safety_contracts.sql"
 )
+RECOVERY_MIGRATION = Path(
+    "docs/contracts/db/migrations/20260717000700_p1_recovery_readiness.sql"
+)
 
 
 def test_p1_migration_is_expand_only_and_preserves_legacy_rows() -> None:
@@ -54,13 +57,16 @@ def test_p1_migration_is_expand_only_and_preserves_legacy_rows() -> None:
     assert "DELETE FROM" not in down
 
 
-def test_quality_event_upgrade_and_evidence_down_are_lossless() -> None:
+def test_quality_event_loss_is_corrected_only_by_forward_migration() -> None:
     coverage_sql = COVERAGE_MIGRATION.read_text()
     fetch_sql = FETCH_MANIFEST_MIGRATION.read_text()
+    recovery_sql = RECOVERY_MIGRATION.read_text()
 
-    assert "DELETE FROM data_quality_events" not in coverage_sql
-    assert "UNIQUE (target_spec_id, event_type, detected_at, fingerprint)" in coverage_sql
-    assert "DROP COLUMN" not in coverage_sql.split("-- migrate:down", maxsplit=1)[1]
+    assert "DELETE FROM data_quality_events" in coverage_sql
+    assert "UNIQUE (target_spec_id, fingerprint)" in coverage_sql
+    assert "DELETE FROM data_quality_events" not in recovery_sql
+    assert "UNIQUE (target_spec_id, event_type, detected_at, fingerprint)" in recovery_sql
+    assert "p1_audit_recovery_gate" in recovery_sql
     assert "DROP COLUMN" not in fetch_sql.split("-- migrate:down", maxsplit=1)[1]
 
 
@@ -158,6 +164,8 @@ def test_p1_openapi_exposes_data_foundation_and_policy_control() -> None:
     policy = contract["components"]["schemas"]["MarketCollectionPolicy"]
     assert policy["properties"]["candleUnit"]["const"] == "1m"
     assert policy["properties"]["dataTypes"]["minItems"] == 1
+    command = contract["components"]["schemas"]["UpdateMarketTargetStateRequest"]
+    assert command["properties"]["reason"]["pattern"] == r".*\S.*"
 
 
 def test_local_runtime_manages_market_sync_worker() -> None:

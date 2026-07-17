@@ -12,10 +12,12 @@ def test_dbmate_migration_e2e_uses_empty_postgres_and_cleans_up() -> None:
     assert "trap cleanup EXIT" in script
     assert "DBMATE_STRICT=true" in script
     assert "export POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB" in script
-    assert script.count("--no-dump-schema migrate") == 5
-    assert "c2a809a:docs/contracts/db/migrations/20260717000400" in script
+    assert script.count("--no-dump-schema migrate") == 6
+    assert "git -C" not in script
+    assert "20260717000400_coverage_five_states_quality_events.sql" in script
     assert "p1_audit_recovery_gate" in script
     assert "goodmoneying_upgrade" in script
+    assert "PRE_008_MIGRATIONS" in script
     assert "same-fingerprint" in script
     assert "upgrade_event_count" in script
     assert "INSERT INTO instruments" in script

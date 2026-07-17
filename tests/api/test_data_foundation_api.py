@@ -139,7 +139,7 @@ def test_market_change_rejects_extra_field_and_whitespace_command_identifiers() 
         "reason": "운영 중지",
     }
 
-    for field in ("requestId", "idempotencyKey", "actorId"):
+    for field in ("requestId", "idempotencyKey", "actorId", "reason"):
         payload = {**base, field: "   "}
         assert client.patch(
             "/v1/data-foundation/markets/KRW-BTC", headers=headers, json=payload

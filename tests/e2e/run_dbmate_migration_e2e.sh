@@ -72,20 +72,22 @@ UPGRADE_DB="goodmoneying_upgrade"
 UPGRADE_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DB_CONTAINER}:5432/${UPGRADE_DB}?sslmode=disable"
 PRE_004_MIGRATIONS="$SNAPSHOT_DIR/pre-004-migrations"
 LEGACY_TAIL_MIGRATIONS="$SNAPSHOT_DIR/legacy-tail-migrations"
-mkdir -p "$PRE_004_MIGRATIONS" "$LEGACY_TAIL_MIGRATIONS"
+PRE_008_MIGRATIONS="$SNAPSHOT_DIR/pre-008-migrations"
+mkdir -p "$PRE_004_MIGRATIONS" "$LEGACY_TAIL_MIGRATIONS" "$PRE_008_MIGRATIONS"
 cp \
   "$ROOT_DIR/docs/contracts/db/migrations/20260715000100_initial_schema.sql" \
   "$ROOT_DIR/docs/contracts/db/migrations/20260717000100_system_trading_data_foundation.sql" \
   "$ROOT_DIR/docs/contracts/db/migrations/20260717000200_collection_target_state_reason.sql" \
   "$ROOT_DIR/docs/contracts/db/migrations/20260717000300_fetch_manifest_raw_response.sql" \
   "$PRE_004_MIGRATIONS/"
-git -C "$ROOT_DIR" show \
-  c2a809a:docs/contracts/db/migrations/20260717000400_coverage_five_states_quality_events.sql \
-  >"$LEGACY_TAIL_MIGRATIONS/20260717000400_coverage_five_states_quality_events.sql"
 cp \
+  "$ROOT_DIR/docs/contracts/db/migrations/20260717000400_coverage_five_states_quality_events.sql" \
   "$ROOT_DIR/docs/contracts/db/migrations/20260717000500_source_orderbook_evidence.sql" \
   "$ROOT_DIR/docs/contracts/db/migrations/20260717000600_p1_review_safety_contracts.sql" \
   "$LEGACY_TAIL_MIGRATIONS/"
+cp \
+  "$ROOT_DIR/docs/contracts/db/migrations/20260717000700_p1_recovery_readiness.sql" \
+  "$PRE_008_MIGRATIONS/"
 docker exec "$DB_CONTAINER" createdb -U "$POSTGRES_USER" "$UPGRADE_DB"
 docker run --rm \
   --network "$NETWORK" \
@@ -149,6 +151,20 @@ docker run --rm \
   --network "$NETWORK" \
   -e GOODMONEYING_DATABASE_URL="$UPGRADE_DATABASE_URL" \
   -e DBMATE_STRICT \
+  -v "$PRE_008_MIGRATIONS:/db/pre-008-migrations:ro" \
+  "$MIGRATION_IMAGE" \
+  --env GOODMONEYING_DATABASE_URL --migrations-dir /db/pre-008-migrations \
+  --no-dump-schema migrate
+docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 \
+  -U "$POSTGRES_USER" -d "$UPGRADE_DB" -c \
+  "UPDATE p1_audit_recovery_gate
+   SET confirmed_at = now(), confirmed_by = NULL,
+       backup_reference = NULL, updated_at = now()
+   WHERE singleton;" >/dev/null
+docker run --rm \
+  --network "$NETWORK" \
+  -e GOODMONEYING_DATABASE_URL="$UPGRADE_DATABASE_URL" \
+  -e DBMATE_STRICT \
   "$MIGRATION_IMAGE" \
   --env GOODMONEYING_DATABASE_URL --migrations-dir /db/migrations --no-dump-schema migrate
 upgrade_event_count="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USER" \
@@ -175,6 +191,15 @@ upgrade_recovery_state="$(docker exec "$DB_CONTAINER" psql -At -U "$POSTGRES_USE
   printf '오류: 구버전 적용 DB 복구 게이트=%s\n' "$upgrade_recovery_state" >&2
   exit 1
 }
+if docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 \
+  -U "$POSTGRES_USER" -d "$UPGRADE_DB" -c \
+  "UPDATE p1_audit_recovery_gate
+   SET confirmed_at = now(), confirmed_by = NULL,
+       backup_reference = NULL, updated_at = now()
+   WHERE singleton;" >/dev/null 2>&1; then
+  printf '오류: 008 이후 불완전 복구 확인값이 저장됐습니다.\n' >&2
+  exit 1
+fi
 if docker run --rm --network "$NETWORK" \
   -e GOODMONEYING_DATABASE_URL="$UPGRADE_DATABASE_URL" "$API_IMAGE" \
   uv run --no-sync python -c "from goodmoneying_shared.data_foundation_repository import PostgresDataFoundationRepository; import os; PostgresDataFoundationRepository(os.environ['GOODMONEYING_DATABASE_URL']).assert_runtime_ready()" \

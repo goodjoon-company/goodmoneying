@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
+from psycopg import sql
+from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from goodmoneying_shared.data_foundation import (
@@ -18,8 +20,101 @@ from goodmoneying_shared.data_foundation_repository import (
 )
 from goodmoneying_shared.models import FetchEvidence
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
+from goodmoneying_shared.runtime_readiness import (
+    RUNTIME_DELETE_TABLES,
+    RUNTIME_INSERT_TABLES,
+    RUNTIME_READ_TABLES,
+    RUNTIME_UPDATE_TABLES,
+    assert_p1_runtime_ready,
+)
 
 pytestmark = pytest.mark.live
+
+UNUSED_RUNTIME_SEQUENCE_TABLES = {
+    "collection_coverage_segments",
+    "collection_coverage_snapshots",
+    "missing_ranges",
+    "raw_response_samples",
+}
+
+
+def test_runtime_readiness_ignores_sequences_owned_by_unused_tables() -> None:
+    if os.getenv("GOODMONEYING_LIVE_POSTGRES_TEST") != "1":
+        pytest.skip("실제 PostgreSQL 검증에서만 실행한다")
+    role = f"p1_runtime_sequence_probe_{os.getpid()}"
+    connection = psycopg.connect(
+        os.environ["GOODMONEYING_DATABASE_URL"], autocommit=True, row_factory=dict_row
+    )
+    try:
+        connection.execute(sql.SQL("CREATE ROLE {}").format(sql.Identifier(role)))
+        for privilege, tables in (
+            ("SELECT", RUNTIME_READ_TABLES),
+            ("INSERT", RUNTIME_INSERT_TABLES),
+            ("UPDATE", RUNTIME_UPDATE_TABLES),
+            ("DELETE", RUNTIME_DELETE_TABLES),
+        ):
+            connection.execute(
+                sql.SQL("GRANT {} ON TABLE {} TO {}").format(
+                    sql.SQL(privilege),
+                    sql.SQL(", ").join(sql.Identifier(table) for table in sorted(tables)),
+                    sql.Identifier(role),
+                )
+            )
+        sequences = connection.execute(
+            """
+            SELECT DISTINCT sequence.relname AS sequence_name
+            FROM pg_class AS sequence
+            JOIN pg_depend AS dependency
+              ON dependency.classid = 'pg_class'::regclass
+             AND dependency.objid = sequence.oid
+             AND dependency.refclassid = 'pg_class'::regclass
+             AND dependency.deptype IN ('a', 'i')
+            JOIN pg_class AS owner_table ON owner_table.oid = dependency.refobjid
+            JOIN pg_namespace AS owner_namespace
+              ON owner_namespace.oid = owner_table.relnamespace
+            WHERE sequence.relkind = 'S'
+              AND owner_namespace.nspname = current_schema()
+              AND owner_table.relname = ANY(%s)
+            """,
+            (sorted(RUNTIME_INSERT_TABLES),),
+        ).fetchall()
+        for sequence in sequences:
+            connection.execute(
+                sql.SQL("GRANT USAGE ON SEQUENCE {} TO {}").format(
+                    sql.Identifier(sequence["sequence_name"]), sql.Identifier(role)
+                )
+            )
+        unused_sequences = connection.execute(
+            """
+            SELECT owner_table.relname AS table_name, sequence.relname AS sequence_name
+            FROM pg_class AS sequence
+            JOIN pg_depend AS dependency
+              ON dependency.classid = 'pg_class'::regclass
+             AND dependency.objid = sequence.oid
+             AND dependency.refclassid = 'pg_class'::regclass
+             AND dependency.deptype IN ('a', 'i')
+            JOIN pg_class AS owner_table ON owner_table.oid = dependency.refobjid
+            WHERE sequence.relkind = 'S'
+              AND owner_table.relname = ANY(%s)
+            """,
+            (sorted(UNUSED_RUNTIME_SEQUENCE_TABLES),),
+        ).fetchall()
+        assert {row["table_name"] for row in unused_sequences} == UNUSED_RUNTIME_SEQUENCE_TABLES
+        for sequence in unused_sequences:
+            privilege_row = connection.execute(
+                "SELECT has_sequence_privilege(%s, %s, 'USAGE') AS can_use",
+                (role, sequence["sequence_name"]),
+            ).fetchone()
+            assert privilege_row is not None
+            assert not privilege_row["can_use"]
+
+        connection.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role)))
+        assert_p1_runtime_ready(connection)
+    finally:
+        connection.execute("RESET ROLE")
+        connection.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role)))
+        connection.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
+        connection.close()
 
 
 def test_market_sync_is_idempotent_and_creates_default_krw_work() -> None:

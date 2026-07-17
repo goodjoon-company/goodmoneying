@@ -25,6 +25,8 @@ RUNTIME_READ_TABLES = frozenset(
         "collection_worker_heartbeats",
         "command_idempotency_records",
         "coverage_intervals",
+        "data_quality_events",
+        "fetch_manifests",
         "instruments",
         "market_status_history",
         "markets",
@@ -180,13 +182,25 @@ def assert_p1_runtime_ready(connection: psycopg.Connection[Any]) -> None:
         SELECT COALESCE(bool_and(
           has_sequence_privilege(
             current_user,
-            quote_ident(schemaname) || '.' || quote_ident(sequencename),
+            sequence.oid,
             'USAGE'
           )
         ), true) AS can_use_sequences
-        FROM pg_sequences
-        WHERE schemaname = current_schema()
-        """
+        FROM pg_class AS sequence
+        JOIN pg_depend AS dependency
+          ON dependency.classid = 'pg_class'::regclass
+         AND dependency.objid = sequence.oid
+         AND dependency.refclassid = 'pg_class'::regclass
+         AND dependency.deptype IN ('a', 'i')
+         AND dependency.refobjsubid > 0
+        JOIN pg_class AS owner_table ON owner_table.oid = dependency.refobjid
+        JOIN pg_namespace AS owner_namespace
+          ON owner_namespace.oid = owner_table.relnamespace
+        WHERE sequence.relkind = 'S'
+          AND owner_namespace.nspname = current_schema()
+          AND owner_table.relname = ANY(%s)
+        """,
+        (sorted(RUNTIME_INSERT_TABLES),),
     ).fetchone()
     if sequence_privileges is None or not sequence_privileges["can_use_sequences"]:
         raise RuntimeError("P1 런타임 identity sequence 권한이 부족하다.")

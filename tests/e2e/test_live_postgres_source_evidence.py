@@ -536,7 +536,7 @@ def test_failed_backfill_retries_after_delay_then_moves_to_dead_letter() -> None
     assert quality_events[0][3] is not None
 
 
-def test_multi_target_dead_letter_preserves_succeeded_target_evidence() -> None:
+def test_multi_target_dead_letter_preserves_paused_target_evidence() -> None:
     observed_at = datetime(2026, 7, 17, 11, 40, tzinfo=UTC)
     database_url = _database_url()
     market_codes = ("KRW-DEADLETTER-SUCCESS", "KRW-DEADLETTER-FAILURE")
@@ -653,6 +653,14 @@ def test_multi_target_dead_letter_preserves_succeeded_target_evidence() -> None:
         status="succeeded",
         last_completed_at=candle_start,
     )
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        connection.execute(
+            """
+            UPDATE backfill_job_targets SET status = 'paused'
+            WHERE backfill_job_id = %s AND instrument_id = %s
+            """,
+            (job[0], success_instrument_id),
+        )
 
     def succeeded_snapshot() -> tuple[Any, list[Any]]:
         with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
@@ -708,9 +716,9 @@ def test_multi_target_dead_letter_preserves_succeeded_target_evidence() -> None:
         ).fetchall()
 
     assert before_failure == after_failure
-    assert before_failure[0] == ("succeeded", 1, 1, 1, candle_start, None)
+    assert before_failure[0] == ("paused", 1, 1, 1, candle_start, None)
     assert any(row[2] == "available" and row[3] is not None for row in before_failure[1])
-    assert failed_state == ("dead_letter", "succeeded", "failed")
+    assert failed_state == ("dead_letter", "paused", "failed")
     assert ("missing",) in failed_coverage
     assert all(row[0] not in {"available", "no_trade"} for row in failed_coverage)
 
@@ -1623,6 +1631,27 @@ def test_raw_source_retention_removes_only_rows_strictly_before_boundary() -> No
         )
 
     with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        connection.execute(
+            "UPDATE collection_target_specs SET retention_days = 1 "
+            "WHERE market_id = %s AND data_type = 'trade_event'",
+            (market_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO source_receipts (
+              data_type, market_id, instrument_id, connection_id, frame_sequence,
+              occurred_at, received_at, payload_checksum, raw_payload
+            ) VALUES ('trade_event', %s, %s, %s, 1, %s, %s, %s, '{}'::jsonb)
+            """,
+            (
+                market_id,
+                instrument_id,
+                str(uuid4()),
+                as_of - timedelta(days=2),
+                as_of - timedelta(days=2) + timedelta(milliseconds=1),
+                "a" * 64,
+            ),
+        )
         manifest_row = connection.execute(
             """
             SELECT fetch_manifest_id
@@ -1693,7 +1722,8 @@ def test_raw_source_retention_removes_only_rows_strictly_before_boundary() -> No
 
     with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
         receipt_times = connection.execute(
-            "SELECT occurred_at FROM source_receipts WHERE market_id = %s ORDER BY occurred_at",
+            "SELECT occurred_at FROM source_receipts "
+            "WHERE market_id = %s AND data_type = 'orderbook_snapshot' ORDER BY occurred_at",
             (market_id,),
         ).fetchall()
         snapshot_times = connection.execute(
@@ -1709,6 +1739,11 @@ def test_raw_source_retention_removes_only_rows_strictly_before_boundary() -> No
             """,
             (market_id,),
         ).fetchone()
+        preserved_non_orderbook_receipts = connection.execute(
+            "SELECT count(*) FROM source_receipts "
+            "WHERE market_id = %s AND data_type = 'trade_event'",
+            (market_id,),
+        ).fetchone()
         summary_count = connection.execute(
             "SELECT count(*) FROM orderbook_summaries WHERE instrument_id = %s",
             (instrument_id,),
@@ -1721,6 +1756,7 @@ def test_raw_source_retention_removes_only_rows_strictly_before_boundary() -> No
     assert receipt_times == [(moments[1],), (moments[2],)]
     assert snapshot_times == [(moments[1],), (moments[2],)]
     assert level_count == (60,)
+    assert preserved_non_orderbook_receipts == (1,)
     assert summary_count == (3,)
     assert manifest_count == (1,)
 

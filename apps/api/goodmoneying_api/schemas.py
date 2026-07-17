@@ -71,6 +71,8 @@ class DataFoundationResponse(BaseModel):
 
 
 class UpdateMarketCollectionPolicyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     startAt: datetime
     dataTypes: tuple[
         Literal[
@@ -102,6 +104,8 @@ class UpdateMarketCollectionPolicyRequest(BaseModel):
 
 
 class UpdateMarketTargetStateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     requestId: str = Field(min_length=1, max_length=200)
     idempotencyKey: str = Field(min_length=1, max_length=200)
     actorId: str = Field(min_length=1, max_length=200)
@@ -116,6 +120,14 @@ class UpdateMarketTargetStateRequest(BaseModel):
         if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
             raise ValueError("requestedAt은 UTC timezone-aware datetime이어야 한다.")
         return value
+
+    @field_validator("requestId", "idempotencyKey", "actorId", "reason")
+    @classmethod
+    def reject_blank_command_strings(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("명령 문자열은 공백일 수 없다.")
+        return stripped
 
 
 class UpdateMarketTargetStateResponse(BaseModel):

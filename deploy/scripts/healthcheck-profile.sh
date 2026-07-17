@@ -36,6 +36,8 @@ container_running_check_template="{{.State.Running}}"
 postgres_remote_command="PATH=$REMOTE_DOCKER_PATH docker exec goodmoneying-postgres sh -c '$postgres_check'"
 realtime_worker_remote_command="PATH=$REMOTE_DOCKER_PATH docker inspect -f '$container_running_check_template' goodmoneying-realtime-collection-worker"
 backfill_worker_remote_command="PATH=$REMOTE_DOCKER_PATH docker inspect -f '$container_running_check_template' goodmoneying-backfill-collection-worker"
+market_sync_worker_remote_command="PATH=$REMOTE_DOCKER_PATH docker inspect -f '$container_running_check_template' goodmoneying-market-sync-worker"
+candle_aggregation_worker_remote_command="PATH=$REMOTE_DOCKER_PATH docker inspect -f '$container_running_check_template' goodmoneying-candle-aggregation-worker"
 
 commands=(
   "retry $retry_attempts ${retry_interval_seconds}s curl ${curl_args[*]} $api_health_url"
@@ -44,6 +46,8 @@ commands=(
   "ssh ${ssh_args[*]} $GOODMONEYING_INFRA_HOST $postgres_remote_command"
   "ssh ${ssh_args[*]} $GOODMONEYING_APP_HOST $realtime_worker_remote_command"
   "ssh ${ssh_args[*]} $GOODMONEYING_APP_HOST $backfill_worker_remote_command"
+  "ssh ${ssh_args[*]} $GOODMONEYING_APP_HOST $market_sync_worker_remote_command"
+  "ssh ${ssh_args[*]} $GOODMONEYING_APP_HOST $candle_aggregation_worker_remote_command"
 )
 
 if [[ "$DRY_RUN" == "1" ]]; then
@@ -100,3 +104,13 @@ backfill_worker_running="${backfill_worker_running//$'\n'/}"
 if [[ "$backfill_worker_running" != "true" ]]; then
   fail "backfill-collection-worker 컨테이너가 실행 중이 아닙니다."
 fi
+
+for worker_name in market-sync-worker candle-aggregation-worker; do
+  worker_running="$(ssh "${ssh_args[@]}" "$GOODMONEYING_APP_HOST" \
+    "PATH=$REMOTE_DOCKER_PATH docker inspect -f '$container_running_check_template' goodmoneying-$worker_name")"
+  worker_running="${worker_running//$'\r'/}"
+  worker_running="${worker_running//$'\n'/}"
+  if [[ "$worker_running" != "true" ]]; then
+    fail "$worker_name 컨테이너가 실행 중이 아닙니다."
+  fi
+done

@@ -46,8 +46,7 @@ def create_repository_from_environment(database: str = ":memory:") -> Operations
     if database_url and database_url.startswith(("postgres://", "postgresql://")):
         repository = PostgresOperationsRepository(database_url)
         if runtime_mode == "production":
-            with repository._connect() as connection:
-                connection.execute("SELECT 1")
+            repository.assert_runtime_ready()
         return repository
     if runtime_mode == "production":
         raise RuntimeError(

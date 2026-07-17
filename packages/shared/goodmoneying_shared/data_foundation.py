@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -50,6 +50,7 @@ class MarketCatalogItem:
     english_name: str
     market_warning: str
     tradable: bool
+    market_event: dict[str, object] = field(default_factory=dict)
 
     @property
     def quote_currency(self) -> str:

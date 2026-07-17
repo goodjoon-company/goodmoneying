@@ -74,6 +74,7 @@ from goodmoneying_shared.models import (
     TradeFrequencyStatus,
     TradeSummary,
 )
+from goodmoneying_shared.runtime_readiness import assert_p1_runtime_ready
 from goodmoneying_shared.time import KST, isoformat_kst, minute_bucket, now_kst
 
 Row = dict[str, Any]
@@ -161,6 +162,13 @@ class PostgresOperationsRepository:
             row_factory=dict_row,
             options=options,
         )
+
+    def assert_runtime_ready(self) -> None:
+        try:
+            with self._connect() as connection:
+                assert_p1_runtime_ready(connection)
+        except Exception as exc:
+            raise RuntimeError("P1 PostgreSQL 런타임 계약을 초기화할 수 없다.") from exc
 
     def upsert_instrument(self, market_code: str, display_name: str) -> Instrument:
         quote_currency, base_asset = market_code.split("-", maxsplit=1)
@@ -787,6 +795,7 @@ class PostgresOperationsRepository:
                 USING effective_retention retention
                 WHERE retention.market_id = receipt.market_id
                   AND retention.data_type = receipt.data_type
+                  AND receipt.data_type = 'orderbook_snapshot'
                   AND retention.retention_days IS NOT NULL
                   AND receipt.occurred_at
                       < %s - make_interval(days => retention.retention_days)
@@ -2289,7 +2298,7 @@ class PostgresOperationsRepository:
             JOIN backfill_jobs job ON job.id = target.backfill_job_id
             WHERE target.backfill_job_id = %s
               AND target.target_spec_id IS NOT NULL
-              AND target.status NOT IN ('succeeded', 'stopped')
+              AND target.status NOT IN ('succeeded', 'stopped', 'paused')
             ORDER BY target.target_spec_id
             FOR UPDATE OF target
             """,
@@ -2346,7 +2355,7 @@ class PostgresOperationsRepository:
             UPDATE backfill_job_targets
             SET status = 'failed', updated_at = %s
             WHERE backfill_job_id = %s
-              AND status NOT IN ('succeeded', 'stopped')
+              AND status NOT IN ('succeeded', 'stopped', 'paused')
             """,
             (detected_at, job_id),
         )

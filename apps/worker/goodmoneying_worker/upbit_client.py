@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import httpx
 
@@ -180,7 +180,7 @@ class LiveUpbitClient:
             params={"is_details": "true"},
         )
         self.last_market_catalog_evidence = evidence
-        if not response:
+        if not isinstance(response, list) or not response:
             raise ValueError("업비트 시장 목록 성공 응답이 비어 있어 동기화를 중단한다.")
         try:
             return [
@@ -188,8 +188,9 @@ class LiveUpbitClient:
                     market_code=str(item["market"]),
                     korean_name=str(item.get("korean_name") or item["market"]),
                     english_name=str(item.get("english_name") or item["market"]),
-                    market_warning=str(item.get("market_warning") or "NONE"),
-                    tradable=_is_market_tradable(item),
+                    market_warning=_market_warning(item),
+                    tradable=True,
+                    market_event=_market_event(item),
                 )
                 for item in response
             ]
@@ -416,13 +417,24 @@ class LiveUpbitClient:
         )
 
 
-def _is_market_tradable(item: dict[str, Any]) -> bool:
+def _market_event(item: dict[str, Any]) -> dict[str, object]:
     event = item.get("market_event")
     if not isinstance(event, dict):
-        raise ValueError("상세 시장 응답에 market_event가 없어 거래 가능 여부를 판정할 수 없다.")
-    if "trading_suspended" not in event:
-        raise ValueError("market_event.trading_suspended가 없어 거래 가능 여부를 판정할 수 없다.")
-    return not bool(event.get("trading_suspended"))
+        raise ValueError("상세 시장 응답에 market_event가 없다.")
+    if not isinstance(event.get("warning"), bool) or not isinstance(event.get("caution"), dict):
+        raise ValueError("market_event.warning/caution 형식이 올바르지 않다.")
+    caution = event["caution"]
+    if not all(isinstance(key, str) and isinstance(value, bool) for key, value in caution.items()):
+        raise ValueError("market_event.caution 값은 boolean이어야 한다.")
+    return cast(dict[str, object], event)
+
+
+def _market_warning(item: dict[str, Any]) -> str:
+    event = _market_event(item)
+    if bool(event["warning"]):
+        return "WARNING"
+    caution = cast(dict[str, bool], event["caution"])
+    return "CAUTION" if any(caution.values()) else "NONE"
 
 
 def _parse_upbit_candle_time(value: object) -> datetime:

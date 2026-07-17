@@ -619,7 +619,7 @@ CREATE TABLE public.collection_worker_heartbeats (
     last_error_message text,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT collection_worker_heartbeats_status_ck CHECK ((status = ANY (ARRAY['running'::text, 'gated'::text, 'failed'::text]))),
-    CONSTRAINT collection_worker_heartbeats_worker_type_ck CHECK ((worker_type = ANY (ARRAY['realtime_collection'::text, 'backfill_collection'::text, 'candle_aggregation'::text])))
+    CONSTRAINT collection_worker_heartbeats_worker_type_ck CHECK ((worker_type = ANY (ARRAY['realtime_collection'::text, 'backfill_collection'::text, 'candle_aggregation'::text, 'market_sync'::text])))
 );
 
 
@@ -1044,6 +1044,24 @@ ALTER TABLE public.orderbook_summaries ALTER COLUMN id ADD GENERATED ALWAYS AS I
     NO MINVALUE
     NO MAXVALUE
     CACHE 1
+);
+
+
+--
+-- Name: p1_audit_recovery_gate; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.p1_audit_recovery_gate (
+    singleton boolean DEFAULT true NOT NULL,
+    recovery_required boolean DEFAULT false NOT NULL,
+    detected_at timestamp with time zone,
+    confirmed_at timestamp with time zone,
+    confirmed_by text,
+    backup_reference text,
+    reason text,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT p1_audit_recovery_gate_confirmation_ck CHECK (((confirmed_at IS NULL) OR (recovery_required AND (btrim(confirmed_by) <> ''::text) AND (btrim(backup_reference) <> ''::text)))),
+    CONSTRAINT p1_audit_recovery_gate_singleton_check CHECK (singleton)
 );
 
 
@@ -1707,6 +1725,14 @@ ALTER TABLE ONLY public.orderbook_summaries
 
 ALTER TABLE ONLY public.orderbook_summaries
     ADD CONSTRAINT orderbook_summaries_uk UNIQUE (instrument_id, source, bucket_at);
+
+
+--
+-- Name: p1_audit_recovery_gate p1_audit_recovery_gate_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.p1_audit_recovery_gate
+    ADD CONSTRAINT p1_audit_recovery_gate_pkey PRIMARY KEY (singleton);
 
 
 --
@@ -2435,4 +2461,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260717000300'),
     ('20260717000400'),
     ('20260717000500'),
-    ('20260717000600');
+    ('20260717000600'),
+    ('20260717000700');

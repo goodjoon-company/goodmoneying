@@ -813,9 +813,9 @@ components:
       additionalProperties: false
       required: [requestId, idempotencyKey, actorId, requestedAt, state, reason]
       properties:
-        requestId: { type: string, minLength: 1, maxLength: 200 }
-        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
-        actorId: { type: string, minLength: 1, maxLength: 200 }
+        requestId: { type: string, minLength: 1, maxLength: 200, pattern: ".*\\S.*" }
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200, pattern: ".*\\S.*" }
+        actorId: { type: string, minLength: 1, maxLength: 200, pattern: ".*\\S.*" }
         requestedAt:
           type: string
           format: date-time

@@ -40,6 +40,8 @@ rest_endpoints:
     path: /v1/market/all
     parameters: [{name: is_details, location: query, type: boolean, required: false}]
     required_response_fields: [market, korean_name, english_name, market_event]
+    market_event_fields: [warning, caution]
+    listed_pair_state: active
     rate_limit_group: market
     safety: read
     source_url: https://docs.upbit.com/kr/reference/list-trading-pairs.md

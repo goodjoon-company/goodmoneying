@@ -122,6 +122,35 @@ def test_market_change_requires_command_envelope() -> None:
     assert response.status_code == 422
 
 
+def test_market_change_rejects_extra_field_and_whitespace_command_identifiers() -> None:
+    client = TestClient(
+        create_app(
+            SQLiteOperationsRepository(),
+            data_foundation_repository=FakeDataFoundationRepository(),
+        )
+    )
+    headers = {"X-Operator-Token": "local-dev-token"}
+    base = {
+        "requestId": "req-001",
+        "idempotencyKey": "key-001",
+        "actorId": "operator:test",
+        "requestedAt": "2026-07-17T00:00:00Z",
+        "state": "paused",
+        "reason": "운영 중지",
+    }
+
+    for field in ("requestId", "idempotencyKey", "actorId"):
+        payload = {**base, field: "   "}
+        assert client.patch(
+            "/v1/data-foundation/markets/KRW-BTC", headers=headers, json=payload
+        ).status_code == 422
+    assert client.patch(
+        "/v1/data-foundation/markets/KRW-BTC",
+        headers=headers,
+        json={**base, "unexpected": True},
+    ).status_code == 422
+
+
 def test_market_policy_can_be_updated_with_state_and_rejects_non_utc_start() -> None:
     repository = FakeDataFoundationRepository()
     client = TestClient(

@@ -473,6 +473,67 @@ def test_policy_without_source_candle_does_not_create_backfill_job() -> None:
     assert str(reselected[2]).startswith("p1:policy:")
 
 
+def test_excluded_market_reactivation_uses_stored_policy_and_creates_one_backfill() -> None:
+    if os.getenv("GOODMONEYING_LIVE_POSTGRES_TEST") != "1":
+        pytest.skip("실제 PostgreSQL 검증에서만 실행한다")
+    database_url = os.environ["GOODMONEYING_DATABASE_URL"]
+    repository = PostgresDataFoundationRepository(database_url)
+    observed_at = datetime(2026, 7, 17, 5, 1, tzinfo=UTC)
+    market_code = "KRW-REACTIVATE-STORED-POLICY"
+    repository.sync_market_catalog([_market(market_code, "재활성화")], observed_at=observed_at)
+    repository.set_market_target_state(
+        market_code,
+        state="excluded",
+        actor="operator:e2e",
+        reason="운영 제외",
+        changed_at=observed_at + timedelta(seconds=1),
+    )
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        connection.execute(
+            """
+            UPDATE backfill_jobs job SET status = 'cancelled'
+            WHERE EXISTS (
+              SELECT 1 FROM backfill_job_targets target
+              JOIN instruments instrument ON instrument.id = target.instrument_id
+              WHERE target.backfill_job_id = job.id AND instrument.market_code = %s
+            )
+            """,
+            (market_code,),
+        )
+    repository.set_market_target_state(
+        market_code,
+        state="active",
+        actor="operator:e2e",
+        reason="저장 정책 재활성화",
+        changed_at=observed_at + timedelta(seconds=2),
+    )
+
+    with psycopg.connect(database_url, options="-c timezone=UTC") as connection:
+        desires = connection.execute(
+            """
+            SELECT desire.desired_state
+            FROM collection_subscription_desires desire
+            JOIN collection_target_specs spec ON spec.id = desire.target_spec_id
+            JOIN markets market ON market.id = spec.market_id
+            WHERE market.market_code = %s AND spec.continuous
+            """,
+            (market_code,),
+        ).fetchall()
+        policy_jobs = connection.execute(
+            """
+            SELECT count(*) FROM backfill_jobs job
+            JOIN backfill_job_targets target ON target.backfill_job_id = job.id
+            JOIN instruments instrument ON instrument.id = target.instrument_id
+            WHERE instrument.market_code = %s
+              AND job.idempotency_key LIKE 'p1:policy:%%'
+            """,
+            (market_code,),
+        ).fetchone()
+
+    assert desires and all(row == ("subscribed",) for row in desires)
+    assert policy_jobs == (1,)
+
+
 def test_policy_rebalance_stops_manual_target_without_invalidating_other_target_lease() -> None:
     if os.getenv("GOODMONEYING_LIVE_POSTGRES_TEST") != "1":
         pytest.skip("실제 PostgreSQL 검증에서만 실행한다")
@@ -671,10 +732,9 @@ def test_market_catalog_manifest_preserves_raw_response_and_status_history_link(
             "market": "KRW-MANIFEST-RAW",
             "korean_name": "원문증적",
             "english_name": "Raw Evidence",
-            "market_warning": "NONE",
             "market_event": {
-                "trading_suspended": False,
-                "withdrawal_suspended": True,
+                "warning": False,
+                "caution": {"PRICE_FLUCTUATIONS": False},
             },
             "future_field": {"preserved": True},
         }
@@ -734,8 +794,10 @@ def test_market_catalog_manifest_preserves_raw_response_and_status_history_link(
             "market": "KRW-MANIFEST-KEEP",
             "korean_name": "유지",
             "english_name": "Keep",
-            "market_warning": "NONE",
-            "market_event": {"trading_suspended": False},
+            "market_event": {
+                "warning": False,
+                "caution": {"PRICE_FLUCTUATIONS": False},
+            },
         }
     ]
     repository.sync_market_catalog(

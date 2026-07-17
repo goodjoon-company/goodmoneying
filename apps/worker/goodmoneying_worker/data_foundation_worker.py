@@ -41,6 +41,10 @@ class DataFoundationSyncRepository(Protocol):
         fetch_evidence: FetchEvidence,
     ) -> None: ...
 
+    def record_market_sync_heartbeat(
+        self, status: str, error_message: str | None = None
+    ) -> None: ...
+
 
 def refresh_seconds_from_environment() -> float:
     value = os.getenv("GOODMONEYING_MARKET_SYNC_INTERVAL_SECONDS")
@@ -106,12 +110,19 @@ def run_market_sync_loop(
     while True:
         try:
             run_market_sync_once(repository, client)
+            repository.record_market_sync_heartbeat("running")
             sleep(refresh_seconds)
-        except UpbitApiError as exc:
-            delay = max(refresh_seconds, exc.retry_after_seconds or 1.0)
+        except Exception as exc:
+            delay = refresh_seconds
+            if isinstance(exc, UpbitApiError):
+                delay = max(refresh_seconds, exc.retry_after_seconds or 1.0)
+            try:
+                repository.record_market_sync_heartbeat("failed", str(exc))
+            except Exception:
+                logger.exception("market_sync_failed_heartbeat_write_failed")
             logger.warning(
-                "market_sync_rate_limited status=%s retry_after_seconds=%s",
-                exc.status_code,
+                "market_sync_cycle_failed error_type=%s retry_after_seconds=%s",
+                type(exc).__name__,
                 delay,
             )
             sleep(delay)

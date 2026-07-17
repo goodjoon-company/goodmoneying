@@ -607,6 +607,8 @@ def test_healthcheck_script_dry_run_prints_checks() -> None:
     assert (
         "docker inspect -f '{{.State.Running}}' goodmoneying-backfill-collection-worker"
     ) in result.stdout
+    assert "goodmoneying-market-sync-worker" in result.stdout
+    assert "goodmoneying-candle-aggregation-worker" in result.stdout
 
 
 def test_healthcheck_script_rejects_unknown_profile() -> None:
@@ -626,8 +628,11 @@ def test_healthcheck_script_dry_run_prints_checks_in_order() -> None:
     postgres_index = result.stdout.index("docker exec goodmoneying-postgres")
     realtime_worker_index = result.stdout.index("goodmoneying-realtime-collection-worker")
     backfill_worker_index = result.stdout.index("goodmoneying-backfill-collection-worker")
+    market_sync_worker_index = result.stdout.index("goodmoneying-market-sync-worker")
+    aggregation_worker_index = result.stdout.index("goodmoneying-candle-aggregation-worker")
     assert api_index < gateway_index < web_index < postgres_index < realtime_worker_index
     assert realtime_worker_index < backfill_worker_index
+    assert backfill_worker_index < market_sync_worker_index < aggregation_worker_index
 
 
 def test_deploy_workflow_builds_and_checks_upbit_gateway() -> None:

@@ -27,6 +27,7 @@ from goodmoneying_shared.data_foundation import (
     classify_coverage,
 )
 from goodmoneying_shared.models import FetchEvidence
+from goodmoneying_shared.runtime_readiness import assert_p1_runtime_ready
 
 Row = dict[str, Any]
 DEFAULT_POLICY_NAME = "default-krw-2024"
@@ -50,7 +51,7 @@ def _require_utc(value: datetime, name: str) -> None:
 
 def _status_fingerprint(item: MarketCatalogItem) -> tuple[str, dict[str, object], str]:
     trading_status = "active" if item.tradable else "inactive"
-    event: dict[str, object] = {"trading_suspended": not item.tradable}
+    event = item.market_event
     canonical = json.dumps(
         {
             "trading_status": trading_status,
@@ -92,24 +93,48 @@ class PostgresDataFoundationRepository:
     def assert_runtime_ready(self) -> None:
         try:
             with self._connect() as connection:
-                version = connection.execute(
-                    "SELECT version FROM schema_migrations WHERE version = %s",
-                    ("20260717000600",),
-                ).fetchone()
-                if version is None:
-                    raise RuntimeError("P1 최신 DB 마이그레이션이 적용되지 않았다.")
-                for table in (
-                    "markets",
-                    "collection_target_specs",
-                    "fetch_manifests",
-                    "command_idempotency_records",
-                    "backfill_safety_gate",
-                ):
-                    connection.execute(f"SELECT 1 FROM {table} LIMIT 1")
+                assert_p1_runtime_ready(connection)
         except Exception as exc:
             raise RuntimeError(
                 "데이터 기반(data-foundation) PostgreSQL 계약을 초기화할 수 없다."
             ) from exc
+
+    def record_market_sync_heartbeat(
+        self, status: str, error_message: str | None = None
+    ) -> None:
+        if status not in {"running", "failed"}:
+            raise ValueError("지원하지 않는 시장 동기화 워커 상태다.")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO collection_worker_heartbeats (
+                  worker_type, status, last_heartbeat_at, last_started_at,
+                  last_successful_at, last_error_at, last_error_message
+                )
+                VALUES (
+                  'market_sync', %s, clock_timestamp(),
+                  CASE WHEN %s = 'running' THEN clock_timestamp() END,
+                  CASE WHEN %s = 'running' THEN clock_timestamp() END,
+                  CASE WHEN %s = 'failed' THEN clock_timestamp() END,
+                  %s
+                )
+                ON CONFLICT (worker_type) DO UPDATE SET
+                  status = excluded.status,
+                  last_heartbeat_at = excluded.last_heartbeat_at,
+                  last_started_at = CASE WHEN excluded.status = 'running'
+                    THEN excluded.last_started_at
+                    ELSE collection_worker_heartbeats.last_started_at END,
+                  last_successful_at = CASE WHEN excluded.status = 'running'
+                    THEN excluded.last_successful_at
+                    ELSE collection_worker_heartbeats.last_successful_at END,
+                  last_error_at = CASE WHEN excluded.status = 'failed'
+                    THEN excluded.last_error_at
+                    ELSE collection_worker_heartbeats.last_error_at END,
+                  last_error_message = excluded.last_error_message,
+                  updated_at = clock_timestamp()
+                """,
+                (status, status, status, status, error_message),
+            )
 
     def sync_market_catalog(
         self,
@@ -711,7 +736,7 @@ class PostgresDataFoundationRepository:
                     "korean_name": item.korean_name,
                     "english_name": item.english_name,
                     "market_warning": item.market_warning,
-                    "market_event": {"trading_suspended": not item.tradable},
+                    "market_event": item.market_event,
                 }
                 for item in catalog
             ]
@@ -1362,6 +1387,7 @@ class PostgresDataFoundationRepository:
             )
             source_specification: Row | None = None
             source_policy_changed = False
+            source_was_excluded = False
             for specification in specifications:
                 data_type = str(specification["data_type"])
                 selected_before = specification["exclusion_reason"] != POLICY_DISABLED_REASON
@@ -1437,8 +1463,16 @@ class PostgresDataFoundationRepository:
                     ),
                 )
                 if data_type == "source_candle":
-                    source_specification = {**specification, "candle_unit": next_configuration[1]}
+                    source_specification = {
+                        **specification,
+                        "range_start_at": next_configuration[0],
+                        "candle_unit": next_configuration[1],
+                        "retention_days": next_configuration[2],
+                        "priority": next_configuration[3],
+                        "continuous": next_configuration[4],
+                    }
                     source_policy_changed = policy_changed
+                    source_was_excluded = specification["status"] == "excluded"
                 next_desired_state = (
                     "subscribed"
                     if selected_after and state == "active" and bool(next_configuration[4])
@@ -1498,11 +1532,11 @@ class PostgresDataFoundationRepository:
                     changed_at=changed_at,
                 )
             if (
-                policy is not None
-                and "source_candle" in selected_data_types
+                "source_candle" in selected_data_types
                 and state == "active"
                 and source_specification is not None
                 and market["legacy_instrument_id"] is not None
+                and (policy is not None or source_was_excluded)
             ):
                 source_desire = connection.execute(
                     """
@@ -1517,11 +1551,13 @@ class PostgresDataFoundationRepository:
                     {
                         "targetSpecId": source_specification["id"],
                         "policyGeneration": int(source_desire["generation"]),
-                        "startAt": policy.start_at.isoformat(),
-                        "candleUnit": policy.candle_unit,
-                        "retentionDays": policy.retention_days,
-                        "priority": policy.priority,
-                        "continuous": policy.continuous,
+                        "startAt": cast(
+                            datetime, source_specification["range_start_at"]
+                        ).isoformat(),
+                        "candleUnit": source_specification["candle_unit"],
+                        "retentionDays": source_specification["retention_days"],
+                        "priority": source_specification["priority"],
+                        "continuous": source_specification["continuous"],
                     },
                     sort_keys=True,
                     separators=(",", ":"),
@@ -1532,9 +1568,9 @@ class PostgresDataFoundationRepository:
                     target_spec_id=int(source_specification["id"]),
                     instrument_id=int(market["legacy_instrument_id"]),
                     market_code=market_code,
-                    start_at=policy.start_at,
+                    start_at=cast(datetime, source_specification["range_start_at"]),
                     end_at=changed_at,
-                    priority=policy.priority,
+                    priority=int(source_specification["priority"]),
                     idempotency_key=(f"p1:policy:{source_specification['id']}:{policy_key}"),
                 )
             if market["legacy_instrument_id"] is not None:

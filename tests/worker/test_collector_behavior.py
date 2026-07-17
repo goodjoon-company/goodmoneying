@@ -224,15 +224,25 @@ def test_live_client_reads_detailed_market_catalog_without_ticker_filtering() ->
                     "market": "KRW-BTC",
                     "korean_name": "비트코인",
                     "english_name": "Bitcoin",
-                    "market_warning": "NONE",
-                    "market_event": {"trading_suspended": False},
+                    "market_event": {
+                        "warning": False,
+                        "caution": {
+                            "PRICE_FLUCTUATIONS": False,
+                            "TRADING_VOLUME_SOARING": False,
+                        },
+                    },
                 },
                 {
                     "market": "BTC-ETH",
                     "korean_name": "이더리움",
                     "english_name": "Ethereum",
-                    "market_warning": "CAUTION",
-                    "market_event": {"trading_suspended": True},
+                    "market_event": {
+                        "warning": False,
+                        "caution": {
+                            "PRICE_FLUCTUATIONS": False,
+                            "GLOBAL_PRICE_DIFFERENCES": True,
+                        },
+                    },
                 },
             ],
         )
@@ -250,7 +260,11 @@ def test_live_client_reads_detailed_market_catalog_without_ticker_filtering() ->
     assert [item.market_code for item in catalog] == ["KRW-BTC", "BTC-ETH"]
     assert catalog[0].korean_name == "비트코인"
     assert catalog[1].market_warning == "CAUTION"
-    assert not catalog[1].tradable
+    assert catalog[1].tradable
+    assert catalog[1].market_event["caution"] == {
+        "PRICE_FLUCTUATIONS": False,
+        "GLOBAL_PRICE_DIFFERENCES": True,
+    }
     assert requests[0].url.path == "/v1/market/all"
     assert requests[0].url.params["is_details"] == "true"
 
@@ -264,7 +278,6 @@ def test_market_catalog_rejects_missing_market_event_details() -> None:
                     "market": "KRW-BTC",
                     "korean_name": "비트코인",
                     "english_name": "Bitcoin",
-                    "market_warning": "NONE",
                 }
             ],
         )

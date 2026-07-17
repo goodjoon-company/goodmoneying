@@ -58,6 +58,24 @@ def test_worker_repository_requires_explicit_runtime_mode(
         runtime.create_heartbeat_repository_from_environment()
 
 
+def test_all_production_workers_use_p1_runtime_readiness_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setenv("GOODMONEYING_RUNTIME_MODE", "production")
+    monkeypatch.setenv("GOODMONEYING_DATABASE_URL", "postgresql://example.invalid/db")
+    monkeypatch.setattr(
+        PostgresOperationsRepository,
+        "assert_runtime_ready",
+        lambda _repository: calls.append("ready"),
+    )
+
+    repository = runtime.create_repository_from_environment()
+
+    assert isinstance(repository, PostgresOperationsRepository)
+    assert calls == ["ready"]
+
+
 def test_realtime_collection_worker_runs_single_collection_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -10,6 +10,7 @@ from goodmoneying_shared.models import FetchEvidence
 from goodmoneying_worker import data_foundation_worker
 from goodmoneying_worker.data_foundation_worker import (
     refresh_seconds_from_environment,
+    run_market_sync_loop,
     run_market_sync_once,
 )
 from goodmoneying_worker.upbit_client import LiveUpbitClient, UpbitApiError
@@ -143,6 +144,29 @@ def test_market_sync_refresh_interval_defaults_and_validates_environment(
         refresh_seconds_from_environment()
 
 
+def test_market_sync_loop_records_expected_failure_and_retries_next_cycle() -> None:
+    repository = RecordingDataFoundationRepository()
+    client = SequencedCatalogClient()
+    sleeps: list[float] = []
+
+    class StopLoop(BaseException):
+        pass
+
+    def sleep(delay: float) -> None:
+        sleeps.append(delay)
+        if len(sleeps) == 2:
+            raise StopLoop
+
+    with pytest.raises(StopLoop):
+        run_market_sync_loop(repository, client, refresh_seconds=12, sleep=sleep)
+
+    assert sleeps == [12, 12]
+    assert repository.heartbeats == [
+        ("failed", "업비트 목록 응답의 필드가 올바르지 않다."),
+        ("running", None),
+    ]
+
+
 def test_market_sync_main_checks_data_foundation_contract_before_upbit_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -183,6 +207,16 @@ class CatalogClient:
         return self.catalog
 
 
+class SequencedCatalogClient:
+    calls = 0
+
+    def get_market_catalog(self) -> list[MarketCatalogItem]:
+        self.calls += 1
+        if self.calls == 1:
+            raise ValueError("업비트 목록 응답의 필드가 올바르지 않다.")
+        return [MarketCatalogItem("KRW-BTC", "비트코인", "Bitcoin", "NONE", True)]
+
+
 class FailingCatalogClient:
     def __init__(self, evidence: FetchEvidence) -> None:
         self.last_market_catalog_evidence = evidence
@@ -216,6 +250,10 @@ class RecordingDataFoundationRepository:
     catalog: list[MarketCatalogItem]
     observed_at: datetime
     failed_evidence: FetchEvidence | None = None
+    heartbeats: list[tuple[str, str | None]]
+
+    def __init__(self) -> None:
+        self.heartbeats = []
 
     def sync_market_catalog(
         self,
@@ -231,6 +269,11 @@ class RecordingDataFoundationRepository:
 
     def record_market_catalog_fetch_failure(self, fetch_evidence: FetchEvidence) -> None:
         self.failed_evidence = fetch_evidence
+
+    def record_market_sync_heartbeat(
+        self, status: str, error_message: str | None = None
+    ) -> None:
+        self.heartbeats.append((status, error_message))
 
 
 class FailingSyncDataFoundationRepository(RecordingDataFoundationRepository):

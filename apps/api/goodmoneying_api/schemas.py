@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -347,6 +348,46 @@ class DatasetSeriesResponse(BaseModel):
     unit: str
     items: list[DatasetSeriesPointResponse]
     nextCursor: str | None
+
+
+class BacktestMetricResponse(BaseModel):
+    metricName: str
+    scopeKey: str
+    metricValue: Decimal
+    metricPayload: dict[str, object]
+
+
+class BacktestTradeResponse(BaseModel):
+    tradeSequence: int = Field(ge=1)
+    side: Literal["buy", "sell"]
+    requestedQuantity: Decimal
+    filledQuantity: Decimal
+    remainingQuantity: Decimal
+    fillPrice: Decimal
+    feePaid: Decimal
+    status: Literal["filled", "partially_filled", "rejected"]
+    occurredAt: datetime
+    knowledgeAt: datetime
+
+
+class BacktestArtifactResponse(BaseModel):
+    artifactType: str
+    contentHash: str = Field(pattern="^[0-9a-f]{64}$")
+    mediaType: str
+    storageUri: str | None
+    metadata: dict[str, object]
+
+
+class BacktestRunResponse(BaseModel):
+    backtestRunId: int
+    strategyVersionId: int
+    datasetVersionId: int
+    status: Literal["pending", "running", "succeeded", "failed", "cancelled"]
+    inputHash: str = Field(pattern="^[0-9a-f]{64}$")
+    resultHash: str = Field(pattern="^[0-9a-f]{64}$")
+    metrics: list[BacktestMetricResponse]
+    trades: list[BacktestTradeResponse]
+    artifacts: list[BacktestArtifactResponse]
 
 
 class DataFoundationSummaryResponse(BaseModel):

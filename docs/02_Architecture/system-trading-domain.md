@@ -1,7 +1,7 @@
 # 시스템 트레이딩 도메인 설계(Module Design)
 
-상태: 승인된 목표 설계(Accepted Target), P1·P2·P3·P4-1 기계 계약 구현 중
-버전: 1.6.0
+상태: 승인된 목표 설계(Accepted Target), P1·P2·P3·P4-3 기계 계약 구현 중
+버전: 1.6.1
 날짜: 2026-07-18
 
 ## 1. 목적
@@ -64,6 +64,7 @@
 | 백테스트 | `backtest_equity_points` | `(run_id, occurred_at)` |
 | 백테스트 | `backtest_metrics` | `(run_id, metric_name, scope_key)` |
 | 백테스트 | `backtest_artifacts` | `(run_id, artifact_type, content_hash)` |
+| 백테스트 UI | Backtest Lab | `/v1/backtest-runs/{backtestRunId}` REST 계약으로 저장된 성과·체결·산출물을 읽기 전용 조회 |
 | 계좌 | `exchange_accounts` | `(exchange, account_alias)`; secret 저장 금지 |
 | 포트폴리오 | `portfolios` | `(owner_id, name)`, 현재 자산·현금 projection 경계 |
 | 포트폴리오 | `portfolio_policies` | `(owner_id, name, version)` |

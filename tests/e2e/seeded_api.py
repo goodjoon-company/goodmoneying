@@ -421,6 +421,51 @@ class _SeededStrategyRepository:
             None,
         )
 
+
+class _SeededBacktestRepository:
+    def get_run(self, backtest_run_id: int) -> dict[str, object] | None:
+        if backtest_run_id != 21:
+            return None
+        return {
+            "backtestRunId": 21,
+            "strategyVersionId": 41,
+            "datasetVersionId": 12,
+            "status": "succeeded",
+            "inputHash": "e" * 64,
+            "resultHash": "f" * 64,
+            "metrics": [
+                {
+                    "metricName": "finalEquity",
+                    "scopeKey": "run",
+                    "metricValue": Decimal("1009.579790"),
+                    "metricPayload": {},
+                }
+            ],
+            "trades": [
+                {
+                    "tradeSequence": 1,
+                    "side": "buy",
+                    "requestedQuantity": Decimal("3"),
+                    "filledQuantity": Decimal("1.00"),
+                    "remainingQuantity": Decimal("2.00"),
+                    "fillPrice": Decimal("100.100"),
+                    "feePaid": Decimal("0.100100"),
+                    "status": "partially_filled",
+                    "occurredAt": "2026-07-18T00:00:00Z",
+                    "knowledgeAt": "2026-07-18T00:00:00Z",
+                }
+            ],
+            "artifacts": [
+                {
+                    "artifactType": "walk_forward_summary",
+                    "contentHash": "c" * 64,
+                    "mediaType": "application/json",
+                    "storageUri": "artifact://p4-3/walk-forward",
+                    "metadata": {"folds": 3},
+                }
+            ],
+        }
+
 def _analysis_history_candles(
     first_instrument_id: int, second_instrument_id: int
 ) -> list[SourceCandle]:
@@ -503,6 +548,7 @@ def create_seeded_e2e_app() -> FastAPI:
         data_foundation_repository=_SeededDataFoundationRepository(),
         dataset_version_repository=_SeededDatasetVersionRepository(),
         strategy_repository=_SeededStrategyRepository(),
+        backtest_repository=_SeededBacktestRepository(),
     )
     catalog = load_catalog()
 

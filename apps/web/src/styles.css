@@ -10,4 +10,5 @@
 @import "./styles/analysis.css";
 @import "./styles/upbit-workbench.css";
 @import "./features/dataLab/data-lab.css";
+@import "./features/backtestLab/backtest-lab.css";
 @import "./styles/responsive.css";

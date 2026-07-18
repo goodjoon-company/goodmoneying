@@ -610,6 +610,46 @@ export type DatasetSeriesResponse = {
   nextCursor: string | null;
 };
 
+export type BacktestMetric = {
+  metricName: string;
+  scopeKey: string;
+  metricValue: string;
+  metricPayload: Record<string, unknown>;
+};
+
+export type BacktestTrade = {
+  tradeSequence: number;
+  side: "buy" | "sell";
+  requestedQuantity: string;
+  filledQuantity: string;
+  remainingQuantity: string;
+  fillPrice: string;
+  feePaid: string;
+  status: "filled" | "partially_filled" | "rejected";
+  occurredAt: string;
+  knowledgeAt: string;
+};
+
+export type BacktestArtifact = {
+  artifactType: string;
+  contentHash: string;
+  mediaType: string;
+  storageUri: string | null;
+  metadata: Record<string, unknown>;
+};
+
+export type BacktestRun = {
+  backtestRunId: number;
+  strategyVersionId: number;
+  datasetVersionId: number;
+  status: "pending" | "running" | "succeeded" | "failed" | "cancelled";
+  inputHash: string;
+  resultHash: string;
+  metrics: BacktestMetric[];
+  trades: BacktestTrade[];
+  artifacts: BacktestArtifact[];
+};
+
 export type OperationsSnapshot = {
   dashboard: DashboardSummary;
   candidateEntries: CandidateUniverseEntry[];
@@ -999,6 +1039,10 @@ export async function loadDatasetSeries(options: {
   return getJson<DatasetSeriesResponse>(
     `/v1/dataset-versions/${options.datasetVersionId}/series?${params.toString()}`
   );
+}
+
+export async function loadBacktestRun(backtestRunId: number): Promise<BacktestRun> {
+  return getJson<BacktestRun>(`/v1/backtest-runs/${backtestRunId}`);
 }
 
 export async function loadInstrumentSnapshot(

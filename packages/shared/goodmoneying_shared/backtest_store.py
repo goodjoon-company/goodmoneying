@@ -271,6 +271,7 @@ def _metric_response(row: Mapping[str, object]) -> Row:
 
 def _trade_response(row: Mapping[str, object]) -> Row:
     return {
+        "tradeSequence": row["trade_sequence"],
         "side": row["side"],
         "requestedQuantity": cast(Decimal, row["requested_quantity"]),
         "filledQuantity": cast(Decimal, row["filled_quantity"]),
@@ -278,6 +279,8 @@ def _trade_response(row: Mapping[str, object]) -> Row:
         "fillPrice": cast(Decimal, row["fill_price"]),
         "feePaid": cast(Decimal, row["fee_paid"]),
         "status": row["status"],
+        "occurredAt": row["occurred_at"],
+        "knowledgeAt": row["knowledge_at"],
     }
 
 
@@ -285,6 +288,7 @@ def _artifact_response(row: Mapping[str, object]) -> Row:
     return {
         "artifactType": row["artifact_type"],
         "contentHash": row["content_hash"],
+        "mediaType": row["media_type"],
         "storageUri": row["storage_uri"],
         "metadata": row["artifact_json"],
     }

@@ -34,6 +34,7 @@ from goodmoneying_api.schemas import (
     BackfillJobResponse,
     BackfillJobsResponse,
     BackfillPlanResponse,
+    BacktestRunResponse,
     CandidateUniverseResponse,
     CandleSeriesResponse,
     CollectionCoverageSegmentsResponse,
@@ -84,6 +85,7 @@ from goodmoneying_api.schemas import (
     ValidateStrategyGraphRequest,
 )
 from goodmoneying_api.service import AnalysisSubscriptionError, OperationsService
+from goodmoneying_shared.backtest_store import PostgresBacktestStore
 from goodmoneying_shared.data_foundation import (
     CoverageState,
     DataFoundationOverview,
@@ -316,6 +318,15 @@ class EmptyDatasetVersionRepository:
         return None
 
 
+class BacktestApiRepository(Protocol):
+    def get_run(self, backtest_run_id: int) -> Mapping[str, object] | None: ...
+
+
+class EmptyBacktestRepository:
+    def get_run(self, _backtest_run_id: int) -> Mapping[str, object] | None:
+        return None
+
+
 class StrategyApiRepository(Protocol):
     def validate_graph(self, *, graph: Mapping[str, object]) -> Mapping[str, object]: ...
 
@@ -410,6 +421,7 @@ def create_app(
     data_foundation_repository: DataFoundationApiRepository | None = None,
     dataset_version_repository: DatasetVersionApiRepository | None = None,
     strategy_repository: StrategyApiRepository | None = None,
+    backtest_repository: BacktestApiRepository | None = None,
 ) -> FastAPI:
     repo = repository or create_repository_from_environment()
     foundation_repository = data_foundation_repository
@@ -434,6 +446,12 @@ def create_app(
         strategy_store = PostgresStrategyStore(repo)
     else:
         strategy_store = EmptyStrategyRepository()
+    if backtest_repository is not None:
+        backtest_store = backtest_repository
+    elif isinstance(repo, PostgresOperationsRepository):
+        backtest_store = PostgresBacktestStore(repo)
+    else:
+        backtest_store = EmptyBacktestRepository()
     service = OperationsService(repo, load_dashboard_refresh_seconds())
     app = FastAPI(title="goodmoneying 시스템 트레이딩 운영 API", version="0.2.0")
     app.add_middleware(
@@ -588,6 +606,24 @@ def create_app(
                 },
             )
         return StrategyVersionResponse.model_validate(result)
+
+    @app.get(
+        "/v1/backtest-runs/{backtestRunId}",
+        response_model=BacktestRunResponse,
+    )
+    def get_backtest_run(
+        backtestRunId: Annotated[int, Path(gt=0)],
+    ) -> BacktestRunResponse:
+        result = backtest_store.get_run(backtestRunId)
+        if result is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": "BACKTEST_RUN_NOT_FOUND",
+                    "message": "백테스트 실행 결과가 없습니다.",
+                },
+            )
+        return BacktestRunResponse.model_validate(result)
 
     @app.post(
         "/v1/dataset-builds",

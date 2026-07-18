@@ -23,6 +23,7 @@ def test_openapi_contract_contains_m1_paths() -> None:
         "/v1/strategies",
         "/v1/strategies/{strategyId}/versions",
         "/v1/strategy-versions/{strategyVersionId}",
+        "/v1/backtest-runs/{backtestRunId}",
         "/v1/dashboard/summary",
         "/v1/dashboard/summary/stream",
         "/v1/dashboard/overview",
@@ -66,6 +67,8 @@ def test_openapi_contract_groups_operations_with_described_tags() -> None:
         "백필(Backfill)",
         "알림(Notification)",
         "전략(Strategy)",
+        "연구 데이터셋(Dataset)",
+        "백테스트(Backtest)",
     }
     assert set(tag_descriptions) == expected_tags
     assert all(tag_descriptions[tag] for tag in expected_tags)
@@ -79,6 +82,7 @@ def test_openapi_contract_groups_operations_with_described_tags() -> None:
         ("post", "/v1/strategies/{strategyId}/versions"): ["전략(Strategy)"],
         ("get", "/v1/strategies/{strategyId}/versions"): ["전략(Strategy)"],
         ("get", "/v1/strategy-versions/{strategyVersionId}"): ["전략(Strategy)"],
+        ("get", "/v1/backtest-runs/{backtestRunId}"): ["백테스트(Backtest)"],
         ("get", "/v1/dashboard/summary"): ["대시보드(Dashboard)"],
         ("get", "/v1/dashboard/summary/stream"): ["대시보드(Dashboard)"],
         ("get", "/v1/dashboard/overview"): ["대시보드(Dashboard)"],

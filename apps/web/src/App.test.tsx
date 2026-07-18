@@ -181,6 +181,23 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.getByText("REST validation")).toBeInTheDocument();
   });
 
+  it("Backtest Lab 전용 메뉴에서 저장된 run 결과를 읽기 전용으로 탐색한다", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Backtest Lab" }));
+
+    expect(await screen.findByRole("heading", { name: "Backtest Lab" })).toBeInTheDocument();
+    expect(await screen.findByText("Run #21")).toBeInTheDocument();
+    expect(screen.getByText("finalEquity")).toBeInTheDocument();
+    expect(screen.getAllByText("1009.579790")).toHaveLength(2);
+    expect(screen.getByRole("table", { name: "백테스트 체결 결과" })).toHaveTextContent(
+      "partially_filled"
+    );
+    expect(screen.getByText("REST 조회")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "백테스트 실행" })).not.toBeInTheDocument();
+  });
+
   it("운영 상태는 코인별 실시간 수집과 수집 범위를 동적인 숫자로 표시한다", async () => {
     const user = userEvent.setup();
     render(<App />);

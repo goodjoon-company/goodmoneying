@@ -351,6 +351,44 @@ describe("운영 API 클라이언트", () => {
       .toBeUndefined();
   });
 
+  it("Backtest Lab은 저장된 run 조회 API를 REST 계약대로 호출한다", async () => {
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/v1/backtest-runs/21") {
+        return Response.json({
+          backtestRunId: 21,
+          strategyVersionId: 41,
+          datasetVersionId: 12,
+          status: "succeeded",
+          inputHash: "e".repeat(64),
+          resultHash: "f".repeat(64),
+          metrics: [
+            {
+              metricName: "finalEquity",
+              scopeKey: "run",
+              metricValue: "1009.579790",
+              metricPayload: {}
+            }
+          ],
+          trades: [],
+          artifacts: []
+        });
+      }
+      return new Response(`unexpected ${url}`, { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    const { loadBacktestRun } = await import("./api");
+
+    await expect(loadBacktestRun(21)).resolves.toMatchObject({
+      backtestRunId: 21,
+      status: "succeeded",
+      resultHash: "f".repeat(64),
+      metrics: [{ metricName: "finalEquity", metricValue: "1009.579790" }]
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/v1/backtest-runs/21");
+  });
+
   it("구버전 대시보드 응답에 새 운영 콘솔 필드가 없어도 첫 화면용 기본값을 채운다", async () => {
     const dashboardWithoutWorkerStatus = { ...dashboard };
     delete (dashboardWithoutWorkerStatus as Partial<typeof dashboard>).workerStatus;

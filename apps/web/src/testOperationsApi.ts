@@ -450,7 +450,7 @@ export function createTestOperationsFetch(
         nextCursor: null
       });
     }
-    if (url.includes("/v1/dataset-versions")) {
+  if (url.includes("/v1/dataset-versions")) {
       const series = {
         instrumentId: 1,
         dataKind: "candle",
@@ -488,6 +488,47 @@ export function createTestOperationsFetch(
           }
         ],
         nextCursor: null
+      });
+    }
+    if (url.endsWith("/v1/backtest-runs/21")) {
+      return Response.json({
+        backtestRunId: 21,
+        strategyVersionId: 41,
+        datasetVersionId: 12,
+        status: "succeeded",
+        inputHash: "e".repeat(64),
+        resultHash: "f".repeat(64),
+        metrics: [
+          {
+            metricName: "finalEquity",
+            scopeKey: "run",
+            metricValue: "1009.579790",
+            metricPayload: {}
+          }
+        ],
+        trades: [
+          {
+            tradeSequence: 1,
+            side: "buy",
+            requestedQuantity: "3",
+            filledQuantity: "1.00",
+            remainingQuantity: "2.00",
+            fillPrice: "100.100",
+            feePaid: "0.100100",
+            status: "partially_filled",
+            occurredAt: "2026-07-18T00:00:00Z",
+            knowledgeAt: "2026-07-18T00:00:00Z"
+          }
+        ],
+        artifacts: [
+          {
+            artifactType: "walk_forward_summary",
+            contentHash: "c".repeat(64),
+            mediaType: "application/json",
+            storageUri: "artifact://p4-3/walk-forward",
+            metadata: { folds: 3 }
+          }
+        ]
       });
     }
     if (url.match(/\/v1\/instruments\/\d+$/)) {

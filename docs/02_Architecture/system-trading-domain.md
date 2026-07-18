@@ -191,6 +191,8 @@ run은 dataset content hash, strategy graph hash, engine semantic version, param
 
 P4-1은 `backtest-core-v1` 순수 엔진을 공유 모듈에 둔다. 이 엔진은 공통 전략 평가기(Common Strategy Evaluator)가 만든 신호를 이미 계산된 `BacktestSignal`로 받아 사건 재생·체결·성과 계산만 수행한다. 전략 연구, 백테스트, paper·shadow·live-ready는 같은 공통 전략 평가기와 주문 의미를 사용해야 하며, golden replay는 같은 입력 신호를 다시 주입했을 때 신호 동등성을 검증하는 기준이다. 호가가 없는 캔들 재생은 `orderbook_absent_uses_candle_close`, 부분 체결은 `partial_fill_by_candle_volume_participation` 가정을 결과에 남긴다. 기계 검증 계약은 [백테스트 엔진 계약](../contracts/backtest-engine.md)을 따른다.
 
+P4-2 Backtest Store는 `backtest_runs`에 `input_hash`, `result_hash`, dataset content hash, strategy graph hash를 함께 저장한다. 저장 대상은 published 전략 버전과 sealed 데이터셋 버전으로 제한하며, 성공·실패·취소 terminal run과 `backtest_trades`, `backtest_equity_points`, `backtest_metrics`, `backtest_artifacts` 결과 행은 append-only로 봉인한다.
+
 ## 7. 실시간 envelope
 
 ```json

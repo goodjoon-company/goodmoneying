@@ -50,6 +50,44 @@ $$;
 
 
 --
+-- Name: enforce_backtest_run_terminal_seal(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enforce_backtest_run_terminal_seal() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'backtest_runs is append-only';
+  END IF;
+
+  IF OLD.status IN ('succeeded','failed','cancelled') THEN
+    RAISE EXCEPTION 'backtest_runs is append-only';
+  END IF;
+
+  IF NEW.strategy_version_id <> OLD.strategy_version_id
+     OR NEW.strategy_graph_hash <> OLD.strategy_graph_hash
+     OR NEW.dataset_version_id <> OLD.dataset_version_id
+     OR NEW.dataset_content_hash <> OLD.dataset_content_hash
+     OR NEW.engine_version <> OLD.engine_version
+     OR NEW.input_hash <> OLD.input_hash
+     OR NEW.parameter_hash <> OLD.parameter_hash
+     OR NEW.seed <> OLD.seed
+     OR NEW.idempotency_key <> OLD.idempotency_key
+     OR NEW.request_id <> OLD.request_id
+     OR NEW.actor_id <> OLD.actor_id
+     OR NEW.requested_at <> OLD.requested_at
+     OR NEW.reason <> OLD.reason
+     OR NEW.request_hash <> OLD.request_hash THEN
+    RAISE EXCEPTION 'backtest_runs immutable identity fields cannot be changed';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
 -- Name: enforce_dataset_version_seal(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -504,6 +542,19 @@ $$;
 
 
 --
+-- Name: reject_backtest_result_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_backtest_result_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END;
+$$;
+
+
+--
 -- Name: reject_candle_rollup_invalidation_mutation(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -643,6 +694,35 @@ $$;
 CREATE FUNCTION public.source_candle_content_hash(p_open numeric, p_high numeric, p_low numeric, p_close numeric, p_volume numeric, p_trade_amount numeric) RETURNS text
     LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
     RETURN encode(sha256(convert_to(concat_ws('|'::text, (trim_scale(p_open))::text, (trim_scale(p_high))::text, (trim_scale(p_low))::text, (trim_scale(p_close))::text, (trim_scale(p_volume))::text, (trim_scale(p_trade_amount))::text), 'UTF8'::name)), 'hex'::text);
+
+
+--
+-- Name: validate_backtest_run_inputs(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.validate_backtest_run_inputs() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  -- strategy.status <> 'published'은 백테스트 실행 입력으로 거부한다.
+  IF NOT EXISTS (
+    SELECT 1 FROM strategy_versions strategy
+    WHERE strategy.id = NEW.strategy_version_id AND strategy.status = 'published'
+  ) THEN
+    RAISE EXCEPTION 'backtest_runs requires published strategy version';
+  END IF;
+
+  -- version.sealed_at IS NULL인 데이터셋은 백테스트 실행 입력으로 거부한다.
+  IF NOT EXISTS (
+    SELECT 1 FROM dataset_versions version
+    WHERE version.id = NEW.dataset_version_id AND version.sealed_at IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'backtest_runs requires sealed dataset version';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
 
 
 --
@@ -891,6 +971,211 @@ CREATE TABLE public.backfill_safety_gate (
     CONSTRAINT backfill_safety_gate_free_capacity_bytes_check CHECK ((free_capacity_bytes >= 0)),
     CONSTRAINT backfill_safety_gate_required_capacity_bytes_check CHECK ((required_capacity_bytes >= 0)),
     CONSTRAINT backfill_safety_gate_singleton_check CHECK (singleton)
+);
+
+
+--
+-- Name: backtest_artifacts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.backtest_artifacts (
+    id bigint NOT NULL,
+    run_id bigint NOT NULL,
+    artifact_type text NOT NULL,
+    content_hash text NOT NULL,
+    media_type text NOT NULL,
+    storage_uri text,
+    artifact_json jsonb,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT backtest_artifacts_artifact_type_check CHECK ((btrim(artifact_type) <> ''::text)),
+    CONSTRAINT backtest_artifacts_check CHECK (((storage_uri IS NOT NULL) OR (artifact_json IS NOT NULL))),
+    CONSTRAINT backtest_artifacts_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT backtest_artifacts_media_type_check CHECK ((btrim(media_type) <> ''::text))
+);
+
+
+--
+-- Name: backtest_artifacts_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.backtest_artifacts ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.backtest_artifacts_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: backtest_equity_points; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.backtest_equity_points (
+    id bigint NOT NULL,
+    run_id bigint NOT NULL,
+    point_sequence integer NOT NULL,
+    occurred_at timestamp with time zone NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    cash numeric(38,18) NOT NULL,
+    base_position numeric(38,18) NOT NULL,
+    equity numeric(38,18) NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT backtest_equity_points_check CHECK ((knowledge_at >= occurred_at)),
+    CONSTRAINT backtest_equity_points_point_sequence_check CHECK ((point_sequence > 0))
+);
+
+
+--
+-- Name: backtest_equity_points_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.backtest_equity_points ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.backtest_equity_points_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: backtest_metrics; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.backtest_metrics (
+    id bigint NOT NULL,
+    run_id bigint NOT NULL,
+    metric_name text NOT NULL,
+    scope_key text DEFAULT 'run'::text NOT NULL,
+    metric_value numeric(38,18),
+    metric_payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT backtest_metrics_check CHECK (((metric_value IS NOT NULL) OR (metric_payload <> '{}'::jsonb))),
+    CONSTRAINT backtest_metrics_metric_name_check CHECK ((btrim(metric_name) <> ''::text)),
+    CONSTRAINT backtest_metrics_scope_key_check CHECK ((btrim(scope_key) <> ''::text))
+);
+
+
+--
+-- Name: backtest_metrics_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.backtest_metrics ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.backtest_metrics_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: backtest_runs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.backtest_runs (
+    id bigint NOT NULL,
+    strategy_version_id bigint NOT NULL,
+    strategy_graph_hash text NOT NULL,
+    dataset_version_id bigint NOT NULL,
+    dataset_content_hash text NOT NULL,
+    engine_version text NOT NULL,
+    status text NOT NULL,
+    input_hash text NOT NULL,
+    result_hash text,
+    parameter_hash text NOT NULL,
+    seed bigint NOT NULL,
+    assumptions jsonb DEFAULT '[]'::jsonb NOT NULL,
+    idempotency_key text NOT NULL,
+    request_id text NOT NULL,
+    actor_id text NOT NULL,
+    requested_at timestamp with time zone NOT NULL,
+    reason text NOT NULL,
+    request_hash text NOT NULL,
+    started_at timestamp with time zone,
+    finished_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT backtest_runs_actor_id_check CHECK ((btrim(actor_id) <> ''::text)),
+    CONSTRAINT backtest_runs_assumptions_check CHECK ((jsonb_typeof(assumptions) = 'array'::text)),
+    CONSTRAINT backtest_runs_check CHECK (((status <> 'running'::text) OR (started_at IS NOT NULL))),
+    CONSTRAINT backtest_runs_check1 CHECK (((status <> 'queued'::text) OR ((started_at IS NULL) AND (finished_at IS NULL)))),
+    CONSTRAINT backtest_runs_check2 CHECK (((status <> ALL (ARRAY['succeeded'::text, 'failed'::text, 'cancelled'::text])) OR (finished_at IS NOT NULL))),
+    CONSTRAINT backtest_runs_check3 CHECK (((status <> 'succeeded'::text) OR (result_hash IS NOT NULL))),
+    CONSTRAINT backtest_runs_dataset_content_hash_check CHECK ((dataset_content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT backtest_runs_engine_version_check CHECK ((btrim(engine_version) <> ''::text)),
+    CONSTRAINT backtest_runs_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
+    CONSTRAINT backtest_runs_input_hash_check CHECK ((input_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT backtest_runs_parameter_hash_check CHECK ((parameter_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT backtest_runs_reason_check CHECK ((btrim(reason) <> ''::text)),
+    CONSTRAINT backtest_runs_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT backtest_runs_request_id_check CHECK ((btrim(request_id) <> ''::text)),
+    CONSTRAINT backtest_runs_result_hash_check CHECK (((result_hash IS NULL) OR (result_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT backtest_runs_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'succeeded'::text, 'failed'::text, 'cancelled'::text]))),
+    CONSTRAINT backtest_runs_strategy_graph_hash_check CHECK ((strategy_graph_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+
+--
+-- Name: backtest_runs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.backtest_runs ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.backtest_runs_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: backtest_trades; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.backtest_trades (
+    id bigint NOT NULL,
+    run_id bigint NOT NULL,
+    trade_sequence integer NOT NULL,
+    signal_sequence integer,
+    side text NOT NULL,
+    requested_quantity numeric(38,18) NOT NULL,
+    filled_quantity numeric(38,18) NOT NULL,
+    remaining_quantity numeric(38,18) NOT NULL,
+    fill_price numeric(38,18) NOT NULL,
+    fee_paid numeric(38,18) NOT NULL,
+    status text NOT NULL,
+    occurred_at timestamp with time zone NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT backtest_trades_check CHECK (((filled_quantity + remaining_quantity) = requested_quantity)),
+    CONSTRAINT backtest_trades_check1 CHECK ((knowledge_at >= occurred_at)),
+    CONSTRAINT backtest_trades_fee_paid_check CHECK ((fee_paid >= (0)::numeric)),
+    CONSTRAINT backtest_trades_fill_price_check CHECK ((fill_price >= (0)::numeric)),
+    CONSTRAINT backtest_trades_filled_quantity_check CHECK ((filled_quantity >= (0)::numeric)),
+    CONSTRAINT backtest_trades_remaining_quantity_check CHECK ((remaining_quantity >= (0)::numeric)),
+    CONSTRAINT backtest_trades_requested_quantity_check CHECK ((requested_quantity >= (0)::numeric)),
+    CONSTRAINT backtest_trades_side_check CHECK ((side = ANY (ARRAY['buy'::text, 'sell'::text]))),
+    CONSTRAINT backtest_trades_status_check CHECK ((status = ANY (ARRAY['filled'::text, 'partially_filled'::text, 'rejected'::text]))),
+    CONSTRAINT backtest_trades_trade_sequence_check CHECK ((trade_sequence > 0))
+);
+
+
+--
+-- Name: backtest_trades_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.backtest_trades ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.backtest_trades_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
 );
 
 
@@ -3363,6 +3648,110 @@ ALTER TABLE ONLY public.backfill_safety_gate
 
 
 --
+-- Name: backtest_artifacts backtest_artifacts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_artifacts
+    ADD CONSTRAINT backtest_artifacts_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: backtest_artifacts backtest_artifacts_run_id_artifact_type_content_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_artifacts
+    ADD CONSTRAINT backtest_artifacts_run_id_artifact_type_content_hash_key UNIQUE (run_id, artifact_type, content_hash);
+
+
+--
+-- Name: backtest_equity_points backtest_equity_points_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_equity_points
+    ADD CONSTRAINT backtest_equity_points_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: backtest_equity_points backtest_equity_points_run_id_occurred_at_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_equity_points
+    ADD CONSTRAINT backtest_equity_points_run_id_occurred_at_key UNIQUE (run_id, occurred_at);
+
+
+--
+-- Name: backtest_equity_points backtest_equity_points_run_id_point_sequence_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_equity_points
+    ADD CONSTRAINT backtest_equity_points_run_id_point_sequence_key UNIQUE (run_id, point_sequence);
+
+
+--
+-- Name: backtest_metrics backtest_metrics_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_metrics
+    ADD CONSTRAINT backtest_metrics_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: backtest_metrics backtest_metrics_run_id_metric_name_scope_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_metrics
+    ADD CONSTRAINT backtest_metrics_run_id_metric_name_scope_key_key UNIQUE (run_id, metric_name, scope_key);
+
+
+--
+-- Name: backtest_runs backtest_runs_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_runs
+    ADD CONSTRAINT backtest_runs_idempotency_key_key UNIQUE (idempotency_key);
+
+
+--
+-- Name: backtest_runs backtest_runs_input_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_runs
+    ADD CONSTRAINT backtest_runs_input_hash_key UNIQUE (input_hash);
+
+
+--
+-- Name: backtest_runs backtest_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_runs
+    ADD CONSTRAINT backtest_runs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: backtest_runs backtest_runs_strategy_version_id_dataset_version_id_engine_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_runs
+    ADD CONSTRAINT backtest_runs_strategy_version_id_dataset_version_id_engine_key UNIQUE (strategy_version_id, dataset_version_id, engine_version, parameter_hash, seed);
+
+
+--
+-- Name: backtest_trades backtest_trades_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_trades
+    ADD CONSTRAINT backtest_trades_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: backtest_trades backtest_trades_run_id_trade_sequence_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_trades
+    ADD CONSTRAINT backtest_trades_run_id_trade_sequence_key UNIQUE (run_id, trade_sequence);
+
+
+--
 -- Name: candidate_universe_entries candidate_universe_entries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3776,6 +4165,14 @@ ALTER TABLE ONLY public.dataset_version_series
 
 ALTER TABLE ONLY public.dataset_versions
     ADD CONSTRAINT dataset_versions_content_hash_key UNIQUE (content_hash);
+
+
+--
+-- Name: dataset_versions dataset_versions_id_content_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_versions
+    ADD CONSTRAINT dataset_versions_id_content_hash_key UNIQUE (id, content_hash);
 
 
 --
@@ -4400,6 +4797,20 @@ CREATE INDEX backfill_jobs_status_idx ON public.backfill_jobs USING btree (statu
 
 
 --
+-- Name: backtest_runs_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX backtest_runs_status_idx ON public.backtest_runs USING btree (status, created_at, id);
+
+
+--
+-- Name: backtest_runs_strategy_dataset_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX backtest_runs_strategy_dataset_idx ON public.backtest_runs USING btree (strategy_version_id, dataset_version_id, created_at DESC, id DESC);
+
+
+--
 -- Name: candle_rollup_invalidations_range_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4691,6 +5102,90 @@ CREATE INDEX trade_events_instrument_time_idx ON public.trade_events USING btree
 --
 
 CREATE UNIQUE INDEX trade_events_source_receipt_uk ON public.trade_events USING btree (source_receipt_id) WHERE (source_receipt_id IS NOT NULL);
+
+
+--
+-- Name: backtest_artifacts backtest_artifacts_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER backtest_artifacts_append_only_delete BEFORE DELETE ON public.backtest_artifacts FOR EACH ROW EXECUTE FUNCTION public.reject_backtest_result_mutation();
+
+
+--
+-- Name: backtest_artifacts backtest_artifacts_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER backtest_artifacts_append_only_update BEFORE UPDATE ON public.backtest_artifacts FOR EACH ROW EXECUTE FUNCTION public.reject_backtest_result_mutation();
+
+
+--
+-- Name: backtest_equity_points backtest_equity_points_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER backtest_equity_points_append_only_delete BEFORE DELETE ON public.backtest_equity_points FOR EACH ROW EXECUTE FUNCTION public.reject_backtest_result_mutation();
+
+
+--
+-- Name: backtest_equity_points backtest_equity_points_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER backtest_equity_points_append_only_update BEFORE UPDATE ON public.backtest_equity_points FOR EACH ROW EXECUTE FUNCTION public.reject_backtest_result_mutation();
+
+
+--
+-- Name: backtest_metrics backtest_metrics_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER backtest_metrics_append_only_delete BEFORE DELETE ON public.backtest_metrics FOR EACH ROW EXECUTE FUNCTION public.reject_backtest_result_mutation();
+
+
+--
+-- Name: backtest_metrics backtest_metrics_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER backtest_metrics_append_only_update BEFORE UPDATE ON public.backtest_metrics FOR EACH ROW EXECUTE FUNCTION public.reject_backtest_result_mutation();
+
+
+--
+-- Name: backtest_runs backtest_runs_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER backtest_runs_append_only_delete BEFORE DELETE ON public.backtest_runs FOR EACH ROW EXECUTE FUNCTION public.enforce_backtest_run_terminal_seal();
+
+
+--
+-- Name: backtest_runs backtest_runs_terminal_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER backtest_runs_terminal_update BEFORE UPDATE ON public.backtest_runs FOR EACH ROW EXECUTE FUNCTION public.enforce_backtest_run_terminal_seal();
+
+
+--
+-- Name: backtest_runs backtest_runs_validate_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER backtest_runs_validate_insert BEFORE INSERT ON public.backtest_runs FOR EACH ROW EXECUTE FUNCTION public.validate_backtest_run_inputs();
+
+
+--
+-- Name: backtest_runs backtest_runs_validate_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER backtest_runs_validate_update BEFORE UPDATE ON public.backtest_runs FOR EACH ROW EXECUTE FUNCTION public.validate_backtest_run_inputs();
+
+
+--
+-- Name: backtest_trades backtest_trades_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER backtest_trades_append_only_delete BEFORE DELETE ON public.backtest_trades FOR EACH ROW EXECUTE FUNCTION public.reject_backtest_result_mutation();
+
+
+--
+-- Name: backtest_trades backtest_trades_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER backtest_trades_append_only_update BEFORE UPDATE ON public.backtest_trades FOR EACH ROW EXECUTE FUNCTION public.reject_backtest_result_mutation();
 
 
 --
@@ -5192,6 +5687,70 @@ ALTER TABLE ONLY public.backfill_job_targets
 
 ALTER TABLE ONLY public.backfill_job_targets
     ADD CONSTRAINT backfill_job_targets_target_spec_id_fkey FOREIGN KEY (target_spec_id) REFERENCES public.collection_target_specs(id);
+
+
+--
+-- Name: backtest_artifacts backtest_artifacts_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_artifacts
+    ADD CONSTRAINT backtest_artifacts_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.backtest_runs(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: backtest_equity_points backtest_equity_points_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_equity_points
+    ADD CONSTRAINT backtest_equity_points_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.backtest_runs(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: backtest_metrics backtest_metrics_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_metrics
+    ADD CONSTRAINT backtest_metrics_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.backtest_runs(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: backtest_runs backtest_runs_dataset_version_id_dataset_content_hash_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_runs
+    ADD CONSTRAINT backtest_runs_dataset_version_id_dataset_content_hash_fkey FOREIGN KEY (dataset_version_id, dataset_content_hash) REFERENCES public.dataset_versions(id, content_hash) ON DELETE RESTRICT;
+
+
+--
+-- Name: backtest_runs backtest_runs_dataset_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_runs
+    ADD CONSTRAINT backtest_runs_dataset_version_id_fkey FOREIGN KEY (dataset_version_id) REFERENCES public.dataset_versions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: backtest_runs backtest_runs_strategy_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_runs
+    ADD CONSTRAINT backtest_runs_strategy_version_id_fkey FOREIGN KEY (strategy_version_id) REFERENCES public.strategy_versions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: backtest_runs backtest_runs_strategy_version_id_strategy_graph_hash_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_runs
+    ADD CONSTRAINT backtest_runs_strategy_version_id_strategy_graph_hash_fkey FOREIGN KEY (strategy_version_id, strategy_graph_hash) REFERENCES public.strategy_versions(id, graph_hash) ON DELETE RESTRICT;
+
+
+--
+-- Name: backtest_trades backtest_trades_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.backtest_trades
+    ADD CONSTRAINT backtest_trades_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.backtest_runs(id) ON DELETE RESTRICT;
 
 
 --
@@ -6628,4 +7187,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260717001100'),
     ('20260717001200'),
     ('20260717001300'),
-    ('20260718000100');
+    ('20260718000100'),
+    ('20260718000200');

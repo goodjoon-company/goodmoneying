@@ -7,6 +7,7 @@ import { formatKstDateTime } from "../displayFormat";
 import { useOperationsConsole, type SectionId } from "../useOperationsConsole";
 import { DataLab } from "../features/dataLab/DataLab";
 import { BacktestLab } from "../features/backtestLab/BacktestLab";
+import { BotWorkshop } from "../features/botWorkshop/BotWorkshop";
 import { StrategyStudio } from "../features/strategyStudio/StrategyStudio";
 import { InstrumentName } from "./common";
 import { Dashboard } from "./Dashboard";
@@ -39,7 +40,8 @@ const primaryMenuItems: { id: SectionId; label: string; badge: string }[] = [
   { id: "analysis", label: "코인 분석", badge: "NEW" },
   { id: "data-lab", label: "Data Lab", badge: "P2-6" },
   { id: "strategy-studio", label: "Strategy Studio", badge: "P3-2" },
-  { id: "backtest-lab", label: "Backtest Lab", badge: "P4-3" }
+  { id: "backtest-lab", label: "Backtest Lab", badge: "P4-3" },
+  { id: "bot-workshop", label: "Bot Workshop", badge: "P5-6" }
 ];
 
 const upbitWorkbenchMenuItems: { id: WorkbenchModuleId; label: string; badge: string }[] = [
@@ -96,6 +98,12 @@ const sectionMeta: Record<SectionId, { crumb: string; milestone: string; title: 
     milestone: "P4-3 · 백테스트 조회",
     title: "백테스트 실행 결과",
     desc: "저장된 Backtest Store run의 성과, 체결, 산출물을 읽기 전용으로 확인합니다."
+  },
+  "bot-workshop": {
+    crumb: "goodmoneying / Bot Workshop / P5-6",
+    milestone: "P5-6 · 운영 리허설",
+    title: "Bot Workshop",
+    desc: "Portfolio allocation부터 paper·shadow 운영 rehearsal, 안전 잠금과 reconciliation 증적을 읽기 전용으로 확인합니다."
   },
   system: {
     crumb: "goodmoneying / 시스템 관리 / P2.1",
@@ -246,7 +254,7 @@ export function OperationsConsole() {
           <div className="runtime-pills" aria-label="화면 갱신 기준">
             <span>표시 KST</span>
             <span>저장 UTC</span>
-            <span>{activeSection === "strategy-studio" ? "REST validation" : activeSection === "analysis" || activeSection === "system" ? "WebSocket 실시간" : activeSection === "upbit-api-test" ? "게이트웨이 격리 조회" : activeSection === "data-lab" ? "REST polling" : activeSection === "backtest-lab" ? "REST 조회" : "SSE 실시간"}</span>
+            <span>{activeSection === "strategy-studio" ? "REST validation" : activeSection === "analysis" || activeSection === "system" ? "WebSocket 실시간" : activeSection === "upbit-api-test" ? "게이트웨이 격리 조회" : activeSection === "data-lab" ? "REST polling" : activeSection === "backtest-lab" ? "REST 조회" : activeSection === "bot-workshop" ? "REST 준비" : "SSE 실시간"}</span>
             <span>마지막 갱신 {formatFreshness(snapshot.dashboard.refreshedAt)}</span>
           </div>
         </section>
@@ -271,6 +279,7 @@ export function OperationsConsole() {
         {activeSection === "data-lab" ? <DataLab /> : null}
         {activeSection === "strategy-studio" ? <StrategyStudio /> : null}
         {activeSection === "backtest-lab" ? <BacktestLab /> : null}
+        {activeSection === "bot-workshop" ? <BotWorkshop /> : null}
         {activeSection === "system" ? <SystemManagement /> : null}
         {activeSection === "upbit-api-test" ? <UpbitApiTest moduleId={activeWorkbenchModule}
           market={workbenchMarket} onMarketChange={setWorkbenchMarket} /> : null}

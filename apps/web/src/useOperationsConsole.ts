@@ -12,6 +12,7 @@ export type SectionId =
   | "data-lab"
   | "strategy-studio"
   | "backtest-lab"
+  | "bot-workshop"
   | "system"
   | "upbit-api-test";
 

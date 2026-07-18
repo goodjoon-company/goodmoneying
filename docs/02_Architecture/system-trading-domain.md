@@ -215,6 +215,8 @@ P5-4 Risk Worker는 새 DB migration 없이 P5-1의 `order_intents`, `risk_limit
 
 P5-5 reconciliation은 private 계좌 조회 없이 paper/shadow 내부 주문·체결 원장과 포지션 projection을 대사한다. `20260718000800_p5_reconciliation_runs.sql`은 `exchange_orders`별 대사 run key, request hash, 관측 상태, 관측 fill count, actor·reason·evidence를 append-only로 저장한다. `PostgresPortfolioBotStore.reconcile_exchange_order()`는 대상 `exchange_orders`와 `order_intents`를 잠그고, 새 reconciliation fill만 `order_fills(fill_source='reconciliation')`에 append한 뒤 같은 transaction에서 `position_projections`를 갱신한다. 동일 run key와 동일 request hash는 멱등으로 흡수하고, 같은 fill sequence의 기존 fill과 관측 fill이 다르면 position을 바꾸지 않고 `reconciliation_mismatch` 위험 이벤트를 남긴다. 주문 결과가 충분히 확인되지 않은 관측은 `outcome_unknown`으로 남기며 동일 주문 재제출을 허용하지 않는다. P5-5는 private WebSocket, 주문 테스트 API, 실제 Upbit 주문 submit/cancel/read 경로를 호출하지 않는다.
 
+P5-6 Bot Workshop은 P5 저장소·worker 상태의 운영 흐름을 UI에서 읽기 전용으로 묶는다. Operations Console은 Bot Workshop 메뉴와 `REST 준비` 갱신 기준을 제공하고, 화면은 Portfolio allocation, 봇 승격 단계, order intent부터 position projection까지의 paper/shadow 파이프라인, global kill switch, 승인 checklist, reconciliation mismatch/outcome_unknown 증적을 표시한다. live_ready/live는 안전 잠금 상태로 표현하며 일반 UI action으로 활성화하지 않는다. P5-6은 새 DB/API 계약을 만들지 않고 실제 Upbit 주문 submit/cancel/read, private WebSocket, 주문 테스트 API 경로를 호출하지 않는다.
+
 ## 7. 실시간 envelope
 
 ```json

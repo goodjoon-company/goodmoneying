@@ -1,7 +1,7 @@
 # 시스템 트레이딩 UI 사양(UI Spec)
 
 상태: Accepted Target
-구현 상태: P2-7 내부 WebSocket envelope와 P2-6 Data Lab 구현됨
+구현 상태: P5-6 Bot Workshop까지 구현됨
 추적: GitHub Issue #28~#34
 
 ## 1. 디자인 방향
@@ -47,6 +47,15 @@ P2-6 Data Lab은 이 원칙을 다음 범위로 적용한다.
 - build, version, exact member의 다음 page는 cursor 기반 더 보기로 명시 탐색한다.
 - coverage heatmap은 긴 범위에서도 viewport 가로 overflow를 만들지 않도록 wrap한다.
 - 화면 갱신 기준은 Data Lab에서는 `REST polling`, Coin Analysis에서는 `P2 envelope WebSocket`으로 분리해 표시한다.
+
+P5-6 Bot Workshop은 이 원칙을 다음 범위로 적용한다.
+
+- Operations Console 1차 메뉴의 Bot Workshop entry에서 진입한다.
+- 화면 갱신 기준은 `REST 준비`로 표시해 아직 별도 Bot API를 소비하지 않는 읽기 전용 workshop임을 구분한다.
+- Portfolio allocation → paper 운영 준비, 봇 승격 단계, 주문 파이프라인, kill switch/checklist, 대사 증적을 card 안 card 없이 같은 정보 밀도로 배치한다.
+- `live_ready`와 `live`는 성공 green이 아니라 안전 잠금 상태로 표시하며 활성화 action을 제공하지 않는다.
+- `backtest_ready`, `live_ready`, `live` 표시는 UI상 준비·잠금 의미이며, P5 저장소의 paper/shadow 실행 계약과 혼동하지 않도록 별도 action이나 API 쓰기를 만들지 않는다.
+- 390px mobile viewport에서 stages와 evidence는 단일 열로 접히고 문서 전체 horizontal overflow를 만들지 않는다.
 
 ## 4. 상호작용
 

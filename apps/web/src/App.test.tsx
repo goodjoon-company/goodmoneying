@@ -198,6 +198,30 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.queryByRole("button", { name: "백테스트 실행" })).not.toBeInTheDocument();
   });
 
+  it("Bot Workshop 메뉴에서 P5-6 읽기 전용 운영 리허설 정보를 확인한다", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Bot Workshop" }));
+
+    expect((await screen.findAllByRole("heading", { name: "Bot Workshop" })).length)
+      .toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("P5-6 · Bot Workshop")).toBeInTheDocument();
+    expect(screen.getByText("Portfolio allocation → paper 운영 준비")).toBeInTheDocument();
+    expect(screen.getByText("paper · paper rehearsal")).toBeInTheDocument();
+    expect(screen.getByText("shadow · shadow rehearsal")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "live 안전 잠금" })).toHaveTextContent(
+      "live-ready · live 잠금"
+    );
+    expect(screen.getByRole("region", { name: "킬스위치와 승인 checklist" }))
+      .toHaveTextContent("global kill switch");
+    expect(screen.getByRole("region", { name: "대사 증적" })).toHaveTextContent(
+      "reconciliation_mismatch"
+    );
+    expect(screen.getByLabelText("화면 갱신 기준")).toHaveTextContent("REST 준비");
+    expect(screen.queryByRole("button", { name: /주문.*제출|live.*활성화/i })).not.toBeInTheDocument();
+  });
+
   it("운영 상태는 코인별 실시간 수집과 수집 범위를 동적인 숫자로 표시한다", async () => {
     const user = userEvent.setup();
     render(<App />);

@@ -1,7 +1,7 @@
 # 시스템 트레이딩 UI 흐름(UI Flow)
 
 상태: Accepted Target
-구현 상태: P2-7 내부 WebSocket envelope와 Data Lab 구현됨
+구현 상태: P5-6 Bot Workshop까지 구현됨
 추적: GitHub Issue #28~#34
 
 ## 1. 정보 구조
@@ -49,6 +49,8 @@ Coin Analysis 실시간 화면은 P2-7부터 내부 WebSocket envelope를 소비
 `성공 backtest → Portfolio allocation → Bot Workshop paper → shadow → live-ready → 별도 운영 승인 live`
 
 각 승격은 승인 checklist와 실패 이유를 표시한다. 모든 화면에서 global kill switch 상태가 보이며 mobile에서도 두 단계 확인으로 arm할 수 있다. live enable은 일반 UI 동작과 분리하고 이 구현 목표 동안 노출하지 않는다.
+
+P5-6 Bot Workshop은 이 흐름 중 Portfolio allocation → paper/shadow rehearsal → live-ready/live safety lock을 읽기 전용으로 표시한다. 주문 파이프라인은 order intent, risk evaluation, paper execution job, reconciliation, position projection 순서로 보여주며, live 활성화와 외부 주문 제출 action은 제공하지 않는다.
 
 ### 장애 복구
 

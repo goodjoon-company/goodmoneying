@@ -2,7 +2,7 @@
 
 상태: 승인됨(Accepted)
 
-최종 갱신: 2026-07-17
+최종 갱신: 2026-07-18
 
 ## 1. 목적과 경계
 
@@ -25,10 +25,10 @@
 
 이 문서는 승인된 목표 아키텍처다. `Accepted`는 구현 완료나 운영 강제를 의미하지 않는다. 구현 상태는 다음과 같으며 미구현 배포 gate가 하나라도 있으면 P8 승격을 차단한다.
 
-| 영역 | 2026-07-17 기준 | 구현 추적 |
+| 영역 | 2026-07-18 기준 | 구현 추적 |
 |---|---|---|
 | 기존 수집·백필·집계, API·Web, Upbit Lab·Gateway | 부분 구현 | Issue #28, #29, #33 |
-| 전략·백테스트·포트폴리오·봇·주문·위험 | P3 전략, P4 백테스트, P5-1 portfolio/bot/order intent/risk DB 계약, P5-2 portfolio API/Store, P5-3 paper execution queue/worker, P5-4 risk evaluation worker와 kill switch 차단, P5-5 paper/shadow 내부 reconciliation 증적과 projection 갱신 구현. Bot Workshop UI는 후속 P5 조각 | Issue #30~#33 |
+| 전략·백테스트·포트폴리오·봇·주문·위험 | P3 전략, P4 백테스트, P5-1 portfolio/bot/order intent/risk DB 계약, P5-2 portfolio API/Store, P5-3 paper execution queue/worker, P5-4 risk evaluation worker와 kill switch 차단, P5-5 paper/shadow 내부 reconciliation 증적과 projection 갱신, P5-6 Bot Workshop UI 구현 | Issue #30~#33 |
 | 내부 UTC와 5가지 품질 상태 | 미구현 | Issue #28 |
 | 복구 가능한 내부 WebSocket | P2-7 envelope·cursor·heartbeat·gap 적용 중단, P2-8 REST snapshot 복구·slow consumer 신호 구현 | Issue #29 |
 | Action commit SHA pinning·P8 exact-SHA 잠금 | P0 구현, 배포는 계속 차단 | Issue #27, #35 |
@@ -41,7 +41,7 @@
 
 | 구성 요소 | 책임 | 상태 저장 | 현재 상태 |
 |---|---|---|---|
-| Web | 연구·전략·백테스트·봇·위험·운영 UI, REST 부트스트랩, WebSocket 구독 | 브라우저 단기 상태만 유지 | 부분 구현 |
+| Web | 연구·전략·백테스트·봇·위험·운영 UI, REST 부트스트랩, WebSocket 구독 | 브라우저 단기 상태만 유지 | P5-6 Bot Workshop까지 부분 구현 |
 | API | 권한, 명령·조회, 버전 생성, 스냅숏 복구, 내부 이벤트 발행 | PostgreSQL | 부분 구현 |
 | Upbit Gateway | 공식 REST·WebSocket, JWT, 요청 제한, SMP, 주문 테스트와 실제 주문 안전 경계 | 비밀 파일은 프로세스 외부, 추적 메타데이터만 DB | 실제 주문·SMP 제외 부분 구현 |
 | Market Sync Worker | 전체 거래쌍과 상태 이력 동기화, KRW 기본 정책 자동 편입 | PostgreSQL | 실시간 worker에 일부 결합 |
@@ -54,7 +54,7 @@
 | Backtest Worker | 결정론적 사건 재생, 체결·비용 모델, 성과·산출물 생성 | PostgreSQL | P4 구현 |
 | Paper/Shadow Worker | 모의 체결 또는 실시간 신호 관찰, 실제 주문 금지 | PostgreSQL | P5-3 paper execution worker 구현, shadow worker 미구현 |
 | Bot Worker | 승인 버전 실행, 주문 의도 생성, 상태 전이 | PostgreSQL | 미구현 |
-| Reconciliation Worker | paper/shadow 내부 체결 원장과 포지션 projection을 대사하고, P6 이후 REST·private WebSocket·잔고 대사로 확장 | PostgreSQL | P5-5 내부 대사 증적 구현 중, private 계좌 대사는 P6 이후 |
+| Reconciliation Worker | paper/shadow 내부 체결 원장과 포지션 projection을 대사하고, P6 이후 REST·private WebSocket·잔고 대사로 확장 | PostgreSQL | P5-5 내부 대사 증적 구현, private 계좌 대사는 P6 이후 |
 | Risk Worker | 사전 주문·실시간 노출 검사, 위험 이벤트, 긴급 정지 | PostgreSQL | P5-4 created 주문 의도 평가, 위험 이벤트, kill switch 신규 주문·paper job 차단 구현 |
 | Operations Worker | 하트비트, 큐·DB·요청 제한·배포 상태와 알림 | PostgreSQL | 부분 구현 |
 

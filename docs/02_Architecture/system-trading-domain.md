@@ -1,7 +1,7 @@
 # 시스템 트레이딩 도메인 설계(Module Design)
 
-상태: 승인된 목표 설계(Accepted Target), P1·P2·P3-1 기계 계약 구현 중
-버전: 1.5.0
+상태: 승인된 목표 설계(Accepted Target), P1·P2·P3·P4-1 기계 계약 구현 중
+버전: 1.6.0
 날짜: 2026-07-18
 
 ## 1. 목적
@@ -188,6 +188,8 @@ P3-1은 서버 검증기와 DB/API 계약을 먼저 구현한다. canonical grap
 ## 6. 백테스트 재현성 계약
 
 run은 dataset content hash, strategy graph hash, engine semantic version, parameter hash, fill policy, fee·slippage·latency model, deterministic seed, 시작·종료 시각을 고정한다. 사건 정렬 키는 `(knowledge_at, source_priority, stable_sequence)`다. `source_priority`는 `market_status=10, candle=20, trade=30, orderbook=40, ticker=50, order_update=60, risk=70`으로 고정한다. 호가 `stable_sequence`는 `source_receipts.id`를 사용해 A-B-A 수신을 보존한다. `connection_id`와 `frame_sequence`는 연결별 전달 provenance와 멱등성에만 사용하고 연결 간 순서에는 사용하지 않는다. 그 밖에는 거래소 sequence가 있으면 사용하고 없으면 `(source natural key, received_at, fetch_manifest_id)`의 정규화 hash 순서를 사용한다. 실행 중 wall clock과 임의 난수는 직접 사용하지 않는다.
+
+P4-1은 `backtest-core-v1` 순수 엔진을 공유 모듈에 둔다. 이 엔진은 공통 전략 평가기(Common Strategy Evaluator)가 만든 신호를 이미 계산된 `BacktestSignal`로 받아 사건 재생·체결·성과 계산만 수행한다. 전략 연구, 백테스트, paper·shadow·live-ready는 같은 공통 전략 평가기와 주문 의미를 사용해야 하며, golden replay는 같은 입력 신호를 다시 주입했을 때 신호 동등성을 검증하는 기준이다. 호가가 없는 캔들 재생은 `orderbook_absent_uses_candle_close`, 부분 체결은 `partial_fill_by_candle_volume_participation` 가정을 결과에 남긴다. 기계 검증 계약은 [백테스트 엔진 계약](../contracts/backtest-engine.md)을 따른다.
 
 ## 7. 실시간 envelope
 

@@ -11,6 +11,7 @@
 | 업비트 게이트웨이 HTTP 경계 | `api/upbit-gateway.openapi.yaml` | 업비트 API 작업대, 게이트웨이 | `tests/contracts/test_upbit_gateway_contract.py` |
 | 업비트 게이트웨이 WebSocket 이벤트 | `api/upbit-gateway-websocket.schema.json` | 업비트 API 작업대, 게이트웨이 | `tests/contracts/test_upbit_gateway_contract.py` |
 | 공식 Upbit 기능·파라미터·안전 정책 | `upbit/upbit-api-catalog.yaml` | 업비트 API 작업대, 게이트웨이 | `tests/contracts/test_upbit_gateway_contract.py` |
+| 백테스트 엔진 결정론·체결 가정 | `backtest-engine.md` | 공유 도메인 엔진, Backtest Worker, Backtest Lab | `tests/contracts/test_p4_backtest_contract.py` |
 | 코인 분석 실시간 메시지 | `api/realtime-analysis-websocket.schema.json` | 분석 화면, 운영 서버 | API·프론트엔드 메시지 테스트 |
 | 시스템 관리 실시간 메시지 | `api/realtime-system-management-websocket.md` | 시스템 관리 화면, 운영 서버 | API·프론트엔드 메시지 테스트 |
 | 미래 내부 이벤트 | `protobuf/` | 승인된 메시지 큐 소비자 | 스키마별 테스트 |
@@ -24,6 +25,7 @@ P1 데이터 기반 계약은 `db/migrations/20260717000100_system_trading_data_
 | DB | `docs/contracts/db/` | 변경 이력 `migrations/*.sql`, 생성 스냅샷 `schema.sql` |
 | API | `docs/contracts/api/` | `openapi.yaml` |
 | Upbit | `docs/contracts/upbit/` | `upbit-api-catalog.yaml` |
+| Backtest | `docs/contracts/backtest-engine.md` | 순수 엔진 계약과 후속 Worker/API 확장 경계 |
 | Message | `docs/contracts/protobuf/` | `*.proto` |
 
 ## 변경 순서

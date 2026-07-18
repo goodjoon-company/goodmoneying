@@ -18,6 +18,7 @@
 - `P1.md`: 시스템 트레이딩 데이터 기반, 자동 정책·백필·구독·품질
 - `P2.md`: 연구 데이터 계층, 불변 집계·지표·미시구조·데이터셋 버전·Data Lab·내부 WebSocket envelope
 - `P3.md`: 형식 안전 전략 DAG, 서버 검증, 불변 전략 버전, Strategy Studio
+- `P4.md`: 재현 가능한 백테스트, 결정론적 사건 재생, 체결 가정, Backtest Lab
 
 ## 과거 상세 Task 처리
 

@@ -207,6 +207,8 @@ P4-9 Backtest progress WebSocket은 `ws://<api-host>/v1/backtest-runs/{backtestR
 
 P5-1은 paper/shadow 실행 연결 전에 영속화 경계를 먼저 고정한다. `20260718000500_p5_portfolio_bot_risk.sql`은 portfolio policy, bot instance, order intent, simulated exchange order, order fill, position projection, risk limit/event, kill switch를 PostgreSQL 계약으로 추가한다. P5-1의 `execution_mode`는 `paper|shadow`만 허용하고 `bot_instances.stage`는 `draft|backtest|paper|shadow|paused|stopped|faulted`까지만 허용한다. 실제 Upbit 주문 제출, private WebSocket, 주문 테스트 API와 live-ready/live 전이는 P6 이후 범위다.
 
+P5-2는 포트폴리오 API 명령 경계를 연다. `20260718000600_p5_portfolio_api_commands.sql`은 API로 생성된 `portfolios` 행에 `request_id`, `idempotency_key`, `requested_at`, `request_hash`를 보존하고, 멱등 키 부분 고유 인덱스(partial unique index)와 all-or-none 제약으로 기존 fixture·수동 행과 API 명령 행을 구분한다. `POST /v1/portfolios`는 운영자 토큰과 멱등 명령을 요구하고, 동일 멱등 키의 다른 본문은 `PORTFOLIO_IDEMPOTENCY_CONFLICT`로 거부한다. `GET /v1/portfolios` cursor는 owner와 최초 ID 상한을 고정한다.
+
 ## 7. 실시간 envelope
 
 ```json

@@ -27,6 +27,8 @@ tags:
     description: 연구와 백테스트 입력으로 사용하는 불변 데이터셋 버전과 생성 작업을 조회·관리하는 API 그룹.
   - name: 백테스트(Backtest)
     description: Backtest Store에 저장된 결정론적 백테스트 실행 결과와 산출물을 조회하는 API 그룹.
+  - name: 포트폴리오/봇(Portfolio/Bot)
+    description: P5 paper·shadow 단계의 포트폴리오와 봇 운영 설정을 감사 가능한 명령으로 관리하는 API 그룹.
 paths:
   /health:
     get:
@@ -236,6 +238,59 @@ paths:
                 $ref: "#/components/schemas/StrategyVersion"
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/portfolios:
+    post:
+      tags:
+        - 포트폴리오/봇(Portfolio/Bot)
+      summary: 포트폴리오 생성
+      operationId: createPortfolio
+      security:
+        - OperatorToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePortfolioRequest"
+      responses:
+        "201":
+          description: 생성된 포트폴리오. 동일 멱등 키와 동일 본문 재시도는 같은 결과를 반환한다.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortfolioResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    get:
+      tags:
+        - 포트폴리오/봇(Portfolio/Bot)
+      summary: owner별 포트폴리오 목록 조회
+      operationId: listPortfolios
+      parameters:
+        - name: ownerId
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: owner 문맥과 생성 시점 상한이 고정된 포트폴리오 페이지
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortfoliosResponse"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /v1/dashboard/summary:
     get:
       tags:
@@ -1485,6 +1540,61 @@ components:
         createdAt:
           type: string
           format: date-time
+    CreatePortfolioRequest:
+      description: P5 포트폴리오를 만들기 위한 감사 가능한 명령 요청.
+      type: object
+      additionalProperties: false
+      required: [requestId, idempotencyKey, actorId, requestedAt, reason, ownerId, name]
+      properties:
+        requestId: {type: string, minLength: 1, maxLength: 200}
+        idempotencyKey: {type: string, minLength: 1, maxLength: 200}
+        actorId: {type: string, minLength: 1, maxLength: 200}
+        requestedAt: {type: string, format: date-time}
+        reason: {type: string, minLength: 1, maxLength: 500}
+        ownerId:
+          type: string
+          minLength: 1
+          maxLength: 200
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        baseCurrency:
+          type: string
+          enum: [KRW, BTC, USDT]
+          default: KRW
+    PortfolioResponse:
+      description: 포트폴리오 생성과 목록 조회에 사용하는 요약 모델.
+      type: object
+      required: [portfolioId, ownerId, name, baseCurrency, status, createdAt]
+      properties:
+        portfolioId:
+          type: integer
+          format: int64
+        ownerId:
+          type: string
+        name:
+          type: string
+        baseCurrency:
+          type: string
+          enum: [KRW, BTC, USDT]
+        status:
+          type: string
+          enum: [active, archived]
+        createdAt:
+          type: string
+          format: date-time
+    PortfoliosResponse:
+      description: owner 문맥과 cursor 상한을 고정한 포트폴리오 목록 응답.
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PortfolioResponse"
+        nextCursor:
+          type: [string, "null"]
     PublishStrategyVersionRequest:
       description: 서버 검증을 통과한 전략 graph를 불변 version으로 게시하는 명령.
       type: object

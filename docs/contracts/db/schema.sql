@@ -3541,9 +3541,16 @@ CREATE TABLE public.portfolios (
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     created_by text NOT NULL,
     reason text NOT NULL,
+    request_id text,
+    idempotency_key text,
+    requested_at timestamp with time zone,
+    request_hash text,
+    CONSTRAINT portfolios_api_command_all_or_none CHECK ((((request_id IS NULL) AND (idempotency_key IS NULL) AND (requested_at IS NULL) AND (request_hash IS NULL)) OR ((request_id IS NOT NULL) AND (idempotency_key IS NOT NULL) AND (requested_at IS NOT NULL) AND (request_hash IS NOT NULL)))),
+    CONSTRAINT portfolios_api_command_non_blank CHECK ((((request_id IS NULL) OR (btrim(request_id) <> ''::text)) AND ((idempotency_key IS NULL) OR (btrim(idempotency_key) <> ''::text)))),
     CONSTRAINT portfolios_base_currency_check CHECK ((base_currency = ANY (ARRAY['KRW'::text, 'BTC'::text, 'USDT'::text]))),
     CONSTRAINT portfolios_created_by_check CHECK ((created_by <> ''::text)),
     CONSTRAINT portfolios_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT portfolios_request_hash_format CHECK (((request_hash IS NULL) OR (request_hash ~ '^[0-9a-f]{64}$'::text))),
     CONSTRAINT portfolios_status_check CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text])))
 );
 
@@ -5917,6 +5924,13 @@ CREATE INDEX orderbook_summaries_collected_at_idx ON public.orderbook_summaries 
 --
 
 CREATE INDEX orderbook_summaries_instrument_bucket_idx ON public.orderbook_summaries USING btree (instrument_id, bucket_at DESC);
+
+
+--
+-- Name: portfolios_idempotency_key_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX portfolios_idempotency_key_unique ON public.portfolios USING btree (idempotency_key) WHERE (idempotency_key IS NOT NULL);
 
 
 --
@@ -8311,4 +8325,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260718000200'),
     ('20260718000300'),
     ('20260718000400'),
-    ('20260718000500');
+    ('20260718000500'),
+    ('20260718000600');

@@ -72,6 +72,7 @@ def test_openapi_contract_groups_operations_with_described_tags() -> None:
         "전략(Strategy)",
         "연구 데이터셋(Dataset)",
         "백테스트(Backtest)",
+        "포트폴리오/봇(Portfolio/Bot)",
     }
     assert set(tag_descriptions) == expected_tags
     assert all(tag_descriptions[tag] for tag in expected_tags)
@@ -91,6 +92,8 @@ def test_openapi_contract_groups_operations_with_described_tags() -> None:
         ("get", "/v1/backtest-runs/{backtestRunId}/equity-points"): [
             "백테스트(Backtest)"
         ],
+        ("post", "/v1/portfolios"): ["포트폴리오/봇(Portfolio/Bot)"],
+        ("get", "/v1/portfolios"): ["포트폴리오/봇(Portfolio/Bot)"],
         ("get", "/v1/dashboard/summary"): ["대시보드(Dashboard)"],
         ("get", "/v1/dashboard/summary/stream"): ["대시보드(Dashboard)"],
         ("get", "/v1/dashboard/overview"): ["대시보드(Dashboard)"],

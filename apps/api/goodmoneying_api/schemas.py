@@ -136,6 +136,12 @@ class CreateStrategyRequest(StrategyCommandRequest):
     name: str = Field(min_length=1, max_length=200)
 
 
+class CreatePortfolioRequest(StrategyCommandRequest):
+    ownerId: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
+    baseCurrency: Literal["KRW", "BTC", "USDT"] = "KRW"
+
+
 class PublishStrategyVersionRequest(StrategyCommandRequest):
     graph: StrategyGraph
 
@@ -145,6 +151,20 @@ class StrategyDefinitionResponse(BaseModel):
     ownerId: str
     name: str
     createdAt: datetime
+
+
+class PortfolioResponse(BaseModel):
+    portfolioId: int
+    ownerId: str
+    name: str
+    baseCurrency: Literal["KRW", "BTC", "USDT"]
+    status: Literal["active", "archived"]
+    createdAt: datetime
+
+
+class PortfoliosResponse(BaseModel):
+    items: list[PortfolioResponse]
+    nextCursor: str | None
 
 
 class StrategyVersionResponse(BaseModel):

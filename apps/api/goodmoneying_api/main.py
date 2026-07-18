@@ -49,6 +49,7 @@ from goodmoneying_api.schemas import (
     CreateBackfillPlanRequest,
     CreateBacktestRunRequest,
     CreateDatasetBuildRequest,
+    CreatePortfolioRequest,
     CreateStrategyRequest,
     DashboardAuditLogSummaryResponse,
     DashboardCollectionActivityResponse,
@@ -78,6 +79,8 @@ from goodmoneying_api.schemas import (
     MicrostructureStatisticsResponse,
     NotificationEventsResponse,
     OrderbookSummariesResponse,
+    PortfolioResponse,
+    PortfoliosResponse,
     PublishStrategyVersionRequest,
     StrategyDefinitionResponse,
     StrategyValidationResponse,
@@ -109,6 +112,11 @@ from goodmoneying_shared.dataset_version_store import (
     DatasetCursorMismatchError,
     DatasetIdempotencyConflictError,
     PostgresDatasetVersionStore,
+)
+from goodmoneying_shared.portfolio_bot_store import (
+    PortfolioCursorMismatchError,
+    PortfolioIdempotencyConflictError,
+    PostgresPortfolioBotStore,
 )
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
 from goodmoneying_shared.realtime_stream import (
@@ -396,6 +404,33 @@ class StrategyApiRepository(Protocol):
     def get_version(self, strategy_version_id: int) -> Mapping[str, object] | None: ...
 
 
+class PortfolioBotApiRepository(Protocol):
+    def create_portfolio(
+        self,
+        *,
+        request_id: str,
+        idempotency_key: str,
+        actor_id: str,
+        requested_at: datetime,
+        reason: str,
+        owner_id: str,
+        name: str,
+        base_currency: str,
+    ) -> Mapping[str, object]: ...
+
+    def list_portfolios(
+        self, *, owner_id: str, page_size: int, cursor: str | None
+    ) -> Mapping[str, object]: ...
+
+
+class EmptyPortfolioBotRepository:
+    def create_portfolio(self, **_arguments: object) -> Mapping[str, object]:
+        raise RuntimeError("포트폴리오/봇 저장소가 구성되지 않았다.")
+
+    def list_portfolios(self, **_arguments: object) -> Mapping[str, object]:
+        return {"items": [], "nextCursor": None}
+
+
 class EmptyStrategyRepository:
     def validate_graph(self, *, graph: Mapping[str, object]) -> Mapping[str, object]:
         return validate_strategy_graph(graph).to_api()
@@ -490,6 +525,7 @@ def create_app(
     dataset_version_repository: DatasetVersionApiRepository | None = None,
     strategy_repository: StrategyApiRepository | None = None,
     backtest_repository: BacktestApiRepository | None = None,
+    portfolio_bot_repository: PortfolioBotApiRepository | None = None,
 ) -> FastAPI:
     repo = repository or create_repository_from_environment()
     foundation_repository = data_foundation_repository
@@ -520,6 +556,12 @@ def create_app(
         backtest_store = PostgresBacktestStore(repo)
     else:
         backtest_store = EmptyBacktestRepository()
+    if portfolio_bot_repository is not None:
+        portfolio_bot_store = portfolio_bot_repository
+    elif isinstance(repo, PostgresOperationsRepository):
+        portfolio_bot_store = PostgresPortfolioBotStore(repo)
+    else:
+        portfolio_bot_store = EmptyPortfolioBotRepository()
     service = OperationsService(repo, load_dashboard_refresh_seconds())
     app = FastAPI(title="goodmoneying 시스템 트레이딩 운영 API", version="0.2.0")
     app.add_middleware(
@@ -674,6 +716,58 @@ def create_app(
                 },
             )
         return StrategyVersionResponse.model_validate(result)
+
+    @app.post(
+        "/v1/portfolios",
+        response_model=PortfolioResponse,
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(require_operator_token)],
+    )
+    def create_portfolio(request: CreatePortfolioRequest) -> PortfolioResponse:
+        try:
+            result = portfolio_bot_store.create_portfolio(
+                request_id=request.requestId,
+                idempotency_key=request.idempotencyKey,
+                actor_id=request.actorId,
+                requested_at=request.requestedAt,
+                reason=request.reason,
+                owner_id=request.ownerId,
+                name=request.name,
+                base_currency=request.baseCurrency,
+            )
+        except PortfolioIdempotencyConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "PORTFOLIO_IDEMPOTENCY_CONFLICT", "message": str(exc)},
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={"code": "INVALID_PORTFOLIO", "message": str(exc)},
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"code": "PORTFOLIO_STORE_UNAVAILABLE", "message": str(exc)},
+            ) from exc
+        return PortfolioResponse.model_validate(result)
+
+    @app.get("/v1/portfolios", response_model=PortfoliosResponse)
+    def list_portfolios(
+        ownerId: Annotated[str, Query(min_length=1, max_length=200)],
+        pageSize: Annotated[int, Query(ge=1, le=100)] = 50,
+        cursor: str | None = None,
+    ) -> PortfoliosResponse:
+        try:
+            result = portfolio_bot_store.list_portfolios(
+                owner_id=ownerId, page_size=pageSize, cursor=cursor
+            )
+        except PortfolioCursorMismatchError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "PORTFOLIO_CURSOR_CONTEXT_MISMATCH", "message": str(exc)},
+            ) from exc
+        return PortfoliosResponse.model_validate(result)
 
     @app.post(
         "/v1/backtest-runs",

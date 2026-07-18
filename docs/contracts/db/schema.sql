@@ -733,6 +733,32 @@ $$;
 
 
 --
+-- Name: reject_p6_upbit_order_outbox_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_p6_upbit_order_outbox_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'upbit order outbox evidence is append-only in P6-6';
+END;
+$$;
+
+
+--
+-- Name: reject_p6_upbit_permission_attestation_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_p6_upbit_permission_attestation_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'upbit api key permission attestation is append-only';
+END;
+$$;
+
+
+--
 -- Name: reject_sealed_dataset_version_child_insert(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1089,6 +1115,72 @@ BEGIN
       )
   ) THEN
     RAISE EXCEPTION 'live order identifier cannot be recorded as an order-test response identifier';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: validate_p6_upbit_order_outbox_consistency(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.validate_p6_upbit_order_outbox_consistency() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  live_identity RECORD;
+  permission RECORD;
+BEGIN
+  SELECT live.exchange_account_id, live.order_intent_id, intent.status AS order_intent_status
+    INTO live_identity
+  FROM live_order_identifiers live
+  JOIN order_intents intent ON intent.id = live.order_intent_id
+  WHERE live.id = NEW.live_order_identifier_id;
+
+  IF live_identity IS NULL THEN
+    RAISE EXCEPTION 'live order identifier does not exist';
+  END IF;
+
+  IF live_identity.exchange_account_id <> NEW.exchange_account_id THEN
+    RAISE EXCEPTION 'outbox exchange account does not match live identifier';
+  END IF;
+
+  IF live_identity.order_intent_id <> NEW.order_intent_id THEN
+    RAISE EXCEPTION 'outbox order intent does not match live identifier';
+  END IF;
+
+  IF NEW.permission_attestation_id IS NOT NULL THEN
+    SELECT exchange_account_id, has_order_permission, has_order_read_permission,
+           has_withdraw_permission, expires_at
+      INTO permission
+    FROM upbit_api_key_permission_attestations
+    WHERE id = NEW.permission_attestation_id;
+
+    IF permission IS NULL THEN
+      RAISE EXCEPTION 'ready outbox requires permission attestation';
+    END IF;
+
+    IF permission.exchange_account_id <> NEW.exchange_account_id THEN
+      RAISE EXCEPTION 'outbox exchange account does not match permission attestation';
+    END IF;
+  END IF;
+
+  IF NEW.status = 'ready' THEN
+    IF live_identity.order_intent_status <> 'approved' THEN
+      RAISE EXCEPTION 'ready outbox requires approved order intent';
+    END IF;
+
+    IF permission.has_order_permission IS NOT TRUE
+       OR permission.has_order_read_permission IS NOT TRUE
+       OR permission.has_withdraw_permission IS NOT FALSE THEN
+      RAISE EXCEPTION 'permission attestation is not order-ready';
+    END IF;
+
+    IF permission.expires_at <= clock_timestamp() THEN
+      RAISE EXCEPTION 'permission attestation is expired';
+    END IF;
   END IF;
 
   RETURN NEW;
@@ -4673,6 +4765,56 @@ ALTER SEQUENCE public.trading_capabilities_id_seq OWNED BY public.trading_capabi
 
 
 --
+-- Name: upbit_api_key_permission_attestations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.upbit_api_key_permission_attestations (
+    id bigint NOT NULL,
+    exchange_account_id bigint NOT NULL,
+    has_order_permission boolean NOT NULL,
+    has_order_read_permission boolean NOT NULL,
+    has_withdraw_permission boolean NOT NULL,
+    attested_at timestamp with time zone NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    actor_id text NOT NULL,
+    reason text NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    request_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    CONSTRAINT upbit_api_key_permission_attest_has_order_read_permission_check CHECK ((has_order_read_permission IS TRUE)),
+    CONSTRAINT upbit_api_key_permission_attestat_has_withdraw_permission_check CHECK ((has_withdraw_permission IS FALSE)),
+    CONSTRAINT upbit_api_key_permission_attestation_has_order_permission_check CHECK ((has_order_permission IS TRUE)),
+    CONSTRAINT upbit_api_key_permission_attestations_actor_id_check CHECK ((actor_id <> ''::text)),
+    CONSTRAINT upbit_api_key_permission_attestations_actor_id_check1 CHECK ((actor_id !~* '^(ci|ai|service):'::text)),
+    CONSTRAINT upbit_api_key_permission_attestations_check CHECK ((expires_at > attested_at)),
+    CONSTRAINT upbit_api_key_permission_attestations_evidence_check CHECK ((jsonb_typeof(evidence) = 'object'::text)),
+    CONSTRAINT upbit_api_key_permission_attestations_idempotency_key_check CHECK ((idempotency_key <> ''::text)),
+    CONSTRAINT upbit_api_key_permission_attestations_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT upbit_api_key_permission_attestations_request_id_check CHECK ((request_id <> ''::text))
+);
+
+
+--
+-- Name: upbit_api_key_permission_attestations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.upbit_api_key_permission_attestations_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: upbit_api_key_permission_attestations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.upbit_api_key_permission_attestations_id_seq OWNED BY public.upbit_api_key_permission_attestations.id;
+
+
+--
 -- Name: upbit_order_identifier_reservations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4707,6 +4849,59 @@ CREATE SEQUENCE public.upbit_order_identifier_reservations_id_seq
 --
 
 ALTER SEQUENCE public.upbit_order_identifier_reservations_id_seq OWNED BY public.upbit_order_identifier_reservations.id;
+
+
+--
+-- Name: upbit_order_outbox; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.upbit_order_outbox (
+    id bigint NOT NULL,
+    exchange_account_id bigint NOT NULL,
+    order_intent_id bigint NOT NULL,
+    live_order_identifier_id bigint NOT NULL,
+    permission_attestation_id bigint,
+    status text NOT NULL,
+    blocked_reason text,
+    request_payload jsonb NOT NULL,
+    request_hash text NOT NULL,
+    submit_attempt_count integer DEFAULT 0 NOT NULL,
+    actor_id text NOT NULL,
+    reason text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    request_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    CONSTRAINT upbit_order_outbox_actor_id_check CHECK ((actor_id <> ''::text)),
+    CONSTRAINT upbit_order_outbox_actor_id_check1 CHECK ((actor_id !~* '^(ci|ai|service):'::text)),
+    CONSTRAINT upbit_order_outbox_blocked_reason_check CHECK (((blocked_reason IS NULL) OR (blocked_reason = ANY (ARRAY['live_disabled'::text, 'permission_missing'::text, 'permission_not_ready'::text, 'permission_expired'::text, 'withdraw_permission_present'::text, 'kill_switch_armed'::text])))),
+    CONSTRAINT upbit_order_outbox_check CHECK ((((status = 'ready'::text) AND (blocked_reason IS NULL) AND (permission_attestation_id IS NOT NULL)) OR ((status = 'blocked'::text) AND (blocked_reason IS NOT NULL)))),
+    CONSTRAINT upbit_order_outbox_idempotency_key_check CHECK ((idempotency_key <> ''::text)),
+    CONSTRAINT upbit_order_outbox_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT upbit_order_outbox_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT upbit_order_outbox_request_id_check CHECK ((request_id <> ''::text)),
+    CONSTRAINT upbit_order_outbox_request_payload_check CHECK ((jsonb_typeof(request_payload) = 'object'::text)),
+    CONSTRAINT upbit_order_outbox_status_check CHECK ((status = ANY (ARRAY['ready'::text, 'blocked'::text]))),
+    CONSTRAINT upbit_order_outbox_submit_attempt_count_check CHECK ((submit_attempt_count = 0))
+);
+
+
+--
+-- Name: upbit_order_outbox_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.upbit_order_outbox_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: upbit_order_outbox_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.upbit_order_outbox_id_seq OWNED BY public.upbit_order_outbox.id;
 
 
 --
@@ -4886,10 +5081,24 @@ ALTER TABLE ONLY public.trading_capabilities ALTER COLUMN id SET DEFAULT nextval
 
 
 --
+-- Name: upbit_api_key_permission_attestations id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_api_key_permission_attestations ALTER COLUMN id SET DEFAULT nextval('public.upbit_api_key_permission_attestations_id_seq'::regclass);
+
+
+--
 -- Name: upbit_order_identifier_reservations id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.upbit_order_identifier_reservations ALTER COLUMN id SET DEFAULT nextval('public.upbit_order_identifier_reservations_id_seq'::regclass);
+
+
+--
+-- Name: upbit_order_outbox id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_outbox ALTER COLUMN id SET DEFAULT nextval('public.upbit_order_outbox_id_seq'::regclass);
 
 
 --
@@ -6364,6 +6573,30 @@ ALTER TABLE ONLY public.trading_capabilities
 
 
 --
+-- Name: upbit_api_key_permission_attestations upbit_api_key_permission_attestations_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_api_key_permission_attestations
+    ADD CONSTRAINT upbit_api_key_permission_attestations_idempotency_key_key UNIQUE (idempotency_key);
+
+
+--
+-- Name: upbit_api_key_permission_attestations upbit_api_key_permission_attestations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_api_key_permission_attestations
+    ADD CONSTRAINT upbit_api_key_permission_attestations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: upbit_api_key_permission_attestations upbit_api_key_permission_attestations_request_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_api_key_permission_attestations
+    ADD CONSTRAINT upbit_api_key_permission_attestations_request_id_key UNIQUE (request_id);
+
+
+--
 -- Name: upbit_order_identifier_reservations upbit_order_identifier_reserv_exchange_account_id_identifie_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6385,6 +6618,38 @@ ALTER TABLE ONLY public.upbit_order_identifier_reservations
 
 ALTER TABLE ONLY public.upbit_order_identifier_reservations
     ADD CONSTRAINT upbit_order_identifier_reservations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: upbit_order_outbox upbit_order_outbox_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_outbox
+    ADD CONSTRAINT upbit_order_outbox_idempotency_key_key UNIQUE (idempotency_key);
+
+
+--
+-- Name: upbit_order_outbox upbit_order_outbox_order_intent_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_outbox
+    ADD CONSTRAINT upbit_order_outbox_order_intent_id_key UNIQUE (order_intent_id);
+
+
+--
+-- Name: upbit_order_outbox upbit_order_outbox_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_outbox
+    ADD CONSTRAINT upbit_order_outbox_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: upbit_order_outbox upbit_order_outbox_request_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_outbox
+    ADD CONSTRAINT upbit_order_outbox_request_id_key UNIQUE (request_id);
 
 
 --
@@ -6807,6 +7072,20 @@ CREATE UNIQUE INDEX trade_events_source_receipt_uk ON public.trade_events USING 
 --
 
 CREATE INDEX trading_capabilities_global_latest_idx ON public.trading_capabilities USING btree (scope_type, scope_key, created_at DESC, id DESC);
+
+
+--
+-- Name: upbit_api_key_permission_attestations_latest_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX upbit_api_key_permission_attestations_latest_idx ON public.upbit_api_key_permission_attestations USING btree (exchange_account_id, expires_at DESC, id DESC);
+
+
+--
+-- Name: upbit_order_outbox_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX upbit_order_outbox_status_idx ON public.upbit_order_outbox USING btree (status, created_at, id);
 
 
 --
@@ -7465,6 +7744,41 @@ CREATE TRIGGER trading_capabilities_append_only_delete BEFORE DELETE ON public.t
 --
 
 CREATE TRIGGER trading_capabilities_append_only_update BEFORE UPDATE ON public.trading_capabilities FOR EACH ROW EXECUTE FUNCTION public.reject_p6_trading_capability_mutation();
+
+
+--
+-- Name: upbit_api_key_permission_attestations upbit_api_key_permission_attestations_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_api_key_permission_attestations_append_only_delete BEFORE DELETE ON public.upbit_api_key_permission_attestations FOR EACH ROW EXECUTE FUNCTION public.reject_p6_upbit_permission_attestation_mutation();
+
+
+--
+-- Name: upbit_api_key_permission_attestations upbit_api_key_permission_attestations_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_api_key_permission_attestations_append_only_update BEFORE UPDATE ON public.upbit_api_key_permission_attestations FOR EACH ROW EXECUTE FUNCTION public.reject_p6_upbit_permission_attestation_mutation();
+
+
+--
+-- Name: upbit_order_outbox upbit_order_outbox_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_order_outbox_append_only_delete BEFORE DELETE ON public.upbit_order_outbox FOR EACH ROW EXECUTE FUNCTION public.reject_p6_upbit_order_outbox_mutation();
+
+
+--
+-- Name: upbit_order_outbox upbit_order_outbox_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_order_outbox_append_only_update BEFORE UPDATE ON public.upbit_order_outbox FOR EACH ROW EXECUTE FUNCTION public.reject_p6_upbit_order_outbox_mutation();
+
+
+--
+-- Name: upbit_order_outbox upbit_order_outbox_validate_consistency; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_order_outbox_validate_consistency BEFORE INSERT ON public.upbit_order_outbox FOR EACH ROW EXECUTE FUNCTION public.validate_p6_upbit_order_outbox_consistency();
 
 
 --
@@ -9169,11 +9483,51 @@ ALTER TABLE ONLY public.trade_events
 
 
 --
+-- Name: upbit_api_key_permission_attestations upbit_api_key_permission_attestations_exchange_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_api_key_permission_attestations
+    ADD CONSTRAINT upbit_api_key_permission_attestations_exchange_account_id_fkey FOREIGN KEY (exchange_account_id) REFERENCES public.exchange_accounts(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: upbit_order_identifier_reservations upbit_order_identifier_reservations_exchange_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.upbit_order_identifier_reservations
     ADD CONSTRAINT upbit_order_identifier_reservations_exchange_account_id_fkey FOREIGN KEY (exchange_account_id) REFERENCES public.exchange_accounts(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_order_outbox upbit_order_outbox_exchange_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_outbox
+    ADD CONSTRAINT upbit_order_outbox_exchange_account_id_fkey FOREIGN KEY (exchange_account_id) REFERENCES public.exchange_accounts(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_order_outbox upbit_order_outbox_live_order_identifier_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_outbox
+    ADD CONSTRAINT upbit_order_outbox_live_order_identifier_id_fkey FOREIGN KEY (live_order_identifier_id) REFERENCES public.live_order_identifiers(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_order_outbox upbit_order_outbox_order_intent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_outbox
+    ADD CONSTRAINT upbit_order_outbox_order_intent_id_fkey FOREIGN KEY (order_intent_id) REFERENCES public.order_intents(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_order_outbox upbit_order_outbox_permission_attestation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_outbox
+    ADD CONSTRAINT upbit_order_outbox_permission_attestation_id_fkey FOREIGN KEY (permission_attestation_id) REFERENCES public.upbit_api_key_permission_attestations(id) ON DELETE RESTRICT;
 
 
 --
@@ -9219,4 +9573,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260718000700'),
     ('20260718000800'),
     ('20260718000900'),
-    ('20260718001000');
+    ('20260718001000'),
+    ('20260718001100');

@@ -527,6 +527,14 @@ describe("운영 API 클라이언트", () => {
     });
   });
 
+  it("백테스트 진행 WebSocket URL은 API base path를 보존한다", async () => {
+    const { backtestProgressWebSocketUrl } = await import("./api");
+    const expected = new URL("/api/v1/backtest-runs/21/progress", window.location.origin);
+    expected.protocol = expected.protocol === "https:" ? "wss:" : "ws:";
+
+    expect(backtestProgressWebSocketUrl(21)).toBe(expected.toString());
+  });
+
   it("구버전 대시보드 응답에 새 운영 콘솔 필드가 없어도 첫 화면용 기본값을 채운다", async () => {
     const dashboardWithoutWorkerStatus = { ...dashboard };
     delete (dashboardWithoutWorkerStatus as Partial<typeof dashboard>).workerStatus;

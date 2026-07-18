@@ -4,6 +4,7 @@ from pathlib import Path
 
 CONTRACT = Path("docs/contracts/backtest-engine.md")
 DOMAIN = Path("docs/02_Architecture/system-trading-domain.md")
+PROGRESS_WS = Path("docs/contracts/api/backtest-progress-websocket.md")
 
 
 def test_P4_1_백테스트_계약은_결정론과_입력_hash를_명시한다() -> None:
@@ -48,3 +49,17 @@ def test_P4_8_백테스트_계약은_성과_artifact_스키마를_명시한다()
     assert "backtest-artifact-bootstrap-v1" in text
     assert "contentHash" in text
     assert "P4-8" in domain
+
+
+def test_P4_9_백테스트_진행_WebSocket_계약을_명시한다() -> None:
+    text = PROGRESS_WS.read_text()
+    contract = CONTRACT.read_text()
+
+    assert "/v1/backtest-runs/{backtestRunId}/progress" in text
+    assert "backtest.progress" in text
+    assert "backtest.error" in text
+    assert "BACKTEST_RUN_NOT_FOUND" in text
+    assert "pending" in text
+    assert "running" in text
+    assert "succeeded" in text
+    assert "P4-9" in contract

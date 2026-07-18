@@ -204,6 +204,8 @@ P4-7 Backtest 실행 생성 API는 `POST /v1/backtest-runs` 명령을 운영 토
 
 P4-8 Backtest 성과 artifact는 `walk_forward_summary`, `sensitivity_summary`, `bootstrap_summary`를 Backtest Store의 기존 `backtest_artifacts` 입력 형태로 생성한다. 각 artifact metadata는 schema version(`backtest-artifact-walk-forward-v1`, `backtest-artifact-sensitivity-v1`, `backtest-artifact-bootstrap-v1`), `inputHash`, `resultHash`, 정렬된 분석 행, `finalEquity` min/max/mean 요약을 포함한다. `contentHash`는 metadata 정규 JSON SHA-256으로 계산해 입력 순서와 dictionary 삽입 순서가 결과 식별자에 영향을 주지 않게 한다.
 
+P4-9 Backtest progress WebSocket은 `ws://<api-host>/v1/backtest-runs/{backtestRunId}/progress`에서 현재 `BacktestRunSummary` 기반 snapshot을 전송한다. P4-9는 별도 progress row를 만들지 않고 run 상태에서 `pending=0`, `running=50`, terminal=100 진행률을 파생한다. 없는 run은 연결 수락 뒤 `backtest.error`와 `BACKTEST_RUN_NOT_FOUND`를 보내고 닫는다.
+
 ## 7. 실시간 envelope
 
 ```json

@@ -423,6 +423,17 @@ class _SeededStrategyRepository:
 
 
 class _SeededBacktestRepository:
+    def get_run_summary(self, backtest_run_id: int) -> dict[str, object] | None:
+        runs = self.list_runs(page_size=100, cursor=None)["items"]
+        return next(
+            (
+                item
+                for item in cast(list[dict[str, object]], runs)
+                if item["backtestRunId"] == backtest_run_id
+            ),
+            None,
+        )
+
     def create_run(self, **_arguments: object) -> dict[str, object]:
         return {
             "backtestRunId": 23,

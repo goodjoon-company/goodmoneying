@@ -60,6 +60,9 @@ class PostgresBacktestStore:
     def get_run(self, backtest_run_id: int) -> Row | None:
         return get_run(self._repository, backtest_run_id)
 
+    def get_run_summary(self, backtest_run_id: int) -> Row | None:
+        return get_run_summary(self._repository, backtest_run_id)
+
     def list_runs(self, **arguments: object) -> Row:
         return list_runs(self._repository, **arguments)
 
@@ -581,6 +584,12 @@ def persist_completed_run(
 def get_run(repository: object, backtest_run_id: int) -> Row | None:
     with _connector(repository)() as connection:
         return _get_run_with_connection(connection, backtest_run_id)
+
+
+def get_run_summary(repository: object, backtest_run_id: object) -> Row | None:
+    run_id = _positive_int(backtest_run_id, "backtestRunId")
+    with _connector(repository)() as connection:
+        return _get_run_summary_with_connection(connection, run_id)
 
 
 def list_runs(repository: object, *, page_size: object, cursor: object) -> Row:

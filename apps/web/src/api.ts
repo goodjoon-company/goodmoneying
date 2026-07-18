@@ -757,6 +757,13 @@ export function systemManagementWebSocketUrl(): string {
   return apiUrl.toString();
 }
 
+export function backtestProgressWebSocketUrl(backtestRunId: number): string {
+  const apiUrl = new URL(API_BASE_URL, window.location.origin);
+  apiUrl.protocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";
+  apiUrl.pathname = `${apiUrl.pathname.replace(/\/$/, "")}/v1/backtest-runs/${backtestRunId}/progress`;
+  return apiUrl.toString();
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`);
   if (!response.ok) {

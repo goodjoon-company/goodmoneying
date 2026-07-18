@@ -339,6 +339,46 @@ def test_백테스트_run_생성은_published_strategy와_sealed_dataset만_허�
     }
 
 
+def test_백테스트_progress_websocket은_현재_run_진행_snapshot을_전송한다() -> None:
+    repository = FakeBacktestRepository(pending=True)
+    client = _client(repository)
+
+    with client.websocket_connect("/v1/backtest-runs/21/progress") as websocket:
+        message = websocket.receive_json()
+
+    assert message == {
+        "version": "1",
+        "type": "backtest.progress",
+        "backtestRunId": 21,
+        "status": "pending",
+        "progressPercent": "0",
+        "isTerminal": False,
+        "inputHash": "e" * 64,
+        "resultHash": None,
+        "requestedAt": "2026-07-18T00:00:00Z",
+        "startedAt": None,
+        "finishedAt": None,
+    }
+    assert repository.summary_read_count == 1
+    assert repository.last_backtest_run_id == 21
+
+
+def test_백테스트_progress_websocket은_없는_run을_안정된_오류로_전송한다() -> None:
+    repository = FakeBacktestRepository(not_found=True)
+    client = _client(repository)
+
+    with client.websocket_connect("/v1/backtest-runs/999/progress") as websocket:
+        message = websocket.receive_json()
+
+    assert message == {
+        "version": "1",
+        "type": "backtest.error",
+        "code": "BACKTEST_RUN_NOT_FOUND",
+        "message": "백테스트 실행 결과가 없습니다.",
+        "backtestRunId": 999,
+    }
+
+
 class FakeBacktestRepository:
     def __init__(
         self,
@@ -355,6 +395,7 @@ class FakeBacktestRepository:
         self.idempotency_conflict = idempotency_conflict
         self.input_not_ready = input_not_ready
         self.read_count = 0
+        self.summary_read_count = 0
         self.list_count = 0
         self.mutation_count = 0
         self.last_backtest_run_id: int | None = None
@@ -392,6 +433,13 @@ class FakeBacktestRepository:
         if self.not_found:
             return None
         return self.run(backtest_run_id)
+
+    def get_run_summary(self, backtest_run_id: int) -> Mapping[str, object] | None:
+        self.summary_read_count += 1
+        self.last_backtest_run_id = backtest_run_id
+        if self.not_found:
+            return None
+        return self.summary(backtest_run_id)
 
     def list_run_trades(self, **arguments: object) -> Mapping[str, object] | None:
         self.last_trade_arguments = dict(arguments)
@@ -477,8 +525,8 @@ class FakeBacktestRepository:
             "inputHash": "e" * 64,
             "resultHash": None if self.pending else "f" * 64,
             "requestedAt": "2026-07-18T00:00:00Z",
-            "startedAt": "2026-07-18T00:00:00Z",
-            "finishedAt": "2026-07-18T00:00:00Z",
+            "startedAt": None if self.pending else "2026-07-18T00:00:00Z",
+            "finishedAt": None if self.pending else "2026-07-18T00:00:00Z",
         }
 
 

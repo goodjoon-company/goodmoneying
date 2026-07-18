@@ -335,6 +335,8 @@ class BacktestApiRepository(Protocol):
 
     def get_run(self, backtest_run_id: int) -> Mapping[str, object] | None: ...
 
+    def get_run_summary(self, backtest_run_id: int) -> Mapping[str, object] | None: ...
+
     def list_run_trades(self, **arguments: object) -> Mapping[str, object] | None: ...
 
     def list_run_equity_points(self, **arguments: object) -> Mapping[str, object] | None: ...
@@ -348,6 +350,9 @@ class EmptyBacktestRepository:
         return {"items": [], "nextCursor": None}
 
     def get_run(self, _backtest_run_id: int) -> Mapping[str, object] | None:
+        return None
+
+    def get_run_summary(self, _backtest_run_id: int) -> Mapping[str, object] | None:
         return None
 
     def list_run_trades(self, **_arguments: object) -> Mapping[str, object] | None:
@@ -443,6 +448,39 @@ class EmptyDataFoundationRepository:
         policy: MarketCollectionPolicySettings | None = None,
     ) -> datetime:
         raise ValueError("변경할 시장을 찾을 수 없다.")
+
+
+def _backtest_progress_message(summary: Mapping[str, object]) -> dict[str, object]:
+    status_value = str(summary["status"])
+    return {
+        "version": "1",
+        "type": "backtest.progress",
+        "backtestRunId": int(cast(int | str, summary["backtestRunId"])),
+        "status": status_value,
+        "progressPercent": _backtest_progress_percent(status_value),
+        "isTerminal": status_value in {"succeeded", "failed", "cancelled"},
+        "inputHash": summary["inputHash"],
+        "resultHash": summary["resultHash"],
+        "requestedAt": _json_datetime(summary["requestedAt"]),
+        "startedAt": _json_datetime(summary["startedAt"]),
+        "finishedAt": _json_datetime(summary["finishedAt"]),
+    }
+
+
+def _backtest_progress_percent(status_value: str) -> str:
+    if status_value == "pending":
+        return "0"
+    if status_value == "running":
+        return "50"
+    return "100"
+
+
+def _json_datetime(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat().replace("+00:00", "Z")
+    return str(value)
 
 
 def create_app(
@@ -716,6 +754,28 @@ def create_app(
                 },
             )
         return BacktestRunResponse.model_validate(result)
+
+    @app.websocket("/v1/backtest-runs/{backtestRunId}/progress")
+    async def stream_backtest_run_progress(
+        websocket: WebSocket,
+        backtestRunId: int,
+    ) -> None:
+        await websocket.accept()
+        summary = backtest_store.get_run_summary(backtestRunId)
+        if summary is None:
+            await websocket.send_json(
+                {
+                    "version": "1",
+                    "type": "backtest.error",
+                    "code": "BACKTEST_RUN_NOT_FOUND",
+                    "message": "백테스트 실행 결과가 없습니다.",
+                    "backtestRunId": backtestRunId,
+                }
+            )
+            await websocket.close()
+            return
+        await websocket.send_json(_backtest_progress_message(summary))
+        await websocket.close()
 
     @app.get(
         "/v1/backtest-runs/{backtestRunId}/trades",

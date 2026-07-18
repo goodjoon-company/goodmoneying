@@ -3485,6 +3485,56 @@ CREATE TABLE public.p1_audit_recovery_gate (
 
 
 --
+-- Name: paper_execution_jobs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.paper_execution_jobs (
+    id bigint NOT NULL,
+    order_intent_id bigint NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    priority integer DEFAULT 100 NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    max_attempts integer DEFAULT 3 NOT NULL,
+    next_retry_at timestamp with time zone DEFAULT '1970-01-01 00:00:00+00'::timestamp with time zone NOT NULL,
+    lease_owner text,
+    lease_expires_at timestamp with time zone,
+    lease_generation integer DEFAULT 0 NOT NULL,
+    last_error_code text,
+    dead_letter_reason text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT paper_execution_jobs_attempt_count_check CHECK ((attempt_count >= 0)),
+    CONSTRAINT paper_execution_jobs_check CHECK ((attempt_count <= max_attempts)),
+    CONSTRAINT paper_execution_jobs_check1 CHECK ((((status = 'running'::text) AND (lease_owner IS NOT NULL) AND (btrim(lease_owner) <> ''::text) AND (lease_expires_at IS NOT NULL)) OR ((status <> 'running'::text) AND (lease_owner IS NULL) AND (lease_expires_at IS NULL)))),
+    CONSTRAINT paper_execution_jobs_dead_letter_reason_check CHECK (((dead_letter_reason IS NULL) OR (btrim(dead_letter_reason) <> ''::text))),
+    CONSTRAINT paper_execution_jobs_last_error_code_check CHECK (((last_error_code IS NULL) OR (btrim(last_error_code) <> ''::text))),
+    CONSTRAINT paper_execution_jobs_lease_generation_check CHECK ((lease_generation >= 0)),
+    CONSTRAINT paper_execution_jobs_max_attempts_check CHECK ((max_attempts >= 1)),
+    CONSTRAINT paper_execution_jobs_priority_check CHECK ((priority >= 0)),
+    CONSTRAINT paper_execution_jobs_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'running'::text, 'retry_wait'::text, 'succeeded'::text, 'dead_letter'::text])))
+);
+
+
+--
+-- Name: paper_execution_jobs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.paper_execution_jobs_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: paper_execution_jobs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.paper_execution_jobs_id_seq OWNED BY public.paper_execution_jobs.id;
+
+
+--
 -- Name: portfolio_policies; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4255,6 +4305,13 @@ ALTER TABLE ONLY public.order_fills ALTER COLUMN id SET DEFAULT nextval('public.
 --
 
 ALTER TABLE ONLY public.order_intents ALTER COLUMN id SET DEFAULT nextval('public.order_intents_id_seq'::regclass);
+
+
+--
+-- Name: paper_execution_jobs id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.paper_execution_jobs ALTER COLUMN id SET DEFAULT nextval('public.paper_execution_jobs_id_seq'::regclass);
 
 
 --
@@ -5365,6 +5422,22 @@ ALTER TABLE ONLY public.p1_audit_recovery_gate
 
 
 --
+-- Name: paper_execution_jobs paper_execution_jobs_order_intent_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.paper_execution_jobs
+    ADD CONSTRAINT paper_execution_jobs_order_intent_id_key UNIQUE (order_intent_id);
+
+
+--
+-- Name: paper_execution_jobs paper_execution_jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.paper_execution_jobs
+    ADD CONSTRAINT paper_execution_jobs_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: portfolio_policies portfolio_policies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5924,6 +5997,13 @@ CREATE INDEX orderbook_summaries_collected_at_idx ON public.orderbook_summaries 
 --
 
 CREATE INDEX orderbook_summaries_instrument_bucket_idx ON public.orderbook_summaries USING btree (instrument_id, bucket_at DESC);
+
+
+--
+-- Name: paper_execution_jobs_claim_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX paper_execution_jobs_claim_idx ON public.paper_execution_jobs USING btree (status, next_retry_at, lease_expires_at, priority DESC, created_at, id);
 
 
 --
@@ -8008,6 +8088,14 @@ ALTER TABLE ONLY public.orderbook_summaries
 
 
 --
+-- Name: paper_execution_jobs paper_execution_jobs_order_intent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.paper_execution_jobs
+    ADD CONSTRAINT paper_execution_jobs_order_intent_id_fkey FOREIGN KEY (order_intent_id) REFERENCES public.order_intents(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: portfolio_policies portfolio_policies_portfolio_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -8326,4 +8414,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260718000300'),
     ('20260718000400'),
     ('20260718000500'),
-    ('20260718000600');
+    ('20260718000600'),
+    ('20260718000700');

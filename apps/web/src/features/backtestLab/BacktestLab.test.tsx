@@ -127,7 +127,7 @@ describe("Backtest Lab", () => {
       "partially_filled"
     );
     expect(screen.getByText("walk_forward_summary")).toBeInTheDocument();
-    expect(screen.getByText(run.resultHash)).toBeInTheDocument();
+    expect(screen.getByText(run.resultHash ?? "")).toBeInTheDocument();
   });
 
   it("저장된 run 목록을 먼저 읽고 선택한 run 상세만 조회한다", async () => {

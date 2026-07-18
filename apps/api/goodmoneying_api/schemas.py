@@ -370,6 +370,15 @@ class BacktestTradeResponse(BaseModel):
     knowledgeAt: datetime
 
 
+class BacktestEquityPointResponse(BaseModel):
+    pointSequence: int = Field(ge=1)
+    occurredAt: datetime
+    knowledgeAt: datetime
+    cash: Decimal
+    basePosition: Decimal
+    equity: Decimal
+
+
 class BacktestArtifactResponse(BaseModel):
     artifactType: str
     contentHash: str = Field(pattern="^[0-9a-f]{64}$")
@@ -384,7 +393,7 @@ class BacktestRunResponse(BaseModel):
     datasetVersionId: int
     status: Literal["pending", "running", "succeeded", "failed", "cancelled"]
     inputHash: str = Field(pattern="^[0-9a-f]{64}$")
-    resultHash: str = Field(pattern="^[0-9a-f]{64}$")
+    resultHash: str | None = Field(pattern="^[0-9a-f]{64}$")
     metrics: list[BacktestMetricResponse]
     trades: list[BacktestTradeResponse]
     artifacts: list[BacktestArtifactResponse]
@@ -397,7 +406,7 @@ class BacktestRunSummaryResponse(BaseModel):
     engineVersion: str
     status: Literal["pending", "running", "succeeded", "failed", "cancelled"]
     inputHash: str = Field(pattern="^[0-9a-f]{64}$")
-    resultHash: str = Field(pattern="^[0-9a-f]{64}$")
+    resultHash: str | None = Field(pattern="^[0-9a-f]{64}$")
     requestedAt: datetime
     startedAt: datetime | None
     finishedAt: datetime | None
@@ -405,6 +414,18 @@ class BacktestRunSummaryResponse(BaseModel):
 
 class BacktestRunsResponse(BaseModel):
     items: list[BacktestRunSummaryResponse]
+    nextCursor: str | None
+
+
+class BacktestTradesResponse(BaseModel):
+    backtestRunId: int = Field(gt=0)
+    items: list[BacktestTradeResponse]
+    nextCursor: str | None
+
+
+class BacktestEquityPointsResponse(BaseModel):
+    backtestRunId: int = Field(gt=0)
+    items: list[BacktestEquityPointResponse]
     nextCursor: str | None
 
 

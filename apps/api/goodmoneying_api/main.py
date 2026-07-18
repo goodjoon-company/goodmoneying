@@ -34,8 +34,10 @@ from goodmoneying_api.schemas import (
     BackfillJobResponse,
     BackfillJobsResponse,
     BackfillPlanResponse,
+    BacktestEquityPointsResponse,
     BacktestRunResponse,
     BacktestRunsResponse,
+    BacktestTradesResponse,
     CandidateUniverseResponse,
     CandleSeriesResponse,
     CollectionCoverageSegmentsResponse,
@@ -327,12 +329,22 @@ class BacktestApiRepository(Protocol):
 
     def get_run(self, backtest_run_id: int) -> Mapping[str, object] | None: ...
 
+    def list_run_trades(self, **arguments: object) -> Mapping[str, object] | None: ...
+
+    def list_run_equity_points(self, **arguments: object) -> Mapping[str, object] | None: ...
+
 
 class EmptyBacktestRepository:
     def list_runs(self, **_arguments: object) -> Mapping[str, object]:
         return {"items": [], "nextCursor": None}
 
     def get_run(self, _backtest_run_id: int) -> Mapping[str, object] | None:
+        return None
+
+    def list_run_trades(self, **_arguments: object) -> Mapping[str, object] | None:
+        return None
+
+    def list_run_equity_points(self, **_arguments: object) -> Mapping[str, object] | None:
         return None
 
 
@@ -650,6 +662,72 @@ def create_app(
                 },
             )
         return BacktestRunResponse.model_validate(result)
+
+    @app.get(
+        "/v1/backtest-runs/{backtestRunId}/trades",
+        response_model=BacktestTradesResponse,
+    )
+    def list_backtest_trades(
+        backtestRunId: Annotated[int, Path(gt=0)],
+        pageSize: Annotated[int, Query(ge=1, le=500)] = 100,
+        cursor: str | None = None,
+    ) -> BacktestTradesResponse:
+        try:
+            result = backtest_store.list_run_trades(
+                backtest_run_id=backtestRunId,
+                page_size=pageSize,
+                cursor=cursor,
+            )
+        except BacktestCursorMismatchError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "BACKTEST_RESULT_CURSOR_CONTEXT_MISMATCH",
+                    "message": "백테스트 결과 cursor가 현재 조회 문맥과 다릅니다.",
+                },
+            ) from exc
+        if result is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": "BACKTEST_RUN_NOT_FOUND",
+                    "message": "백테스트 실행 결과가 없습니다.",
+                },
+            )
+        return BacktestTradesResponse.model_validate(result)
+
+    @app.get(
+        "/v1/backtest-runs/{backtestRunId}/equity-points",
+        response_model=BacktestEquityPointsResponse,
+    )
+    def list_backtest_equity_points(
+        backtestRunId: Annotated[int, Path(gt=0)],
+        pageSize: Annotated[int, Query(ge=1, le=500)] = 100,
+        cursor: str | None = None,
+    ) -> BacktestEquityPointsResponse:
+        try:
+            result = backtest_store.list_run_equity_points(
+                backtest_run_id=backtestRunId,
+                page_size=pageSize,
+                cursor=cursor,
+            )
+        except BacktestCursorMismatchError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "BACKTEST_RESULT_CURSOR_CONTEXT_MISMATCH",
+                    "message": "백테스트 결과 cursor가 현재 조회 문맥과 다릅니다.",
+                },
+            ) from exc
+        if result is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": "BACKTEST_RUN_NOT_FOUND",
+                    "message": "백테스트 실행 결과가 없습니다.",
+                },
+            )
+        return BacktestEquityPointsResponse.model_validate(result)
 
     @app.post(
         "/v1/dataset-builds",

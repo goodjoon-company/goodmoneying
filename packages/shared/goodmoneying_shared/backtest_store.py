@@ -32,6 +32,8 @@ class BacktestLeaseLostError(RuntimeError):
 
 
 _LIST_CURSOR_KIND = "backtest-run-list-v1"
+_TRADE_CURSOR_KIND = "backtest-trade-list-v1"
+_EQUITY_CURSOR_KIND = "backtest-equity-list-v1"
 _CURSOR_HMAC_SECRET = os.getenv("GOODMONEYING_CURSOR_HMAC_SECRET") or secrets.token_hex(32)
 
 
@@ -47,6 +49,12 @@ class PostgresBacktestStore:
 
     def list_runs(self, **arguments: object) -> Row:
         return list_runs(self._repository, **arguments)
+
+    def list_run_trades(self, **arguments: object) -> Row | None:
+        return list_run_trades(self._repository, **arguments)
+
+    def list_run_equity_points(self, **arguments: object) -> Row | None:
+        return list_run_equity_points(self._repository, **arguments)
 
     def claim_next_run(self, worker_id: str, lease_seconds: int = 120) -> Row | None:
         return claim_next_run(
@@ -402,6 +410,112 @@ def list_runs(repository: object, *, page_size: object, cursor: object) -> Row:
     }
 
 
+def list_run_trades(
+    repository: object,
+    *,
+    backtest_run_id: object,
+    page_size: object,
+    cursor: object,
+) -> Row | None:
+    run_id = _positive_int(backtest_run_id, "backtestRunId")
+    page_size_int = _positive_int(page_size, "pageSize")
+    return _list_run_child_rows(
+        repository,
+        backtest_run_id=run_id,
+        page_size=page_size_int,
+        cursor=cursor,
+        cursor_kind=_TRADE_CURSOR_KIND,
+        table_name="backtest_trades",
+        sequence_column="trade_sequence",
+        row_mapper=_trade_response,
+    )
+
+
+def list_run_equity_points(
+    repository: object,
+    *,
+    backtest_run_id: object,
+    page_size: object,
+    cursor: object,
+) -> Row | None:
+    run_id = _positive_int(backtest_run_id, "backtestRunId")
+    page_size_int = _positive_int(page_size, "pageSize")
+    return _list_run_child_rows(
+        repository,
+        backtest_run_id=run_id,
+        page_size=page_size_int,
+        cursor=cursor,
+        cursor_kind=_EQUITY_CURSOR_KIND,
+        table_name="backtest_equity_points",
+        sequence_column="point_sequence",
+        row_mapper=_equity_point_response,
+    )
+
+
+def _list_run_child_rows(
+    repository: object,
+    *,
+    backtest_run_id: int,
+    page_size: int,
+    cursor: object,
+    cursor_kind: str,
+    table_name: str,
+    sequence_column: str,
+    row_mapper: Callable[[Mapping[str, object]], Row],
+) -> Row | None:
+    if page_size < 1:
+        raise ValueError("pageSize는 1 이상 정수여야 한다.")
+    with _connector(repository)() as connection:
+        exists = connection.execute(
+            "SELECT 1 FROM backtest_runs WHERE id=%s",
+            (backtest_run_id,),
+        ).fetchone()
+        if exists is None:
+            return None
+        if cursor is None:
+            ceiling_row = connection.execute(
+                f"SELECT COALESCE(MAX({sequence_column}), 0) AS sequence "
+                f"FROM {table_name} WHERE run_id=%s",
+                (backtest_run_id,),
+            ).fetchone()
+            ceiling = (
+                int(cast(int, ceiling_row["sequence"])) if ceiling_row is not None else 0
+            )
+            last_sequence = 0
+        else:
+            cursor_run_id, ceiling, last_sequence = _decode_result_cursor(
+                cursor,
+                expected_kind=cursor_kind,
+            )
+            if cursor_run_id != backtest_run_id:
+                raise BacktestCursorMismatchError(
+                    "백테스트 결과 cursor가 현재 조회 문맥과 다릅니다."
+                )
+        rows = connection.execute(
+            f"""
+            SELECT * FROM {table_name}
+            WHERE run_id=%s AND {sequence_column} <= %s AND {sequence_column} > %s
+            ORDER BY {sequence_column}
+            LIMIT %s
+            """,
+            (backtest_run_id, ceiling, last_sequence, page_size + 1),
+        ).fetchall()
+    page = rows[:page_size]
+    next_cursor = None
+    if len(rows) > page_size and page:
+        next_cursor = _encode_result_cursor(
+            kind=cursor_kind,
+            backtest_run_id=backtest_run_id,
+            ceiling=ceiling,
+            last_sequence=int(cast(int, page[-1][sequence_column])),
+        )
+    return {
+        "backtestRunId": backtest_run_id,
+        "items": [row_mapper(row) for row in page],
+        "nextCursor": next_cursor,
+    }
+
+
 def _get_run_with_connection(connection: Any, backtest_run_id: int) -> Row | None:
     run = connection.execute(
         "SELECT * FROM backtest_runs WHERE id=%s", (backtest_run_id,)
@@ -542,6 +656,17 @@ def _trade_response(row: Mapping[str, object]) -> Row:
         "status": row["status"],
         "occurredAt": row["occurred_at"],
         "knowledgeAt": row["knowledge_at"],
+    }
+
+
+def _equity_point_response(row: Mapping[str, object]) -> Row:
+    return {
+        "pointSequence": row["point_sequence"],
+        "occurredAt": row["occurred_at"],
+        "knowledgeAt": row["knowledge_at"],
+        "cash": cast(Decimal, row["cash"]),
+        "basePosition": cast(Decimal, row["base_position"]),
+        "equity": cast(Decimal, row["equity"]),
     }
 
 
@@ -691,3 +816,68 @@ def _cursor_digest(payload: Mapping[str, object]) -> str:
         encoded.encode(),
         hashlib.sha256,
     ).hexdigest()
+
+
+def _encode_result_cursor(
+    *,
+    kind: str,
+    backtest_run_id: int,
+    ceiling: int,
+    last_sequence: int,
+) -> str:
+    payload = {
+        "backtestRunId": backtest_run_id,
+        "ceiling": ceiling,
+        "lastSequence": last_sequence,
+    }
+    envelope = {
+        "kind": kind,
+        "payload": payload,
+        "digest": _cursor_digest(payload),
+    }
+    encoded = json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
+    return urlsafe_b64encode(encoded).decode().rstrip("=")
+
+
+def _decode_result_cursor(
+    value: object,
+    *,
+    expected_kind: str,
+) -> tuple[int, int, int]:
+    if not isinstance(value, str) or not value.strip():
+        raise BacktestCursorMismatchError("유효하지 않은 백테스트 결과 cursor다.")
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        envelope = json.loads(urlsafe_b64decode(padded.encode()).decode())
+        if not isinstance(envelope, Mapping):
+            raise BacktestCursorMismatchError("유효하지 않은 백테스트 결과 cursor 구조다.")
+        if envelope.get("kind") != expected_kind:
+            raise BacktestCursorMismatchError(
+                "백테스트 결과 cursor가 현재 조회 문맥과 다릅니다."
+            )
+        payload = envelope.get("payload")
+        if not isinstance(payload, Mapping):
+            raise BacktestCursorMismatchError("유효하지 않은 백테스트 결과 cursor 구조다.")
+        digest = envelope.get("digest")
+        if not isinstance(digest, str) or not hmac.compare_digest(
+            digest, _cursor_digest(payload)
+        ):
+            raise BacktestCursorMismatchError("백테스트 결과 cursor 무결성 검증에 실패했다.")
+        run_id = payload.get("backtestRunId")
+        ceiling = payload.get("ceiling")
+        last_sequence = payload.get("lastSequence")
+        if type(run_id) is not int or type(ceiling) is not int or type(last_sequence) is not int:
+            raise BacktestCursorMismatchError("유효하지 않은 백테스트 결과 cursor 구조다.")
+        if run_id < 1 or ceiling < 0 or last_sequence < 0 or last_sequence > ceiling:
+            raise BacktestCursorMismatchError("유효하지 않은 백테스트 결과 cursor 범위다.")
+        return run_id, ceiling, last_sequence
+    except BacktestCursorMismatchError:
+        raise
+    except Exception as exc:
+        raise BacktestCursorMismatchError("유효하지 않은 백테스트 결과 cursor다.") from exc
+
+
+def _positive_int(value: object, field: str) -> int:
+    if type(value) is not int or value < 1:
+        raise ValueError(f"{field}는 1 이상 정수여야 한다.")
+    return value

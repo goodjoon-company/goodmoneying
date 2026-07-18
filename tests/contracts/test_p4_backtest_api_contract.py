@@ -34,6 +34,7 @@ def test_P4_3_OpenAPI는_백테스트_run_조회_계약을_노출한다() -> Non
     }
     assert schemas["BacktestMetric"]["properties"]["metricValue"]["type"] == "string"
     assert schemas["BacktestTrade"]["properties"]["filledQuantity"]["type"] == "string"
+    assert schemas["BacktestRun"]["properties"]["resultHash"]["type"] == ["string", "null"]
     assert schemas["BacktestArtifact"]["properties"]["artifactType"]["type"] == "string"
 
 
@@ -67,6 +68,10 @@ def test_P4_4_OpenAPI는_백테스트_run_목록과_안정_cursor를_노출한�
         "$ref": "#/components/schemas/BacktestRunSummary"
     }
     assert schemas["BacktestRuns"]["properties"]["nextCursor"]["type"] == ["string", "null"]
+    assert schemas["BacktestRunSummary"]["properties"]["resultHash"]["type"] == [
+        "string",
+        "null",
+    ]
     assert set(schemas["BacktestRunSummary"]["required"]) == {
         "backtestRunId",
         "strategyVersionId",
@@ -78,4 +83,51 @@ def test_P4_4_OpenAPI는_백테스트_run_목록과_안정_cursor를_노출한�
         "requestedAt",
         "startedAt",
         "finishedAt",
+    }
+
+
+def test_P4_6_OpenAPI는_백테스트_결과_대용량_pagination을_노출한다() -> None:
+    document = yaml.safe_load(OPENAPI.read_text())
+    paths = document["paths"]
+
+    trades = paths["/v1/backtest-runs/{backtestRunId}/trades"]["get"]
+    equity = paths["/v1/backtest-runs/{backtestRunId}/equity-points"]["get"]
+
+    assert trades["operationId"] == "listBacktestTrades"
+    assert equity["operationId"] == "listBacktestEquityPoints"
+    for operation, schema_name in (
+        (trades, "BacktestTrades"),
+        (equity, "BacktestEquityPoints"),
+    ):
+        assert operation["tags"] == ["백테스트(Backtest)"]
+        parameters = {parameter["name"]: parameter for parameter in operation["parameters"]}
+        assert parameters["pageSize"]["schema"] == {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 100,
+        }
+        assert "불투명 커서" in parameters["cursor"]["description"]
+        assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+            "$ref": f"#/components/schemas/{schema_name}"
+        }
+        assert operation["responses"]["404"]["$ref"] == "#/components/responses/NotFound"
+        assert operation["responses"]["409"]["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/ErrorResponse"
+        }
+
+    schemas = document["components"]["schemas"]
+    assert schemas["BacktestEquityPoint"]["required"] == [
+        "pointSequence",
+        "occurredAt",
+        "knowledgeAt",
+        "cash",
+        "basePosition",
+        "equity",
+    ]
+    assert schemas["BacktestTrades"]["properties"]["items"]["items"] == {
+        "$ref": "#/components/schemas/BacktestTrade"
+    }
+    assert schemas["BacktestEquityPoints"]["properties"]["items"]["items"] == {
+        "$ref": "#/components/schemas/BacktestEquityPoint"
     }

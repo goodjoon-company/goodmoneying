@@ -486,6 +486,36 @@ class _SeededBacktestRepository:
             ],
         }
 
+    def list_run_trades(self, **arguments: object) -> dict[str, object] | None:
+        backtest_run_id = int(cast(int | str, arguments["backtest_run_id"]))
+        run = self.get_run(backtest_run_id)
+        if run is None:
+            return None
+        return {
+            "backtestRunId": backtest_run_id,
+            "items": run["trades"],
+            "nextCursor": None,
+        }
+
+    def list_run_equity_points(self, **arguments: object) -> dict[str, object] | None:
+        backtest_run_id = int(cast(int | str, arguments["backtest_run_id"]))
+        if backtest_run_id != 21:
+            return None
+        return {
+            "backtestRunId": backtest_run_id,
+            "items": [
+                {
+                    "pointSequence": 1,
+                    "occurredAt": "2026-07-18T00:00:00Z",
+                    "knowledgeAt": "2026-07-18T00:00:00Z",
+                    "cash": Decimal("899.799900"),
+                    "basePosition": Decimal("1.00"),
+                    "equity": Decimal("1009.579790"),
+                }
+            ],
+            "nextCursor": None,
+        }
+
 def _analysis_history_candles(
     first_instrument_id: int, second_instrument_id: int
 ) -> list[SourceCandle]:

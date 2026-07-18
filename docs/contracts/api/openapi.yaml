@@ -899,6 +899,78 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+  /v1/backtest-runs/{backtestRunId}/trades:
+    get:
+      tags: [백테스트(Backtest)]
+      summary: 백테스트 체결 결과 페이지 조회
+      operationId: listBacktestTrades
+      parameters:
+        - name: backtestRunId
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+        - name: pageSize
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+        - name: cursor
+          in: query
+          required: false
+          description: 백테스트 run·최초 체결 sequence 상한·마지막 sequence를 고정한 불투명 커서
+          schema: {type: [string, "null"]}
+      responses:
+        "200":
+          description: 대용량 체결 결과를 sequence 오름차순으로 나눈 페이지
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BacktestTrades"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: cursor 무결성이 깨졌거나 다른 결과 문맥에서 생성됨
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/backtest-runs/{backtestRunId}/equity-points:
+    get:
+      tags: [백테스트(Backtest)]
+      summary: 백테스트 자산곡선 페이지 조회
+      operationId: listBacktestEquityPoints
+      parameters:
+        - name: backtestRunId
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+        - name: pageSize
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+        - name: cursor
+          in: query
+          required: false
+          description: 백테스트 run·최초 자산곡선 sequence 상한·마지막 sequence를 고정한 불투명 커서
+          schema: {type: [string, "null"]}
+      responses:
+        "200":
+          description: 대용량 자산곡선 결과를 sequence 오름차순으로 나눈 페이지
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BacktestEquityPoints"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: cursor 무결성이 깨졌거나 다른 결과 문맥에서 생성됨
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /v1/instruments/{instrumentId}/orderbook-summaries:
     get:
       tags:
@@ -1695,6 +1767,18 @@ components:
         status: {type: string, enum: [filled, partially_filled, rejected]}
         occurredAt: {type: string, format: date-time}
         knowledgeAt: {type: string, format: date-time}
+    BacktestEquityPoint:
+      description: 백테스트 run의 sequence 기반 자산곡선 지점.
+      type: object
+      additionalProperties: false
+      required: [pointSequence, occurredAt, knowledgeAt, cash, basePosition, equity]
+      properties:
+        pointSequence: {type: integer, minimum: 1}
+        occurredAt: {type: string, format: date-time}
+        knowledgeAt: {type: string, format: date-time}
+        cash: {type: string}
+        basePosition: {type: string}
+        equity: {type: string}
     BacktestArtifact:
       description: walk-forward 요약 등 백테스트 run에서 파생된 산출물 메타데이터.
       type: object
@@ -1719,7 +1803,7 @@ components:
         datasetVersionId: {type: integer, format: int64, minimum: 1}
         status: {type: string, enum: [pending, running, succeeded, failed, cancelled]}
         inputHash: {type: string, pattern: "^[0-9a-f]{64}$"}
-        resultHash: {type: string, pattern: "^[0-9a-f]{64}$"}
+        resultHash: {type: [string, "null"], pattern: "^[0-9a-f]{64}$"}
         metrics:
           type: array
           items:
@@ -1744,7 +1828,7 @@ components:
         engineVersion: {type: string}
         status: {type: string, enum: [pending, running, succeeded, failed, cancelled]}
         inputHash: {type: string, pattern: "^[0-9a-f]{64}$"}
-        resultHash: {type: string, pattern: "^[0-9a-f]{64}$"}
+        resultHash: {type: [string, "null"], pattern: "^[0-9a-f]{64}$"}
         requestedAt: {type: string, format: date-time}
         startedAt: {type: [string, "null"], format: date-time}
         finishedAt: {type: [string, "null"], format: date-time}
@@ -1758,6 +1842,32 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BacktestRunSummary"
+        nextCursor:
+          type: [string, "null"]
+    BacktestTrades:
+      description: 백테스트 체결 결과 페이지.
+      type: object
+      additionalProperties: false
+      required: [backtestRunId, items, nextCursor]
+      properties:
+        backtestRunId: {type: integer, format: int64, minimum: 1}
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BacktestTrade"
+        nextCursor:
+          type: [string, "null"]
+    BacktestEquityPoints:
+      description: 백테스트 자산곡선 결과 페이지.
+      type: object
+      additionalProperties: false
+      required: [backtestRunId, items, nextCursor]
+      properties:
+        backtestRunId: {type: integer, format: int64, minimum: 1}
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BacktestEquityPoint"
         nextCursor:
           type: [string, "null"]
     DataFoundationMarket:

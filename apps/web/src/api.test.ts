@@ -424,6 +424,43 @@ describe("운영 API 클라이언트", () => {
     expect(fetch).toHaveBeenCalledWith("/api/v1/backtest-runs?pageSize=25&cursor=cursor-1");
   });
 
+  it("Backtest Lab은 대용량 백테스트 결과 페이지 API를 cursor 계약대로 호출한다", async () => {
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/v1/backtest-runs/21/trades?pageSize=100&cursor=trade-cursor") {
+        return Response.json({
+          backtestRunId: 21,
+          items: [{ tradeSequence: 1, side: "buy" }],
+          nextCursor: "trade-next"
+        });
+      }
+      if (url === "/api/v1/backtest-runs/21/equity-points?pageSize=100&cursor=equity-cursor") {
+        return Response.json({
+          backtestRunId: 21,
+          items: [{ pointSequence: 1, equity: "1009.579790" }],
+          nextCursor: null
+        });
+      }
+      return new Response(`unexpected ${url}`, { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    const { loadBacktestEquityPoints, loadBacktestTrades } = await import("./api");
+
+    await expect(
+      loadBacktestTrades({ backtestRunId: 21, pageSize: 100, cursor: "trade-cursor" })
+    ).resolves.toMatchObject({ nextCursor: "trade-next" });
+    await expect(
+      loadBacktestEquityPoints({ backtestRunId: 21, pageSize: 100, cursor: "equity-cursor" })
+    ).resolves.toMatchObject({ items: [{ pointSequence: 1, equity: "1009.579790" }] });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/v1/backtest-runs/21/trades?pageSize=100&cursor=trade-cursor"
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/v1/backtest-runs/21/equity-points?pageSize=100&cursor=equity-cursor"
+    );
+  });
+
   it("구버전 대시보드 응답에 새 운영 콘솔 필드가 없어도 첫 화면용 기본값을 채운다", async () => {
     const dashboardWithoutWorkerStatus = { ...dashboard };
     delete (dashboardWithoutWorkerStatus as Partial<typeof dashboard>).workerStatus;

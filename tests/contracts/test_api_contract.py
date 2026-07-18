@@ -25,6 +25,8 @@ def test_openapi_contract_contains_m1_paths() -> None:
         "/v1/strategy-versions/{strategyVersionId}",
         "/v1/backtest-runs",
         "/v1/backtest-runs/{backtestRunId}",
+        "/v1/backtest-runs/{backtestRunId}/trades",
+        "/v1/backtest-runs/{backtestRunId}/equity-points",
         "/v1/dashboard/summary",
         "/v1/dashboard/summary/stream",
         "/v1/dashboard/overview",
@@ -85,6 +87,10 @@ def test_openapi_contract_groups_operations_with_described_tags() -> None:
         ("get", "/v1/strategy-versions/{strategyVersionId}"): ["전략(Strategy)"],
         ("get", "/v1/backtest-runs"): ["백테스트(Backtest)"],
         ("get", "/v1/backtest-runs/{backtestRunId}"): ["백테스트(Backtest)"],
+        ("get", "/v1/backtest-runs/{backtestRunId}/trades"): ["백테스트(Backtest)"],
+        ("get", "/v1/backtest-runs/{backtestRunId}/equity-points"): [
+            "백테스트(Backtest)"
+        ],
         ("get", "/v1/dashboard/summary"): ["대시보드(Dashboard)"],
         ("get", "/v1/dashboard/summary/stream"): ["대시보드(Dashboard)"],
         ("get", "/v1/dashboard/overview"): ["대시보드(Dashboard)"],

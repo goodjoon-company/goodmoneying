@@ -630,6 +630,15 @@ export type BacktestTrade = {
   knowledgeAt: string;
 };
 
+export type BacktestEquityPoint = {
+  pointSequence: number;
+  occurredAt: string;
+  knowledgeAt: string;
+  cash: string;
+  basePosition: string;
+  equity: string;
+};
+
 export type BacktestArtifact = {
   artifactType: string;
   contentHash: string;
@@ -644,7 +653,7 @@ export type BacktestRun = {
   datasetVersionId: number;
   status: "pending" | "running" | "succeeded" | "failed" | "cancelled";
   inputHash: string;
-  resultHash: string;
+  resultHash: string | null;
   metrics: BacktestMetric[];
   trades: BacktestTrade[];
   artifacts: BacktestArtifact[];
@@ -657,7 +666,7 @@ export type BacktestRunSummary = {
   engineVersion: string;
   status: "pending" | "running" | "succeeded" | "failed" | "cancelled";
   inputHash: string;
-  resultHash: string;
+  resultHash: string | null;
   requestedAt: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -665,6 +674,18 @@ export type BacktestRunSummary = {
 
 export type BacktestRunsResponse = {
   items: BacktestRunSummary[];
+  nextCursor: string | null;
+};
+
+export type BacktestTradesResponse = {
+  backtestRunId: number;
+  items: BacktestTrade[];
+  nextCursor: string | null;
+};
+
+export type BacktestEquityPointsResponse = {
+  backtestRunId: number;
+  items: BacktestEquityPoint[];
   nextCursor: string | null;
 };
 
@@ -1072,6 +1093,34 @@ export async function loadBacktestRuns(options: {
   });
   if (options.cursor) params.set("cursor", options.cursor);
   return getJson<BacktestRunsResponse>(`/v1/backtest-runs?${params.toString()}`);
+}
+
+export async function loadBacktestTrades(options: {
+  backtestRunId: number;
+  pageSize?: number;
+  cursor?: string | null;
+}): Promise<BacktestTradesResponse> {
+  const params = new URLSearchParams({
+    pageSize: String(options.pageSize ?? 100)
+  });
+  if (options.cursor) params.set("cursor", options.cursor);
+  return getJson<BacktestTradesResponse>(
+    `/v1/backtest-runs/${options.backtestRunId}/trades?${params.toString()}`
+  );
+}
+
+export async function loadBacktestEquityPoints(options: {
+  backtestRunId: number;
+  pageSize?: number;
+  cursor?: string | null;
+}): Promise<BacktestEquityPointsResponse> {
+  const params = new URLSearchParams({
+    pageSize: String(options.pageSize ?? 100)
+  });
+  if (options.cursor) params.set("cursor", options.cursor);
+  return getJson<BacktestEquityPointsResponse>(
+    `/v1/backtest-runs/${options.backtestRunId}/equity-points?${params.toString()}`
+  );
 }
 
 export async function loadInstrumentSnapshot(

@@ -318,9 +318,11 @@ rest_endpoints:
       - {name: volume, location: body, type: string, required: false, format: decimal-string, dynamic_constraint_source: rest.available-order-information}
       - {name: price, location: body, type: string, required: false, format: decimal-string, dynamic_constraint_source: rest.list-orderbook-instruments}
       - {name: ord_type, location: body, type: string, required: false, enum: [limit, price, market, best]}
-      - {name: identifier, location: body, type: string, required: false}
+      - {name: identifier, location: body, type: string, required: false, max_length: 64}
       - {name: time_in_force, location: body, type: string, required: false, enum: [ioc, fok, post_only]}
       - {name: smp_type, location: body, type: string, required: false, enum: [cancel_maker, cancel_taker, reduce]}
+    forbidden_value_combinations: &order_forbidden_value_combinations
+      - {when: {time_in_force: post_only}, forbid: [smp_type]}
     rate_limit_group: order
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/new-order.md
@@ -331,6 +333,7 @@ rest_endpoints:
     method: POST
     path: /v1/orders/test
     parameters: *order_parameters
+    forbidden_value_combinations: *order_forbidden_value_combinations
     rate_limit_group: order-test
     safety: test
     source_url: https://docs.upbit.com/kr/reference/order-test.md
@@ -342,7 +345,7 @@ rest_endpoints:
     path: /v1/order
     parameters:
       - {name: uuid, location: query, type: string, required: false}
-      - {name: identifier, location: query, type: string, required: false}
+      - {name: identifier, location: query, type: string, required: false, max_length: 64}
     any_of_required: [[uuid], [identifier]]
     rate_limit_group: default
     safety: read
@@ -406,7 +409,7 @@ rest_endpoints:
     path: /v1/order
     parameters:
       - {name: uuid, location: query, type: string, required: false}
-      - {name: identifier, location: query, type: string, required: false}
+      - {name: identifier, location: query, type: string, required: false, max_length: 64}
     any_of_required: [[uuid], [identifier]]
     rate_limit_group: default
     safety: blocked
@@ -449,13 +452,15 @@ rest_endpoints:
     path: /v1/orders/cancel_and_new
     parameters:
       - {name: prev_order_uuid, location: body, type: string, required: false}
-      - {name: prev_order_identifier, location: body, type: string, required: false}
+      - {name: prev_order_identifier, location: body, type: string, required: false, max_length: 64}
       - {name: new_ord_type, location: body, type: string, required: true, enum: [limit, price, market, best]}
       - {name: new_volume, location: body, type: string, required: false}
       - {name: new_price, location: body, type: string, required: false}
-      - {name: new_identifier, location: body, type: string, required: false}
+      - {name: new_identifier, location: body, type: string, required: false, max_length: 64}
       - {name: new_time_in_force, location: body, type: string, required: false, enum: [ioc, fok, post_only]}
       - {name: new_smp_type, location: body, type: string, required: false, enum: [cancel_maker, cancel_taker, reduce]}
+    forbidden_value_combinations:
+      - {when: {new_time_in_force: post_only}, forbid: [new_smp_type]}
     rate_limit_group: order
     safety: blocked
     source_url: https://docs.upbit.com/kr/reference/cancel-and-new-order.md

@@ -749,7 +749,8 @@
           "name": "identifier",
           "location": "body",
           "type": "string",
-          "required": false
+          "required": false,
+          "max_length": 64
         },
         {
           "name": "time_in_force",
@@ -828,7 +829,8 @@
           "name": "identifier",
           "location": "body",
           "type": "string",
-          "required": false
+          "required": false,
+          "max_length": 64
         },
         {
           "name": "time_in_force",
@@ -869,7 +871,8 @@
           "name": "identifier",
           "location": "query",
           "type": "string",
-          "required": false
+          "required": false,
+          "max_length": 64
         }
       ]
     },
@@ -1053,7 +1056,8 @@
           "name": "identifier",
           "location": "query",
           "type": "string",
-          "required": false
+          "required": false,
+          "max_length": 64
         }
       ]
     },
@@ -1159,7 +1163,8 @@
           "name": "prev_order_identifier",
           "location": "body",
           "type": "string",
-          "required": false
+          "required": false,
+          "max_length": 64
         },
         {
           "name": "new_ord_type",
@@ -1189,7 +1194,8 @@
           "name": "new_identifier",
           "location": "body",
           "type": "string",
-          "required": false
+          "required": false,
+          "max_length": 64
         },
         {
           "name": "new_time_in_force",

@@ -89,6 +89,7 @@ def validate_parameters(endpoint: Mapping[str, Any], values: Mapping[str, Any]) 
             raise InvalidParameters(
                 f"파라미터를 동시에 사용할 수 없습니다: {present}."
             )
+    _validate_forbidden_value_combinations(endpoint, values)
     for name, value in values.items():
         specification = specifications[name]
         if not _matches_parameter_schema(value, specification):
@@ -107,6 +108,30 @@ def _has_parameter_value(values: Mapping[str, Any], name: str) -> bool:
     if isinstance(value, list):
         return bool(value)
     return True
+
+
+def _validate_forbidden_value_combinations(
+    endpoint: Mapping[str, Any],
+    values: Mapping[str, Any],
+) -> None:
+    rules = cast(list[dict[str, Any]], endpoint.get("forbidden_value_combinations", []))
+    for rule in rules:
+        when = rule.get("when")
+        forbid = rule.get("forbid")
+        if not isinstance(when, Mapping) or not isinstance(forbid, list):
+            continue
+        if not all(values.get(name) == expected for name, expected in when.items()):
+            continue
+        present = [
+            str(name)
+            for name in forbid
+            if isinstance(name, str) and _has_parameter_value(values, name)
+        ]
+        if present:
+            trigger = ", ".join(f"{name}={value}" for name, value in when.items())
+            raise InvalidParameters(
+                f"{trigger} 조건에서는 파라미터를 동시에 사용할 수 없습니다: {present}."
+            )
 
 
 def _matches_parameter_schema(value: Any, specification: Mapping[str, Any]) -> bool:
@@ -137,8 +162,15 @@ def _matches_parameter_schema(value: Any, specification: Mapping[str, Any]) -> b
     if not valid_type:
         return False
 
-    if isinstance(value, str) and not _matches_string_format(value, specification):
-        return False
+    if isinstance(value, str):
+        minimum_length = specification.get("min_length")
+        maximum_length = specification.get("max_length")
+        if isinstance(minimum_length, int) and len(value) < minimum_length:
+            return False
+        if isinstance(maximum_length, int) and len(value) > maximum_length:
+            return False
+        if not _matches_string_format(value, specification):
+            return False
     if isinstance(value, list):
         if any(isinstance(item, str) and not item.strip() for item in value):
             return False

@@ -327,6 +327,18 @@ def test_catalog_defines_parameter_input_constraints_and_defaults() -> None:
     assert parameter("rest.order-test", "price")["dynamic_constraint_source"] == (
         "rest.list-orderbook-instruments"
     )
+    for endpoint_id in ("rest.new-order", "rest.order-test"):
+        assert parameter(endpoint_id, "identifier")["max_length"] == 64
+        assert {
+            "when": {"time_in_force": "post_only"},
+            "forbid": ["smp_type"],
+        } in by_id[endpoint_id]["forbidden_value_combinations"]
+    assert parameter("rest.cancel-and-new-order", "prev_order_identifier")["max_length"] == 64
+    assert parameter("rest.cancel-and-new-order", "new_identifier")["max_length"] == 64
+    assert {
+        "when": {"new_time_in_force": "post_only"},
+        "forbid": ["new_smp_type"],
+    } in by_id["rest.cancel-and-new-order"]["forbidden_value_combinations"]
     for endpoint_id in (
         "rest.post-universal-transfer",
         "rest.post-transfer",

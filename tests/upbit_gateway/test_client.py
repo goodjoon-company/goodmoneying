@@ -194,6 +194,73 @@ def test_catalog_parameter_validation_enforces_required_alternative_groups() -> 
         )
 
 
+def test_order_identifier_length_and_post_only_smp_conflict_are_rejected_locally() -> None:
+    order_test = _endpoint("rest.order-test")
+    cancel_and_new = _endpoint("rest.cancel-and-new-order")
+    valid_limit_bid = {
+        "market": "KRW-BTC",
+        "side": "bid",
+        "ord_type": "limit",
+        "volume": "0.01",
+        "price": "1000",
+    }
+
+    validate_parameters(order_test, valid_limit_bid | {"identifier": "x" * 64})
+    validate_parameters(
+        order_test,
+        valid_limit_bid | {"time_in_force": "post_only"},
+    )
+    validate_parameters(
+        order_test,
+        valid_limit_bid | {"time_in_force": "ioc", "smp_type": "cancel_taker"},
+    )
+
+    with pytest.raises(InvalidParameters, match="identifier"):
+        validate_parameters(order_test, valid_limit_bid | {"identifier": "x" * 65})
+    with pytest.raises(InvalidParameters, match="동시에"):
+        validate_parameters(
+            order_test,
+            valid_limit_bid | {"time_in_force": "post_only", "smp_type": "cancel_taker"},
+        )
+    validate_parameters(
+        cancel_and_new,
+        {
+            "prev_order_identifier": "p" * 64,
+            "new_ord_type": "limit",
+            "new_volume": "0.01",
+            "new_price": "1000",
+            "new_identifier": "n" * 64,
+        },
+    )
+    with pytest.raises(InvalidParameters, match="prev_order_identifier"):
+        validate_parameters(
+            cancel_and_new,
+            {
+                "prev_order_identifier": "p" * 65,
+                "new_ord_type": "limit",
+            },
+        )
+    with pytest.raises(InvalidParameters, match="new_identifier"):
+        validate_parameters(
+            cancel_and_new,
+            {
+                "prev_order_uuid": "fake-order-uuid",
+                "new_ord_type": "limit",
+                "new_identifier": "n" * 65,
+            },
+        )
+    with pytest.raises(InvalidParameters, match="동시에"):
+        validate_parameters(
+            cancel_and_new,
+            {
+                "prev_order_uuid": "fake-order-uuid",
+                "new_ord_type": "limit",
+                "new_time_in_force": "post_only",
+                "new_smp_type": "cancel_taker",
+            },
+        )
+
+
 @pytest.mark.parametrize(
     ("endpoint", "parameter"),
     REST_ARRAY_PARAMETERS,

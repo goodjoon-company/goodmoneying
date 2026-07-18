@@ -43,7 +43,7 @@
 |---|---|---|---|
 | Web | 연구·전략·백테스트·봇·위험·운영 UI, REST 부트스트랩, WebSocket 구독 | 브라우저 단기 상태만 유지 | P5-6 Bot Workshop까지 부분 구현 |
 | API | 권한, 명령·조회, 버전 생성, 스냅숏 복구, 내부 이벤트 발행 | PostgreSQL | 부분 구현 |
-| Upbit Gateway | 공식 REST·WebSocket, JWT, 요청 제한, SMP, 주문 테스트와 실제 주문 안전 경계 | 비밀 파일은 프로세스 외부, 추적 메타데이터만 DB | 실제 주문·SMP 제외 부분 구현 |
+| Upbit Gateway | 공식 REST·WebSocket, JWT, 요청 제한, SMP, 주문 테스트와 실제 주문 안전 경계 | 비밀 파일은 프로세스 외부, 추적 메타데이터만 DB | P6-1 주문 identifier 64자와 `post_only`+SMP 로컬 거부 구현, 실제 주문 adapter와 private 대사는 미구현 |
 | Market Sync Worker | 전체 거래쌍과 상태 이력 동기화, KRW 기본 정책 자동 편입 | PostgreSQL | 실시간 worker에 일부 결합 |
 | Realtime Worker | 체결·호가·티커·캔들 구독, 중복 제거, 원천 저장, 연결 복구 | PostgreSQL | 부분 구현 |
 | Backfill Scheduler/Worker | 커버리지 격차에서 작업 생성, 임대, 재시도, 200개 단위 역방향 백필 | PostgreSQL 큐 | 수동 흐름 부분 구현 |

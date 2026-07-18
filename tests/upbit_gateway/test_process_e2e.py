@@ -195,6 +195,47 @@ def test_actual_gateway_process_uses_canonical_authenticated_query() -> None:
     ]
 
 
+def test_actual_gateway_process_rejects_order_guardrails_before_upstream_call() -> None:
+    with _processes() as (fake_url, gateway_url, _, _):
+        calls_before = httpx.get(f"{fake_url}/__calls", timeout=3).json()
+        invalid_identifier = _execute(
+            gateway_url,
+            "rest.order-test",
+            {
+                "market": "KRW-BTC",
+                "side": "bid",
+                "ord_type": "limit",
+                "volume": "0.01",
+                "price": "1000",
+                "identifier": "x" * 65,
+            },
+        )
+        invalid_smp = _execute(
+            gateway_url,
+            "rest.order-test",
+            {
+                "market": "KRW-BTC",
+                "side": "bid",
+                "ord_type": "limit",
+                "volume": "0.01",
+                "price": "1000",
+                "time_in_force": "post_only",
+                "smp_type": "cancel_taker",
+            },
+        )
+        calls_after = httpx.get(f"{fake_url}/__calls", timeout=3).json()
+
+    assert (invalid_identifier.status_code, invalid_identifier.json()["detail"]["code"]) == (
+        422,
+        "INVALID_PARAMETERS",
+    )
+    assert (invalid_smp.status_code, invalid_smp.json()["detail"]["code"]) == (
+        422,
+        "INVALID_PARAMETERS",
+    )
+    assert calls_after == calls_before
+
+
 def test_actual_gateway_process_against_fake_upstream_end_to_end() -> None:
     with _processes() as (fake_url, gateway_url, fake, gateway):
         public = _execute(gateway_url, "rest.list-trading-pairs", {})

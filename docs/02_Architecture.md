@@ -28,7 +28,7 @@
 | 영역 | 2026-07-17 기준 | 구현 추적 |
 |---|---|---|
 | 기존 수집·백필·집계, API·Web, Upbit Lab·Gateway | 부분 구현 | Issue #28, #29, #33 |
-| 전략·백테스트·포트폴리오·봇·주문·위험 | P3 전략, P4 백테스트, P5-1 portfolio/bot/order intent/risk DB 계약, P5-2 portfolio API/Store, P5-3 paper execution queue/worker, P5-4 risk evaluation worker와 kill switch 차단 구현. shadow·reconciliation 연결은 후속 P5 조각 | Issue #30~#33 |
+| 전략·백테스트·포트폴리오·봇·주문·위험 | P3 전략, P4 백테스트, P5-1 portfolio/bot/order intent/risk DB 계약, P5-2 portfolio API/Store, P5-3 paper execution queue/worker, P5-4 risk evaluation worker와 kill switch 차단, P5-5 paper/shadow 내부 reconciliation 증적과 projection 갱신 구현. Bot Workshop UI는 후속 P5 조각 | Issue #30~#33 |
 | 내부 UTC와 5가지 품질 상태 | 미구현 | Issue #28 |
 | 복구 가능한 내부 WebSocket | P2-7 envelope·cursor·heartbeat·gap 적용 중단, P2-8 REST snapshot 복구·slow consumer 신호 구현 | Issue #29 |
 | Action commit SHA pinning·P8 exact-SHA 잠금 | P0 구현, 배포는 계속 차단 | Issue #27, #35 |
@@ -54,7 +54,7 @@
 | Backtest Worker | 결정론적 사건 재생, 체결·비용 모델, 성과·산출물 생성 | PostgreSQL | P4 구현 |
 | Paper/Shadow Worker | 모의 체결 또는 실시간 신호 관찰, 실제 주문 금지 | PostgreSQL | P5-3 paper execution worker 구현, shadow worker 미구현 |
 | Bot Worker | 승인 버전 실행, 주문 의도 생성, 상태 전이 | PostgreSQL | 미구현 |
-| Reconciliation Worker | REST·private WebSocket·잔고를 주문·체결·포지션과 대사 | PostgreSQL | 미구현 |
+| Reconciliation Worker | paper/shadow 내부 체결 원장과 포지션 projection을 대사하고, P6 이후 REST·private WebSocket·잔고 대사로 확장 | PostgreSQL | P5-5 내부 대사 증적 구현 중, private 계좌 대사는 P6 이후 |
 | Risk Worker | 사전 주문·실시간 노출 검사, 위험 이벤트, 긴급 정지 | PostgreSQL | P5-4 created 주문 의도 평가, 위험 이벤트, kill switch 신규 주문·paper job 차단 구현 |
 | Operations Worker | 하트비트, 큐·DB·요청 제한·배포 상태와 알림 | PostgreSQL | 부분 구현 |
 

@@ -30,6 +30,10 @@ class PaperExecutionBlockedError(RuntimeError):
     """활성 kill switch 때문에 paper execution을 진행할 수 없다."""
 
 
+class ReconciliationIdempotencyConflictError(ValueError):
+    """같은 대사 run key가 다른 관측 payload를 가리킨다."""
+
+
 class PostgresPortfolioBotStore:
     def __init__(self, repository: object) -> None:
         self._repository = repository
@@ -55,6 +59,9 @@ class PostgresPortfolioBotStore:
         self, worker_id: str
     ) -> Mapping[str, object] | None:
         return evaluate_next_order_intent_risk(self._repository, worker_id=worker_id)
+
+    def reconcile_exchange_order(self, **arguments: object) -> Row:
+        return reconcile_exchange_order(self._repository, **arguments)
 
 
 def create_portfolio(
@@ -415,6 +422,212 @@ def fail_claimed_paper_execution_job(
         return _paper_execution_job_summary(failed)
 
 
+def reconcile_exchange_order(
+    repository: object,
+    *,
+    exchange_order_id: object,
+    run_key: object,
+    actor_id: object,
+    reason: object,
+    observed_status: object,
+    fills: object,
+    evidence: object,
+) -> Row:
+    order_id = int(cast(int, exchange_order_id))
+    key = _non_blank(run_key, "runKey")
+    actor = _non_blank(actor_id, "actorId")
+    run_reason = _non_blank(reason, "reason")
+    observed = _observed_reconciliation_status(observed_status)
+    fill_payloads = sorted(
+        [
+            _reconciliation_fill_payload(fill)
+            for fill in cast(list[Mapping[str, object]], fills or [])
+        ],
+        key=lambda fill: int(cast(int, fill["fillSequence"])),
+    )
+    evidence_payload = dict(cast(Mapping[str, object], evidence or {}))
+    request_hash = _hash(
+        {
+            "exchangeOrderId": order_id,
+            "runKey": key,
+            "observedStatus": observed,
+            "fills": [_reconciliation_fill_hash_payload(fill) for fill in fill_payloads],
+            "evidence": evidence_payload,
+        }
+    )
+    connector = _connector(repository)
+    with connector() as connection:
+        _lock_reconciliation_run_key(connection, order_id, key)
+        existing_run = connection.execute(
+            """
+            SELECT *
+            FROM reconciliation_runs
+            WHERE exchange_order_id=%s AND run_key=%s
+            """,
+            (order_id, key),
+        ).fetchone()
+        if existing_run is not None:
+            if existing_run["request_hash"] != request_hash:
+                raise ReconciliationIdempotencyConflictError(
+                    "같은 대사 run key가 다른 관측 payload로 재사용됐다."
+                )
+            return _reconciliation_run_summary(cast(Row, existing_run))
+        order = _locked_exchange_order_for_reconciliation(connection, order_id)
+        if observed in {"outcome_unknown", "missing"} and not fill_payloads:
+            run = _insert_reconciliation_run(
+                connection,
+                exchange_order_id=order_id,
+                run_key=key,
+                status="outcome_unknown",
+                observed_status=observed,
+                observed_fill_count=0,
+                request_hash=request_hash,
+                actor_id=actor,
+                reason=run_reason,
+                evidence=evidence_payload,
+            )
+            connection.execute(
+                """
+                UPDATE exchange_orders
+                SET status='outcome_unknown',
+                    reconciled_at=clock_timestamp()
+                WHERE id=%s
+                """,
+                (order_id,),
+            )
+            connection.execute(
+                "UPDATE order_intents SET status='outcome_unknown' WHERE id=%s",
+                (order["order_intent_id"],),
+            )
+            _insert_reconciliation_risk_event(
+                connection,
+                order,
+                run,
+                event_type="outcome_unknown",
+                severity="warning",
+                message="대사 결과 주문 결과가 불명확하다.",
+            )
+            return _reconciliation_run_summary(run)
+        mismatch: Row | None = None
+        existing_fills = {
+            int(cast(int, row["fill_sequence"])): cast(Row, row)
+            for row in connection.execute(
+                """
+                SELECT *
+                FROM order_fills
+                WHERE exchange_order_id=%s
+                FOR UPDATE
+                """,
+                (order_id,),
+            ).fetchall()
+        }
+        seen_sequences: set[int] = set()
+        for fill in fill_payloads:
+            fill_sequence = int(cast(int, fill["fillSequence"]))
+            if fill_sequence in seen_sequences:
+                mismatch = {"fillSequence": fill_sequence, "reason": "duplicate observed fill"}
+                break
+            seen_sequences.add(fill_sequence)
+            existing_fill = existing_fills.get(fill_sequence)
+            if existing_fill is not None:
+                if not _same_fill(existing_fill, fill):
+                    mismatch = {
+                        "fillSequence": fill_sequence,
+                        "existingFillId": int(cast(int, existing_fill["id"])),
+                    }
+                    break
+                continue
+            if any(existing_sequence > fill_sequence for existing_sequence in existing_fills):
+                mismatch = {
+                    "fillSequence": fill_sequence,
+                    "reason": "late fill before existing higher sequence",
+                }
+                break
+        if mismatch is not None:
+            run = _insert_reconciliation_run(
+                connection,
+                exchange_order_id=order_id,
+                run_key=key,
+                status="mismatch",
+                observed_status=observed,
+                observed_fill_count=len(fill_payloads),
+                request_hash=request_hash,
+                actor_id=actor,
+                reason=run_reason,
+                evidence={**evidence_payload, "mismatch": mismatch},
+            )
+            _insert_reconciliation_risk_event(
+                connection,
+                order,
+                run,
+                event_type="reconciliation_mismatch",
+                severity="critical",
+                message="대사 결과 기존 체결과 관측 체결이 불일치한다.",
+            )
+            return _reconciliation_run_summary(run)
+        inserted_fill_count = 0
+        for fill in fill_payloads:
+            if int(cast(int, fill["fillSequence"])) in existing_fills:
+                continue
+            inserted = connection.execute(
+                """
+                INSERT INTO order_fills (
+                  exchange_order_id, fill_sequence, fill_source, side, filled_quantity,
+                  fill_price, fee_paid, occurred_at, knowledge_at, evidence
+                ) VALUES (%s,%s,'reconciliation',%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+                """,
+                (
+                    order_id,
+                    fill["fillSequence"],
+                    fill["side"],
+                    fill["filledQuantity"],
+                    fill["fillPrice"],
+                    fill["feePaid"],
+                    fill["occurredAt"],
+                    fill["knowledgeAt"],
+                    Jsonb(fill["evidence"]),
+                ),
+            ).fetchone()
+            assert inserted is not None
+            _upsert_position_projection(
+                connection,
+                portfolio_id=int(cast(int, order["portfolio_id"])),
+                instrument_id=int(cast(int, order["instrument_id"])),
+                side=str(fill["side"]),
+                quantity=cast(Decimal, fill["filledQuantity"]),
+                price=cast(Decimal, fill["fillPrice"]),
+                source_fill_id=int(cast(int, inserted["id"])),
+            )
+            inserted_fill_count += 1
+        connection.execute(
+            """
+            UPDATE exchange_orders
+            SET status='reconciled',
+                reconciled_at=clock_timestamp()
+            WHERE id=%s
+            """,
+            (order_id,),
+        )
+        connection.execute(
+            "UPDATE order_intents SET status='reconciled' WHERE id=%s",
+            (order["order_intent_id"],),
+        )
+        run = _insert_reconciliation_run(
+            connection,
+            exchange_order_id=order_id,
+            run_key=key,
+            status="succeeded",
+            observed_status=observed,
+            observed_fill_count=len(fill_payloads),
+            request_hash=request_hash,
+            actor_id=actor,
+            reason=run_reason,
+            evidence={**evidence_payload, "insertedFillCount": inserted_fill_count},
+        )
+        return _reconciliation_run_summary(run)
+
+
 def _locked_claimed_paper_job(
     connection: Any, *, job_id: int, worker_id: str, lease_generation: int
 ) -> Row:
@@ -433,6 +646,30 @@ def _locked_claimed_paper_job(
     ).fetchone()
     if row is None:
         raise PaperExecutionLeaseLostError("paper execution job 임대를 잃었다.")
+    return cast(Row, row)
+
+
+def _locked_exchange_order_for_reconciliation(connection: Any, exchange_order_id: int) -> Row:
+    row = connection.execute(
+        """
+        SELECT
+          exchange.*,
+          intent.id AS order_intent_id,
+          intent.instrument_id,
+          intent.bot_instance_id,
+          definition.portfolio_id
+        FROM exchange_orders exchange
+        JOIN order_intents intent ON intent.id = exchange.order_intent_id
+        JOIN bot_instances instance ON instance.id = intent.bot_instance_id
+        JOIN bot_definitions definition ON definition.id = instance.bot_definition_id
+        WHERE exchange.id=%s
+          AND exchange.execution_mode IN ('paper','shadow')
+        FOR UPDATE OF exchange, intent
+        """,
+        (exchange_order_id,),
+    ).fetchone()
+    if row is None:
+        raise PaperExecutionLeaseLostError("대사 가능한 paper/shadow exchange order가 없다.")
     return cast(Row, row)
 
 
@@ -809,6 +1046,7 @@ def _upsert_position_projection(
     price: Decimal,
     source_fill_id: int,
 ) -> None:
+    _lock_position_projection_scope(connection, portfolio_id, instrument_id)
     current = connection.execute(
         """
         SELECT * FROM position_projections
@@ -818,6 +1056,8 @@ def _upsert_position_projection(
         (portfolio_id, instrument_id),
     ).fetchone()
     if current is None:
+        if side == "sell":
+            raise ValueError("보유 position 없는 매도 fill은 projection으로 반영할 수 없다.")
         signed_quantity = quantity if side == "buy" else -quantity
         average_entry_price = price if signed_quantity > 0 else None
         realized_pnl = Decimal("0")
@@ -835,6 +1075,10 @@ def _upsert_position_projection(
             average_entry_price = cost / signed_quantity if signed_quantity > 0 else None
             realized_pnl = previous_realized
         else:
+            if quantity > previous_quantity:
+                raise ValueError(
+                    "보유 quantity를 초과한 매도 fill은 projection으로 반영할 수 없다."
+                )
             signed_quantity = previous_quantity - quantity
             realized_pnl = previous_realized + (price - previous_average) * quantity
             average_entry_price = previous_average if signed_quantity > 0 else None
@@ -860,6 +1104,164 @@ def _upsert_position_projection(
             realized_pnl,
             source_fill_id,
         ),
+    )
+
+
+def _lock_position_projection_scope(
+    connection: Any, portfolio_id: int, instrument_id: int
+) -> None:
+    connection.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (f"position-projection:{portfolio_id}:{instrument_id}",),
+    )
+
+
+def _lock_reconciliation_run_key(connection: Any, exchange_order_id: int, run_key: str) -> None:
+    connection.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (f"reconciliation-run:{exchange_order_id}:{run_key}",),
+    )
+
+
+def _insert_reconciliation_run(
+    connection: Any,
+    *,
+    exchange_order_id: int,
+    run_key: str,
+    status: str,
+    observed_status: str,
+    observed_fill_count: int,
+    request_hash: str,
+    actor_id: str,
+    reason: str,
+    evidence: Mapping[str, object],
+) -> Row:
+    row = connection.execute(
+        """
+        INSERT INTO reconciliation_runs (
+          exchange_order_id, run_key, status, observed_status, observed_fill_count,
+          request_hash, actor_id, reason, evidence
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        RETURNING *
+        """,
+        (
+            exchange_order_id,
+            run_key,
+            status,
+            observed_status,
+            observed_fill_count,
+            request_hash,
+            actor_id,
+            reason,
+            Jsonb(dict(evidence)),
+        ),
+    ).fetchone()
+    assert row is not None
+    return cast(Row, row)
+
+
+def _insert_reconciliation_risk_event(
+    connection: Any,
+    order: Mapping[str, object],
+    run: Mapping[str, object],
+    *,
+    event_type: str,
+    severity: str,
+    message: str,
+) -> None:
+    fingerprint = (
+        f"reconciliation-v1:{order['id']}:{run['run_key']}:{event_type}"
+    )
+    connection.execute(
+        """
+        INSERT INTO risk_events (
+          order_intent_id, bot_instance_id, scope_type, scope_key, event_type,
+          severity, fingerprint, message, evidence
+        ) VALUES (%s,%s,'bot',%s,%s,%s,%s,%s,%s)
+        ON CONFLICT DO NOTHING
+        """,
+        (
+            order["order_intent_id"],
+            order["bot_instance_id"],
+            str(order["bot_instance_id"]),
+            event_type,
+            severity,
+            fingerprint,
+            message,
+            Jsonb(
+                {
+                    "reconciliationRunId": int(cast(int, run["id"])),
+                    "exchangeOrderId": int(cast(int, order["id"])),
+                    "runKey": run["run_key"],
+                    "observedStatus": run["observed_status"],
+                }
+            ),
+        ),
+    )
+
+
+def _reconciliation_run_summary(row: Mapping[str, object]) -> Row:
+    return {
+        "reconciliationRunId": int(cast(int, row["id"])),
+        "exchangeOrderId": int(cast(int, row["exchange_order_id"])),
+        "runKey": row["run_key"],
+        "status": row["status"],
+        "observedStatus": row["observed_status"],
+        "observedFillCount": int(cast(int, row["observed_fill_count"])),
+        "completedAt": row["completed_at"],
+    }
+
+
+def _observed_reconciliation_status(value: object) -> str:
+    status = _non_blank(value, "observedStatus")
+    allowed = {"done", "cancel", "prevented", "rejected", "outcome_unknown", "missing"}
+    if status not in allowed:
+        raise ValueError("observedStatus는 지원하는 대사 상태여야 한다.")
+    return status
+
+
+def _reconciliation_fill_payload(fill: Mapping[str, object]) -> Row:
+    fill_sequence = int(cast(int, fill["fillSequence"]))
+    if fill_sequence < 1:
+        raise ValueError("fillSequence는 1 이상이어야 한다.")
+    side = _side(fill["side"])
+    occurred = _datetime(fill["occurredAt"], "occurredAt")
+    knowledge = _datetime(fill["knowledgeAt"], "knowledgeAt")
+    if knowledge < occurred:
+        raise ValueError("knowledgeAt은 occurredAt보다 빠를 수 없다.")
+    return {
+        "fillSequence": fill_sequence,
+        "side": side,
+        "filledQuantity": _positive_decimal(fill["filledQuantity"], "filledQuantity"),
+        "fillPrice": _positive_decimal(fill["fillPrice"], "fillPrice"),
+        "feePaid": _non_negative_decimal(fill.get("feePaid", Decimal("0")), "feePaid"),
+        "occurredAt": occurred,
+        "knowledgeAt": knowledge,
+        "evidence": dict(cast(Mapping[str, object], fill.get("evidence", {}))),
+    }
+
+
+def _reconciliation_fill_hash_payload(fill: Mapping[str, object]) -> Row:
+    return {
+        "fillSequence": fill["fillSequence"],
+        "side": fill["side"],
+        "filledQuantity": str(fill["filledQuantity"]),
+        "fillPrice": str(fill["fillPrice"]),
+        "feePaid": str(fill["feePaid"]),
+        "occurredAt": cast(datetime, fill["occurredAt"]).isoformat(),
+        "knowledgeAt": cast(datetime, fill["knowledgeAt"]).isoformat(),
+        "evidence": fill["evidence"],
+    }
+
+
+def _same_fill(existing: Mapping[str, object], observed: Mapping[str, object]) -> bool:
+    return (
+        str(existing["side"]) == observed["side"]
+        and _decimal(existing["filled_quantity"], "filledQuantity")
+        == cast(Decimal, observed["filledQuantity"])
+        and _decimal(existing["fill_price"], "fillPrice")
+        == cast(Decimal, observed["fillPrice"])
+        and _decimal(existing["fee_paid"], "feePaid") == cast(Decimal, observed["feePaid"])
     )
 
 
@@ -953,6 +1355,20 @@ def _positive_decimal(value: object, field: str) -> Decimal:
     if decimal_value <= 0:
         raise ValueError(f"{field}는 0보다 커야 한다.")
     return decimal_value
+
+
+def _non_negative_decimal(value: object, field: str) -> Decimal:
+    decimal_value = _decimal(value, field)
+    if decimal_value < 0:
+        raise ValueError(f"{field}는 0 이상이어야 한다.")
+    return decimal_value
+
+
+def _side(value: object) -> str:
+    side = _non_blank(value, "side")
+    if side not in {"buy", "sell"}:
+        raise ValueError("side는 buy 또는 sell이어야 한다.")
+    return side
 
 
 def _base_currency(value: object) -> str:

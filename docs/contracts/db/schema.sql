@@ -3757,6 +3757,54 @@ CREATE TABLE public.realtime_connection_sessions (
 
 
 --
+-- Name: reconciliation_runs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.reconciliation_runs (
+    id bigint NOT NULL,
+    exchange_order_id bigint NOT NULL,
+    run_key text NOT NULL,
+    status text NOT NULL,
+    observed_status text NOT NULL,
+    observed_fill_count integer DEFAULT 0 NOT NULL,
+    request_hash text NOT NULL,
+    actor_id text NOT NULL,
+    reason text NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    started_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    completed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT reconciliation_runs_actor_id_check CHECK ((actor_id <> ''::text)),
+    CONSTRAINT reconciliation_runs_check CHECK ((completed_at >= started_at)),
+    CONSTRAINT reconciliation_runs_evidence_check CHECK ((jsonb_typeof(evidence) = 'object'::text)),
+    CONSTRAINT reconciliation_runs_observed_fill_count_check CHECK ((observed_fill_count >= 0)),
+    CONSTRAINT reconciliation_runs_observed_status_check CHECK ((observed_status = ANY (ARRAY['done'::text, 'cancel'::text, 'prevented'::text, 'rejected'::text, 'outcome_unknown'::text, 'missing'::text]))),
+    CONSTRAINT reconciliation_runs_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT reconciliation_runs_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT reconciliation_runs_run_key_check CHECK ((run_key <> ''::text)),
+    CONSTRAINT reconciliation_runs_status_check CHECK ((status = ANY (ARRAY['succeeded'::text, 'mismatch'::text, 'outcome_unknown'::text])))
+);
+
+
+--
+-- Name: reconciliation_runs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.reconciliation_runs_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: reconciliation_runs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.reconciliation_runs_id_seq OWNED BY public.reconciliation_runs.id;
+
+
+--
 -- Name: risk_events; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4333,6 +4381,13 @@ ALTER TABLE ONLY public.portfolios ALTER COLUMN id SET DEFAULT nextval('public.p
 --
 
 ALTER TABLE ONLY public.position_projections ALTER COLUMN id SET DEFAULT nextval('public.position_projections_id_seq'::regclass);
+
+
+--
+-- Name: reconciliation_runs id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_runs ALTER COLUMN id SET DEFAULT nextval('public.reconciliation_runs_id_seq'::regclass);
 
 
 --
@@ -5518,6 +5573,22 @@ ALTER TABLE ONLY public.realtime_connection_sessions
 
 
 --
+-- Name: reconciliation_runs reconciliation_runs_exchange_order_id_run_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_runs
+    ADD CONSTRAINT reconciliation_runs_exchange_order_id_run_key_key UNIQUE (exchange_order_id, run_key);
+
+
+--
+-- Name: reconciliation_runs reconciliation_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_runs
+    ADD CONSTRAINT reconciliation_runs_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: risk_events risk_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6011,6 +6082,13 @@ CREATE INDEX paper_execution_jobs_claim_idx ON public.paper_execution_jobs USING
 --
 
 CREATE UNIQUE INDEX portfolios_idempotency_key_unique ON public.portfolios USING btree (idempotency_key) WHERE (idempotency_key IS NOT NULL);
+
+
+--
+-- Name: reconciliation_runs_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX reconciliation_runs_status_idx ON public.reconciliation_runs USING btree (status, completed_at DESC, id DESC);
 
 
 --
@@ -6613,6 +6691,20 @@ CREATE TRIGGER realtime_connection_quality_intervals_append_only BEFORE DELETE O
 --
 
 CREATE TRIGGER realtime_quality_microstructure_invalidation AFTER INSERT ON public.realtime_connection_quality_intervals FOR EACH ROW EXECUTE FUNCTION public.enqueue_quality_microstructure_invalidation();
+
+
+--
+-- Name: reconciliation_runs reconciliation_runs_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER reconciliation_runs_append_only_delete BEFORE DELETE ON public.reconciliation_runs FOR EACH ROW EXECUTE FUNCTION public.reject_p5_append_only_mutation();
+
+
+--
+-- Name: reconciliation_runs reconciliation_runs_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER reconciliation_runs_append_only_update BEFORE UPDATE ON public.reconciliation_runs FOR EACH ROW EXECUTE FUNCTION public.reject_p5_append_only_mutation();
 
 
 --
@@ -8144,6 +8236,14 @@ ALTER TABLE ONLY public.realtime_connection_quality_intervals
 
 
 --
+-- Name: reconciliation_runs reconciliation_runs_exchange_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_runs
+    ADD CONSTRAINT reconciliation_runs_exchange_order_id_fkey FOREIGN KEY (exchange_order_id) REFERENCES public.exchange_orders(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: risk_events risk_events_bot_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -8415,4 +8515,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260718000400'),
     ('20260718000500'),
     ('20260718000600'),
-    ('20260718000700');
+    ('20260718000700'),
+    ('20260718000800');

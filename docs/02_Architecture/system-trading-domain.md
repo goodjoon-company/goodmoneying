@@ -79,7 +79,7 @@
 | 위험 | `risk_limits` | `(scope_type, scope_key, limit_type, version)` |
 | 위험 | `risk_events` | `(scope_type, scope_key, fingerprint)`, 정책 version·evidence append-only |
 | 긴급 정지 | `kill_switches` | `(scope_type, scope_key, sequence)`, `armed|released`와 open order 처리 정책 감사 |
-| 대사 | `reconciliation_runs` | P6 private 계좌 대사 전까지 미구현. P5-1은 order fill과 position projection provenance만 고정 |
+| 대사 | `reconciliation_runs` | P5-5는 paper/shadow 내부 대사 실행 증적과 중복 방지, mismatch/outcome_unknown 감사를 고정한다. P6 private 계좌 대사는 후속 범위 |
 | 감사 | `audit_events` | append-only, `(occurred_at, sequence)` |
 
 Upbit 호가 payload에는 거래소 전역 sequence가 없다. 공식 payload의 millisecond `timestamp`를 사건 시각으로, 정규화 전 전체 JSON의 결정적 직렬화 SHA-256을 `payload_checksum`으로 사용한다. 전역 고유 `connection_id`와 연결 내부 `frame_sequence`는 같은 연결 안의 전달 provenance와 재처리 멱등 키이며, 재연결 시 frame sequence가 초기화되므로 연결 간 사건 순서나 snapshot 자연키로 사용하지 않는다. `source_receipts.id`는 PostgreSQL이 영속화 시 부여하는 단조 증가 identity이며 거래소 sequence가 아니라 같은 수신 시각의 안정적 tie-breaker다. 같은 instrument·source·사건 시각·checksum의 snapshot은 한 경제적 상태로 흡수하되 A-B-A 재등장과 재연결 중복을 포함한 모든 수신은 별도 `source_receipts` 행으로 보존한다. 같은 timestamp에 내용이 다르면 두 snapshot을 모두 보존한다. 감사 재생은 receipt의 원본 JSON을 `(received_at, source_receipts.id)`로 정렬하고 snapshot·summary는 instrument·사건 시각·checksum으로 연결한다.
@@ -212,6 +212,8 @@ P5-2는 포트폴리오 API 명령 경계를 연다. `20260718000600_p5_portfoli
 P5-3은 실제 Upbit 주문 제출 없이 `paper_execution_jobs` 큐만 처리한다. `20260718000700_p5_paper_execution_jobs.sql`은 approved `order_intents`를 `paper` 실행 모드의 임대 가능한 작업으로 연결하고, `FOR UPDATE SKIP LOCKED`, lease owner, lease expiry, lease generation, retry/dead-letter 상태로 중복 실행과 늦은 worker 쓰기를 차단한다. `PaperExecutionWorker`는 claim된 job을 주입된 paper simulator에 전달하고, completion transaction에서 simulated `exchange_orders`, `paper_simulator` fill, `position_projections`, `order_intents.status='paper_filled'`를 함께 기록한다. 이 worker는 private WebSocket, 주문 테스트 API, 실제 주문 submit/cancel/read 경로를 호출하지 않는다.
 
 P5-4 Risk Worker는 새 DB migration 없이 P5-1의 `order_intents`, `risk_limits`, `risk_events`, `kill_switches`와 P5-3의 `paper_execution_jobs` 계약을 소비한다. `RiskEvaluationWorker`는 `created` 주문 의도를 `FOR UPDATE SKIP LOCKED`로 하나만 잠그고 전역·포트폴리오·봇·거래쌍 위험 한도와 전역·포트폴리오·봇 kill switch 최신 sequence를 같은 transaction에서 평가한다. 활성 kill switch가 있거나 적용 가능한 한도를 초과하거나 필요한 계산 증적이 없으면 `risk_rejected`와 `kill_switch_rejected|limit_rejected` 이벤트를 append-only로 남긴다. 승인된 paper 주문 의도는 같은 transaction에서 `approved`, `policy_approved`, `paper_execution_jobs` pending으로 연결한다. `PaperExecutionWorker`의 claim과 completion은 활성 kill switch를 다시 검사해 arm 이후 신규 모의 체결 생성을 막는다. P5-4는 private WebSocket, 주문 테스트 API, 실제 Upbit 주문 submit/cancel/read 경로를 호출하지 않는다.
+
+P5-5 reconciliation은 private 계좌 조회 없이 paper/shadow 내부 주문·체결 원장과 포지션 projection을 대사한다. `20260718000800_p5_reconciliation_runs.sql`은 `exchange_orders`별 대사 run key, request hash, 관측 상태, 관측 fill count, actor·reason·evidence를 append-only로 저장한다. `PostgresPortfolioBotStore.reconcile_exchange_order()`는 대상 `exchange_orders`와 `order_intents`를 잠그고, 새 reconciliation fill만 `order_fills(fill_source='reconciliation')`에 append한 뒤 같은 transaction에서 `position_projections`를 갱신한다. 동일 run key와 동일 request hash는 멱등으로 흡수하고, 같은 fill sequence의 기존 fill과 관측 fill이 다르면 position을 바꾸지 않고 `reconciliation_mismatch` 위험 이벤트를 남긴다. 주문 결과가 충분히 확인되지 않은 관측은 `outcome_unknown`으로 남기며 동일 주문 재제출을 허용하지 않는다. P5-5는 private WebSocket, 주문 테스트 API, 실제 Upbit 주문 submit/cancel/read 경로를 호출하지 않는다.
 
 ## 7. 실시간 envelope
 

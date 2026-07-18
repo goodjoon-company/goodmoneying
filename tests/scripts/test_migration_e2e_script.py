@@ -35,3 +35,4 @@ def test_dbmate_migration_e2e_uses_empty_postgres_and_cleans_up() -> None:
     assert 'docker restart "$DB_CONTAINER"' in script
     assert "재시작 후 PostgreSQL" in script
     assert "tests/e2e/test_live_postgres_p6_order_identity.py" in script
+    assert "tests/e2e/test_live_postgres_p6_live_capability.py" in script

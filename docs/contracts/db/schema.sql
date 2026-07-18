@@ -720,6 +720,19 @@ $$;
 
 
 --
+-- Name: reject_p6_trading_capability_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_p6_trading_capability_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'trading capability evidence is append-only';
+END;
+$$;
+
+
+--
 -- Name: reject_sealed_dataset_version_child_insert(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -4609,6 +4622,57 @@ ALTER TABLE public.trade_events ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY
 
 
 --
+-- Name: trading_capabilities; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.trading_capabilities (
+    id bigint NOT NULL,
+    scope_type text DEFAULT 'global'::text NOT NULL,
+    scope_key text DEFAULT 'global'::text NOT NULL,
+    state text DEFAULT 'live_disabled'::text NOT NULL,
+    deployment_sha text NOT NULL,
+    approved_at timestamp with time zone NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    actor_id text NOT NULL,
+    reason text NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    request_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    CONSTRAINT trading_capabilities_actor_id_check CHECK ((actor_id <> ''::text)),
+    CONSTRAINT trading_capabilities_actor_id_check1 CHECK ((actor_id !~ '^(ci|ai|service):'::text)),
+    CONSTRAINT trading_capabilities_check CHECK ((expires_at > approved_at)),
+    CONSTRAINT trading_capabilities_deployment_sha_check CHECK ((deployment_sha ~ '^[0-9a-f]{40}$'::text)),
+    CONSTRAINT trading_capabilities_evidence_check CHECK ((jsonb_typeof(evidence) = 'object'::text)),
+    CONSTRAINT trading_capabilities_idempotency_key_check CHECK ((idempotency_key <> ''::text)),
+    CONSTRAINT trading_capabilities_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT trading_capabilities_request_id_check CHECK ((request_id <> ''::text)),
+    CONSTRAINT trading_capabilities_scope_key_check CHECK ((scope_key = 'global'::text)),
+    CONSTRAINT trading_capabilities_scope_type_check CHECK ((scope_type = 'global'::text)),
+    CONSTRAINT trading_capabilities_state_check CHECK ((state = ANY (ARRAY['live_disabled'::text, 'live_enabled'::text])))
+);
+
+
+--
+-- Name: trading_capabilities_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.trading_capabilities_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: trading_capabilities_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.trading_capabilities_id_seq OWNED BY public.trading_capabilities.id;
+
+
+--
 -- Name: upbit_order_identifier_reservations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4812,6 +4876,13 @@ ALTER TABLE ONLY public.risk_events ALTER COLUMN id SET DEFAULT nextval('public.
 --
 
 ALTER TABLE ONLY public.risk_limits ALTER COLUMN id SET DEFAULT nextval('public.risk_limits_id_seq'::regclass);
+
+
+--
+-- Name: trading_capabilities id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.trading_capabilities ALTER COLUMN id SET DEFAULT nextval('public.trading_capabilities_id_seq'::regclass);
 
 
 --
@@ -6269,6 +6340,30 @@ ALTER TABLE ONLY public.trade_events
 
 
 --
+-- Name: trading_capabilities trading_capabilities_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.trading_capabilities
+    ADD CONSTRAINT trading_capabilities_idempotency_key_key UNIQUE (idempotency_key);
+
+
+--
+-- Name: trading_capabilities trading_capabilities_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.trading_capabilities
+    ADD CONSTRAINT trading_capabilities_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: trading_capabilities trading_capabilities_request_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.trading_capabilities
+    ADD CONSTRAINT trading_capabilities_request_id_key UNIQUE (request_id);
+
+
+--
 -- Name: upbit_order_identifier_reservations upbit_order_identifier_reserv_exchange_account_id_identifie_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6705,6 +6800,13 @@ CREATE INDEX trade_events_instrument_time_idx ON public.trade_events USING btree
 --
 
 CREATE UNIQUE INDEX trade_events_source_receipt_uk ON public.trade_events USING btree (source_receipt_id) WHERE (source_receipt_id IS NOT NULL);
+
+
+--
+-- Name: trading_capabilities_global_latest_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX trading_capabilities_global_latest_idx ON public.trading_capabilities USING btree (scope_type, scope_key, created_at DESC, id DESC);
 
 
 --
@@ -7349,6 +7451,20 @@ CREATE TRIGGER trade_event_microstructure_invalidation AFTER INSERT ON public.tr
 --
 
 CREATE TRIGGER trade_events_conflicting_duplicate_guard BEFORE INSERT ON public.trade_events FOR EACH ROW EXECUTE FUNCTION public.reject_conflicting_trade_event();
+
+
+--
+-- Name: trading_capabilities trading_capabilities_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trading_capabilities_append_only_delete BEFORE DELETE ON public.trading_capabilities FOR EACH ROW EXECUTE FUNCTION public.reject_p6_trading_capability_mutation();
+
+
+--
+-- Name: trading_capabilities trading_capabilities_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trading_capabilities_append_only_update BEFORE UPDATE ON public.trading_capabilities FOR EACH ROW EXECUTE FUNCTION public.reject_p6_trading_capability_mutation();
 
 
 --
@@ -9102,4 +9218,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260718000600'),
     ('20260718000700'),
     ('20260718000800'),
-    ('20260718000900');
+    ('20260718000900'),
+    ('20260718001000');

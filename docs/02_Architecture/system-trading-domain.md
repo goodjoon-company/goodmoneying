@@ -168,6 +168,8 @@ P6-2는 위 식별자 경계를 먼저 DB와 shared utility로 고정한다. `20
 
 `trading_capabilities`는 global `live_disabled|live_enabled` 권위 상태와 승인 actor·reason·approved_at·expires_at·deployment_sha를 가진다. 조회 실패·불일치·만료·새 SHA는 `live_disabled`로 평가한다. `kill_switches`는 `global|bot|account` scope, `armed|released`, reason, actor와 sequence를 가진다. 주문 의도 승인 transaction은 capability와 모든 적용 switch를 잠그고 검사해 신규 주문과 race를 차단한다. switch arm 후 진행 주문은 정책에 따라 `leave_open|cancel_open`을 선택하고 결과를 감사한다.
 
+P6-3은 `trading_capabilities`를 append-only PostgreSQL 권위 로그로 추가한다. 최신 global 행만 평가하며 행 없음, DB 조회 실패, `deployment_sha` 불일치, `expires_at` 만료, 명시 `live_disabled`는 모두 `live_disabled`로 닫는다. `ci:`, `ai:`, `service:` actor는 DB 제약으로 capability 기록을 만들 수 없다. 이 단계는 live 활성화 API나 실제 주문 제출을 만들지 않고, 후속 주문 adapter가 사용할 fail-closed guardrail만 제공한다.
+
 ## 5. 전략 그래프 계약
 
 그래프는 `schema_version`, `nodes`, `edges`, `outputs`를 가진다. 노드는 `id`, `type`, `config`, `input_ports`, `output_ports`를 가진다. edge는 `(from_node, from_port, to_node, to_port)`이며 자료형과 시간 주기가 호환돼야 한다.

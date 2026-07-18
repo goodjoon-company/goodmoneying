@@ -94,6 +94,8 @@ class RealtimeEnvelopeBuilder:
     def resume_from(self, cursor_context: StreamCursorContext) -> None:
         if cursor_context.topic != self.topic or cursor_context.scope != self.scope:
             raise StreamCursorError("stream cursor 문맥이 현재 구독과 다릅니다.")
+        if cursor_context.snapshot_version != self.snapshot_version:
+            raise StreamCursorError("stream cursor snapshot version이 현재 snapshot과 다릅니다.")
         self.sequence = cursor_context.sequence
 
 

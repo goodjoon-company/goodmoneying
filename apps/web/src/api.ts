@@ -560,6 +560,19 @@ export function analysisWebSocketUrl(): string {
   return apiUrl.toString();
 }
 
+export function analysisSnapshotUrl(params: {
+  instrumentId: number;
+  unit: string;
+  rangeDays: number;
+}): string {
+  const query = new URLSearchParams({
+    instrumentId: String(params.instrumentId),
+    unit: params.unit,
+    rangeDays: String(params.rangeDays)
+  });
+  return `${API_BASE_URL}/v1/realtime/analysis/snapshot?${query.toString()}`;
+}
+
 export function systemManagementWebSocketUrl(): string {
   const apiUrl = new URL(API_BASE_URL, window.location.origin);
   apiUrl.protocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";

@@ -82,6 +82,23 @@
       }
     },
     {
+      "if": { "properties": { "message_type": { "const": "slow_consumer" } }, "required": ["message_type"] },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": ["type", "code", "message", "lastSequence"],
+            "properties": {
+              "type": { "const": "stream.slow_consumer" },
+              "code": { "const": "SLOW_CONSUMER" },
+              "message": { "type": "string" },
+              "lastSequence": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    {
       "if": { "properties": { "message_type": { "const": "error" } }, "required": ["message_type"] },
       "then": {
         "properties": {

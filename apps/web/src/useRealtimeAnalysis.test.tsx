@@ -73,6 +73,7 @@ describe("코인 분석 WebSocket 구독", () => {
   afterEach(() => {
     FakeWebSocket.instances = [];
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("관심 코인과 시간 단위를 바꿔도 기존 연결에 새 구독을 보내고 독립 메시지를 반영한다", () => {
@@ -469,5 +470,88 @@ describe("코인 분석 WebSocket 구독", () => {
     expect(result.current.market).toBeNull();
     expect(result.current.streamRecoveryStatus).toBe("snapshot_required");
     expect(result.current.error).toContain("REST snapshot 복구");
+  });
+
+  it("snapshot_required를 받으면 REST snapshot을 적용하고 cursor로 재구독한다", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          schema_version: "1.0",
+          topic: "analysis.instrument:1:1d:365",
+          scope: "operator:local",
+          sequence: 9,
+          cursor: "rest-cursor-9",
+          snapshotVersion: "analysis-snapshot-v1",
+          payload: {
+            type: "analysis.snapshot",
+            instrument: {
+              id: 1,
+              marketCode: "KRW-REST",
+              baseAsset: "REST",
+              quoteCurrency: "KRW",
+              displayName: "복구 코인"
+            },
+            unit: "1d",
+            candles: [],
+            indicatorPoints: [],
+            microstructurePoints: [],
+            market: {
+              ticker: {
+                tradePrice: "123",
+                accTradePrice24h: "1000",
+                changeRate: "0.01",
+                collectedAt: "2026-07-18T06:30:00Z"
+              },
+              orderbook: {
+                bestBidPrice: "122",
+                bestBidSize: "1",
+                bestAskPrice: "124",
+                bestAskSize: "2",
+                spread: "2",
+                bidDepth10: "10",
+                askDepth10: "9",
+                imbalance10: "0.1",
+                collectedAt: "2026-07-18T06:30:00Z"
+              },
+              tradeSummary: { tradeCount: 7, buyVolume: "5", sellVolume: "2", lastTradeAt: null }
+            }
+          }
+        })
+      )
+    );
+    const { result } = renderHook(() => useRealtimeAnalysis(1, "1d", 365));
+    const socket = FakeWebSocket.instances[0];
+
+    await act(async () => {
+      socket.open();
+      socket.receive(streamEnvelope(1, { type: "analysis.session", subscriptionId: "p2-sub" }, "subscribed"));
+      socket.receive(
+        streamEnvelope(
+          2,
+          {
+            type: "analysis.snapshot_required",
+            code: "CURSOR_EXPIRED",
+            message: "REST snapshot 복구가 필요합니다.",
+            snapshotTopic: "analysis.instrument:1:1d:365"
+          },
+          "snapshot_required"
+        )
+      );
+      await Promise.resolve();
+    });
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/v1/realtime/analysis/snapshot?instrumentId=1&unit=1d&rangeDays=365"
+    );
+    expect(result.current.instrument?.marketCode).toBe("KRW-REST");
+    expect(result.current.market?.tradeSummary.tradeCount).toBe(7);
+    expect(result.current.streamRecoveryStatus).toBe("ready");
+    expect(result.current.error).toBeNull();
+    expect(JSON.parse(socket.sentMessages.at(-1) ?? "{}")).toMatchObject({
+      type: "analysis.subscribe",
+      resumeCursor: "rest-cursor-9"
+    });
   });
 });

@@ -40,7 +40,7 @@ Command Center
 
 Data Lab은 P2-6에서 별도 화면으로 구현됐다. 사용자는 KRW 시장과 KST 반개방 범위를 입력해 새 build를 만들고, 기존 version은 편집하지 않고 새 build로 복제한다. build 상태는 REST polling으로 갱신하며 version, coverage heatmap, exact member 표·차트, A/B 비교는 저장된 dataset 계약만 읽는다.
 
-Coin Analysis 실시간 화면은 P2-7부터 내부 WebSocket envelope를 소비한다. 정상 event는 `payload.type` 기준으로 기존 분석 reducer에 들어가고, 중복·역순·gap event는 화면 상태를 덮어쓰지 않는다. gap이 감지되면 `streamRecoveryStatus=snapshot_required`와 오류 문구를 유지하며 P2-8의 REST snapshot 복구 전까지 이후 event를 적용하지 않는다.
+Coin Analysis 실시간 화면은 P2-7부터 내부 WebSocket envelope를 소비한다. 정상 event는 `payload.type` 기준으로 기존 분석 reducer에 들어가고, 중복·역순·gap event는 화면 상태를 덮어쓰지 않는다. P2-8부터 gap·cursor 만료·`snapshot_required`·`slow_consumer`가 감지되면 REST snapshot을 자동으로 읽어 상태를 교체하고 응답 cursor로 같은 WebSocket 구독을 재개한다.
 
 검증 실패는 graph node와 error summary 양쪽에 연결한다. pointer를 사용할 수 없는 사용자는 ordered node list와 connection form으로 같은 graph를 편집한다.
 

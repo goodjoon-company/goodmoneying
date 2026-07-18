@@ -30,7 +30,8 @@ Related ADR: `docs/ADR/ADR-0008-분석-화면-WebSocket-증분-메시지.md`, `d
 | `analysis.candle.upsert` | 현재 봉이 새로 생기거나 보정될 때 | 단일 캔들 | 단일 캔들만 |
 | `analysis.error` | 잘못된 구독 또는 권한 없음 | `code`, `message` | 실패 원인만 |
 | `stream.heartbeat` | 연결 유지와 복구 기준 확인 | `lastSequence`, `serverTime` | `message_type=heartbeat`, event sequence 증가 없음 |
-| `analysis.snapshot_required` | resume cursor 위변조·만료·문맥 불일치 또는 클라이언트 gap | `code`, `message`, `snapshotTopic` | P2-8 REST snapshot 복구 전까지 이후 event 적용 금지 |
+| `analysis.snapshot_required` | resume cursor 위변조·만료·문맥 불일치 또는 클라이언트 gap | `code`, `message`, `snapshotTopic` | REST snapshot 복구 전까지 이후 event 적용 금지 |
+| `stream.slow_consumer` | 서버 전송 timeout으로 소비 지연 감지 | `code=SLOW_CONSUMER`, `message`, `lastSequence` | 연결 종료 뒤 REST snapshot 복구 필요 |
 
 `analysis.session`은 같은 연결에서 보낸 각 `analysis.subscribe`의 승인 경계다. 서버는 구독 수신 순서대로 `analysis.session`을 먼저 보내고 그 세션의 상품·차트·지표·시장 메시지를 이어서 보낸다. 구독이 실패하면 `analysis.session` 대신 `analysis.error`가 같은 순서의 응답 경계가 된다.
 
@@ -53,11 +54,14 @@ Related ADR: `docs/ADR/ADR-0008-분석-화면-WebSocket-증분-메시지.md`, `d
 - 운영 모드는 `GOODMONEYING_STREAM_CURSOR_SECRET`이 반드시 설정돼야 한다. 개발·테스트 모드만 로컬 기본 secret을 사용한다.
 - 브라우저는 중복·역순 event를 버리고, sequence gap을 감지하면 REST snapshot 복구 전까지 이후 event를 reducer에 적용하지 않는다.
 - 브라우저는 heartbeat가 마지막 적용 sequence보다 앞선 sequence를 보고해도 같은 gap으로 보고 REST snapshot 복구 전까지 이후 event를 적용하지 않는다.
-- P2-8 전까지 REST snapshot endpoint와 slow consumer backpressure는 아직 제공하지 않는다.
+- REST snapshot 복구 endpoint는 `GET /v1/realtime/analysis/snapshot?instrumentId={id}&unit={unit}&rangeDays={days}`다. 응답은 `schema_version`, `topic`, `scope`, `sequence`, `cursor`, `snapshotVersion`, `issuedAt`, `expiresAt`, `payload.type=analysis.snapshot`을 가진다. `snapshotVersion`은 `analysis-snapshot-v1:{snapshot-content-sha256}` 형식이고 cursor에 함께 서명된다.
+- 브라우저는 gap·cursor 만료·`snapshot_required`·`slow_consumer`에서 snapshot endpoint를 호출해 상태를 교체하고, 응답 cursor를 다음 `analysis.subscribe`의 최상위 `resumeCursor`로 보낸다.
+- 서버는 유효하고 현재 snapshotVersion과 같은 REST snapshot cursor를 받은 stream 재구독에서 전체 초기 snapshot을 반복 전송하지 않고 `subscribed`와 heartbeat 경계부터 이어간다. cursor 발급 뒤 snapshot 내용이 달라졌으면 최신 전체 snapshot을 다시 보내 상태 누락을 막는다.
+- 지원하지 않는 snapshot version 형식은 cursor 문맥 불일치로 보고 `snapshot_required`로 수렴한다.
 
 ## 재연결과 오류
 
-- 클라이언트는 연결이 닫히면 동일한 `analysis.subscribe`를 다시 보낸다.
+- 클라이언트는 연결이 닫히면 동일한 `analysis.subscribe`를 다시 보낸다. 마지막 안전 cursor가 있는 같은 topic 재연결은 `resumeCursor`를 함께 보낼 수 있다.
 - 클라이언트는 P2 envelope가 있으면 `payload`를 상태 reducer 입력으로 사용한다.
 - 클라이언트가 같은 연결에서 새 구독을 보내면 직전 구독 세대를 즉시 무효화한다. 새 구독에 대응하는 `analysis.session`을 받을 때까지 이전 세션의 지연 프레임을 화면에 반영하지 않으며, 여러 구독 승인이 대기 중이면 전송 순서대로 세대를 대응한다.
 - 관심목록 밖 거래 상품은 `NOT_WATCHLISTED`를 받고 차트·시장 메시지를 받지 않는다.

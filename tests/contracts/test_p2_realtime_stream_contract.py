@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import yaml
 from jsonschema import Draft202012Validator, FormatChecker  # type: ignore[import-untyped]
 
 from goodmoneying_shared.realtime_stream import (
@@ -15,6 +16,7 @@ from goodmoneying_shared.realtime_stream import (
 )
 
 STREAM_CONTRACT = Path("docs/contracts/api/internal-realtime-stream.schema.json")
+OPENAPI_CONTRACT = Path("docs/contracts/api/openapi.yaml")
 
 
 def test_internal_realtime_stream_schema_validates_core_message_types() -> None:
@@ -57,6 +59,17 @@ def test_internal_realtime_stream_schema_validates_core_message_types() -> None:
                 "code": "CURSOR_INVALID",
                 "message": "snapshot 복구가 필요합니다.",
                 "snapshotTopic": "analysis.instrument:1:1d:365",
+            },
+            now=issued_at,
+            increment_sequence=False,
+        ),
+        builder.make(
+            message_type="slow_consumer",
+            payload={
+                "type": "stream.slow_consumer",
+                "code": "SLOW_CONSUMER",
+                "message": "클라이언트 수신이 지연되어 REST snapshot 복구가 필요합니다.",
+                "lastSequence": 1,
             },
             now=issued_at,
             increment_sequence=False,
@@ -117,3 +130,29 @@ def test_stream_cursor_is_opaque_signed_and_context_bound() -> None:
             pass
         else:
             raise AssertionError("사용할 수 없는 cursor를 거부해야 한다")
+
+
+def test_P2_8_OpenAPI는_REST_snapshot_cursor_복구_endpoint를_정의한다() -> None:
+    document = yaml.safe_load(OPENAPI_CONTRACT.read_text())
+    operation = document["paths"]["/v1/realtime/analysis/snapshot"]["get"]
+    parameter_names = {parameter["name"] for parameter in operation["parameters"]}
+    response_schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+    schemas = document["components"]["schemas"]
+
+    assert operation["operationId"] == "getRealtimeAnalysisSnapshot"
+    assert parameter_names == {"instrumentId", "unit", "rangeDays"}
+    assert response_schema == {"$ref": "#/components/schemas/RealtimeAnalysisSnapshotResponse"}
+    assert schemas["RealtimeAnalysisSnapshotResponse"]["required"] == [
+        "schema_version",
+        "topic",
+        "scope",
+        "sequence",
+        "cursor",
+        "snapshotVersion",
+        "issuedAt",
+        "expiresAt",
+        "payload",
+    ]
+    assert schemas["RealtimeAnalysisSnapshotPayload"]["properties"]["type"]["const"] == (
+        "analysis.snapshot"
+    )

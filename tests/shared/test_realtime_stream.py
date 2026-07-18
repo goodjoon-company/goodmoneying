@@ -74,3 +74,17 @@ def test_스트림_cursor는_만료되면_resume에_사용할_수_없다() -> No
             scope="operator:local",
             now=NOW + timedelta(days=2),
         )
+
+
+def test_스트림_builder는_snapshot_version이_다른_cursor를_resume하지_않는다() -> None:
+    from goodmoneying_shared.realtime_stream import RealtimeEnvelopeBuilder
+
+    builder = RealtimeEnvelopeBuilder(
+        topic="analysis.instrument:1:1m:365",
+        scope="operator:local",
+        cursor_secret=SECRET,
+        snapshot_version="analysis-snapshot-v2",
+    )
+
+    with pytest.raises(StreamCursorError, match="snapshot version"):
+        builder.resume_from(_context())

@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
-import { analysisWebSocketUrl } from "./api";
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { analysisSnapshotUrl, analysisWebSocketUrl } from "./api";
 import {
   applyAnalysisMessage,
   initialAnalysisState,
   type AnalysisMessage,
+  type AnalysisMarket,
   type AnalysisRangeDays,
   type AnalysisState,
   type AnalysisUnit
@@ -20,7 +21,25 @@ type SubscriptionGate = {
   nextGeneration: number;
   currentGeneration: number;
   acceptedGeneration: number | null;
-  pendingGenerations: number[];
+  pendingGenerations: { generation: number; purpose: "normal" | "recovery" }[];
+};
+
+type AnalysisRecoverySnapshot = {
+  schema_version: "1.0";
+  topic: string;
+  scope: string;
+  sequence: number;
+  cursor: string;
+  snapshotVersion: string;
+  payload: {
+    type: "analysis.snapshot";
+    instrument: AnalysisState["instrument"];
+    unit: AnalysisUnit;
+    candles: AnalysisState["candles"];
+    indicatorPoints: AnalysisState["indicators"];
+    microstructurePoints: unknown[];
+    market: AnalysisMarket;
+  };
 };
 
 export function useRealtimeAnalysis(
@@ -39,6 +58,7 @@ export function useRealtimeAnalysis(
   const subscriptionGateRef = useRef<SubscriptionGate | null>(null);
   const streamTrackerRef = useRef<RealtimeStreamTracker>(createRealtimeStreamTracker());
   const subscriptionRef = useRef({ instrumentId, unit, rangeDays });
+  const recoveryGenerationRef = useRef(0);
   subscriptionRef.current = { instrumentId, unit, rangeDays };
   const hasSubscription = instrumentId !== null;
 
@@ -54,7 +74,7 @@ export function useRealtimeAnalysis(
         { instrumentId, unit, rangeDays },
         lastSentSubscriptionRef
       );
-      if (sent) recordSubscriptionGeneration(socket, subscriptionGateRef);
+      if (sent) recordSubscriptionGeneration(socket, subscriptionGateRef, "normal");
     }
   }, [instrumentId, rangeDays, unit]);
 
@@ -84,7 +104,7 @@ export function useRealtimeAnalysis(
             { ...subscription, instrumentId: nextInstrumentId },
             lastSentSubscriptionRef
           );
-          if (sent) recordSubscriptionGeneration(socket, subscriptionGateRef);
+          if (sent) recordSubscriptionGeneration(socket, subscriptionGateRef, "normal");
         }
       };
       socket.onmessage = (event) => {
@@ -99,12 +119,23 @@ export function useRealtimeAnalysis(
           setStreamRecoveryStatus("snapshot_required");
           setConnectionStatus("live");
           setState((previous) => ({ ...previous, error: streamMessage.message }));
+          void recoverFromSnapshotRequired(
+            socket,
+            streamTrackerRef,
+            subscriptionGateRef,
+            lastSentSubscriptionRef,
+            subscriptionRef,
+            recoveryGenerationRef,
+            setState,
+            setStreamRecoveryStatus
+          );
           return;
         }
         const message = streamMessage.message;
         if (message.type === "analysis.session") {
-          if (acceptSubscriptionGeneration(socket, subscriptionGateRef)) {
-            setState(initialAnalysisState);
+          const accepted = acceptSubscriptionGeneration(socket, subscriptionGateRef);
+          if (accepted) {
+            if (accepted.purpose === "normal") setState(initialAnalysisState);
             setStreamRecoveryStatus("ready");
             setConnectionStatus("live");
           }
@@ -192,12 +223,13 @@ function sendSubscriptionIfChanged(
   subscription: { instrumentId: number; unit: AnalysisUnit; rangeDays: AnalysisRangeDays },
   lastSentSubscriptionRef: {
     current: { socket: WebSocket; key: string } | null;
-  }
+  },
+  resumeCursor?: string
 ): boolean {
-  const key = `${subscription.instrumentId}:${subscription.unit}:${subscription.rangeDays}`;
+  const key = `${subscription.instrumentId}:${subscription.unit}:${subscription.rangeDays}:${resumeCursor ?? ""}`;
   const lastSent = lastSentSubscriptionRef.current;
   if (lastSent?.socket === socket && lastSent.key === key) return false;
-  sendSubscription(socket, subscription);
+  sendSubscription(socket, subscription, resumeCursor);
   lastSentSubscriptionRef.current = { socket, key };
   return true;
 }
@@ -218,26 +250,27 @@ function createSubscriptionGate(socket: WebSocket): SubscriptionGate {
 
 function recordSubscriptionGeneration(
   socket: WebSocket,
-  subscriptionGateRef: { current: SubscriptionGate | null }
+  subscriptionGateRef: { current: SubscriptionGate | null },
+  purpose: "normal" | "recovery"
 ) {
   const gate = subscriptionGateRef.current;
   if (gate?.socket !== socket) return;
   gate.nextGeneration += 1;
   gate.currentGeneration = gate.nextGeneration;
   gate.acceptedGeneration = null;
-  gate.pendingGenerations.push(gate.currentGeneration);
+  gate.pendingGenerations.push({ generation: gate.currentGeneration, purpose });
 }
 
 function acceptSubscriptionGeneration(
   socket: WebSocket,
   subscriptionGateRef: { current: SubscriptionGate | null }
-): boolean {
+): { purpose: "normal" | "recovery" } | null {
   const gate = subscriptionGateRef.current;
-  if (gate?.socket !== socket) return false;
-  const generation = gate.pendingGenerations.shift();
-  if (generation === undefined || generation !== gate.currentGeneration) return false;
-  gate.acceptedGeneration = generation;
-  return true;
+  if (gate?.socket !== socket) return null;
+  const pending = gate.pendingGenerations.shift();
+  if (pending === undefined || pending.generation !== gate.currentGeneration) return null;
+  gate.acceptedGeneration = pending.generation;
+  return { purpose: pending.purpose };
 }
 
 function hasPendingGeneration(
@@ -254,8 +287,8 @@ function rejectSubscriptionGeneration(
 ): boolean {
   const gate = subscriptionGateRef.current;
   if (gate?.socket !== socket) return false;
-  const generation = gate.pendingGenerations.shift();
-  return generation !== undefined && generation === gate.currentGeneration;
+  const pending = gate.pendingGenerations.shift();
+  return pending !== undefined && pending.generation === gate.currentGeneration;
 }
 
 function isCurrentGenerationAccepted(
@@ -272,7 +305,8 @@ function isCurrentGenerationAccepted(
 
 function sendSubscription(
   socket: WebSocket,
-  subscription: { instrumentId: number; unit: AnalysisUnit; rangeDays: AnalysisRangeDays }
+  subscription: { instrumentId: number; unit: AnalysisUnit; rangeDays: AnalysisRangeDays },
+  resumeCursor?: string
 ) {
   socket.send(
     JSON.stringify({
@@ -284,7 +318,84 @@ function sendSubscription(
       scope: "operator:local",
       sentAt: new Date().toISOString(),
       ...subscription,
+      ...(resumeCursor ? { resumeCursor } : {}),
       payload: subscription
     })
   );
+}
+
+async function recoverFromSnapshotRequired(
+  socket: WebSocket,
+  streamTrackerRef: { current: RealtimeStreamTracker },
+  subscriptionGateRef: { current: SubscriptionGate | null },
+  lastSentSubscriptionRef: { current: { socket: WebSocket; key: string } | null },
+  subscriptionRef: {
+    current: {
+      instrumentId: number | null;
+      unit: AnalysisUnit;
+      rangeDays: AnalysisRangeDays;
+    };
+  },
+  recoveryGenerationRef: { current: number },
+  setState: Dispatch<SetStateAction<AnalysisState>>,
+  setStreamRecoveryStatus: Dispatch<SetStateAction<"ready" | "snapshot_required">>
+) {
+  const subscription = subscriptionRef.current;
+  if (subscription.instrumentId === null) return;
+  const recoveryGeneration = recoveryGenerationRef.current + 1;
+  recoveryGenerationRef.current = recoveryGeneration;
+  const recoveryKey = `${subscription.instrumentId}:${subscription.unit}:${subscription.rangeDays}`;
+  let response: Response;
+  try {
+    response = await fetch(
+      analysisSnapshotUrl({
+        instrumentId: subscription.instrumentId,
+        unit: subscription.unit,
+        rangeDays: subscription.rangeDays
+      })
+    );
+  } catch (error) {
+    setState((previous) => ({
+      ...previous,
+      error: `REST snapshot 복구 실패(${error instanceof Error ? error.message : "unknown"})`
+    }));
+    return;
+  }
+  if (!response.ok) {
+    setState((previous) => ({ ...previous, error: `REST snapshot 복구 실패(${response.status})` }));
+    return;
+  }
+  const snapshot = (await response.json()) as AnalysisRecoverySnapshot;
+  const current = subscriptionRef.current;
+  const currentKey =
+    current.instrumentId === null
+      ? null
+      : `${current.instrumentId}:${current.unit}:${current.rangeDays}`;
+  if (
+    recoveryGenerationRef.current !== recoveryGeneration ||
+    currentKey !== recoveryKey ||
+    subscriptionGateRef.current?.socket !== socket
+  ) {
+    return;
+  }
+  setState({
+    instrument: snapshot.payload.instrument,
+    candles: snapshot.payload.candles,
+    indicators: snapshot.payload.indicatorPoints,
+    market: snapshot.payload.market,
+    error: null
+  });
+  setStreamRecoveryStatus("ready");
+  const sent = sendSubscriptionIfChanged(
+    socket,
+    {
+      instrumentId: subscription.instrumentId,
+      unit: subscription.unit,
+      rangeDays: subscription.rangeDays
+    },
+    lastSentSubscriptionRef,
+    snapshot.cursor
+  );
+  if (sent) recordSubscriptionGeneration(socket, subscriptionGateRef, "recovery");
+  streamTrackerRef.current = createRealtimeStreamTracker();
 }

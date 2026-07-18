@@ -81,4 +81,18 @@ describe("P2 실시간 스트림 envelope 추적", () => {
     expect(heartbeat.kind).toBe("snapshot_required");
     expect(nextEvent.kind).toBe("snapshot_required");
   });
+
+  test("slow_consumer 신호는 snapshot 복구가 끝날 때까지 이후 event를 막는다", () => {
+    const tracker = createRealtimeStreamTracker();
+    consumeRealtimeEnvelope(tracker, envelope(1, { type: "analysis.instrument" }));
+
+    const slowConsumer = consumeRealtimeEnvelope(
+      tracker,
+      envelope(1, { type: "stream.slow_consumer" }, "slow_consumer")
+    );
+    const nextEvent = consumeRealtimeEnvelope(tracker, envelope(2, { type: "analysis.market" }));
+
+    expect(slowConsumer.kind).toBe("snapshot_required");
+    expect(nextEvent.kind).toBe("snapshot_required");
+  });
 });

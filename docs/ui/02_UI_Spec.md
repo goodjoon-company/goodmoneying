@@ -54,7 +54,7 @@ P2-6 Data Lab은 이 원칙을 다음 범위로 적용한다.
 - destructive·live 관련 action은 icon만 두지 않고 동사·대상·영향을 표시한다.
 - kill switch arm은 대상·진행 주문 정책·사유를 확인하고 release보다 시각 우선순위가 높다.
 - live-disabled는 성공 green이 아니라 안전 잠금 상태로 표현한다.
-- WebSocket gap·stale data는 마지막 정상 cursor와 `snapshot_required` 복구 상태를 표시한다. P2-7은 event 적용 중단까지 보장하고, snapshot 재동기화 UI는 P2-8에서 연결한다.
+- WebSocket gap·stale data는 마지막 정상 cursor와 `snapshot_required` 복구 상태를 표시한다. P2-8부터 snapshot 재동기화는 자동 REST snapshot 복구와 `resumeCursor` 재구독으로 연결한다.
 - drag는 keyboard move·connect·delete command와 동등해야 한다.
 
 ## 5. motion·성능

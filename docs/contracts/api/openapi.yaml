@@ -462,6 +462,23 @@ paths:
           content: {application/json: {schema: {$ref: "#/components/schemas/MarketStatisticsResponse"}}}
         "400": {$ref: "#/components/responses/BadRequest"}
         "422": {$ref: "#/components/responses/ValidationError"}
+  /v1/realtime/analysis/snapshot:
+    get:
+      tags: [상품(Instrument)]
+      summary: 분석 WebSocket 복구용 REST snapshot 조회
+      operationId: getRealtimeAnalysisSnapshot
+      parameters:
+        - {name: instrumentId, in: query, required: true, schema: {type: integer, minimum: 1}}
+        - {name: unit, in: query, required: true, schema: {type: string, enum: [1m, 3m, 5m, 10m, 15m, 30m, 1h, 4h, 1d, 1w, 1M]}}
+        - {name: rangeDays, in: query, required: true, schema: {type: integer, enum: [1, 7, 30, 90, 365, 1095]}}
+      responses:
+        "200":
+          description: 분석 화면 상태와 재구독 cursor를 함께 담은 복구 snapshot
+          content: {application/json: {schema: {$ref: "#/components/schemas/RealtimeAnalysisSnapshotResponse"}}}
+        "403":
+          description: 관심목록 밖 상품의 분석 snapshot 요청 거부
+          content: {application/json: {schema: {$ref: "#/components/schemas/ErrorResponse"}}}
+        "422": {$ref: "#/components/responses/ValidationError"}
   /v1/instruments/{instrumentId}/microstructure-statistics:
     get:
       tags: [상품(Instrument)]
@@ -2462,6 +2479,40 @@ components:
         completeness:
           type: string
           enum: [complete, partial, empty]
+    RealtimeAnalysisSnapshotResponse:
+      description: 분석 WebSocket gap·cursor 만료·slow consumer 이후 상태를 복구하고 같은 topic으로 재구독할 수 있게 하는 REST snapshot 응답.
+      type: object
+      required: [schema_version, topic, scope, sequence, cursor, snapshotVersion, issuedAt, expiresAt, payload]
+      properties:
+        schema_version: {type: string, pattern: "^1\\.\\d+$"}
+        topic: {type: string, pattern: "^analysis\\.instrument:[0-9]+:[A-Za-z0-9]+:[0-9]+$"}
+        scope: {type: string, const: "operator:local"}
+        sequence: {type: integer, minimum: 1}
+        cursor: {type: string, minLength: 16}
+        snapshotVersion: {type: string, pattern: "^analysis-snapshot-v1:[0-9a-f]{64}$"}
+        issuedAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+        payload: {$ref: "#/components/schemas/RealtimeAnalysisSnapshotPayload"}
+    RealtimeAnalysisSnapshotPayload:
+      description: 분석 화면 reducer가 즉시 상태 교체에 사용할 수 있는 상품·차트·지표·미시구조·시장 snapshot payload.
+      type: object
+      required: [type, instrument, unit, candles, indicatorPoints, microstructurePoints, market]
+      properties:
+        type: {type: string, const: analysis.snapshot}
+        instrument: {$ref: "#/components/schemas/Instrument"}
+        unit: {type: string, enum: [1m, 3m, 5m, 10m, 15m, 30m, 1h, 4h, 1d, 1w, 1M]}
+        candles:
+          type: array
+          items: {$ref: "#/components/schemas/Candle"}
+        indicatorPoints:
+          type: array
+          items: {$ref: "#/components/schemas/IndicatorPoint"}
+        microstructurePoints:
+          type: array
+          items: {type: object}
+        market:
+          type: object
+          additionalProperties: true
     IndicatorPoint:
       description: 불변 지표 정의 버전과 사용 가능한 시점 계보를 포함한 한 구간의 지표 투영.
       type: object

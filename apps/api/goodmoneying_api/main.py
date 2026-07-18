@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import builtins
+import hashlib
+import json
 import os
 import time
 from asyncio import wait_for
 from collections.abc import Iterator, Mapping, Sequence
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Annotated, Protocol, cast
 from uuid import uuid4
@@ -92,13 +95,17 @@ from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
 from goodmoneying_shared.realtime_stream import (
     CursorExpiredError,
     RealtimeEnvelopeBuilder,
+    StreamCursorContext,
     StreamCursorError,
     StreamMessageType,
     decode_stream_cursor,
+    encode_stream_cursor,
 )
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_shared.time import now_kst
+
+ANALYSIS_SNAPSHOT_VERSION_PREFIX = "analysis-snapshot-v1"
 
 
 def create_repository_from_environment() -> OperationsRepository:
@@ -135,12 +142,81 @@ def _stream_cursor_secret() -> str:
     return "local-dev-stream-cursor-secret"
 
 
+def _stream_send_timeout_seconds() -> float:
+    configured = os.getenv("GOODMONEYING_STREAM_SEND_TIMEOUT_SECONDS")
+    if configured is None:
+        return 2.0
+    try:
+        timeout_seconds = float(configured)
+    except ValueError as exc:
+        raise RuntimeError(
+            "GOODMONEYING_STREAM_SEND_TIMEOUT_SECONDS는 초 단위 숫자여야 합니다."
+        ) from exc
+    if timeout_seconds <= 0:
+        raise RuntimeError("GOODMONEYING_STREAM_SEND_TIMEOUT_SECONDS는 0보다 커야 합니다.")
+    return timeout_seconds
+
+
 def _analysis_stream_topic(subscription: Mapping[str, object]) -> str:
     return (
         "analysis.instrument:"
         f"{int(cast(int | str, subscription['instrumentId']))}:"
         f"{str(subscription['unit'])}:"
         f"{int(cast(int | str, subscription['rangeDays']))}"
+    )
+
+
+def _analysis_stream_snapshot_response(
+    snapshot: Mapping[str, object],
+    *,
+    topic: str,
+    scope: str,
+    now: datetime,
+) -> dict[str, object]:
+    snapshot_version = _analysis_snapshot_version(snapshot)
+    sequence = 1
+    cursor_secret = _stream_cursor_secret()
+    cursor_ttl = RealtimeEnvelopeBuilder(
+        topic=topic,
+        scope=scope,
+        cursor_secret=cursor_secret,
+    ).cursor_ttl
+    expires_at = now + cursor_ttl
+    cursor = encode_stream_cursor(
+        StreamCursorContext(
+            topic=topic,
+            scope=scope,
+            sequence=sequence,
+            snapshot_version=snapshot_version,
+            issued_at=now,
+            expires_at=expires_at,
+        ),
+        cursor_secret,
+    )
+    return {
+        "schema_version": "1.0",
+        "topic": topic,
+        "scope": scope,
+        "sequence": sequence,
+        "cursor": cursor,
+        "snapshotVersion": snapshot_version,
+        "issuedAt": now.isoformat().replace("+00:00", "Z"),
+        "expiresAt": expires_at.isoformat().replace("+00:00", "Z"),
+        "payload": {
+            "type": "analysis.snapshot",
+            **snapshot,
+        },
+    }
+
+
+def _analysis_snapshot_version(snapshot: Mapping[str, object]) -> str:
+    payload = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode()
+    return f"{ANALYSIS_SNAPSHOT_VERSION_PREFIX}:{hashlib.sha256(payload).hexdigest()}"
+
+
+def _is_supported_analysis_snapshot_version(snapshot_version: str) -> bool:
+    return snapshot_version == ANALYSIS_SNAPSHOT_VERSION_PREFIX or snapshot_version.startswith(
+        f"{ANALYSIS_SNAPSHOT_VERSION_PREFIX}:"
     )
 
 
@@ -693,6 +769,33 @@ def create_app(
 
         return StreamingResponse(events(), media_type="text/event-stream")
 
+    @app.get("/v1/realtime/analysis/snapshot")
+    def get_realtime_analysis_snapshot(
+        instrumentId: Annotated[int, Query(gt=0)],
+        unit: str,
+        rangeDays: Annotated[int, Query(gt=0)],
+    ) -> dict[str, object]:
+        subscription = {"instrumentId": instrumentId, "unit": unit, "rangeDays": rangeDays}
+        topic = _analysis_stream_topic(subscription)
+        try:
+            snapshot = service.analysis_snapshot(instrumentId, unit, rangeDays)
+        except AnalysisSubscriptionError as exc:
+            status_code = (
+                status.HTTP_403_FORBIDDEN
+                if exc.code == "NOT_WATCHLISTED"
+                else status.HTTP_422_UNPROCESSABLE_CONTENT
+            )
+            raise HTTPException(
+                status_code=status_code,
+                detail={"code": exc.code, "message": str(exc)},
+            ) from exc
+        return _analysis_stream_snapshot_response(
+            snapshot,
+            topic=topic,
+            scope="operator:local",
+            now=now_kst(),
+        )
+
     @app.websocket("/v1/realtime/analysis/stream")
     @app.websocket("/v1/realtime/analysis")
     async def stream_coin_analysis(websocket: WebSocket) -> None:
@@ -702,11 +805,43 @@ def create_app(
         latest_indicator_points: list[object] = []
         latest_microstructure_points: list[object] = []
         emit_snapshot_heartbeat = False
+        send_timeout_seconds = _stream_send_timeout_seconds()
         stream_builder = RealtimeEnvelopeBuilder(
             topic="analysis.control",
             scope="operator:local",
             cursor_secret=_stream_cursor_secret(),
         )
+
+        class SlowConsumerDisconnect(Exception):
+            pass
+
+        async def send_stream_json(message: dict[str, object]) -> None:
+            try:
+                await wait_for(websocket.send_json(message), timeout=send_timeout_seconds)
+            except builtins.TimeoutError as exc:
+                sent_at = now_kst()
+                payload: dict[str, object] = {
+                    "version": "1",
+                    "type": "stream.slow_consumer",
+                    "sentAt": sent_at.isoformat(),
+                    "code": "SLOW_CONSUMER",
+                    "message": "클라이언트 수신이 지연되어 REST snapshot 복구가 필요합니다.",
+                    "lastSequence": stream_builder.sequence,
+                }
+                envelope = stream_builder.make(
+                    message_type="slow_consumer",
+                    payload=payload,
+                    now=sent_at,
+                    increment_sequence=False,
+                )
+                with suppress(Exception):
+                    await wait_for(
+                        websocket.send_json({**payload, **envelope}),
+                        timeout=min(send_timeout_seconds, 0.25),
+                    )
+                with suppress(Exception):
+                    await websocket.close(code=1013)
+                raise SlowConsumerDisconnect from exc
 
         async def send_message(
             message_type: str,
@@ -726,7 +861,7 @@ def create_app(
                 payload=legacy_payload,
                 now=sent_at,
             )
-            await websocket.send_json({**legacy_payload, **envelope})
+            await send_stream_json({**legacy_payload, **envelope})
 
         async def send_heartbeat() -> None:
             sent_at = now_kst()
@@ -743,7 +878,7 @@ def create_app(
                 now=sent_at,
                 increment_sequence=False,
             )
-            await websocket.send_json({**payload, **envelope})
+            await send_stream_json({**payload, **envelope})
 
         async def send_snapshot_required(topic: str, message: str, code: str) -> None:
             nonlocal stream_builder
@@ -768,10 +903,18 @@ def create_app(
                 now=sent_at,
                 increment_sequence=False,
             )
-            await websocket.send_json({**payload, **envelope})
+            await send_stream_json({**payload, **envelope})
+
+        def remember_snapshot(snapshot: Mapping[str, object]) -> None:
+            nonlocal latest_candle, latest_indicator_points, latest_microstructure_points
+            candles = cast(list[object], snapshot["candles"])
+            indicator_points = cast(list[object], snapshot["indicatorPoints"])
+            microstructure_points = cast(list[object], snapshot["microstructurePoints"])
+            latest_candle = cast(dict[str, object], candles[-1]) if candles else None
+            latest_indicator_points = indicator_points
+            latest_microstructure_points = microstructure_points
 
         async def send_snapshot(subscription: dict[str, object]) -> None:
-            nonlocal latest_candle, latest_indicator_points, latest_microstructure_points
             try:
                 snapshot = service.analysis_snapshot(
                     int(cast(int | str, subscription["instrumentId"])),
@@ -786,6 +929,7 @@ def create_app(
                     message=str(exc),
                 )
                 return
+            stream_builder.snapshot_version = _analysis_snapshot_version(snapshot)
             candles = cast(list[object], snapshot["candles"])
             chunk_count = max(1, (len(candles) + 499) // 500)
             await send_message(
@@ -829,9 +973,7 @@ def create_app(
             )
             if emit_snapshot_heartbeat:
                 await send_heartbeat()
-            latest_candle = cast(dict[str, object], candles[-1]) if candles else None
-            latest_indicator_points = indicator_points
-            latest_microstructure_points = microstructure_points
+            remember_snapshot(snapshot)
 
         try:
             while True:
@@ -973,6 +1115,7 @@ def create_app(
                     )
                     continue
                 resume_cursor = message.get("resumeCursor") or message.get("resume_cursor")
+                cursor_context: StreamCursorContext | None = None
                 if resume_cursor is not None:
                     try:
                         cursor_context = decode_stream_cursor(
@@ -996,9 +1139,58 @@ def create_app(
                             "CURSOR_INVALID",
                         )
                         continue
-                    stream_builder.resume_from(cursor_context)
-                await send_snapshot(latest_subscription)
-        except WebSocketDisconnect:
+                if cursor_context is not None:
+                    try:
+                        snapshot = service.analysis_snapshot(
+                            int(cast(int | str, latest_subscription["instrumentId"])),
+                            str(latest_subscription["unit"]),
+                            int(cast(int | str, latest_subscription["rangeDays"])),
+                        )
+                    except AnalysisSubscriptionError as exc:
+                        await send_message(
+                            "analysis.error",
+                            stream_message_type="error",
+                            code=exc.code,
+                            message=str(exc),
+                        )
+                        continue
+                    current_snapshot_version = _analysis_snapshot_version(snapshot)
+                    if not _is_supported_analysis_snapshot_version(
+                        cursor_context.snapshot_version
+                    ):
+                        await send_snapshot_required(
+                            topic,
+                            (
+                                "지원하지 않는 snapshot version cursor입니다. "
+                                "REST snapshot 복구가 필요합니다."
+                            ),
+                            "CURSOR_INVALID",
+                        )
+                        continue
+                    stream_builder.snapshot_version = current_snapshot_version
+                    if cursor_context.snapshot_version != current_snapshot_version:
+                        await send_snapshot(latest_subscription)
+                        continue
+                    try:
+                        stream_builder.resume_from(cursor_context)
+                    except StreamCursorError as exc:
+                        await send_snapshot_required(
+                            topic,
+                            f"{exc} REST snapshot 복구가 필요합니다.",
+                            "CURSOR_INVALID",
+                        )
+                        continue
+                    remember_snapshot(snapshot)
+                    await send_message(
+                        "analysis.session",
+                        stream_message_type="subscribed",
+                        subscriptionId=str(uuid4()),
+                        lastSequence=stream_builder.sequence,
+                    )
+                    await send_heartbeat()
+                else:
+                    await send_snapshot(latest_subscription)
+        except (WebSocketDisconnect, SlowConsumerDisconnect):
             return
 
     @app.websocket("/v1/realtime/system-management")

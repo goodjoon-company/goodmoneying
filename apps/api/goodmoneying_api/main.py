@@ -127,7 +127,12 @@ def create_repository_from_environment() -> OperationsRepository:
 
 
 def _stream_cursor_secret() -> str:
-    return os.getenv("GOODMONEYING_STREAM_CURSOR_SECRET", "local-dev-stream-cursor-secret")
+    secret = os.getenv("GOODMONEYING_STREAM_CURSOR_SECRET")
+    if secret:
+        return secret
+    if os.getenv("GOODMONEYING_RUNTIME_MODE") == "production":
+        raise RuntimeError("운영 모드는 GOODMONEYING_STREAM_CURSOR_SECRET 설정이 필요합니다.")
+    return "local-dev-stream-cursor-secret"
 
 
 def _analysis_stream_topic(subscription: Mapping[str, object]) -> str:
@@ -909,14 +914,20 @@ def create_app(
                         )
                         await send_heartbeat()
                     continue
+                if not isinstance(message, dict):
+                    await send_message(
+                        "analysis.error",
+                        stream_message_type="error",
+                        code="INVALID_MESSAGE",
+                        message="analysis.subscribe 메시지가 필요합니다.",
+                    )
+                    continue
                 is_legacy_subscribe = message.get("type") == "analysis.subscribe"
                 is_stream_subscribe = (
                     message.get("schema_version") == "1.0"
                     and message.get("message_type") == "subscribe"
                 )
-                if not isinstance(message, dict) or not (
-                    is_legacy_subscribe or is_stream_subscribe
-                ):
+                if not (is_legacy_subscribe or is_stream_subscribe):
                     await send_message(
                         "analysis.error",
                         stream_message_type="error",
@@ -950,6 +961,17 @@ def create_app(
                     scope="operator:local",
                     cursor_secret=_stream_cursor_secret(),
                 )
+                if is_stream_subscribe and (
+                    message.get("topic") not in {None, topic}
+                    or message.get("scope") not in {None, "operator:local"}
+                ):
+                    await send_message(
+                        "analysis.error",
+                        stream_message_type="error",
+                        code="INVALID_TOPIC",
+                        message="구독 topic/scope가 payload와 일치하지 않습니다.",
+                    )
+                    continue
                 resume_cursor = message.get("resumeCursor") or message.get("resume_cursor")
                 if resume_cursor is not None:
                     try:

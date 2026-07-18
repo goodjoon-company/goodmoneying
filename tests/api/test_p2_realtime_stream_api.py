@@ -87,3 +87,27 @@ def test_analysis_internal_stream_rejects_invalid_resume_cursor_with_snapshot_re
     assert message["message_type"] == "snapshot_required"
     assert message["payload"]["code"] == "CURSOR_EXPIRED"
     assert message["payload"]["snapshotTopic"] == topic
+
+
+def test_analysis_stream_rejects_non_object_and_topic_mismatch_without_disconnect() -> None:
+    repository, client = seeded_repository_and_client()
+    instrument_id = repository.list_active_targets()[0].id
+
+    with client.websocket_connect("/v1/realtime/analysis/stream") as websocket:
+        websocket.send_json(["not", "an", "object"])
+        malformed = websocket.receive_json()
+        websocket.send_json(
+            {
+                "schema_version": "1.0",
+                "message_type": "subscribe",
+                "topic": "analysis.instrument:999:1d:365",
+                "scope": "operator:local",
+                "payload": {"instrumentId": instrument_id, "unit": "1d", "rangeDays": 365},
+            }
+        )
+        mismatch = websocket.receive_json()
+
+    assert malformed["message_type"] == "error"
+    assert malformed["payload"]["code"] == "INVALID_MESSAGE"
+    assert mismatch["message_type"] == "error"
+    assert mismatch["payload"]["code"] == "INVALID_TOPIC"

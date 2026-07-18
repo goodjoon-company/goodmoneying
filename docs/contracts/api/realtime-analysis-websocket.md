@@ -49,7 +49,10 @@ Related ADR: `docs/ADR/ADR-0008-분석-화면-WebSocket-증분-메시지.md`, `d
 - `subscribed`는 sequence 1, `event`는 topic·scope 안에서 1씩 증가, `heartbeat`는 마지막 sequence를 반복한다.
 - `cursor`는 topic, scope, sequence, snapshot version, issued/expires 시각을 HMAC-SHA256으로 서명한 불투명 값이다.
 - `resumeCursor` 또는 `resume_cursor`가 위변조·만료·다른 topic/scope이면 서버는 `message_type=snapshot_required`와 `analysis.snapshot_required` payload를 보낸다.
+- stream subscribe 명령이 보낸 `topic` 또는 `scope`가 payload에서 계산한 topic/scope와 다르면 `analysis.error` `INVALID_TOPIC`으로 거부한다.
+- 운영 모드는 `GOODMONEYING_STREAM_CURSOR_SECRET`이 반드시 설정돼야 한다. 개발·테스트 모드만 로컬 기본 secret을 사용한다.
 - 브라우저는 중복·역순 event를 버리고, sequence gap을 감지하면 REST snapshot 복구 전까지 이후 event를 reducer에 적용하지 않는다.
+- 브라우저는 heartbeat가 마지막 적용 sequence보다 앞선 sequence를 보고해도 같은 gap으로 보고 REST snapshot 복구 전까지 이후 event를 적용하지 않는다.
 - P2-8 전까지 REST snapshot endpoint와 slow consumer backpressure는 아직 제공하지 않는다.
 
 ## 재연결과 오류

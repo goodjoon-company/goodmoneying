@@ -73,7 +73,15 @@ export function consumeRealtimeEnvelope<TPayload>(
   }
 
   if (envelope.message_type === "heartbeat") {
-    if (lastSequence === undefined || envelope.sequence >= lastSequence) {
+    if (lastSequence !== undefined && envelope.sequence > lastSequence) {
+      tracker.pausedStreams.add(streamKey);
+      return {
+        kind: "snapshot_required",
+        message: `실시간 heartbeat가 미수신 sequence(${lastSequence} → ${envelope.sequence})를 보고해 REST snapshot 복구가 필요합니다.`,
+        cursor: envelope.cursor
+      };
+    }
+    if (lastSequence === undefined) {
       tracker.lastSequenceByStream.set(streamKey, envelope.sequence);
     }
     return { kind: "heartbeat", cursor: envelope.cursor };

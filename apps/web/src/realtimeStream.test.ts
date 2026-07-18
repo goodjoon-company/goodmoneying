@@ -67,4 +67,18 @@ describe("P2 실시간 스트림 envelope 추적", () => {
 
     expect(heartbeat.kind).toBe("heartbeat");
   });
+
+  test("heartbeat가 미수신 sequence를 앞서 보고하면 snapshot_required로 전환한다", () => {
+    const tracker = createRealtimeStreamTracker();
+    consumeRealtimeEnvelope(tracker, envelope(1, { type: "analysis.instrument" }));
+
+    const heartbeat = consumeRealtimeEnvelope(
+      tracker,
+      envelope(3, { type: "stream.heartbeat" }, "heartbeat")
+    );
+    const nextEvent = consumeRealtimeEnvelope(tracker, envelope(4, { type: "analysis.market" }));
+
+    expect(heartbeat.kind).toBe("snapshot_required");
+    expect(nextEvent.kind).toBe("snapshot_required");
+  });
 });

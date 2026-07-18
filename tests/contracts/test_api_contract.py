@@ -19,6 +19,10 @@ def test_openapi_contract_contains_m1_paths() -> None:
         "/health",
         "/v1/data-foundation",
         "/v1/data-foundation/markets/{marketCode}",
+        "/v1/strategy-graphs/validate",
+        "/v1/strategies",
+        "/v1/strategies/{strategyId}/versions",
+        "/v1/strategy-versions/{strategyVersionId}",
         "/v1/dashboard/summary",
         "/v1/dashboard/summary/stream",
         "/v1/dashboard/overview",
@@ -61,6 +65,7 @@ def test_openapi_contract_groups_operations_with_described_tags() -> None:
         "상품(Instrument)",
         "백필(Backfill)",
         "알림(Notification)",
+        "전략(Strategy)",
     }
     assert set(tag_descriptions) == expected_tags
     assert all(tag_descriptions[tag] for tag in expected_tags)
@@ -69,6 +74,11 @@ def test_openapi_contract_groups_operations_with_described_tags() -> None:
         ("get", "/health"): ["상태(Health)"],
         ("get", "/v1/data-foundation"): ["수집(Collection)"],
         ("patch", "/v1/data-foundation/markets/{marketCode}"): ["수집(Collection)"],
+        ("post", "/v1/strategy-graphs/validate"): ["전략(Strategy)"],
+        ("post", "/v1/strategies"): ["전략(Strategy)"],
+        ("post", "/v1/strategies/{strategyId}/versions"): ["전략(Strategy)"],
+        ("get", "/v1/strategies/{strategyId}/versions"): ["전략(Strategy)"],
+        ("get", "/v1/strategy-versions/{strategyVersionId}"): ["전략(Strategy)"],
         ("get", "/v1/dashboard/summary"): ["대시보드(Dashboard)"],
         ("get", "/v1/dashboard/summary/stream"): ["대시보드(Dashboard)"],
         ("get", "/v1/dashboard/overview"): ["대시보드(Dashboard)"],

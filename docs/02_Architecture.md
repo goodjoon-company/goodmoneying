@@ -122,7 +122,7 @@ P2-7 내부 분석 WebSocket은 신규 `/v1/realtime/analysis/stream` payload를
 1. 사용자가 Data Lab에서 KRW 시장과 KST 범위를 입력해 새 데이터셋 build를 만들거나 기존 데이터셋 버전을 복제한다.
 2. Data Lab은 REST polling으로 build 수명주기를 재발견하고, 게시된 version의 coverage와 exact member를 표·차트로 비교한다.
 3. Strategy Studio가 그래프 초안을 편집하고 서버 검증 결과를 실시간 표시한다.
-4. 게시 명령은 정규화된 그래프 해시로 불변 전략 버전을 생성한다.
+4. 게시 명령은 서버 검증을 통과한 정규화된 그래프 해시로 불변 전략 버전을 생성한다.
 5. Backtest Worker는 평가 시계가 허용한 사건만 순서대로 재생하고 전략 신호를 주문 의도로 변환한다.
 6. 공통 주문 모델이 수수료·슬리피지·지연·부분 체결을 적용한다.
 7. 결과와 모든 가정, 엔진 버전, seed를 저장하고 UI에 진행 이벤트를 보낸다.

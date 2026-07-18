@@ -43,6 +43,7 @@ from goodmoneying_api.schemas import (
     CreateBackfillJobRequest,
     CreateBackfillPlanRequest,
     CreateDatasetBuildRequest,
+    CreateStrategyRequest,
     DashboardAuditLogSummaryResponse,
     DashboardCollectionActivityResponse,
     DashboardCoverageResponse,
@@ -71,10 +72,16 @@ from goodmoneying_api.schemas import (
     MicrostructureStatisticsResponse,
     NotificationEventsResponse,
     OrderbookSummariesResponse,
+    PublishStrategyVersionRequest,
+    StrategyDefinitionResponse,
+    StrategyValidationResponse,
+    StrategyVersionResponse,
+    StrategyVersionsResponse,
     TickerSnapshotsResponse,
     UpdateCollectionTargetsRequest,
     UpdateMarketTargetStateRequest,
     UpdateMarketTargetStateResponse,
+    ValidateStrategyGraphRequest,
 )
 from goodmoneying_api.service import AnalysisSubscriptionError, OperationsService
 from goodmoneying_shared.data_foundation import (
@@ -103,6 +110,12 @@ from goodmoneying_shared.realtime_stream import (
 )
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
+from goodmoneying_shared.strategy_graph import validate_strategy_graph
+from goodmoneying_shared.strategy_store import (
+    PostgresStrategyStore,
+    StrategyCursorMismatchError,
+    StrategyIdempotencyConflictError,
+)
 from goodmoneying_shared.time import now_kst
 
 ANALYSIS_SNAPSHOT_VERSION_PREFIX = "analysis-snapshot-v1"
@@ -303,6 +316,57 @@ class EmptyDatasetVersionRepository:
         return None
 
 
+class StrategyApiRepository(Protocol):
+    def validate_graph(self, *, graph: Mapping[str, object]) -> Mapping[str, object]: ...
+
+    def create_strategy(
+        self,
+        *,
+        request_id: str,
+        idempotency_key: str,
+        actor_id: str,
+        requested_at: datetime,
+        reason: str,
+        owner_id: str,
+        name: str,
+    ) -> Mapping[str, object]: ...
+
+    def publish_version(
+        self,
+        *,
+        strategy_id: int,
+        request_id: str,
+        idempotency_key: str,
+        actor_id: str,
+        requested_at: datetime,
+        reason: str,
+        graph: Mapping[str, object],
+    ) -> Mapping[str, object]: ...
+
+    def list_versions(
+        self, *, strategy_id: int, page_size: int, cursor: str | None
+    ) -> Mapping[str, object]: ...
+
+    def get_version(self, strategy_version_id: int) -> Mapping[str, object] | None: ...
+
+
+class EmptyStrategyRepository:
+    def validate_graph(self, *, graph: Mapping[str, object]) -> Mapping[str, object]:
+        return validate_strategy_graph(graph).to_api()
+
+    def create_strategy(self, **_arguments: object) -> Mapping[str, object]:
+        raise RuntimeError("전략 저장소가 구성되지 않았다.")
+
+    def publish_version(self, **_arguments: object) -> Mapping[str, object]:
+        raise RuntimeError("전략 저장소가 구성되지 않았다.")
+
+    def list_versions(self, **_arguments: object) -> Mapping[str, object]:
+        return {"items": [], "nextCursor": None}
+
+    def get_version(self, _strategy_version_id: int) -> Mapping[str, object] | None:
+        return None
+
+
 class EmptyDataFoundationRepository:
     def overview(self) -> DataFoundationOverview:
         from goodmoneying_shared.data_foundation import DEFAULT_KRW_START_AT
@@ -345,6 +409,7 @@ def create_app(
     *,
     data_foundation_repository: DataFoundationApiRepository | None = None,
     dataset_version_repository: DatasetVersionApiRepository | None = None,
+    strategy_repository: StrategyApiRepository | None = None,
 ) -> FastAPI:
     repo = repository or create_repository_from_environment()
     foundation_repository = data_foundation_repository
@@ -363,6 +428,12 @@ def create_app(
         dataset_repository = PostgresDatasetVersionStore(repo)
     else:
         dataset_repository = EmptyDatasetVersionRepository()
+    if strategy_repository is not None:
+        strategy_store = strategy_repository
+    elif isinstance(repo, PostgresOperationsRepository):
+        strategy_store = PostgresStrategyStore(repo)
+    else:
+        strategy_store = EmptyStrategyRepository()
     service = OperationsService(repo, load_dashboard_refresh_seconds())
     app = FastAPI(title="goodmoneying 시스템 트레이딩 운영 API", version="0.2.0")
     app.add_middleware(
@@ -397,6 +468,126 @@ def create_app(
     @app.get("/health", response_model=HealthResponse)
     def get_health() -> HealthResponse:
         return HealthResponse(status="ok", checkedAt=now_kst())
+
+    @app.post(
+        "/v1/strategy-graphs/validate",
+        response_model=StrategyValidationResponse,
+        dependencies=[Depends(require_operator_token)],
+    )
+    def validate_strategy_graph_route(
+        request: ValidateStrategyGraphRequest,
+    ) -> StrategyValidationResponse:
+        result = strategy_store.validate_graph(graph=request.graph.model_dump())
+        return StrategyValidationResponse.model_validate(result)
+
+    @app.post(
+        "/v1/strategies",
+        response_model=StrategyDefinitionResponse,
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(require_operator_token)],
+    )
+    def create_strategy(request: CreateStrategyRequest) -> StrategyDefinitionResponse:
+        try:
+            result = strategy_store.create_strategy(
+                request_id=request.requestId,
+                idempotency_key=request.idempotencyKey,
+                actor_id=request.actorId,
+                requested_at=request.requestedAt,
+                reason=request.reason,
+                owner_id=request.ownerId,
+                name=request.name,
+            )
+        except StrategyIdempotencyConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "STRATEGY_IDEMPOTENCY_CONFLICT", "message": str(exc)},
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={"code": "INVALID_STRATEGY", "message": str(exc)},
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"code": "STRATEGY_STORE_UNAVAILABLE", "message": str(exc)},
+            ) from exc
+        return StrategyDefinitionResponse.model_validate(result)
+
+    @app.post(
+        "/v1/strategies/{strategyId}/versions",
+        response_model=StrategyVersionResponse,
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(require_operator_token)],
+    )
+    def publish_strategy_version(
+        strategyId: Annotated[int, Path(gt=0)],
+        request: PublishStrategyVersionRequest,
+    ) -> StrategyVersionResponse:
+        try:
+            result = strategy_store.publish_version(
+                strategy_id=strategyId,
+                request_id=request.requestId,
+                idempotency_key=request.idempotencyKey,
+                actor_id=request.actorId,
+                requested_at=request.requestedAt,
+                reason=request.reason,
+                graph=request.graph.model_dump(),
+            )
+        except StrategyIdempotencyConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "STRATEGY_IDEMPOTENCY_CONFLICT", "message": str(exc)},
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={"code": "INVALID_STRATEGY_GRAPH", "message": str(exc)},
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"code": "STRATEGY_STORE_UNAVAILABLE", "message": str(exc)},
+            ) from exc
+        return StrategyVersionResponse.model_validate(result)
+
+    @app.get(
+        "/v1/strategies/{strategyId}/versions",
+        response_model=StrategyVersionsResponse,
+    )
+    def list_strategy_versions(
+        strategyId: Annotated[int, Path(gt=0)],
+        pageSize: Annotated[int, Query(ge=1, le=100)] = 50,
+        cursor: str | None = None,
+    ) -> StrategyVersionsResponse:
+        try:
+            result = strategy_store.list_versions(
+                strategy_id=strategyId, page_size=pageSize, cursor=cursor
+            )
+        except StrategyCursorMismatchError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "STRATEGY_CURSOR_CONTEXT_MISMATCH", "message": str(exc)},
+            ) from exc
+        return StrategyVersionsResponse.model_validate(result)
+
+    @app.get(
+        "/v1/strategy-versions/{strategyVersionId}",
+        response_model=StrategyVersionResponse,
+    )
+    def get_strategy_version(
+        strategyVersionId: Annotated[int, Path(gt=0)],
+    ) -> StrategyVersionResponse:
+        result = strategy_store.get_version(strategyVersionId)
+        if result is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": "STRATEGY_VERSION_NOT_FOUND",
+                    "message": "전략 버전이 없습니다.",
+                },
+            )
+        return StrategyVersionResponse.model_validate(result)
 
     @app.post(
         "/v1/dataset-builds",

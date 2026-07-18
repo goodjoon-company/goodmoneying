@@ -624,6 +624,19 @@ $$;
 
 
 --
+-- Name: reject_strategy_version_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_strategy_version_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END;
+$$;
+
+
+--
 -- Name: source_candle_content_hash(numeric, numeric, numeric, numeric, numeric, numeric); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -3046,6 +3059,139 @@ ALTER TABLE public.source_receipts ALTER COLUMN id ADD GENERATED ALWAYS AS IDENT
 
 
 --
+-- Name: strategy_definitions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.strategy_definitions (
+    id bigint NOT NULL,
+    owner_id text NOT NULL,
+    name text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_id text NOT NULL,
+    actor_id text NOT NULL,
+    requested_at timestamp with time zone NOT NULL,
+    reason text NOT NULL,
+    request_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT strategy_definitions_actor_id_check CHECK ((btrim(actor_id) <> ''::text)),
+    CONSTRAINT strategy_definitions_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
+    CONSTRAINT strategy_definitions_name_check CHECK ((btrim(name) <> ''::text)),
+    CONSTRAINT strategy_definitions_owner_id_check CHECK ((btrim(owner_id) <> ''::text)),
+    CONSTRAINT strategy_definitions_reason_check CHECK ((btrim(reason) <> ''::text)),
+    CONSTRAINT strategy_definitions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT strategy_definitions_request_id_check CHECK ((btrim(request_id) <> ''::text))
+);
+
+
+--
+-- Name: strategy_definitions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.strategy_definitions ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.strategy_definitions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: strategy_graphs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.strategy_graphs (
+    strategy_version_id bigint NOT NULL,
+    graph_json jsonb NOT NULL,
+    graph_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT strategy_graphs_graph_hash_check CHECK ((graph_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT strategy_graphs_graph_json_check CHECK (((graph_json ->> 'schema_version'::text) = 'strategy-graph-v1'::text))
+);
+
+
+--
+-- Name: strategy_parameters; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.strategy_parameters (
+    id bigint NOT NULL,
+    strategy_version_id bigint NOT NULL,
+    name text NOT NULL,
+    data_type text NOT NULL,
+    default_value jsonb,
+    constraints jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT strategy_parameters_data_type_check CHECK ((data_type = ANY (ARRAY['decimal'::text, 'integer'::text, 'boolean'::text, 'string'::text]))),
+    CONSTRAINT strategy_parameters_name_check CHECK ((btrim(name) <> ''::text))
+);
+
+
+--
+-- Name: strategy_parameters_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.strategy_parameters ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.strategy_parameters_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: strategy_versions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.strategy_versions (
+    id bigint NOT NULL,
+    strategy_id bigint NOT NULL,
+    version integer NOT NULL,
+    schema_version text DEFAULT 'strategy-graph-v1'::text NOT NULL,
+    status text NOT NULL,
+    graph_hash text NOT NULL,
+    validation_result jsonb NOT NULL,
+    idempotency_key text NOT NULL,
+    request_id text NOT NULL,
+    actor_id text NOT NULL,
+    requested_at timestamp with time zone NOT NULL,
+    reason text NOT NULL,
+    request_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    published_at timestamp with time zone,
+    retired_at timestamp with time zone,
+    CONSTRAINT strategy_versions_actor_id_check CHECK ((btrim(actor_id) <> ''::text)),
+    CONSTRAINT strategy_versions_check CHECK (((status = 'published'::text) = (published_at IS NOT NULL))),
+    CONSTRAINT strategy_versions_check1 CHECK (((status = 'retired'::text) = (retired_at IS NOT NULL))),
+    CONSTRAINT strategy_versions_graph_hash_check CHECK ((graph_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT strategy_versions_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
+    CONSTRAINT strategy_versions_reason_check CHECK ((btrim(reason) <> ''::text)),
+    CONSTRAINT strategy_versions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT strategy_versions_request_id_check CHECK ((btrim(request_id) <> ''::text)),
+    CONSTRAINT strategy_versions_schema_version_check CHECK ((schema_version = 'strategy-graph-v1'::text)),
+    CONSTRAINT strategy_versions_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'validated'::text, 'published'::text, 'retired'::text]))),
+    CONSTRAINT strategy_versions_version_check CHECK ((version > 0))
+);
+
+
+--
+-- Name: strategy_versions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.strategy_versions ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.strategy_versions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: target_collection_results; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4105,6 +4251,94 @@ ALTER TABLE ONLY public.source_receipts
 
 
 --
+-- Name: strategy_definitions strategy_definitions_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.strategy_definitions
+    ADD CONSTRAINT strategy_definitions_idempotency_key_key UNIQUE (idempotency_key);
+
+
+--
+-- Name: strategy_definitions strategy_definitions_owner_id_name_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.strategy_definitions
+    ADD CONSTRAINT strategy_definitions_owner_id_name_key UNIQUE (owner_id, name);
+
+
+--
+-- Name: strategy_definitions strategy_definitions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.strategy_definitions
+    ADD CONSTRAINT strategy_definitions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: strategy_graphs strategy_graphs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.strategy_graphs
+    ADD CONSTRAINT strategy_graphs_pkey PRIMARY KEY (strategy_version_id);
+
+
+--
+-- Name: strategy_parameters strategy_parameters_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.strategy_parameters
+    ADD CONSTRAINT strategy_parameters_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: strategy_parameters strategy_parameters_strategy_version_id_name_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.strategy_parameters
+    ADD CONSTRAINT strategy_parameters_strategy_version_id_name_key UNIQUE (strategy_version_id, name);
+
+
+--
+-- Name: strategy_versions strategy_versions_id_graph_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.strategy_versions
+    ADD CONSTRAINT strategy_versions_id_graph_hash_key UNIQUE (id, graph_hash);
+
+
+--
+-- Name: strategy_versions strategy_versions_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.strategy_versions
+    ADD CONSTRAINT strategy_versions_idempotency_key_key UNIQUE (idempotency_key);
+
+
+--
+-- Name: strategy_versions strategy_versions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.strategy_versions
+    ADD CONSTRAINT strategy_versions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: strategy_versions strategy_versions_strategy_id_graph_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.strategy_versions
+    ADD CONSTRAINT strategy_versions_strategy_id_graph_hash_key UNIQUE (strategy_id, graph_hash);
+
+
+--
+-- Name: strategy_versions strategy_versions_strategy_id_version_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.strategy_versions
+    ADD CONSTRAINT strategy_versions_strategy_id_version_key UNIQUE (strategy_id, version);
+
+
+--
 -- Name: target_collection_results target_collection_results_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4870,6 +5104,48 @@ CREATE TRIGGER source_receipts_prepare_realtime_evidence BEFORE INSERT ON public
 --
 
 CREATE TRIGGER source_revision_indicator_invalidation AFTER INSERT ON public.source_candle_revisions FOR EACH ROW EXECUTE FUNCTION public.enqueue_source_indicator_invalidation();
+
+
+--
+-- Name: strategy_graphs strategy_graphs_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER strategy_graphs_append_only_delete BEFORE DELETE ON public.strategy_graphs FOR EACH ROW EXECUTE FUNCTION public.reject_strategy_version_mutation();
+
+
+--
+-- Name: strategy_graphs strategy_graphs_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER strategy_graphs_append_only_update BEFORE UPDATE ON public.strategy_graphs FOR EACH ROW EXECUTE FUNCTION public.reject_strategy_version_mutation();
+
+
+--
+-- Name: strategy_parameters strategy_parameters_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER strategy_parameters_append_only_delete BEFORE DELETE ON public.strategy_parameters FOR EACH ROW EXECUTE FUNCTION public.reject_strategy_version_mutation();
+
+
+--
+-- Name: strategy_parameters strategy_parameters_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER strategy_parameters_append_only_update BEFORE UPDATE ON public.strategy_parameters FOR EACH ROW EXECUTE FUNCTION public.reject_strategy_version_mutation();
+
+
+--
+-- Name: strategy_versions strategy_versions_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER strategy_versions_append_only_delete BEFORE DELETE ON public.strategy_versions FOR EACH ROW EXECUTE FUNCTION public.reject_strategy_version_mutation();
+
+
+--
+-- Name: strategy_versions strategy_versions_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER strategy_versions_append_only_update BEFORE UPDATE ON public.strategy_versions FOR EACH ROW EXECUTE FUNCTION public.reject_strategy_version_mutation();
 
 
 --
@@ -6199,6 +6475,38 @@ ALTER TABLE ONLY public.source_receipts
 
 
 --
+-- Name: strategy_graphs strategy_graphs_strategy_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.strategy_graphs
+    ADD CONSTRAINT strategy_graphs_strategy_version_id_fkey FOREIGN KEY (strategy_version_id) REFERENCES public.strategy_versions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: strategy_graphs strategy_graphs_strategy_version_id_graph_hash_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.strategy_graphs
+    ADD CONSTRAINT strategy_graphs_strategy_version_id_graph_hash_fkey FOREIGN KEY (strategy_version_id, graph_hash) REFERENCES public.strategy_versions(id, graph_hash) ON DELETE RESTRICT;
+
+
+--
+-- Name: strategy_parameters strategy_parameters_strategy_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.strategy_parameters
+    ADD CONSTRAINT strategy_parameters_strategy_version_id_fkey FOREIGN KEY (strategy_version_id) REFERENCES public.strategy_versions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: strategy_versions strategy_versions_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.strategy_versions
+    ADD CONSTRAINT strategy_versions_strategy_id_fkey FOREIGN KEY (strategy_id) REFERENCES public.strategy_definitions(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: target_collection_results target_collection_results_collection_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6319,4 +6627,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260717001000'),
     ('20260717001100'),
     ('20260717001200'),
-    ('20260717001300');
+    ('20260717001300'),
+    ('20260718000100');

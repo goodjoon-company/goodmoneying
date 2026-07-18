@@ -28,6 +28,140 @@ DatasetDataKind = Literal["candle", "indicator", "market_statistic", "microstruc
 DatasetFillPolicy = Literal["none", "no_trade_carry_forward_v1"]
 DatasetMissingPolicy = Literal["fail", "null", "drop"]
 DatasetQuality = Literal["available", "no_trade", "missing", "unavailable", "unverified"]
+StrategyValidationCode = Literal[
+    "cycle_detected",
+    "port_type_mismatch",
+    "timeframe_incompatible",
+    "look_ahead_detected",
+    "parameter_out_of_range",
+    "missing_data_policy_required",
+    "insufficient_warmup",
+    "missing_output",
+]
+
+
+class StrategyGraphPort(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=100)
+    dataType: str = Field(min_length=1, max_length=100)
+    timeframe: (
+        Literal["1m", "3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"]
+        | None
+    ) = None
+
+
+class StrategyGraphNode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=200)
+    type: str = Field(min_length=1, max_length=100)
+    config: dict[str, object] = Field(default_factory=dict)
+    input_ports: list[StrategyGraphPort]
+    output_ports: list[StrategyGraphPort]
+
+
+class StrategyGraphEdge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    from_node: str = Field(min_length=1, max_length=200)
+    from_port: str = Field(min_length=1, max_length=100)
+    to_node: str = Field(min_length=1, max_length=200)
+    to_port: str = Field(min_length=1, max_length=100)
+
+
+class StrategyGraphOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node: str = Field(min_length=1, max_length=200)
+    port: str = Field(min_length=1, max_length=100)
+
+
+class StrategyGraph(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["strategy-graph-v1"]
+    nodes: list[StrategyGraphNode] = Field(min_length=1, max_length=500)
+    edges: list[StrategyGraphEdge] = Field(max_length=2000)
+    outputs: list[StrategyGraphOutput] = Field(min_length=1, max_length=20)
+
+
+class ValidateStrategyGraphRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    graph: StrategyGraph
+
+
+class StrategyValidationErrorResponse(BaseModel):
+    code: StrategyValidationCode
+    nodeId: str | None = None
+    edgeIndex: int | None = Field(default=None, ge=0)
+    message: str
+
+
+class StrategyValidationResponse(BaseModel):
+    valid: bool
+    errors: list[StrategyValidationErrorResponse]
+    graphHash: str = Field(pattern="^[0-9a-f]{64}$")
+
+
+class StrategyCommandRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requestId: str = Field(min_length=1, max_length=200)
+    idempotencyKey: str = Field(min_length=1, max_length=200)
+    actorId: str = Field(min_length=1, max_length=200)
+    requestedAt: datetime
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("requestedAt")
+    @classmethod
+    def require_utc_requested_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
+            raise ValueError("requestedAt은 UTC timezone-aware datetime이어야 한다.")
+        return value
+
+    @field_validator("requestId", "idempotencyKey", "actorId", "reason")
+    @classmethod
+    def reject_blank_command_strings(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("전략 명령 문자열은 공백일 수 없다.")
+        return stripped
+
+
+class CreateStrategyRequest(StrategyCommandRequest):
+    ownerId: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
+
+
+class PublishStrategyVersionRequest(StrategyCommandRequest):
+    graph: StrategyGraph
+
+
+class StrategyDefinitionResponse(BaseModel):
+    strategyId: int
+    ownerId: str
+    name: str
+    createdAt: datetime
+
+
+class StrategyVersionResponse(BaseModel):
+    strategyVersionId: int
+    strategyId: int
+    version: int = Field(ge=1)
+    schemaVersion: Literal["strategy-graph-v1"]
+    status: Literal["draft", "validated", "published", "retired"]
+    graphHash: str = Field(pattern="^[0-9a-f]{64}$")
+    validation: StrategyValidationResponse
+    graph: StrategyGraph
+    createdAt: datetime
+    publishedAt: datetime | None
+
+
+class StrategyVersionsResponse(BaseModel):
+    items: list[StrategyVersionResponse]
+    nextCursor: str | None
 
 
 class DatasetSeriesSelectionRequest(BaseModel):

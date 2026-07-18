@@ -415,7 +415,8 @@ host_port="${host_binding##*:}"
       tests/e2e/test_live_postgres_microstructure.py \
       tests/e2e/test_live_postgres_dataset_versions.py \
       tests/e2e/test_live_postgres_dataset_version_invariants.py \
-      tests/e2e/test_live_postgres_dataset_version_performance.py
+      tests/e2e/test_live_postgres_dataset_version_performance.py \
+      tests/e2e/test_live_postgres_strategy_versions.py
 )
 GOODMONEYING_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${host_port}/${POSTGRES_DB}?sslmode=disable" \
 GOODMONEYING_ENV_FILE="$SNAPSHOT_DIR/missing.env" \

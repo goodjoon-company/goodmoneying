@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -54,6 +54,7 @@ class _SeededDataFoundationRepository:
     def __init__(self) -> None:
         self._markets = [
             MarketCollectionStatus(
+                instrument_id=41,
                 market_code="KRW-BTC",
                 korean_name="비트코인",
                 english_name="Bitcoin",
@@ -85,6 +86,7 @@ class _SeededDataFoundationRepository:
                 ),
             ),
             MarketCollectionStatus(
+                instrument_id=42,
                 market_code="KRW-ETH",
                 korean_name="이더리움",
                 english_name="Ethereum",
@@ -170,6 +172,175 @@ class _SeededDataFoundationRepository:
         raise ValueError("변경할 시장을 찾을 수 없다.")
 
 
+class _SeededDatasetVersionRepository:
+    def __init__(self) -> None:
+        self._builds: list[dict[str, object]] = [
+            {
+                "buildId": 7,
+                "requestId": "dataset-seeded-retry",
+                "idempotencyKey": "dataset-seeded-retry",
+                "actorId": "operator:e2e",
+                "requestedAt": "2026-07-17T06:00:00Z",
+                "frozenAt": "2026-07-17T06:00:01Z",
+                "status": "retry_wait",
+                "attemptCount": 2,
+                "maxAttempts": 3,
+                "nextRetryAt": "2026-07-17T06:05:00Z",
+                "deadLetterReason": None,
+                "datasetVersionId": None,
+                "errorCode": None,
+                "errorMessage": None,
+            }
+        ]
+        self._series = {
+            "instrumentId": 41,
+            "dataKind": "candle",
+            "unit": "1m",
+            "definitionSetHash": None,
+            "calculationVersion": "source-candle-v1",
+        }
+        self._versions: list[dict[str, object]] = [
+            {
+                "datasetVersionId": 12,
+                "schemaVersion": "dataset-v1",
+                "asOf": "2026-07-17T05:00:00Z",
+                "from": "2026-07-17T00:00:00Z",
+                "to": "2026-07-17T02:00:00Z",
+                "contentHash": "b" * 64,
+                "availabilityPolicy": "point_in_time_v1",
+                "fillPolicy": "none",
+                "missingPolicy": "fail",
+                "createdAt": "2026-07-17T06:00:03Z",
+                "series": [{**self._series, "seriesId": 202}],
+            },
+            {
+                "datasetVersionId": 11,
+                "schemaVersion": "dataset-v1",
+                "asOf": "2026-07-17T05:00:00Z",
+                "from": "2026-07-17T00:00:00Z",
+                "to": "2026-07-17T02:00:00Z",
+                "contentHash": "a" * 64,
+                "availabilityPolicy": "point_in_time_v1",
+                "fillPolicy": "none",
+                "missingPolicy": "fail",
+                "createdAt": "2026-07-17T06:00:02Z",
+                "series": [{**self._series, "seriesId": 101}],
+            },
+        ]
+
+    def create_build(
+        self,
+        *,
+        request_id: str,
+        idempotency_key: str,
+        actor_id: str,
+        requested_at: datetime,
+        reason: str,
+        selection: Mapping[str, object],
+        policies: Mapping[str, object],
+    ) -> dict[str, object]:
+        del reason, selection, policies
+        build = {
+            "buildId": max(cast(int, item["buildId"]) for item in self._builds) + 1,
+            "requestId": request_id,
+            "idempotencyKey": idempotency_key,
+            "actorId": actor_id,
+            "requestedAt": requested_at.isoformat().replace("+00:00", "Z"),
+            "frozenAt": now_kst().astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            "status": "pending",
+            "attemptCount": 0,
+            "maxAttempts": 3,
+            "nextRetryAt": None,
+            "deadLetterReason": None,
+            "datasetVersionId": None,
+            "errorCode": None,
+            "errorMessage": None,
+        }
+        self._builds.insert(0, build)
+        return build
+
+    def get_build(self, build_id: int) -> dict[str, object] | None:
+        return next((item for item in self._builds if item["buildId"] == build_id), None)
+
+    def list_builds(self, *, page_size: int, cursor: str | None) -> dict[str, object]:
+        del cursor
+        return {"items": self._builds[:page_size], "nextCursor": None}
+
+    def get_version(self, dataset_version_id: int) -> dict[str, object] | None:
+        return next(
+            (item for item in self._versions if item["datasetVersionId"] == dataset_version_id),
+            None,
+        )
+
+    def list_versions(self, *, page_size: int, cursor: str | None) -> dict[str, object]:
+        del cursor
+        return {"items": self._versions[:page_size], "nextCursor": None}
+
+    def get_coverage(self, dataset_version_id: int) -> dict[str, object] | None:
+        if self.get_version(dataset_version_id) is None:
+            return None
+        base_at = datetime(2026, 7, 17, tzinfo=UTC)
+        return {
+            "datasetVersionId": dataset_version_id,
+            "snapshotHash": "c" * 64,
+            "requestedBucketCount": 80,
+            "eligibleBucketCount": 40,
+            "usableRatio": "0.5000",
+            "counts": {
+                "available": 40,
+                "no_trade": 0,
+                "missing": 0,
+                "unavailable": 0,
+                "unverified": 40,
+            },
+            "items": [
+                {
+                    "seriesId": 202,
+                    "rangeStartAt": (base_at + timedelta(minutes=index))
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    "rangeEndAt": (base_at + timedelta(minutes=index + 1))
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    "knowledgeAt": "2026-07-17T00:00:02Z",
+                    "status": "available" if index % 2 == 0 else "unverified",
+                    "bucketCount": 1,
+                }
+                for index in range(80)
+            ],
+        }
+
+    def get_series(
+        self,
+        *,
+        dataset_version_id: int,
+        series_id: int,
+        from_at: datetime,
+        to_at: datetime,
+        page_size: int,
+        cursor: str | None,
+    ) -> dict[str, object] | None:
+        del from_at, to_at, page_size, cursor
+        if self.get_version(dataset_version_id) is None:
+            return None
+        return {
+            "datasetVersionId": dataset_version_id,
+            "seriesId": series_id,
+            "dataKind": "candle",
+            "unit": "1m",
+            "items": [
+                {
+                    "occurredAt": "2026-07-17T00:00:00Z",
+                    "knowledgeAt": "2026-07-17T00:00:02Z",
+                    "quality": "available",
+                    "contentHash": "d" * 64,
+                    "values": {"open": "100", "close": "101"},
+                }
+            ],
+            "nextCursor": None,
+        }
+
+
 def _analysis_history_candles(
     first_instrument_id: int, second_instrument_id: int
 ) -> list[SourceCandle]:
@@ -250,6 +421,7 @@ def create_seeded_e2e_app() -> FastAPI:
     app = create_app(
         serialized_repository,
         data_foundation_repository=_SeededDataFoundationRepository(),
+        dataset_version_repository=_SeededDatasetVersionRepository(),
     )
     catalog = load_catalog()
 

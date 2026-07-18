@@ -32,6 +32,7 @@ export type ChangeCommandEnvelope = {
 };
 
 export type DataFoundationMarket = {
+  instrumentId: number;
   marketCode: string;
   koreanName: string;
   englishName: string;
@@ -415,6 +416,123 @@ export type BackfillJob = {
   deadLetterReason: string | null;
 };
 
+export type DatasetDataKind = "candle" | "indicator" | "market_statistic" | "microstructure";
+export type DatasetQuality = "available" | "no_trade" | "missing" | "unavailable" | "unverified";
+export type DatasetFillPolicy = "none" | "no_trade_carry_forward_v1";
+export type DatasetMissingPolicy = "fail" | "null" | "drop";
+
+export type DatasetSeriesSelection = {
+  instrumentId: number;
+  dataKind: DatasetDataKind;
+  unit: "1m" | "3m" | "5m" | "10m" | "15m" | "30m" | "1h" | "4h" | "1d" | "1w" | "1M";
+  definitionSetHash: string | null;
+  calculationVersion: string | null;
+};
+
+export type DatasetSelection = {
+  asOf: string;
+  from: string;
+  to: string;
+  series: DatasetSeriesSelection[];
+};
+
+export type DatasetPolicies = {
+  availabilityPolicy: "point_in_time_v1";
+  fillPolicy: DatasetFillPolicy;
+  missingPolicy: DatasetMissingPolicy;
+};
+
+export type CreateDatasetBuildCommand = {
+  requestId: string;
+  idempotencyKey: string;
+  actorId: string;
+  requestedAt: string;
+  reason: string;
+  selection: DatasetSelection;
+  policies: DatasetPolicies;
+};
+
+export type DatasetBuild = {
+  buildId: number;
+  requestId: string;
+  idempotencyKey: string;
+  actorId: string;
+  requestedAt: string;
+  frozenAt: string;
+  status: "pending" | "running" | "retry_wait" | "succeeded" | "failed" | "dead_letter" | "cancelled";
+  attemptCount: number;
+  maxAttempts: number;
+  nextRetryAt: string | null;
+  deadLetterReason: string | null;
+  datasetVersionId: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+};
+
+export type DatasetBuildsResponse = {
+  items: DatasetBuild[];
+  nextCursor: string | null;
+};
+
+export type DatasetVersionSeries = DatasetSeriesSelection & {
+  seriesId: number;
+};
+
+export type DatasetVersion = {
+  datasetVersionId: number;
+  schemaVersion: "dataset-v1";
+  asOf: string;
+  from: string;
+  to: string;
+  contentHash: string;
+  availabilityPolicy: "point_in_time_v1";
+  fillPolicy: DatasetFillPolicy;
+  missingPolicy: DatasetMissingPolicy;
+  createdAt: string;
+  series: DatasetVersionSeries[];
+};
+
+export type DatasetVersionsResponse = {
+  items: DatasetVersion[];
+  nextCursor: string | null;
+};
+
+export type DatasetCoverageItem = {
+  seriesId: number;
+  rangeStartAt: string;
+  rangeEndAt: string;
+  knowledgeAt: string;
+  status: DatasetQuality;
+  bucketCount: number;
+};
+
+export type DatasetCoverage = {
+  datasetVersionId: number;
+  snapshotHash: string;
+  requestedBucketCount: number;
+  eligibleBucketCount: number;
+  usableRatio: string;
+  counts: CoverageCounts;
+  items: DatasetCoverageItem[];
+};
+
+export type DatasetSeriesPoint = {
+  occurredAt: string;
+  knowledgeAt: string;
+  quality: DatasetQuality;
+  contentHash: string;
+  values: Record<string, string | number | boolean | null>;
+};
+
+export type DatasetSeriesResponse = {
+  datasetVersionId: number;
+  seriesId: number;
+  dataKind: DatasetDataKind;
+  unit: string;
+  items: DatasetSeriesPoint[];
+  nextCursor: string | null;
+};
+
 export type OperationsSnapshot = {
   dashboard: DashboardSummary;
   candidateEntries: CandidateUniverseEntry[];
@@ -722,6 +840,58 @@ export async function loadCollectionCoverageSegments(
     `/v1/collection-targets/${instrumentId}/coverage-segments`
   );
   return response.items;
+}
+
+export async function loadDatasetBuilds(options: {
+  pageSize?: number;
+  cursor?: string | null;
+} = {}): Promise<DatasetBuildsResponse> {
+  const params = new URLSearchParams({ pageSize: String(options.pageSize ?? 50) });
+  if (options.cursor) params.set("cursor", options.cursor);
+  return getJson<DatasetBuildsResponse>(`/v1/dataset-builds?${params.toString()}`);
+}
+
+export async function createDatasetBuild(
+  command: CreateDatasetBuildCommand
+): Promise<DatasetBuild> {
+  return sendJson<DatasetBuild>("/v1/dataset-builds", "POST", command);
+}
+
+export async function loadDatasetVersions(options: {
+  pageSize?: number;
+  cursor?: string | null;
+} = {}): Promise<DatasetVersionsResponse> {
+  const params = new URLSearchParams({ pageSize: String(options.pageSize ?? 50) });
+  if (options.cursor) params.set("cursor", options.cursor);
+  return getJson<DatasetVersionsResponse>(`/v1/dataset-versions?${params.toString()}`);
+}
+
+export async function loadDatasetVersion(datasetVersionId: number): Promise<DatasetVersion> {
+  return getJson<DatasetVersion>(`/v1/dataset-versions/${datasetVersionId}`);
+}
+
+export async function loadDatasetCoverage(datasetVersionId: number): Promise<DatasetCoverage> {
+  return getJson<DatasetCoverage>(`/v1/dataset-versions/${datasetVersionId}/coverage`);
+}
+
+export async function loadDatasetSeries(options: {
+  datasetVersionId: number;
+  seriesId: number;
+  from: string;
+  to: string;
+  pageSize?: number;
+  cursor?: string | null;
+}): Promise<DatasetSeriesResponse> {
+  const params = new URLSearchParams({
+    seriesId: String(options.seriesId),
+    from: options.from,
+    to: options.to,
+    pageSize: String(options.pageSize ?? 500)
+  });
+  if (options.cursor) params.set("cursor", options.cursor);
+  return getJson<DatasetSeriesResponse>(
+    `/v1/dataset-versions/${options.datasetVersionId}/series?${params.toString()}`
+  );
 }
 
 export async function loadInstrumentSnapshot(

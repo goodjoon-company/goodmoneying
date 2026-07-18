@@ -1,7 +1,7 @@
 # 시스템 트레이딩 UI 흐름(UI Flow)
 
 상태: Accepted Target
-구현 상태: 미구현
+구현 상태: P2-6 Data Lab 구현됨
 추적: GitHub Issue #28~#34
 
 ## 1. 정보 구조
@@ -30,13 +30,15 @@ Command Center
 
 ### 데이터 준비
 
-`Markets에서 대상 선택 → 정책 편집 → 자동 백필·실시간 가입 → Coverage & Quality에서 상태 확인 → Data Lab에서 dataset version 생성`
+`Markets에서 대상 선택 → 정책 편집 → 자동 백필·실시간 가입 → Coverage & Quality에서 상태 확인 → Data Lab에서 dataset build 생성 → 게시된 dataset version 확인`
 
 별도 시작 버튼은 없다. 정책 저장 결과는 생성된 backfill job, 실시간 desired state, 예상 요청·용량을 함께 보여준다.
 
 ### 전략 연구
 
-`Data Lab dataset → Indicator 정의 → Strategy Studio graph 작성·검증 → 불변 version 게시 → Backtest Lab 실행·비교`
+`Data Lab dataset → coverage·exact member·A/B 비교 확인 → Indicator 정의 → Strategy Studio graph 작성·검증 → 불변 version 게시 → Backtest Lab 실행·비교`
+
+Data Lab은 P2-6에서 별도 화면으로 구현됐다. 사용자는 KRW 시장과 KST 반개방 범위를 입력해 새 build를 만들고, 기존 version은 편집하지 않고 새 build로 복제한다. build 상태는 REST polling으로 갱신하며 version, coverage heatmap, exact member 표·차트, A/B 비교는 저장된 dataset 계약만 읽는다.
 
 검증 실패는 graph node와 error summary 양쪽에 연결한다. pointer를 사용할 수 없는 사용자는 ordered node list와 connection form으로 같은 graph를 편집한다.
 

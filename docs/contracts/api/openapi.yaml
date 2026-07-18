@@ -500,6 +500,31 @@ paths:
               schema:
                 $ref: "#/components/schemas/TickerSnapshotsResponse"
   /v1/dataset-builds:
+    get:
+      tags: [연구 데이터셋(Dataset)]
+      summary: 데이터셋 생성 작업 목록 조회
+      operationId: listDatasetBuilds
+      parameters:
+        - name: pageSize
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+        - name: cursor
+          in: query
+          schema: {type: string}
+          description: 생성 작업 ID 상한과 마지막 ID를 고정한 불투명 커서
+      responses:
+        "200":
+          description: 새로고침 뒤에도 재발견 가능한 생성 작업 목록
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatasetBuilds"
+        "409":
+          description: 커서의 무결성이 깨졌거나 다른 목록 문맥에서 생성됨
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     post:
       tags: [연구 데이터셋(Dataset)]
       summary: 불변 데이터셋 버전 생성 작업 접수
@@ -1041,6 +1066,18 @@ components:
         datasetVersionId: {type: [integer, "null"], format: int64, minimum: 1}
         errorCode: {type: [string, "null"]}
         errorMessage: {type: [string, "null"]}
+    DatasetBuilds:
+      description: 최초 데이터셋 생성 작업 ID 상한에 고정된 build 목록 페이지.
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DatasetBuild"
+        nextCursor:
+          type: [string, "null"]
     DatasetVersionSeries:
       description: 버전이 고정한 시계열과 계산 의미.
       type: object
@@ -1158,6 +1195,7 @@ components:
       type: object
       additionalProperties: false
       required:
+        - instrumentId
         - marketCode
         - koreanName
         - englishName
@@ -1170,6 +1208,7 @@ components:
         - coverageCounts
         - collectionPolicy
       properties:
+        instrumentId: { type: integer, format: int64, minimum: 1 }
         marketCode: { type: string }
         koreanName: { type: string }
         englishName: { type: string }

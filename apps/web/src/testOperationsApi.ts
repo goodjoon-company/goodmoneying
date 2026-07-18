@@ -356,7 +356,138 @@ export function createTestOperationsFetch(
           desiredSubscriptionCount: 300,
           coverageCounts: { available: 1, no_trade: 0, missing: 0, unavailable: 0, unverified: 1 }
         },
-        markets: []
+        markets: [
+          {
+            instrumentId: 1,
+            marketCode: "KRW-BTC",
+            koreanName: "비트코인",
+            englishName: "Bitcoin",
+            quoteCurrency: "KRW",
+            tradingStatus: "active",
+            marketWarning: "NONE",
+            targetStatus: "active",
+            activeDataTypeCount: 4,
+            totalDataTypeCount: 4,
+            coverageCounts: { available: 1, no_trade: 0, missing: 0, unavailable: 0, unverified: 1 },
+            collectionPolicy: {
+              startAt: "2024-01-01T00:00:00Z",
+              dataTypes: ["source_candle", "trade_event", "orderbook_snapshot", "ticker_snapshot"],
+              candleUnit: "1m",
+              retentionDays: null,
+              priority: 100,
+              continuous: true
+            }
+          }
+        ]
+      });
+    }
+    if (url.includes("/v1/dataset-builds") && (!init || init.method !== "POST")) {
+      return Response.json({
+        items: [
+          {
+            buildId: 7,
+            requestId: "dataset-request-1",
+            idempotencyKey: "dataset-key-1",
+            actorId: "operator:test",
+            requestedAt: "2026-07-17T06:00:00Z",
+            frozenAt: "2026-07-17T06:00:01Z",
+            status: "retry_wait",
+            attemptCount: 2,
+            maxAttempts: 3,
+            nextRetryAt: "2026-07-17T06:05:00Z",
+            deadLetterReason: null,
+            datasetVersionId: null,
+            errorCode: null,
+            errorMessage: null
+          }
+        ],
+        nextCursor: null
+      });
+    }
+    if (url.includes("/v1/dataset-versions/12/coverage")) {
+      return Response.json({
+        datasetVersionId: 12,
+        snapshotHash: "c".repeat(64),
+        requestedBucketCount: 3,
+        eligibleBucketCount: 2,
+        usableRatio: "0.6667",
+        counts: { available: 2, no_trade: 0, missing: 0, unavailable: 0, unverified: 1 },
+        items: [
+          {
+            seriesId: 202,
+            rangeStartAt: "2026-07-17T00:00:00Z",
+            rangeEndAt: "2026-07-17T01:00:00Z",
+            knowledgeAt: "2026-07-17T00:00:02Z",
+            status: "available",
+            bucketCount: 2
+          },
+          {
+            seriesId: 202,
+            rangeStartAt: "2026-07-17T01:00:00Z",
+            rangeEndAt: "2026-07-17T02:00:00Z",
+            knowledgeAt: "2026-07-17T06:00:01Z",
+            status: "unverified",
+            bucketCount: 1
+          }
+        ]
+      });
+    }
+    if (url.includes("/v1/dataset-versions/12/series")) {
+      return Response.json({
+        datasetVersionId: 12,
+        seriesId: 202,
+        dataKind: "candle",
+        unit: "1m",
+        items: [
+          {
+            occurredAt: "2026-07-17T00:00:00Z",
+            knowledgeAt: "2026-07-17T00:00:02Z",
+            quality: "available",
+            contentHash: "d".repeat(64),
+            values: { open: "100", close: "101" }
+          }
+        ],
+        nextCursor: null
+      });
+    }
+    if (url.includes("/v1/dataset-versions")) {
+      const series = {
+        instrumentId: 1,
+        dataKind: "candle",
+        unit: "1m",
+        definitionSetHash: null,
+        calculationVersion: "source-candle-v1"
+      };
+      return Response.json({
+        items: [
+          {
+            datasetVersionId: 12,
+            schemaVersion: "dataset-v1",
+            asOf: "2026-07-17T05:00:00Z",
+            from: "2026-07-17T00:00:00Z",
+            to: "2026-07-17T02:00:00Z",
+            contentHash: "b".repeat(64),
+            availabilityPolicy: "point_in_time_v1",
+            fillPolicy: "none",
+            missingPolicy: "fail",
+            createdAt: "2026-07-17T06:00:03Z",
+            series: [{ ...series, seriesId: 202 }]
+          },
+          {
+            datasetVersionId: 11,
+            schemaVersion: "dataset-v1",
+            asOf: "2026-07-17T05:00:00Z",
+            from: "2026-07-17T00:00:00Z",
+            to: "2026-07-17T02:00:00Z",
+            contentHash: "a".repeat(64),
+            availabilityPolicy: "point_in_time_v1",
+            fillPolicy: "none",
+            missingPolicy: "fail",
+            createdAt: "2026-07-17T06:00:02Z",
+            series: [{ ...series, seriesId: 101 }]
+          }
+        ],
+        nextCursor: null
       });
     }
     if (url.match(/\/v1\/instruments\/\d+$/)) {

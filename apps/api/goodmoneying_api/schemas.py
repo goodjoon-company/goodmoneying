@@ -146,6 +146,11 @@ class DatasetBuildResponse(BaseModel):
     errorMessage: str | None
 
 
+class DatasetBuildsResponse(BaseModel):
+    items: list[DatasetBuildResponse]
+    nextCursor: str | None
+
+
 class DatasetVersionSeriesResponse(BaseModel):
     seriesId: int
     instrumentId: int
@@ -236,6 +241,7 @@ class MarketCollectionPolicyResponse(BaseModel):
 
 
 class DataFoundationMarketResponse(BaseModel):
+    instrumentId: int = Field(gt=0)
     marketCode: str
     koreanName: str
     englishName: str

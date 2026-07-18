@@ -44,6 +44,7 @@ def test_data_foundation_api_exposes_utc_policy_and_five_coverage_states() -> No
         },
     }
     assert payload["markets"][0]["marketCode"] == "KRW-BTC"
+    assert payload["markets"][0]["instrumentId"] == 41
     assert payload["markets"][0]["targetStatus"] == "active"
     assert payload["markets"][0]["collectionPolicy"] == {
         "startAt": "2024-01-01T00:00:00Z",
@@ -282,6 +283,7 @@ class FakeDataFoundationRepository:
             coverage_counts=counts,  # type: ignore[arg-type]
             markets=[
                 MarketCollectionStatus(
+                    instrument_id=41,
                     market_code="KRW-BTC",
                     korean_name="비트코인",
                     english_name="Bitcoin",
@@ -307,6 +309,7 @@ class FakeDataFoundationRepository:
                     ),
                 ),
                 MarketCollectionStatus(
+                    instrument_id=42,
                     market_code="USDT-BTC",
                     korean_name="비트코인",
                     english_name="Bitcoin",

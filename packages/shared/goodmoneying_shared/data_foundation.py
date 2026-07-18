@@ -142,6 +142,7 @@ class MarketCollectionPolicySettings:
 
 @dataclass(frozen=True)
 class MarketCollectionStatus:
+    instrument_id: int
     market_code: str
     korean_name: str
     english_name: str

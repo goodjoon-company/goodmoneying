@@ -1,7 +1,7 @@
 # 시스템 트레이딩 UI 사양(UI Spec)
 
 상태: Accepted Target
-구현 상태: 미구현
+구현 상태: P2-6 Data Lab 구현됨
 추적: GitHub Issue #28~#34
 
 ## 1. 디자인 방향
@@ -37,6 +37,16 @@
 - 390·360: one-column, horizontal data table 대신 priority rows·detail disclosure; emergency action은 viewport를 가리지 않음
 
 표는 header sticky, row virtualized, 수치 decimal alignment를 사용한다. chart는 고정 aspect ratio와 table alternative를 제공한다. graph editor는 canvas와 accessible ordered-list representation을 같은 model에서 만든다.
+
+P2-6 Data Lab은 이 원칙을 다음 범위로 적용한다.
+
+- 1440~900px에서는 build composer와 build lifecycle을 2열로, coverage·series·A/B 비교를 3열로 표시한다.
+- 760px 이하에서는 단일 열로 전환하고 exact member 표는 화면 전체 overflow를 만들지 않는 내부 scroll 영역에 둔다.
+- exact member는 series 선택, 요약 차트와 `series exact member table` 접근성 이름을 가진 표를 함께 제공한다.
+- build 생성 form은 시장, 작업자 ID, 사유, 시작 KST, 종료 KST label을 제공하고 UTC wire 변환은 클라이언트 모델 테스트로 고정한다.
+- build, version, exact member의 다음 page는 cursor 기반 더 보기로 명시 탐색한다.
+- coverage heatmap은 긴 범위에서도 viewport 가로 overflow를 만들지 않도록 wrap한다.
+- 화면 갱신 기준은 `REST polling`으로 표시하며 P2-7 내부 WebSocket을 선행하지 않는다.
 
 ## 4. 상호작용
 

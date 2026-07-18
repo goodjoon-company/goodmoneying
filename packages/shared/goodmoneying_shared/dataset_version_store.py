@@ -66,6 +66,9 @@ class PostgresDatasetVersionStore:
     def get_build(self, build_id: int) -> Row | None:
         return get_build(self._repository, build_id)
 
+    def list_builds(self, **arguments: object) -> Row:
+        return list_builds(self._repository, **arguments)
+
     def get_version(self, dataset_version_id: int) -> Row | None:
         return get_version(self._repository, dataset_version_id)
 
@@ -164,6 +167,39 @@ def get_build(repository: object, build_id: int) -> Row | None:
     with _connector(repository)() as connection:
         row = connection.execute("SELECT * FROM dataset_builds WHERE id=%s", (build_id,)).fetchone()
     return None if row is None else _build_response(row)
+
+
+def list_builds(repository: object, *, page_size: object, cursor: object) -> Row:
+    limit = int(cast(int, page_size))
+    decoded = _decode_list_cursor(cast(str | None, cursor))
+    with _connector(repository)() as connection:
+        if decoded is None:
+            ceiling_row = connection.execute(
+                "SELECT COALESCE(MAX(id),0) AS id FROM dataset_builds"
+            ).fetchone()
+            ceiling = int(ceiling_row["id"])
+            last_id = ceiling + 1
+        else:
+            ceiling = int(cast(int, decoded["ceiling"]))
+            last_id = int(cast(int, decoded["lastId"]))
+        rows = connection.execute(
+            """
+            SELECT id FROM dataset_builds
+            WHERE id <= %s AND id < %s
+            ORDER BY id DESC LIMIT %s
+            """,
+            (ceiling, last_id, limit + 1),
+        ).fetchall()
+    page = rows[:limit]
+    items = [get_build(repository, int(row["id"])) for row in page]
+    return {
+        "items": [item for item in items if item is not None],
+        "nextCursor": (
+            _encode_list_cursor(ceiling, int(page[-1]["id"]))
+            if len(rows) > limit and page
+            else None
+        ),
+    }
 
 
 def get_version(repository: object, dataset_version_id: int) -> Row | None:

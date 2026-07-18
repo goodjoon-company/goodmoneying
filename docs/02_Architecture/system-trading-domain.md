@@ -1,8 +1,8 @@
 # 시스템 트레이딩 도메인 설계(Module Design)
 
-상태: 승인된 목표 설계(Accepted Target), P1·P2-1·P2-2·P2-3·P2-4 기계 계약 구현됨
-버전: 1.4.0
-날짜: 2026-07-17
+상태: 승인된 목표 설계(Accepted Target), P1·P2-1·P2-2·P2-3·P2-4·P2-5·P2-6 기계 계약 구현됨
+버전: 1.4.1
+날짜: 2026-07-18
 
 ## 1. 목적
 
@@ -51,6 +51,7 @@
 | 미시구조 작업 | `microstructure_invalidations` | 상품별 닫힌 1분 범위 병합, DB 임대·세대 fencing·재시도·dead-letter |
 | 데이터셋 빌드 | `dataset_builds`, `dataset_build_series` | 요청 트랜잭션에서 선택 hash·asOf·원천/품질/물질화/시장 상태 ceiling 고정, 멱등 키 충돌 차단, 임대 heartbeat·세대 fencing·제한 재시도·dead-letter |
 | 연구 | `dataset_versions`, `dataset_version_series` | 대리키를 제외한 canonical content hash 불변·고유, 입력/출력 반개방 범위와 정책 고정, 게시 전 child 완성 뒤 원자적 봉인 |
+| 연구 UI | Data Lab | `/v1/data-foundation`의 `instrumentId`로 KRW 시장을 선택하고 `/v1/dataset-builds`, `/v1/dataset-versions`, coverage, series REST 계약만 읽어 build 생성·복제·비교를 수행 |
 | 데이터셋 입력 | `dataset_version_candles`, `dataset_version_indicators`, `dataset_version_market_statistics`, `dataset_version_microstructures` | 정확한 불변 입력 FK, 자연키·내용 해시·지식 시각 보존 |
 | 데이터셋 시점 상태 | `dataset_version_market_status_snapshots` | 생성 프런티어의 시장 상태·거래 가능 구간과 coverage 의미 복제 |
 | 전략 | `strategy_definitions` | `(owner_id, name)` |

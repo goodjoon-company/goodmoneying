@@ -1128,6 +1128,7 @@ class PostgresDataFoundationRepository:
             rows = connection.execute(
                 """
                 SELECT
+                  market.legacy_instrument_id,
                   market.market_code,
                   market.korean_name,
                   market.english_name,
@@ -1201,6 +1202,7 @@ class PostgresDataFoundationRepository:
             coverage_by_market = self._coverage_counts_by_market(connection)
         return [
             MarketCollectionStatus(
+                instrument_id=int(row["legacy_instrument_id"]),
                 market_code=str(row["market_code"]),
                 korean_name=str(row["korean_name"]),
                 english_name=str(row["english_name"]),

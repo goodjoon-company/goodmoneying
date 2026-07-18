@@ -54,6 +54,7 @@ from goodmoneying_api.schemas import (
     DataFoundationResponse,
     DataFoundationSummaryResponse,
     DatasetBuildResponse,
+    DatasetBuildsResponse,
     DatasetCoverageResponse,
     DatasetSeriesResponse,
     DatasetVersionResponse,
@@ -154,6 +155,10 @@ class DatasetVersionApiRepository(Protocol):
 
     def get_build(self, build_id: int) -> Mapping[str, object] | None: ...
 
+    def list_builds(
+        self, *, page_size: int, cursor: str | None
+    ) -> Mapping[str, object]: ...
+
     def get_version(self, dataset_version_id: int) -> Mapping[str, object] | None: ...
 
     def list_versions(
@@ -180,6 +185,9 @@ class EmptyDatasetVersionRepository:
 
     def get_build(self, _build_id: int) -> Mapping[str, object] | None:
         return None
+
+    def list_builds(self, **_arguments: object) -> Mapping[str, object]:
+        return {"items": [], "nextCursor": None}
 
     def get_version(self, _dataset_version_id: int) -> Mapping[str, object] | None:
         return None
@@ -323,6 +331,20 @@ def create_app(
             ) from exc
         return DatasetBuildResponse.model_validate(result)
 
+    @app.get("/v1/dataset-builds", response_model=DatasetBuildsResponse)
+    def list_dataset_builds(
+        pageSize: Annotated[int, Query(ge=1, le=100)] = 50,
+        cursor: str | None = None,
+    ) -> DatasetBuildsResponse:
+        try:
+            result = dataset_repository.list_builds(page_size=pageSize, cursor=cursor)
+        except DatasetCursorMismatchError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "DATASET_CURSOR_CONTEXT_MISMATCH", "message": str(exc)},
+            ) from exc
+        return DatasetBuildsResponse.model_validate(result)
+
     @app.get("/v1/dataset-builds/{buildId}", response_model=DatasetBuildResponse)
     def get_dataset_build(buildId: Annotated[int, Path(gt=0)]) -> DatasetBuildResponse:
         result = dataset_repository.get_build(buildId)
@@ -458,6 +480,7 @@ def create_app(
             ),
             markets=[
                 DataFoundationMarketResponse(
+                    instrumentId=market.instrument_id,
                     marketCode=market.market_code,
                     koreanName=market.korean_name,
                     englishName=market.english_name,

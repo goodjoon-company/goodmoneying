@@ -9,4 +9,5 @@
 @import "./styles/coverage-quality.css";
 @import "./styles/analysis.css";
 @import "./styles/upbit-workbench.css";
+@import "./features/dataLab/data-lab.css";
 @import "./styles/responsive.css";

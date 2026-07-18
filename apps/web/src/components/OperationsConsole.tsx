@@ -5,6 +5,7 @@ import { loadMarketList, subscribeMarketList, type MarketListRow } from "../api"
 import { formatCurrencyAmount, formatFreshness } from "../operationsDisplay";
 import { formatKstDateTime } from "../displayFormat";
 import { useOperationsConsole, type SectionId } from "../useOperationsConsole";
+import { DataLab } from "../features/dataLab/DataLab";
 import { InstrumentName } from "./common";
 import { Dashboard } from "./Dashboard";
 import { CoinAnalysis } from "./CoinAnalysis";
@@ -33,7 +34,8 @@ const menuGroups: {
 
 const primaryMenuItems: { id: SectionId; label: string; badge: string }[] = [
   { id: "markets", label: "관심종목", badge: "MVP" },
-  { id: "analysis", label: "코인 분석", badge: "NEW" }
+  { id: "analysis", label: "코인 분석", badge: "NEW" },
+  { id: "data-lab", label: "Data Lab", badge: "P2-6" }
 ];
 
 const upbitWorkbenchMenuItems: { id: WorkbenchModuleId; label: string; badge: string }[] = [
@@ -72,6 +74,12 @@ const sectionMeta: Record<SectionId, { crumb: string; milestone: string; title: 
     milestone: "P2 · 코인 전용",
     title: "코인 분석",
     desc: "관심 코인의 차트, 거래량, 기술 지표와 현재가·호가·체결 흐름을 실시간으로 분석합니다."
+  },
+  "data-lab": {
+    crumb: "goodmoneying / Data Lab / P2-6",
+    milestone: "P2-6 · 연구 데이터",
+    title: "Data Lab",
+    desc: "불변 데이터셋 build와 version, coverage, exact member를 고정된 REST 계약으로 탐색합니다."
   },
   system: {
     crumb: "goodmoneying / 시스템 관리 / P2.1",
@@ -222,7 +230,7 @@ export function OperationsConsole() {
           <div className="runtime-pills" aria-label="화면 갱신 기준">
             <span>표시 KST</span>
             <span>저장 UTC</span>
-            <span>{activeSection === "analysis" || activeSection === "system" ? "WebSocket 실시간" : activeSection === "upbit-api-test" ? "게이트웨이 격리 조회" : "SSE 실시간"}</span>
+            <span>{activeSection === "analysis" || activeSection === "system" ? "WebSocket 실시간" : activeSection === "upbit-api-test" ? "게이트웨이 격리 조회" : activeSection === "data-lab" ? "REST polling" : "SSE 실시간"}</span>
             <span>마지막 갱신 {formatFreshness(snapshot.dashboard.refreshedAt)}</span>
           </div>
         </section>
@@ -244,6 +252,7 @@ export function OperationsConsole() {
         {activeSection === "analysis" ? (
           <CoinAnalysis rows={favoriteCoinRows} onOpenWatchlist={() => setActiveSection("targets")} />
         ) : null}
+        {activeSection === "data-lab" ? <DataLab /> : null}
         {activeSection === "system" ? <SystemManagement /> : null}
         {activeSection === "upbit-api-test" ? <UpbitApiTest moduleId={activeWorkbenchModule}
           market={workbenchMarket} onMarketChange={setWorkbenchMarket} /> : null}

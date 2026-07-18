@@ -1,0 +1,308 @@
+.data-lab {
+  display: grid;
+  gap: 16px;
+  padding: 0 20px 32px;
+}
+
+.data-lab-title-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.data-lab-title-row h2 {
+  margin: 0;
+  font-size: clamp(26px, 3vw, 40px);
+  letter-spacing: 0;
+}
+
+.data-lab-title-row p {
+  max-width: 760px;
+  margin: 6px 0 0;
+  color: #aebbb4;
+}
+
+.data-lab-title-row button,
+.data-lab-version-row .secondary-action,
+.data-lab-panel .secondary-action,
+.data-lab-panel .primary-action {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #315044;
+  border-radius: 8px;
+  padding: 7px 12px;
+  background: #121d19;
+  color: #eff8f1;
+  font-weight: 800;
+}
+
+.data-lab-panel .primary-action {
+  width: 100%;
+  margin-top: 12px;
+  border-color: #35e0a9;
+  background: #35e0a9;
+  color: #07120d;
+  justify-content: center;
+}
+
+.data-lab-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.data-lab-form label {
+  display: grid;
+  gap: 6px;
+  color: #b7c5bc;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.data-lab-form input,
+.data-lab-form select,
+.data-lab-series-select select {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid #263b34;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #0c1210;
+  color: #eff8f1;
+}
+
+.data-lab-series-select {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+  color: #b7c5bc;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.data-lab-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(420px, 1.35fr);
+  gap: 14px;
+}
+
+.data-lab-grid-bottom {
+  grid-template-columns: minmax(260px, 0.95fr) minmax(340px, 1.15fr) minmax(240px, 0.8fr);
+}
+
+.data-lab-panel {
+  min-width: 0;
+  padding: 16px;
+}
+
+.data-lab-panel .panel-heading {
+  margin-bottom: 12px;
+}
+
+.data-lab-panel h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.data-lab-build-row,
+.data-lab-version-row {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  padding: 12px 0;
+}
+
+.data-lab-build-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+}
+
+.data-lab-build-row div,
+.data-lab-version-row button:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.data-lab-build-row span,
+.data-lab-build-row small,
+.data-lab-version-row span,
+.data-lab-version-row dd,
+.data-lab-member-table small {
+  color: #aebbb4;
+}
+
+.data-lab-status,
+.data-lab-coverage-counts span {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.data-lab-version-row {
+  grid-template-columns: minmax(190px, 0.55fr) minmax(260px, 1fr) auto;
+  align-items: center;
+}
+
+.data-lab-version-row.active {
+  border-color: rgba(53, 224, 169, 0.48);
+  background: rgba(53, 224, 169, 0.05);
+}
+
+.data-lab-version-row button:first-child {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #eff8f1;
+  text-align: left;
+}
+
+.data-lab-version-row dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.data-lab-version-row dt {
+  color: #6f8178;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.data-lab-version-row dd {
+  margin: 2px 0 0;
+  font-size: 12px;
+}
+
+.data-lab-coverage-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.data-lab-coverage-bars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 72px;
+  margin-top: 14px;
+  overflow: hidden;
+}
+
+.data-lab-coverage-bar {
+  flex: 1 1 28px;
+  min-width: 12px;
+  height: 32px;
+  border-radius: 6px;
+  background: #24322d;
+}
+
+.status-available { color: #55e0aa; background-color: rgba(85, 224, 170, 0.12); }
+.status-no_trade { color: #b9d785; background-color: rgba(185, 215, 133, 0.12); }
+.status-missing { color: #ffb86b; background-color: rgba(255, 184, 107, 0.12); }
+.status-unavailable { color: #ff7b72; background-color: rgba(255, 123, 114, 0.12); }
+.status-unverified { color: #89b8ff; background-color: rgba(137, 184, 255, 0.12); }
+.status-retry_wait { color: #ffc857; background-color: rgba(255, 200, 87, 0.12); }
+.status-running,
+.status-pending { color: #89b8ff; background-color: rgba(137, 184, 255, 0.12); }
+.status-succeeded { color: #55e0aa; background-color: rgba(85, 224, 170, 0.12); }
+.status-failed,
+.status-dead_letter { color: #ff7b72; background-color: rgba(255, 123, 114, 0.12); }
+
+.data-lab-series-chart {
+  margin: 0 0 12px;
+}
+
+.data-lab-series-chart svg {
+  width: 100%;
+  height: 92px;
+  border: 1px solid rgba(137, 184, 255, 0.22);
+  border-radius: 8px;
+  background:
+    linear-gradient(rgba(137, 184, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(137, 184, 255, 0.08) 1px, transparent 1px);
+  background-size: 100% 30px, 48px 100%;
+}
+
+.data-lab-series-chart polyline {
+  fill: none;
+  stroke: #55e0aa;
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.data-lab-series-chart circle {
+  fill: #07120d;
+  stroke: #55e0aa;
+  stroke-width: 2;
+}
+
+.data-lab-series-chart figcaption {
+  margin-top: 6px;
+  color: #aebbb4;
+  font-size: 12px;
+}
+
+.data-lab-member-table-wrap {
+  overflow-x: auto;
+}
+
+.data-lab-member-table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.data-lab-member-table th,
+.data-lab-member-table td {
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  padding: 8px 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.data-lab-member-table th {
+  color: #6f8178;
+  font-weight: 900;
+}
+
+.data-lab-compare-row,
+.empty-inline,
+.data-lab-load-more {
+  margin: 0;
+  color: #c8d6ce;
+}
+
+.data-lab-load-more {
+  width: 100%;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+@media (max-width: 980px) {
+  .data-lab-grid,
+  .data-lab-grid-bottom {
+    grid-template-columns: 1fr;
+  }
+
+  .data-lab-version-row,
+  .data-lab-build-row {
+    grid-template-columns: 1fr;
+  }
+
+  .data-lab-version-row dl {
+    grid-template-columns: 1fr;
+  }
+
+  .data-lab-form {
+    grid-template-columns: 1fr;
+  }
+}

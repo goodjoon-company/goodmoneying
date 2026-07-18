@@ -132,6 +132,104 @@ describe("운영 API 클라이언트", () => {
     expect(requested.some((url) => url.includes("/market-list"))).toBe(false);
   });
 
+  it("Data Lab build 목록은 안정 cursor로 조회한다", async () => {
+    const build = {
+      buildId: 7,
+      requestId: "dataset-request-1",
+      idempotencyKey: "dataset-key-1",
+      actorId: "operator:test",
+      requestedAt: "2026-07-17T06:00:00Z",
+      frozenAt: "2026-07-17T06:00:01Z",
+      status: "retry_wait",
+      attemptCount: 2,
+      maxAttempts: 3,
+      nextRetryAt: "2026-07-17T06:05:00Z",
+      deadLetterReason: null,
+      datasetVersionId: null,
+      errorCode: null,
+      errorMessage: null
+    };
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/dataset-builds?pageSize=25&cursor=build-cursor")) {
+        return Response.json({ items: [build], nextCursor: null });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    const { loadDatasetBuilds } = await import("./api");
+    const response = await loadDatasetBuilds({ pageSize: 25, cursor: "build-cursor" });
+
+    expect(response.items).toEqual([build]);
+    expect(response.nextCursor).toBeNull();
+  });
+
+  it("Data Lab build 생성은 UTC 명령 payload를 보내고 운영 토큰은 프록시에 맡긴다", async () => {
+    const fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+      Response.json({
+        buildId: 7,
+        requestId: "dataset-request-1",
+        idempotencyKey: "dataset-key-1",
+        actorId: "operator:test",
+        requestedAt: "2026-07-17T06:00:00Z",
+        frozenAt: "2026-07-17T06:00:01Z",
+        status: "pending",
+        attemptCount: 0,
+        maxAttempts: 3,
+        nextRetryAt: null,
+        deadLetterReason: null,
+        datasetVersionId: null,
+        errorCode: null,
+        errorMessage: null
+      })
+    );
+    vi.stubGlobal("fetch", fetch);
+
+    const { createDatasetBuild } = await import("./api");
+    await createDatasetBuild({
+      requestId: "dataset-request-1",
+      idempotencyKey: "dataset-key-1",
+      actorId: "operator:test",
+      requestedAt: "2026-07-17T06:00:00Z",
+      reason: "Data Lab 생성",
+      selection: {
+        asOf: "2026-07-17T05:00:00Z",
+        from: "2026-07-17T00:00:00Z",
+        to: "2026-07-17T02:00:00Z",
+        series: [
+          {
+            instrumentId: 1,
+            dataKind: "candle",
+            unit: "1m",
+            definitionSetHash: null,
+            calculationVersion: "source-candle-v1"
+          }
+        ]
+      },
+      policies: {
+        availabilityPolicy: "point_in_time_v1",
+        fillPolicy: "none",
+        missingPolicy: "fail"
+      }
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/v1/dataset-builds",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "Content-Type": "application/json"
+        })
+      })
+    );
+    expect((fetch.mock.calls[0][1]?.headers as Record<string, string>)["X-Operator-Token"])
+      .toBeUndefined();
+    const body = JSON.parse(String(fetch.mock.calls[0][1]?.body));
+    expect(body.selection.series).toHaveLength(1);
+    expect(body.selection.asOf).toBe("2026-07-17T05:00:00Z");
+  });
+
   it("구버전 대시보드 응답에 새 운영 콘솔 필드가 없어도 첫 화면용 기본값을 채운다", async () => {
     const dashboardWithoutWorkerStatus = { ...dashboard };
     delete (dashboardWithoutWorkerStatus as Partial<typeof dashboard>).workerStatus;

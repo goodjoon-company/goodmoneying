@@ -154,6 +154,21 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.getByText("missing · 복구 필요")).toBeInTheDocument();
   });
 
+  it("Data Lab 전용 메뉴에서 build, version, coverage, series를 탐색한다", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Data Lab" }));
+
+    await waitFor(() => expect(screen.getAllByRole("heading", { name: "Data Lab" }).length)
+      .toBeGreaterThanOrEqual(1));
+    expect(await screen.findByText("Build #7")).toBeInTheDocument();
+    expect(screen.getByText("Version #12")).toBeInTheDocument();
+    expect(await screen.findByText("available 2")).toBeInTheDocument();
+    expect(await screen.findByText("open 100 · close 101")).toBeInTheDocument();
+    expect(screen.getByText("A/B 1 · candle · 1m")).toBeInTheDocument();
+  });
+
   it("운영 상태는 코인별 실시간 수집과 수집 범위를 동적인 숫자로 표시한다", async () => {
     const user = userEvent.setup();
     render(<App />);

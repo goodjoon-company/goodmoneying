@@ -25,3 +25,10 @@
 ## 완료 보고 형식
 
 각 route는 checked viewport, overflow·collision, keyboard·screen reader, contrast, console·network, performance 결과와 수정 내역을 `docs/Test/`에 기록한다. 측정하지 못한 항목은 통과로 표시하지 않고 이유와 후속 Issue를 남긴다.
+
+## P2-6 Data Lab 확인 결과
+
+- 자동 E2E viewport: 1440, 1280, 1024, 900, 760, 390, 360
+- 확인 항목: Data Lab route 진입, build 생성, build 상태 재발견, build/version/series cursor 더 보기, version 목록, coverage heatmap, series 선택, exact member 차트·표, A/B 비교, REST polling 표시, 주요 폭의 가로 overflow 없음
+- 브라우저 runtime: console error 0, page error 0
+- 증적: `docs/Test/2026-07-18-P2-6-Data-Lab-검증.md`

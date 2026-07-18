@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
+import secrets
+from base64 import urlsafe_b64decode, urlsafe_b64encode
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
@@ -19,6 +23,14 @@ class BacktestIdempotencyConflictError(ValueError):
     """같은 멱등 키가 다른 백테스트 저장 요청 본문을 가리킨다."""
 
 
+class BacktestCursorMismatchError(ValueError):
+    """백테스트 목록 cursor가 현재 조회 문맥과 맞지 않는다."""
+
+
+_LIST_CURSOR_KIND = "backtest-run-list-v1"
+_CURSOR_HMAC_SECRET = os.getenv("GOODMONEYING_CURSOR_HMAC_SECRET") or secrets.token_hex(32)
+
+
 class PostgresBacktestStore:
     def __init__(self, repository: object) -> None:
         self._repository = repository
@@ -28,6 +40,9 @@ class PostgresBacktestStore:
 
     def get_run(self, backtest_run_id: int) -> Row | None:
         return get_run(self._repository, backtest_run_id)
+
+    def list_runs(self, **arguments: object) -> Row:
+        return list_runs(self._repository, **arguments)
 
 
 def persist_completed_run(
@@ -141,6 +156,41 @@ def get_run(repository: object, backtest_run_id: int) -> Row | None:
         return _get_run_with_connection(connection, backtest_run_id)
 
 
+def list_runs(repository: object, *, page_size: object, cursor: object) -> Row:
+    if not isinstance(page_size, int) or page_size < 1:
+        raise ValueError("pageSize는 1 이상 정수여야 한다.")
+    with _connector(repository)() as connection:
+        if cursor is None:
+            ceiling_row = connection.execute(
+                "SELECT COALESCE(MAX(id), 0) AS id FROM backtest_runs"
+            ).fetchone()
+            ceiling = int(cast(int, ceiling_row["id"])) if ceiling_row is not None else 0
+            last_id = ceiling + 1
+        else:
+            ceiling, last_id = _decode_list_cursor(cursor)
+        rows = connection.execute(
+            """
+            SELECT
+              id, strategy_version_id, dataset_version_id, engine_version, status,
+              input_hash, result_hash, requested_at, started_at, finished_at
+            FROM backtest_runs
+            WHERE id <= %s AND id < %s
+            ORDER BY id DESC
+            LIMIT %s
+            """,
+            (ceiling, last_id, page_size + 1),
+        ).fetchall()
+    page = rows[:page_size]
+    return {
+        "items": [_run_summary_response(row) for row in page],
+        "nextCursor": (
+            _encode_list_cursor(ceiling=ceiling, last_id=int(cast(int, page[-1]["id"])))
+            if len(rows) > page_size
+            else None
+        ),
+    }
+
+
 def _get_run_with_connection(connection: Any, backtest_run_id: int) -> Row | None:
     run = connection.execute(
         "SELECT * FROM backtest_runs WHERE id=%s", (backtest_run_id,)
@@ -171,7 +221,7 @@ def _get_run_with_connection(connection: Any, backtest_run_id: int) -> Row | Non
         "datasetVersionId": int(cast(int, run["dataset_version_id"])),
         "inputHash": run["input_hash"],
         "resultHash": run["result_hash"],
-        "status": run["status"],
+        "status": _run_status(run["status"]),
         "metrics": [_metric_response(row) for row in metrics],
         "trades": [_trade_response(row) for row in trades],
         "artifacts": [_artifact_response(row) for row in artifacts],
@@ -294,6 +344,27 @@ def _artifact_response(row: Mapping[str, object]) -> Row:
     }
 
 
+def _run_summary_response(row: Mapping[str, object]) -> Row:
+    return {
+        "backtestRunId": int(cast(int, row["id"])),
+        "strategyVersionId": int(cast(int, row["strategy_version_id"])),
+        "datasetVersionId": int(cast(int, row["dataset_version_id"])),
+        "engineVersion": row["engine_version"],
+        "status": _run_status(row["status"]),
+        "inputHash": row["input_hash"],
+        "resultHash": row["result_hash"],
+        "requestedAt": row["requested_at"],
+        "startedAt": row["started_at"],
+        "finishedAt": row["finished_at"],
+    }
+
+
+def _run_status(value: object) -> object:
+    if value == "queued":
+        return "pending"
+    return value
+
+
 def _artifact_inputs(value: object) -> tuple[Mapping[str, object], ...]:
     if value is None:
         return ()
@@ -329,3 +400,58 @@ def _datetime(value: object, field: str) -> datetime:
 def _hash(payload: Mapping[str, object]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _encode_list_cursor(*, ceiling: int, last_id: int) -> str:
+    payload = {"ceiling": ceiling, "lastId": last_id}
+    envelope = {
+        "kind": _LIST_CURSOR_KIND,
+        "payload": payload,
+        "digest": _cursor_digest(payload),
+    }
+    encoded = json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
+    return urlsafe_b64encode(encoded).decode().rstrip("=")
+
+
+def _decode_list_cursor(value: object) -> tuple[int, int]:
+    if not isinstance(value, str) or not value.strip():
+        raise BacktestCursorMismatchError("유효하지 않은 백테스트 run 목록 cursor다.")
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        envelope = json.loads(urlsafe_b64decode(padded.encode()).decode())
+        if not isinstance(envelope, Mapping):
+            raise BacktestCursorMismatchError("유효하지 않은 백테스트 run 목록 cursor 구조다.")
+        if envelope.get("kind") != _LIST_CURSOR_KIND:
+            raise BacktestCursorMismatchError(
+                "백테스트 run 목록 cursor가 현재 조회 문맥과 다릅니다."
+            )
+        payload = envelope.get("payload")
+        if not isinstance(payload, Mapping):
+            raise BacktestCursorMismatchError("유효하지 않은 백테스트 run 목록 cursor 구조다.")
+        digest = envelope.get("digest")
+        if not isinstance(digest, str) or not hmac.compare_digest(
+            digest, _cursor_digest(payload)
+        ):
+            raise BacktestCursorMismatchError("백테스트 run 목록 cursor 무결성 검증에 실패했다.")
+        ceiling = payload.get("ceiling")
+        last_id = payload.get("lastId")
+        if type(ceiling) is not int or type(last_id) is not int:
+            raise BacktestCursorMismatchError("유효하지 않은 백테스트 run 목록 cursor 구조다.")
+        if ceiling < 0 or last_id < 1 or last_id > ceiling + 1:
+            raise BacktestCursorMismatchError("유효하지 않은 백테스트 run 목록 cursor 범위다.")
+        return ceiling, last_id
+    except BacktestCursorMismatchError:
+        raise
+    except Exception as exc:
+        raise BacktestCursorMismatchError(
+            "유효하지 않은 백테스트 run 목록 cursor다."
+        ) from exc
+
+
+def _cursor_digest(payload: Mapping[str, object]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hmac.new(
+        _CURSOR_HMAC_SECRET.encode(),
+        encoded.encode(),
+        hashlib.sha256,
+    ).hexdigest()

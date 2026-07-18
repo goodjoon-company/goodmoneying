@@ -13,7 +13,9 @@ test("Backtest Lab은 저장된 run 결과를 읽기 전용으로 탐색한다",
   const lab = page.locator(".backtest-lab");
   await expect(lab.getByRole("heading", { name: "Backtest Lab" })).toBeVisible();
   await expect(page.getByLabel("화면 갱신 기준").getByText("REST 조회", { exact: true })).toBeVisible();
-  await expect(page.getByText("Run #21")).toBeVisible();
+  await expect(page.getByRole("region", { name: "저장된 백테스트 run 목록" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run #21 선택" })).toBeVisible();
+  await expect(lab.locator(".backtest-lab-grid h3").filter({ hasText: "Run #21" })).toBeVisible();
   await expect(page.getByText("finalEquity", { exact: true })).toBeVisible();
   await expect(page.getByText("1009.579790", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("table", { name: "백테스트 체결 결과" })).toContainText("partially_filled");

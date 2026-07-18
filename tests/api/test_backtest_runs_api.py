@@ -6,6 +6,7 @@ from decimal import Decimal
 from fastapi.testclient import TestClient
 
 from goodmoneying_api.main import create_app
+from goodmoneying_shared.backtest_store import BacktestCursorMismatchError
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 
 
@@ -82,18 +83,69 @@ def test_없는_백테스트_run은_안정된_404_오류코드를_반환한다()
     }
 
 
+def test_백테스트_run_목록은_저장된_run을_최신순_cursor_페이지로_반환한다() -> None:
+    repository = FakeBacktestRepository()
+    client = _client(repository)
+
+    response = client.get(
+        "/v1/backtest-runs",
+        params={"pageSize": 25, "cursor": "backtest-run-list-cursor"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [repository.summary(22), repository.summary(21)],
+        "nextCursor": "backtest-run-list-next",
+    }
+    assert repository.list_count == 1
+    assert repository.last_list_arguments == {
+        "page_size": 25,
+        "cursor": "backtest-run-list-cursor",
+    }
+    assert repository.mutation_count == 0
+
+
+def test_백테스트_run_목록_cursor_문맥이_다르면_안정된_409_오류코드를_반환한다() -> None:
+    repository = FakeBacktestRepository(cursor_mismatch=True)
+    client = _client(repository)
+
+    response = client.get("/v1/backtest-runs", params={"cursor": "wrong-context"})
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "code": "BACKTEST_CURSOR_CONTEXT_MISMATCH",
+        "message": "백테스트 run 목록 cursor가 현재 조회 문맥과 다릅니다.",
+    }
+
+
 class FakeBacktestRepository:
-    def __init__(self, *, not_found: bool = False) -> None:
+    def __init__(self, *, not_found: bool = False, cursor_mismatch: bool = False) -> None:
         self.not_found = not_found
+        self.cursor_mismatch = cursor_mismatch
         self.read_count = 0
+        self.list_count = 0
         self.mutation_count = 0
         self.last_backtest_run_id: int | None = None
+        self.last_list_arguments: dict[str, object] | None = None
+
+    def list_runs(self, **arguments: object) -> Mapping[str, object]:
+        self.list_count += 1
+        self.last_list_arguments = dict(arguments)
+        if self.cursor_mismatch:
+            raise BacktestCursorMismatchError("목록 cursor 문맥이 다르다.")
+        return {
+            "items": [self.summary(22), self.summary(21)],
+            "nextCursor": "backtest-run-list-next",
+        }
 
     def get_run(self, backtest_run_id: int) -> Mapping[str, object] | None:
         self.read_count += 1
         self.last_backtest_run_id = backtest_run_id
         if self.not_found:
             return None
+        return self.run(backtest_run_id)
+
+    def run(self, backtest_run_id: int) -> Mapping[str, object]:
         return {
             "backtestRunId": backtest_run_id,
             "strategyVersionId": 41,
@@ -132,4 +184,18 @@ class FakeBacktestRepository:
                     "metadata": {"folds": 3},
                 }
             ],
+        }
+
+    def summary(self, backtest_run_id: int) -> Mapping[str, object]:
+        return {
+            "backtestRunId": backtest_run_id,
+            "strategyVersionId": 41,
+            "datasetVersionId": 12,
+            "engineVersion": "backtest-core-v1",
+            "status": "succeeded",
+            "inputHash": "e" * 64,
+            "resultHash": "f" * 64,
+            "requestedAt": "2026-07-18T00:00:00Z",
+            "startedAt": "2026-07-18T00:00:00Z",
+            "finishedAt": "2026-07-18T00:00:00Z",
         }

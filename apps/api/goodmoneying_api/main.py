@@ -35,6 +35,7 @@ from goodmoneying_api.schemas import (
     BackfillJobsResponse,
     BackfillPlanResponse,
     BacktestRunResponse,
+    BacktestRunsResponse,
     CandidateUniverseResponse,
     CandleSeriesResponse,
     CollectionCoverageSegmentsResponse,
@@ -85,7 +86,10 @@ from goodmoneying_api.schemas import (
     ValidateStrategyGraphRequest,
 )
 from goodmoneying_api.service import AnalysisSubscriptionError, OperationsService
-from goodmoneying_shared.backtest_store import PostgresBacktestStore
+from goodmoneying_shared.backtest_store import (
+    BacktestCursorMismatchError,
+    PostgresBacktestStore,
+)
 from goodmoneying_shared.data_foundation import (
     CoverageState,
     DataFoundationOverview,
@@ -319,10 +323,15 @@ class EmptyDatasetVersionRepository:
 
 
 class BacktestApiRepository(Protocol):
+    def list_runs(self, *, page_size: int, cursor: str | None) -> Mapping[str, object]: ...
+
     def get_run(self, backtest_run_id: int) -> Mapping[str, object] | None: ...
 
 
 class EmptyBacktestRepository:
+    def list_runs(self, **_arguments: object) -> Mapping[str, object]:
+        return {"items": [], "nextCursor": None}
+
     def get_run(self, _backtest_run_id: int) -> Mapping[str, object] | None:
         return None
 
@@ -606,6 +615,23 @@ def create_app(
                 },
             )
         return StrategyVersionResponse.model_validate(result)
+
+    @app.get("/v1/backtest-runs", response_model=BacktestRunsResponse)
+    def list_backtest_runs(
+        pageSize: Annotated[int, Query(ge=1, le=100)] = 25,
+        cursor: str | None = None,
+    ) -> BacktestRunsResponse:
+        try:
+            result = backtest_store.list_runs(page_size=pageSize, cursor=cursor)
+        except BacktestCursorMismatchError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "BACKTEST_CURSOR_CONTEXT_MISMATCH",
+                    "message": "백테스트 run 목록 cursor가 현재 조회 문맥과 다릅니다.",
+                },
+            ) from exc
+        return BacktestRunsResponse.model_validate(result)
 
     @app.get(
         "/v1/backtest-runs/{backtestRunId}",

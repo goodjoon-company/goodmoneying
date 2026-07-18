@@ -389,6 +389,41 @@ describe("운영 API 클라이언트", () => {
     expect(fetch).toHaveBeenCalledWith("/api/v1/backtest-runs/21");
   });
 
+  it("Backtest Lab은 저장된 run 목록 API를 안정 cursor 계약대로 호출한다", async () => {
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/v1/backtest-runs?pageSize=25&cursor=cursor-1") {
+        return Response.json({
+          items: [
+            {
+              backtestRunId: 22,
+              strategyVersionId: 41,
+              datasetVersionId: 12,
+              engineVersion: "backtest-core-v1",
+              status: "succeeded",
+              inputHash: "e".repeat(64),
+              resultHash: "f".repeat(64),
+              requestedAt: "2026-07-18T00:00:00Z",
+              startedAt: "2026-07-18T00:00:00Z",
+              finishedAt: "2026-07-18T00:00:00Z"
+            }
+          ],
+          nextCursor: null
+        });
+      }
+      return new Response(`unexpected ${url}`, { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    const { loadBacktestRuns } = await import("./api");
+
+    await expect(loadBacktestRuns({ pageSize: 25, cursor: "cursor-1" })).resolves.toMatchObject({
+      items: [{ backtestRunId: 22, engineVersion: "backtest-core-v1" }],
+      nextCursor: null
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/v1/backtest-runs?pageSize=25&cursor=cursor-1");
+  });
+
   it("구버전 대시보드 응답에 새 운영 콘솔 필드가 없어도 첫 화면용 기본값을 채운다", async () => {
     const dashboardWithoutWorkerStatus = { ...dashboard };
     delete (dashboardWithoutWorkerStatus as Partial<typeof dashboard>).workerStatus;

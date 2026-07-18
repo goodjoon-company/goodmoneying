@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BacktestRun } from "../../api";
+import type { BacktestRun, BacktestRunSummary } from "../../api";
 import { BacktestLab } from "./BacktestLab";
 
 const run: BacktestRun = {
@@ -46,25 +46,72 @@ const run: BacktestRun = {
   ]
 };
 
+const runSummaries: BacktestRunSummary[] = [
+  {
+    backtestRunId: 22,
+    strategyVersionId: 41,
+    datasetVersionId: 12,
+    engineVersion: "backtest-core-v1",
+    status: "succeeded",
+    inputHash: "e".repeat(64),
+    resultHash: "f".repeat(64),
+    requestedAt: "2026-07-18T00:00:00Z",
+    startedAt: "2026-07-18T00:00:00Z",
+    finishedAt: "2026-07-18T00:00:00Z"
+  },
+  {
+    backtestRunId: 21,
+    strategyVersionId: 41,
+    datasetVersionId: 12,
+    engineVersion: "backtest-core-v1",
+    status: "succeeded",
+    inputHash: "e".repeat(64),
+    resultHash: "f".repeat(64),
+    requestedAt: "2026-07-18T00:00:00Z",
+    startedAt: "2026-07-18T00:00:00Z",
+    finishedAt: "2026-07-18T00:00:00Z"
+  }
+];
+
+const nextRunSummary: BacktestRunSummary = {
+  backtestRunId: 20,
+  strategyVersionId: 41,
+  datasetVersionId: 12,
+  engineVersion: "backtest-core-v1",
+  status: "succeeded",
+  inputHash: "e".repeat(64),
+  resultHash: "f".repeat(64),
+  requestedAt: "2026-07-18T00:00:00Z",
+  startedAt: "2026-07-18T00:00:00Z",
+  finishedAt: "2026-07-18T00:00:00Z"
+};
+
 const mocks = vi.hoisted(() => ({
-  loadBacktestRun: vi.fn()
+  loadBacktestRun: vi.fn(),
+  loadBacktestRuns: vi.fn()
 }));
 
 vi.mock("../../api", async () => {
   const actual = await vi.importActual<typeof import("../../api")>("../../api");
   return {
     ...actual,
-    loadBacktestRun: mocks.loadBacktestRun
+    loadBacktestRun: mocks.loadBacktestRun,
+    loadBacktestRuns: mocks.loadBacktestRuns
   };
 });
 
 beforeEach(() => {
-  mocks.loadBacktestRun.mockResolvedValue(run);
+  mocks.loadBacktestRun.mockImplementation(async (backtestRunId: number) => ({
+    ...run,
+    backtestRunId
+  }));
+  mocks.loadBacktestRuns.mockResolvedValue({ items: runSummaries, nextCursor: null });
 });
 
 afterEach(() => {
   cleanup();
   mocks.loadBacktestRun.mockReset();
+  mocks.loadBacktestRuns.mockReset();
 });
 
 describe("Backtest Lab", () => {
@@ -72,8 +119,8 @@ describe("Backtest Lab", () => {
     renderBacktestLab();
 
     expect(await screen.findByRole("heading", { name: "Backtest Lab" })).toBeInTheDocument();
-    expect(await screen.findByText("Run #21")).toBeInTheDocument();
-    expect(screen.getByText("succeeded")).toBeInTheDocument();
+    expect(await screen.findByText("Run #22")).toBeInTheDocument();
+    expect(screen.getAllByText("succeeded").length).toBeGreaterThan(0);
     expect(screen.getByText("finalEquity")).toBeInTheDocument();
     expect(screen.getAllByText("1009.579790")).toHaveLength(2);
     expect(screen.getByRole("table", { name: "백테스트 체결 결과" })).toHaveTextContent(
@@ -83,15 +130,48 @@ describe("Backtest Lab", () => {
     expect(screen.getByText(run.resultHash)).toBeInTheDocument();
   });
 
+  it("저장된 run 목록을 먼저 읽고 선택한 run 상세만 조회한다", async () => {
+    const user = userEvent.setup();
+    renderBacktestLab();
+
+    expect(await screen.findByRole("region", { name: "저장된 백테스트 run 목록" }))
+      .toBeInTheDocument();
+    expect(mocks.loadBacktestRuns).toHaveBeenCalledWith({ pageSize: 25, cursor: null });
+
+    await user.click(await screen.findByRole("button", { name: "Run #21 선택" }));
+
+    expect(mocks.loadBacktestRun).toHaveBeenLastCalledWith(21);
+    expect(screen.queryByRole("button", { name: "백테스트 실행" })).not.toBeInTheDocument();
+  });
+
+  it("목록 nextCursor가 있으면 다음 run 페이지를 불러와 누적 선택한다", async () => {
+    const user = userEvent.setup();
+    mocks.loadBacktestRuns.mockImplementation(async (options: { cursor?: string | null }) =>
+      options.cursor === "cursor-2"
+        ? { items: [nextRunSummary], nextCursor: null }
+        : { items: runSummaries, nextCursor: "cursor-2" }
+    );
+
+    renderBacktestLab();
+
+    await user.click(await screen.findByRole("button", { name: "다음 run 목록 불러오기" }));
+
+    expect(mocks.loadBacktestRuns).toHaveBeenLastCalledWith({
+      pageSize: 25,
+      cursor: "cursor-2"
+    });
+    expect(await screen.findByRole("button", { name: "Run #20 선택" })).toBeInTheDocument();
+  });
+
   it("run ID를 바꿔 조회하되 실행 생성 명령은 보내지 않는다", async () => {
     const user = userEvent.setup();
     renderBacktestLab();
 
-    await user.clear(await screen.findByLabelText("백테스트 Run ID"));
-    await user.type(screen.getByLabelText("백테스트 Run ID"), "22");
+    await user.click(await screen.findByLabelText("백테스트 Run ID"));
+    await user.keyboard("{Control>}a{/Control}23");
     await user.click(screen.getByRole("button", { name: "Run 조회" }));
 
-    expect(mocks.loadBacktestRun).toHaveBeenLastCalledWith(22);
+    expect(mocks.loadBacktestRun).toHaveBeenLastCalledWith(23);
     expect(screen.queryByRole("button", { name: "백테스트 실행" })).not.toBeInTheDocument();
   });
 });

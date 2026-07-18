@@ -390,6 +390,24 @@ class BacktestRunResponse(BaseModel):
     artifacts: list[BacktestArtifactResponse]
 
 
+class BacktestRunSummaryResponse(BaseModel):
+    backtestRunId: int = Field(gt=0)
+    strategyVersionId: int = Field(gt=0)
+    datasetVersionId: int = Field(gt=0)
+    engineVersion: str
+    status: Literal["pending", "running", "succeeded", "failed", "cancelled"]
+    inputHash: str = Field(pattern="^[0-9a-f]{64}$")
+    resultHash: str = Field(pattern="^[0-9a-f]{64}$")
+    requestedAt: datetime
+    startedAt: datetime | None
+    finishedAt: datetime | None
+
+
+class BacktestRunsResponse(BaseModel):
+    items: list[BacktestRunSummaryResponse]
+    nextCursor: str | None
+
+
 class DataFoundationSummaryResponse(BaseModel):
     marketCount: int
     krwMarketCount: int

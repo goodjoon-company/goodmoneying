@@ -490,6 +490,25 @@ export function createTestOperationsFetch(
         nextCursor: null
       });
     }
+    if (url.includes("/v1/backtest-runs?")) {
+      return Response.json({
+        items: [
+          {
+            backtestRunId: 21,
+            strategyVersionId: 41,
+            datasetVersionId: 12,
+            engineVersion: "backtest-core-v1",
+            status: "succeeded",
+            inputHash: "e".repeat(64),
+            resultHash: "f".repeat(64),
+            requestedAt: "2026-07-18T00:00:00Z",
+            startedAt: "2026-07-18T00:00:00Z",
+            finishedAt: "2026-07-18T00:00:00Z"
+          }
+        ],
+        nextCursor: null
+      });
+    }
     if (url.endsWith("/v1/backtest-runs/21")) {
       return Response.json({
         backtestRunId: 21,

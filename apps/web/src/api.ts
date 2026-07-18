@@ -650,6 +650,24 @@ export type BacktestRun = {
   artifacts: BacktestArtifact[];
 };
 
+export type BacktestRunSummary = {
+  backtestRunId: number;
+  strategyVersionId: number;
+  datasetVersionId: number;
+  engineVersion: string;
+  status: "pending" | "running" | "succeeded" | "failed" | "cancelled";
+  inputHash: string;
+  resultHash: string;
+  requestedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+};
+
+export type BacktestRunsResponse = {
+  items: BacktestRunSummary[];
+  nextCursor: string | null;
+};
+
 export type OperationsSnapshot = {
   dashboard: DashboardSummary;
   candidateEntries: CandidateUniverseEntry[];
@@ -1043,6 +1061,17 @@ export async function loadDatasetSeries(options: {
 
 export async function loadBacktestRun(backtestRunId: number): Promise<BacktestRun> {
   return getJson<BacktestRun>(`/v1/backtest-runs/${backtestRunId}`);
+}
+
+export async function loadBacktestRuns(options: {
+  pageSize?: number;
+  cursor?: string | null;
+} = {}): Promise<BacktestRunsResponse> {
+  const params = new URLSearchParams({
+    pageSize: String(options.pageSize ?? 25)
+  });
+  if (options.cursor) params.set("cursor", options.cursor);
+  return getJson<BacktestRunsResponse>(`/v1/backtest-runs?${params.toString()}`);
 }
 
 export async function loadInstrumentSnapshot(

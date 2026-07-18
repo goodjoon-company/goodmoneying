@@ -5,6 +5,7 @@ from pathlib import Path
 MIGRATION = Path("docs/contracts/db/migrations/20260718000200_p4_backtest_runs.sql")
 DB_README = Path("docs/contracts/db/README.md")
 DOMAIN = Path("docs/02_Architecture/system-trading-domain.md")
+STORE = Path("packages/shared/goodmoneying_shared/backtest_store.py")
 
 
 def test_P4_2_migration은_백테스트_결과_테이블과_불변_제약을_선언한다() -> None:
@@ -51,3 +52,17 @@ def test_P4_2_DB_계약과_도메인_문서는_영속화_범위를_연결한다(
     assert "input_hash" in domain
     assert "result_hash" in domain
     assert "Backtest Store" in domain
+
+
+def test_P4_4_Backtest_Store는_목록_cursor_무결성과_상한을_계약으로_고정한다() -> None:
+    source = STORE.read_text()
+
+    assert "class BacktestCursorMismatchError" in source
+    assert "backtest-run-list-v1" in source
+    assert "def list_runs(" in source
+    assert "COALESCE(MAX(id), 0)" in source
+    assert "ORDER BY id DESC" in source
+    assert "LIMIT %s" in source
+    assert "ceiling" in source
+    assert "lastId" in source
+    assert "digest" in source

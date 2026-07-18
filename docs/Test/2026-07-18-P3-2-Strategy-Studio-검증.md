@@ -37,8 +37,8 @@ Related Task: [P3](../Task/P3.md), GitHub Issue #30
 | `uv run pytest -q` | PASS | `675 passed`, `122 skipped`, `1 warning` |
 | `npm run e2e` | PASS | `20 passed`, `API 시험 서버 종료 확인: 127.0.0.1:18000`, `웹 시험 서버 종료 확인: 127.0.0.1:15173` |
 | `docker compose build` | PASS | `goodmoneying-systematic-trading-platform-api`, `web`, `upbit-gateway`, `realtime-collection-worker`, `market-sync-worker`, `backfill-collection-worker`, `candle-aggregation-worker` Built |
+| GitHub Actions CI | PASS | run `29639122553`, commit `9874cdafd35e1969b85877b3295d0fdc1fd6274a`, `verify in 5m49s` |
 
 ## 미검증 항목
 
-- 원격 CI는 branch 푸시 뒤 마감 검증에서 수행한다.
 - Backtest 실행, 봇 연결, 주문·위험 연결은 P4 이후 범위다.

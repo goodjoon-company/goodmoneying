@@ -26,7 +26,7 @@ Related Task: [P3](../Task/P3.md), GitHub Issue #30
 
 - 표적 검증은 [P3-2 Strategy Studio 검증](../Test/2026-07-18-P3-2-Strategy-Studio-검증.md)에 기록한다.
 - 전체 Python 회귀, 전체 Playwright E2E, Docker compose build까지 [P3-2 Strategy Studio 검증](../Test/2026-07-18-P3-2-Strategy-Studio-검증.md)에 기록한다.
-- 원격 CI 증적은 브랜치 푸시 뒤 추가 기록한다.
+- 원격 CI `29639122553`는 commit `9874cdafd35e1969b85877b3295d0fdc1fd6274a`에서 success로 완료됐다.
 
 ## 후속
 

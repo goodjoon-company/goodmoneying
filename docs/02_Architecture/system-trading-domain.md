@@ -176,6 +176,8 @@ P6-5는 주문조회 권한 기반 REST snapshot을 기존 내부 원장 대사 
 
 P6-6은 실제 주문 제출 전 outbox와 권한 준비도 경계를 고정한다. `upbit_api_key_permission_attestations`는 운영자가 주문하기와 주문조회 권한이 모두 있고 출금 권한이 없음을 증명한 append-only 행만 허용한다. `upbit_order_outbox`는 `live_order_identifiers`와 연결된 주문 의도를 `ready|blocked` 증적으로 저장하지만 `submit_attempt_count=0`을 DB 제약으로 고정한다. `ready` outbox는 승인 완료(`approved`) 주문 의도만 허용한다. 권한 증적을 참조하는 outbox는 `blocked` 상태라도 같은 `exchange_account_id`에 귀속돼야 한다. shared adapter는 live capability, 권한 만료, 출금 권한 존재, kill switch를 모두 fail-closed로 평가하며, `ready` outbox도 실제 제출 가능(`can_submit`)으로 해석하지 않는다. 실제 `POST /v1/orders` 호출과 submit worker는 후속 범위다.
 
+P6-7은 Upbit live 주문 UUID·identifier와 내부 `exchange_orders` 결합 계약을 추가한다. `exchange_orders.execution_mode='live'`는 저장 계약에만 열리지만, `exchange_orders_require_live_binding` 지연 제약 트리거(deferrable constraint trigger)가 같은 트랜잭션 안의 `upbit_live_exchange_order_bindings` 결합 없이 커밋되는 live 주문 행을 거부한다. `upbit_live_exchange_order_bindings`는 `exchange_orders`, `live_order_identifiers`, `upbit_order_outbox`가 같은 거래소 계좌(exchange account)와 주문 의도(order intent)에 귀속되고 Upbit `identifier`가 내부 `gm1_` identifier와 일치할 때만 append-only 증적으로 저장된다. `upbit_order_uuid`는 표준 UUID 형식이어야 하며, order-test 응답 UUID·identifier는 live 결합에 사용할 수 없다. 결합 증적이 저장되면 `live_order_identifiers.status`는 `submitted`로 전이되지만, live 주문 대사 적용과 submit worker는 후속 범위다.
+
 ## 5. 전략 그래프 계약
 
 그래프는 `schema_version`, `nodes`, `edges`, `outputs`를 가진다. 노드는 `id`, `type`, `config`, `input_ports`, `output_ports`를 가진다. edge는 `(from_node, from_port, to_node, to_port)`이며 자료형과 시간 주기가 호환돼야 한다.

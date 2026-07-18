@@ -518,6 +518,23 @@ $$;
 
 
 --
+-- Name: mark_p6_live_identifier_submitted(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.mark_p6_live_identifier_submitted() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  UPDATE live_order_identifiers
+  SET status = 'submitted'
+  WHERE id = NEW.live_order_identifier_id
+    AND status = 'reserved';
+  RETURN NEW;
+END;
+$$;
+
+
+--
 -- Name: p6_base32lower_no_padding(bytea); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -702,6 +719,19 @@ CREATE FUNCTION public.reject_p5_append_only_mutation() RETURNS trigger
     AS $$
 BEGIN
   RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END;
+$$;
+
+
+--
+-- Name: reject_p6_live_exchange_order_binding_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_p6_live_exchange_order_binding_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'Upbit live exchange order binding is append-only';
 END;
 $$;
 
@@ -1042,6 +1072,139 @@ BEGIN
      OR NEW.source_as_of IS DISTINCT FROM source_as_of THEN
     RAISE EXCEPTION 'typed dataset member 내용 또는 인과 시각이 원천과 다르다';
   END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: validate_p6_live_exchange_order_binding(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.validate_p6_live_exchange_order_binding() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  exchange_order RECORD;
+  live_identifier RECORD;
+  outbox RECORD;
+BEGIN
+  SELECT order_intent_id, execution_mode, simulated_order_key
+    INTO exchange_order
+  FROM exchange_orders
+  WHERE id = NEW.exchange_order_id;
+
+  IF exchange_order IS NULL THEN
+    RAISE EXCEPTION 'live exchange order binding references missing exchange order';
+  END IF;
+
+  IF exchange_order.execution_mode <> 'live' THEN
+    RAISE EXCEPTION 'live exchange order binding requires live exchange order';
+  END IF;
+
+  IF exchange_order.order_intent_id <> NEW.order_intent_id THEN
+    RAISE EXCEPTION 'live binding order intent does not match exchange order';
+  END IF;
+
+  IF exchange_order.simulated_order_key <> NEW.upbit_identifier THEN
+    RAISE EXCEPTION 'live exchange order key must match Upbit identifier';
+  END IF;
+
+  SELECT exchange_account_id, order_intent_id, identifier, status
+    INTO live_identifier
+  FROM live_order_identifiers
+  WHERE id = NEW.live_order_identifier_id;
+
+  IF live_identifier IS NULL THEN
+    RAISE EXCEPTION 'live exchange order binding references missing live identifier';
+  END IF;
+
+  IF live_identifier.exchange_account_id <> NEW.exchange_account_id THEN
+    RAISE EXCEPTION 'live binding exchange account does not match live identifier';
+  END IF;
+
+  IF live_identifier.order_intent_id <> NEW.order_intent_id THEN
+    RAISE EXCEPTION 'live binding order intent does not match live identifier';
+  END IF;
+
+  IF live_identifier.identifier <> NEW.upbit_identifier THEN
+    RAISE EXCEPTION 'live binding Upbit identifier must match live identifier';
+  END IF;
+
+  IF live_identifier.status <> 'reserved' THEN
+    RAISE EXCEPTION 'live binding requires reserved live identifier';
+  END IF;
+
+  SELECT exchange_account_id, order_intent_id, live_order_identifier_id, status
+    INTO outbox
+  FROM upbit_order_outbox
+  WHERE id = NEW.upbit_order_outbox_id;
+
+  IF outbox IS NULL THEN
+    RAISE EXCEPTION 'live exchange order binding references missing safe order outbox';
+  END IF;
+
+  IF outbox.status <> 'ready' THEN
+    RAISE EXCEPTION 'live exchange order binding requires ready outbox';
+  END IF;
+
+  IF outbox.exchange_account_id <> NEW.exchange_account_id
+     OR outbox.order_intent_id <> NEW.order_intent_id
+     OR outbox.live_order_identifier_id <> NEW.live_order_identifier_id THEN
+    RAISE EXCEPTION 'live exchange order binding does not match safe order outbox';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM upbit_order_test_runs test_run
+    WHERE test_run.exchange_account_id = NEW.exchange_account_id
+      AND (
+        NEW.upbit_order_uuid IN (
+          test_run.response_uuid,
+          test_run.response_identifier
+        )
+        OR NEW.upbit_identifier IN (
+          test_run.response_uuid,
+          test_run.response_identifier
+        )
+      )
+  ) THEN
+    RAISE EXCEPTION 'order-test response identifier cannot be bound as live exchange order';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: validate_p6_live_exchange_order_has_binding(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.validate_p6_live_exchange_order_has_binding() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  binding RECORD;
+BEGIN
+  IF NEW.execution_mode <> 'live' THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT order_intent_id, upbit_identifier
+    INTO binding
+  FROM upbit_live_exchange_order_bindings
+  WHERE exchange_order_id = NEW.id;
+
+  IF binding IS NULL THEN
+    RAISE EXCEPTION 'live exchange order requires Upbit live binding';
+  END IF;
+
+  IF binding.order_intent_id <> NEW.order_intent_id
+     OR binding.upbit_identifier <> NEW.simulated_order_key THEN
+    RAISE EXCEPTION 'live exchange order no longer matches Upbit live binding';
+  END IF;
+
   RETURN NEW;
 END;
 $$;
@@ -2869,7 +3032,7 @@ CREATE TABLE public.exchange_orders (
     submitted_at timestamp with time zone,
     reconciled_at timestamp with time zone,
     raw_payload jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT exchange_orders_execution_mode_check CHECK ((execution_mode = ANY (ARRAY['paper'::text, 'shadow'::text]))),
+    CONSTRAINT exchange_orders_execution_mode_check CHECK ((execution_mode = ANY (ARRAY['paper'::text, 'shadow'::text, 'live'::text]))),
     CONSTRAINT exchange_orders_raw_payload_check CHECK ((jsonb_typeof(raw_payload) = 'object'::text)),
     CONSTRAINT exchange_orders_simulated_order_key_check CHECK ((simulated_order_key <> ''::text)),
     CONSTRAINT exchange_orders_status_check CHECK ((status = ANY (ARRAY['pending_submit'::text, 'wait'::text, 'watch'::text, 'trade'::text, 'partially_filled'::text, 'done'::text, 'cancel'::text, 'prevented'::text, 'rejected'::text, 'outcome_unknown'::text, 'reconciled'::text])))
@@ -4815,6 +4978,59 @@ ALTER SEQUENCE public.upbit_api_key_permission_attestations_id_seq OWNED BY publ
 
 
 --
+-- Name: upbit_live_exchange_order_bindings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.upbit_live_exchange_order_bindings (
+    id bigint NOT NULL,
+    exchange_account_id bigint NOT NULL,
+    order_intent_id bigint NOT NULL,
+    exchange_order_id bigint NOT NULL,
+    live_order_identifier_id bigint NOT NULL,
+    upbit_order_outbox_id bigint NOT NULL,
+    upbit_order_uuid text NOT NULL,
+    upbit_identifier text NOT NULL,
+    source text NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    bound_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    actor_id text NOT NULL,
+    reason text NOT NULL,
+    request_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    CONSTRAINT upbit_live_exchange_order_bindings_actor_id_check CHECK ((actor_id <> ''::text)),
+    CONSTRAINT upbit_live_exchange_order_bindings_actor_id_check1 CHECK ((actor_id !~* '^(ci|ai|service):'::text)),
+    CONSTRAINT upbit_live_exchange_order_bindings_check CHECK ((observed_at <= bound_at)),
+    CONSTRAINT upbit_live_exchange_order_bindings_evidence_check CHECK ((jsonb_typeof(evidence) = 'object'::text)),
+    CONSTRAINT upbit_live_exchange_order_bindings_idempotency_key_check CHECK ((idempotency_key <> ''::text)),
+    CONSTRAINT upbit_live_exchange_order_bindings_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT upbit_live_exchange_order_bindings_request_id_check CHECK ((request_id <> ''::text)),
+    CONSTRAINT upbit_live_exchange_order_bindings_source_check CHECK ((source = ANY (ARRAY['order_submit_response'::text, 'rest_order_snapshot'::text, 'myorder_event'::text]))),
+    CONSTRAINT upbit_live_exchange_order_bindings_upbit_identifier_check CHECK ((upbit_identifier ~ '^gm1_[a-z2-7]{52}$'::text)),
+    CONSTRAINT upbit_live_exchange_order_bindings_upbit_order_uuid_check CHECK ((upbit_order_uuid ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text))
+);
+
+
+--
+-- Name: upbit_live_exchange_order_bindings_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.upbit_live_exchange_order_bindings_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: upbit_live_exchange_order_bindings_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.upbit_live_exchange_order_bindings_id_seq OWNED BY public.upbit_live_exchange_order_bindings.id;
+
+
+--
 -- Name: upbit_order_identifier_reservations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5085,6 +5301,13 @@ ALTER TABLE ONLY public.trading_capabilities ALTER COLUMN id SET DEFAULT nextval
 --
 
 ALTER TABLE ONLY public.upbit_api_key_permission_attestations ALTER COLUMN id SET DEFAULT nextval('public.upbit_api_key_permission_attestations_id_seq'::regclass);
+
+
+--
+-- Name: upbit_live_exchange_order_bindings id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_exchange_order_bindings ALTER COLUMN id SET DEFAULT nextval('public.upbit_live_exchange_order_bindings_id_seq'::regclass);
 
 
 --
@@ -6597,6 +6820,70 @@ ALTER TABLE ONLY public.upbit_api_key_permission_attestations
 
 
 --
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bin_exchange_account_id_upbit_ide_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_exchange_order_bindings
+    ADD CONSTRAINT upbit_live_exchange_order_bin_exchange_account_id_upbit_ide_key UNIQUE (exchange_account_id, upbit_identifier);
+
+
+--
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bin_exchange_account_id_upbit_ord_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_exchange_order_bindings
+    ADD CONSTRAINT upbit_live_exchange_order_bin_exchange_account_id_upbit_ord_key UNIQUE (exchange_account_id, upbit_order_uuid);
+
+
+--
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bindings_exchange_order_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_exchange_order_bindings
+    ADD CONSTRAINT upbit_live_exchange_order_bindings_exchange_order_id_key UNIQUE (exchange_order_id);
+
+
+--
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bindings_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_exchange_order_bindings
+    ADD CONSTRAINT upbit_live_exchange_order_bindings_idempotency_key_key UNIQUE (idempotency_key);
+
+
+--
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bindings_live_order_identifier_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_exchange_order_bindings
+    ADD CONSTRAINT upbit_live_exchange_order_bindings_live_order_identifier_id_key UNIQUE (live_order_identifier_id);
+
+
+--
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bindings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_exchange_order_bindings
+    ADD CONSTRAINT upbit_live_exchange_order_bindings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bindings_request_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_exchange_order_bindings
+    ADD CONSTRAINT upbit_live_exchange_order_bindings_request_id_key UNIQUE (request_id);
+
+
+--
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bindings_upbit_order_outbox_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_exchange_order_bindings
+    ADD CONSTRAINT upbit_live_exchange_order_bindings_upbit_order_outbox_id_key UNIQUE (upbit_order_outbox_id);
+
+
+--
 -- Name: upbit_order_identifier_reservations upbit_order_identifier_reserv_exchange_account_id_identifie_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -7082,6 +7369,13 @@ CREATE INDEX upbit_api_key_permission_attestations_latest_idx ON public.upbit_ap
 
 
 --
+-- Name: upbit_live_exchange_order_bindings_observed_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX upbit_live_exchange_order_bindings_observed_idx ON public.upbit_live_exchange_order_bindings USING btree (source, observed_at, id);
+
+
+--
 -- Name: upbit_order_outbox_status_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -7467,6 +7761,13 @@ CREATE TRIGGER dataset_versions_seal_update BEFORE UPDATE ON public.dataset_vers
 
 
 --
+-- Name: exchange_orders exchange_orders_require_live_binding; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE CONSTRAINT TRIGGER exchange_orders_require_live_binding AFTER INSERT OR UPDATE ON public.exchange_orders DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.validate_p6_live_exchange_order_has_binding();
+
+
+--
 -- Name: indicator_definition_versions indicator_definition_versions_append_only; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -7758,6 +8059,34 @@ CREATE TRIGGER upbit_api_key_permission_attestations_append_only_delete BEFORE D
 --
 
 CREATE TRIGGER upbit_api_key_permission_attestations_append_only_update BEFORE UPDATE ON public.upbit_api_key_permission_attestations FOR EACH ROW EXECUTE FUNCTION public.reject_p6_upbit_permission_attestation_mutation();
+
+
+--
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bindings_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_live_exchange_order_bindings_append_only_delete BEFORE DELETE ON public.upbit_live_exchange_order_bindings FOR EACH ROW EXECUTE FUNCTION public.reject_p6_live_exchange_order_binding_mutation();
+
+
+--
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bindings_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_live_exchange_order_bindings_append_only_update BEFORE UPDATE ON public.upbit_live_exchange_order_bindings FOR EACH ROW EXECUTE FUNCTION public.reject_p6_live_exchange_order_binding_mutation();
+
+
+--
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bindings_mark_submitted; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_live_exchange_order_bindings_mark_submitted AFTER INSERT ON public.upbit_live_exchange_order_bindings FOR EACH ROW EXECUTE FUNCTION public.mark_p6_live_identifier_submitted();
+
+
+--
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bindings_validate; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_live_exchange_order_bindings_validate BEFORE INSERT ON public.upbit_live_exchange_order_bindings FOR EACH ROW EXECUTE FUNCTION public.validate_p6_live_exchange_order_binding();
 
 
 --
@@ -9491,6 +9820,46 @@ ALTER TABLE ONLY public.upbit_api_key_permission_attestations
 
 
 --
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_binding_live_order_identifier_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_exchange_order_bindings
+    ADD CONSTRAINT upbit_live_exchange_order_binding_live_order_identifier_id_fkey FOREIGN KEY (live_order_identifier_id) REFERENCES public.live_order_identifiers(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bindings_exchange_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_exchange_order_bindings
+    ADD CONSTRAINT upbit_live_exchange_order_bindings_exchange_account_id_fkey FOREIGN KEY (exchange_account_id) REFERENCES public.exchange_accounts(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bindings_exchange_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_exchange_order_bindings
+    ADD CONSTRAINT upbit_live_exchange_order_bindings_exchange_order_id_fkey FOREIGN KEY (exchange_order_id) REFERENCES public.exchange_orders(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bindings_order_intent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_exchange_order_bindings
+    ADD CONSTRAINT upbit_live_exchange_order_bindings_order_intent_id_fkey FOREIGN KEY (order_intent_id) REFERENCES public.order_intents(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_live_exchange_order_bindings upbit_live_exchange_order_bindings_upbit_order_outbox_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_exchange_order_bindings
+    ADD CONSTRAINT upbit_live_exchange_order_bindings_upbit_order_outbox_id_fkey FOREIGN KEY (upbit_order_outbox_id) REFERENCES public.upbit_order_outbox(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: upbit_order_identifier_reservations upbit_order_identifier_reservations_exchange_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -9574,4 +9943,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260718000800'),
     ('20260718000900'),
     ('20260718001000'),
-    ('20260718001100');
+    ('20260718001100'),
+    ('20260718001200');

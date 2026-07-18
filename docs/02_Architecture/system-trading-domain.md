@@ -67,20 +67,19 @@
 | 백테스트 UI | Backtest Lab | `/v1/backtest-runs/{backtestRunId}` REST 계약으로 저장된 성과·체결·산출물을 읽기 전용 조회 |
 | 계좌 | `exchange_accounts` | `(exchange, account_alias)`; secret 저장 금지 |
 | 포트폴리오 | `portfolios` | `(owner_id, name)`, 현재 자산·현금 projection 경계 |
-| 포트폴리오 | `portfolio_policies` | `(owner_id, name, version)` |
-| 포트폴리오 | `capital_allocations` | `(portfolio_policy_id, scope_type, scope_id)` |
+| 포트폴리오 | `portfolio_policies` | `(portfolio_id, version)` |
+| 포트폴리오 | `capital_allocations` | `(portfolio_policy_id, scope_type, scope_key)` |
 | 봇 | `bot_definitions` | `(owner_id, name)` |
-| 봇 | `bot_versions` | `(bot_id, version)`, 설정 불변 |
-| 봇 | `bot_instances` | `(bot_version_id, instance_key)` |
-| 봇 | `bot_state_transitions` | `(bot_instance_id, transition_sequence)` |
-| 주문 | `order_intents` | `idempotency_key` 전역 고유 |
-| 주문 | `exchange_orders` | `(exchange_account_id, exchange_order_id)` 또는 `(exchange_account_id, identifier)`; identifier는 제출 전 영속 |
-| 주문 | `fills` | `(exchange_account_id, exchange_trade_id)` |
-| 포지션 | `position_events` | `(portfolio_id, event_sequence)`, fill·adjustment append-only ledger |
-| 포지션 | `positions` | `(portfolio_id, market_id)` 현재 projection, `position_events`로 재구성 가능 |
-| 위험 | `risk_limits` | `(scope_type, scope_id, limit_type, version)` |
-| 위험 | `risk_events` | `(scope_type, scope_id, occurred_at, fingerprint)` |
-| 대사 | `reconciliation_runs` | `(exchange_account_id, run_key)` |
+| 봇 | `bot_instances` | strategy version, portfolio policy, optional backtest run, `paper|shadow` execution mode |
+| 봇 | `bot_state_transitions` | `(bot_instance_id, request_id)`, actor·reason·evidence append-only |
+| 주문 | `order_intents` | `(bot_instance_id, idempotency_key)`, 위험 판정 전후 상태와 결정 입력 hash 보존 |
+| 주문 | `exchange_orders` | `(order_intent_id, simulated_order_key)`, P5는 `paper|shadow` simulated order만 허용 |
+| 주문 | `order_fills` | `(exchange_order_id, fill_sequence)`, paper simulator·shadow observation·reconciliation fill append-only |
+| 포지션 | `position_projections` | `(portfolio_id, instrument_id)` 현재 projection, source fill provenance 보존 |
+| 위험 | `risk_limits` | `(scope_type, scope_key, limit_type, version)` |
+| 위험 | `risk_events` | `(scope_type, scope_key, fingerprint)`, 정책 version·evidence append-only |
+| 긴급 정지 | `kill_switches` | `(scope_type, scope_key, sequence)`, `armed|released`와 open order 처리 정책 감사 |
+| 대사 | `reconciliation_runs` | P6 private 계좌 대사 전까지 미구현. P5-1은 order fill과 position projection provenance만 고정 |
 | 감사 | `audit_events` | append-only, `(occurred_at, sequence)` |
 
 Upbit 호가 payload에는 거래소 전역 sequence가 없다. 공식 payload의 millisecond `timestamp`를 사건 시각으로, 정규화 전 전체 JSON의 결정적 직렬화 SHA-256을 `payload_checksum`으로 사용한다. 전역 고유 `connection_id`와 연결 내부 `frame_sequence`는 같은 연결 안의 전달 provenance와 재처리 멱등 키이며, 재연결 시 frame sequence가 초기화되므로 연결 간 사건 순서나 snapshot 자연키로 사용하지 않는다. `source_receipts.id`는 PostgreSQL이 영속화 시 부여하는 단조 증가 identity이며 거래소 sequence가 아니라 같은 수신 시각의 안정적 tie-breaker다. 같은 instrument·source·사건 시각·checksum의 snapshot은 한 경제적 상태로 흡수하되 A-B-A 재등장과 재연결 중복을 포함한 모든 수신은 별도 `source_receipts` 행으로 보존한다. 같은 timestamp에 내용이 다르면 두 snapshot을 모두 보존한다. 감사 재생은 receipt의 원본 JSON을 `(received_at, source_receipts.id)`로 정렬하고 snapshot·summary는 instrument·사건 시각·checksum으로 연결한다.
@@ -205,6 +204,8 @@ P4-7 Backtest 실행 생성 API는 `POST /v1/backtest-runs` 명령을 운영 토
 P4-8 Backtest 성과 artifact는 `walk_forward_summary`, `sensitivity_summary`, `bootstrap_summary`를 Backtest Store의 기존 `backtest_artifacts` 입력 형태로 생성한다. 각 artifact metadata는 schema version(`backtest-artifact-walk-forward-v1`, `backtest-artifact-sensitivity-v1`, `backtest-artifact-bootstrap-v1`), `inputHash`, `resultHash`, 정렬된 분석 행, `finalEquity` min/max/mean 요약을 포함한다. `contentHash`는 metadata 정규 JSON SHA-256으로 계산해 입력 순서와 dictionary 삽입 순서가 결과 식별자에 영향을 주지 않게 한다.
 
 P4-9 Backtest progress WebSocket은 `ws://<api-host>/v1/backtest-runs/{backtestRunId}/progress`에서 현재 `BacktestRunSummary` 기반 snapshot을 전송한다. P4-9는 별도 progress row를 만들지 않고 run 상태에서 `pending=0`, `running=50`, terminal=100 진행률을 파생한다. 없는 run은 연결 수락 뒤 `backtest.error`와 `BACKTEST_RUN_NOT_FOUND`를 보내고 닫는다.
+
+P5-1은 paper/shadow 실행 연결 전에 영속화 경계를 먼저 고정한다. `20260718000500_p5_portfolio_bot_risk.sql`은 portfolio policy, bot instance, order intent, simulated exchange order, order fill, position projection, risk limit/event, kill switch를 PostgreSQL 계약으로 추가한다. P5-1의 `execution_mode`는 `paper|shadow`만 허용하고 `bot_instances.stage`는 `draft|backtest|paper|shadow|paused|stopped|faulted`까지만 허용한다. 실제 Upbit 주문 제출, private WebSocket, 주문 테스트 API와 live-ready/live 전이는 P6 이후 범위다.
 
 ## 7. 실시간 envelope
 

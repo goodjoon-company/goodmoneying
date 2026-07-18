@@ -645,6 +645,19 @@ $$;
 
 
 --
+-- Name: reject_p5_append_only_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_p5_append_only_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END;
+$$;
+
+
+--
 -- Name: reject_sealed_dataset_version_child_insert(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1198,6 +1211,130 @@ ALTER TABLE public.backtest_trades ALTER COLUMN id ADD GENERATED ALWAYS AS IDENT
 
 
 --
+-- Name: bot_definitions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.bot_definitions (
+    id bigint NOT NULL,
+    owner_id text NOT NULL,
+    name text NOT NULL,
+    strategy_version_id bigint NOT NULL,
+    portfolio_id bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    created_by text NOT NULL,
+    reason text NOT NULL,
+    CONSTRAINT bot_definitions_created_by_check CHECK ((created_by <> ''::text)),
+    CONSTRAINT bot_definitions_reason_check CHECK ((reason <> ''::text))
+);
+
+
+--
+-- Name: bot_definitions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.bot_definitions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: bot_definitions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.bot_definitions_id_seq OWNED BY public.bot_definitions.id;
+
+
+--
+-- Name: bot_instances; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.bot_instances (
+    id bigint NOT NULL,
+    bot_definition_id bigint NOT NULL,
+    strategy_version_id bigint NOT NULL,
+    portfolio_policy_id bigint NOT NULL,
+    backtest_run_id bigint,
+    stage text DEFAULT 'draft'::text NOT NULL,
+    previous_stage text,
+    execution_mode text NOT NULL,
+    started_at timestamp with time zone,
+    stopped_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    created_by text NOT NULL,
+    reason text NOT NULL,
+    CONSTRAINT bot_instances_check CHECK (((stopped_at IS NULL) OR (started_at IS NULL) OR (stopped_at >= started_at))),
+    CONSTRAINT bot_instances_created_by_check CHECK ((created_by <> ''::text)),
+    CONSTRAINT bot_instances_execution_mode_check CHECK ((execution_mode = ANY (ARRAY['paper'::text, 'shadow'::text]))),
+    CONSTRAINT bot_instances_previous_stage_check CHECK (((previous_stage IS NULL) OR (previous_stage = ANY (ARRAY['draft'::text, 'backtest'::text, 'paper'::text, 'shadow'::text])))),
+    CONSTRAINT bot_instances_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT bot_instances_stage_check CHECK ((stage = ANY (ARRAY['draft'::text, 'backtest'::text, 'paper'::text, 'shadow'::text, 'paused'::text, 'stopped'::text, 'faulted'::text])))
+);
+
+
+--
+-- Name: bot_instances_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.bot_instances_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: bot_instances_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.bot_instances_id_seq OWNED BY public.bot_instances.id;
+
+
+--
+-- Name: bot_state_transitions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.bot_state_transitions (
+    id bigint NOT NULL,
+    bot_instance_id bigint NOT NULL,
+    from_stage text,
+    to_stage text NOT NULL,
+    request_id text NOT NULL,
+    actor_id text NOT NULL,
+    reason text NOT NULL,
+    occurred_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT bot_state_transitions_actor_id_check CHECK ((actor_id <> ''::text)),
+    CONSTRAINT bot_state_transitions_evidence_check CHECK ((jsonb_typeof(evidence) = 'object'::text)),
+    CONSTRAINT bot_state_transitions_from_stage_check CHECK (((from_stage IS NULL) OR (from_stage = ANY (ARRAY['draft'::text, 'backtest'::text, 'paper'::text, 'shadow'::text, 'paused'::text, 'stopped'::text, 'faulted'::text])))),
+    CONSTRAINT bot_state_transitions_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT bot_state_transitions_to_stage_check CHECK ((to_stage = ANY (ARRAY['draft'::text, 'backtest'::text, 'paper'::text, 'shadow'::text, 'paused'::text, 'stopped'::text, 'faulted'::text])))
+);
+
+
+--
+-- Name: bot_state_transitions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.bot_state_transitions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: bot_state_transitions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.bot_state_transitions_id_seq OWNED BY public.bot_state_transitions.id;
+
+
+--
 -- Name: candidate_universe_entries; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1423,6 +1560,44 @@ ALTER TABLE public.candle_rollups ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTI
     NO MAXVALUE
     CACHE 1
 );
+
+
+--
+-- Name: capital_allocations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.capital_allocations (
+    id bigint NOT NULL,
+    portfolio_policy_id bigint NOT NULL,
+    scope_type text NOT NULL,
+    scope_key text NOT NULL,
+    allocation_pct numeric(20,10) NOT NULL,
+    max_notional numeric(38,18),
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT capital_allocations_allocation_pct_check CHECK (((allocation_pct >= (0)::numeric) AND (allocation_pct <= (1)::numeric))),
+    CONSTRAINT capital_allocations_max_notional_check CHECK (((max_notional IS NULL) OR (max_notional >= (0)::numeric))),
+    CONSTRAINT capital_allocations_scope_key_check CHECK ((scope_key <> ''::text)),
+    CONSTRAINT capital_allocations_scope_type_check CHECK ((scope_type = ANY (ARRAY['global'::text, 'instrument'::text, 'strategy'::text, 'bot'::text])))
+);
+
+
+--
+-- Name: capital_allocations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.capital_allocations_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: capital_allocations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.capital_allocations_id_seq OWNED BY public.capital_allocations.id;
 
 
 --
@@ -2309,6 +2484,45 @@ ALTER TABLE public.dataset_versions ALTER COLUMN id ADD GENERATED ALWAYS AS IDEN
 
 
 --
+-- Name: exchange_orders; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.exchange_orders (
+    id bigint NOT NULL,
+    order_intent_id bigint NOT NULL,
+    execution_mode text NOT NULL,
+    simulated_order_key text NOT NULL,
+    status text DEFAULT 'pending_submit'::text NOT NULL,
+    submitted_at timestamp with time zone,
+    reconciled_at timestamp with time zone,
+    raw_payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT exchange_orders_execution_mode_check CHECK ((execution_mode = ANY (ARRAY['paper'::text, 'shadow'::text]))),
+    CONSTRAINT exchange_orders_raw_payload_check CHECK ((jsonb_typeof(raw_payload) = 'object'::text)),
+    CONSTRAINT exchange_orders_simulated_order_key_check CHECK ((simulated_order_key <> ''::text)),
+    CONSTRAINT exchange_orders_status_check CHECK ((status = ANY (ARRAY['pending_submit'::text, 'wait'::text, 'watch'::text, 'trade'::text, 'partially_filled'::text, 'done'::text, 'cancel'::text, 'prevented'::text, 'rejected'::text, 'outcome_unknown'::text, 'reconciled'::text])))
+);
+
+
+--
+-- Name: exchange_orders_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.exchange_orders_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: exchange_orders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.exchange_orders_id_seq OWNED BY public.exchange_orders.id;
+
+
+--
 -- Name: fetch_manifests; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2582,6 +2796,51 @@ ALTER TABLE public.instruments ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY 
     NO MAXVALUE
     CACHE 1
 );
+
+
+--
+-- Name: kill_switches; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.kill_switches (
+    id bigint NOT NULL,
+    scope_type text NOT NULL,
+    scope_key text NOT NULL,
+    state text NOT NULL,
+    sequence bigint NOT NULL,
+    actor_id text NOT NULL,
+    reason text NOT NULL,
+    open_order_policy text NOT NULL,
+    occurred_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT kill_switches_actor_id_check CHECK ((actor_id <> ''::text)),
+    CONSTRAINT kill_switches_evidence_check CHECK ((jsonb_typeof(evidence) = 'object'::text)),
+    CONSTRAINT kill_switches_open_order_policy_check CHECK ((open_order_policy = ANY (ARRAY['leave_open'::text, 'cancel_open'::text]))),
+    CONSTRAINT kill_switches_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT kill_switches_scope_key_check CHECK ((scope_key <> ''::text)),
+    CONSTRAINT kill_switches_scope_type_check CHECK ((scope_type = ANY (ARRAY['global'::text, 'portfolio'::text, 'bot'::text, 'account'::text]))),
+    CONSTRAINT kill_switches_sequence_check CHECK ((sequence >= 1)),
+    CONSTRAINT kill_switches_state_check CHECK ((state = ANY (ARRAY['armed'::text, 'released'::text])))
+);
+
+
+--
+-- Name: kill_switches_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.kill_switches_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: kill_switches_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.kill_switches_id_seq OWNED BY public.kill_switches.id;
 
 
 --
@@ -3002,6 +3261,106 @@ ALTER TABLE public.notification_events ALTER COLUMN id ADD GENERATED ALWAYS AS I
 
 
 --
+-- Name: order_fills; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.order_fills (
+    id bigint NOT NULL,
+    exchange_order_id bigint NOT NULL,
+    fill_sequence integer NOT NULL,
+    fill_source text NOT NULL,
+    side text NOT NULL,
+    filled_quantity numeric(38,18) NOT NULL,
+    fill_price numeric(38,18) NOT NULL,
+    fee_paid numeric(38,18) DEFAULT 0 NOT NULL,
+    occurred_at timestamp with time zone NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT order_fills_check CHECK ((knowledge_at >= occurred_at)),
+    CONSTRAINT order_fills_evidence_check CHECK ((jsonb_typeof(evidence) = 'object'::text)),
+    CONSTRAINT order_fills_fee_paid_check CHECK ((fee_paid >= (0)::numeric)),
+    CONSTRAINT order_fills_fill_price_check CHECK ((fill_price > (0)::numeric)),
+    CONSTRAINT order_fills_fill_sequence_check CHECK ((fill_sequence >= 1)),
+    CONSTRAINT order_fills_fill_source_check CHECK ((fill_source = ANY (ARRAY['paper_simulator'::text, 'shadow_observation'::text, 'reconciliation'::text]))),
+    CONSTRAINT order_fills_filled_quantity_check CHECK ((filled_quantity > (0)::numeric)),
+    CONSTRAINT order_fills_side_check CHECK ((side = ANY (ARRAY['buy'::text, 'sell'::text])))
+);
+
+
+--
+-- Name: order_fills_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.order_fills_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: order_fills_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.order_fills_id_seq OWNED BY public.order_fills.id;
+
+
+--
+-- Name: order_intents; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.order_intents (
+    id bigint NOT NULL,
+    bot_instance_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    idempotency_key text NOT NULL,
+    side text NOT NULL,
+    order_type text NOT NULL,
+    requested_quantity numeric(38,18),
+    requested_notional numeric(38,18),
+    limit_price numeric(38,18),
+    status text DEFAULT 'created'::text NOT NULL,
+    decision_input_hash text NOT NULL,
+    risk_policy_version integer,
+    risk_decision_reason text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    created_by text NOT NULL,
+    reason text NOT NULL,
+    CONSTRAINT order_intents_check CHECK (((requested_quantity IS NOT NULL) OR (requested_notional IS NOT NULL))),
+    CONSTRAINT order_intents_created_by_check CHECK ((created_by <> ''::text)),
+    CONSTRAINT order_intents_decision_input_hash_check CHECK ((decision_input_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT order_intents_limit_price_check CHECK (((limit_price IS NULL) OR (limit_price > (0)::numeric))),
+    CONSTRAINT order_intents_order_type_check CHECK ((order_type = ANY (ARRAY['market'::text, 'limit'::text]))),
+    CONSTRAINT order_intents_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT order_intents_requested_notional_check CHECK (((requested_notional IS NULL) OR (requested_notional > (0)::numeric))),
+    CONSTRAINT order_intents_requested_quantity_check CHECK (((requested_quantity IS NULL) OR (requested_quantity > (0)::numeric))),
+    CONSTRAINT order_intents_risk_policy_version_check CHECK (((risk_policy_version IS NULL) OR (risk_policy_version >= 1))),
+    CONSTRAINT order_intents_side_check CHECK ((side = ANY (ARRAY['buy'::text, 'sell'::text]))),
+    CONSTRAINT order_intents_status_check CHECK ((status = ANY (ARRAY['created'::text, 'risk_rejected'::text, 'approved'::text, 'paper_filled'::text, 'shadow_observed'::text, 'outcome_unknown'::text, 'reconciled'::text, 'cancelled'::text, 'completed'::text])))
+);
+
+
+--
+-- Name: order_intents_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.order_intents_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: order_intents_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.order_intents_id_seq OWNED BY public.order_intents.id;
+
+
+--
 -- Name: orderbook_snapshot_levels; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3126,6 +3485,125 @@ CREATE TABLE public.p1_audit_recovery_gate (
 
 
 --
+-- Name: portfolio_policies; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.portfolio_policies (
+    id bigint NOT NULL,
+    portfolio_id bigint NOT NULL,
+    version integer NOT NULL,
+    status text DEFAULT 'draft'::text NOT NULL,
+    max_gross_exposure numeric(38,18) NOT NULL,
+    max_single_position_pct numeric(20,10) NOT NULL,
+    cash_reserve_pct numeric(20,10) DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    created_by text NOT NULL,
+    reason text NOT NULL,
+    CONSTRAINT portfolio_policies_cash_reserve_pct_check CHECK (((cash_reserve_pct >= (0)::numeric) AND (cash_reserve_pct <= (1)::numeric))),
+    CONSTRAINT portfolio_policies_created_by_check CHECK ((created_by <> ''::text)),
+    CONSTRAINT portfolio_policies_max_gross_exposure_check CHECK ((max_gross_exposure >= (0)::numeric)),
+    CONSTRAINT portfolio_policies_max_single_position_pct_check CHECK (((max_single_position_pct >= (0)::numeric) AND (max_single_position_pct <= (1)::numeric))),
+    CONSTRAINT portfolio_policies_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT portfolio_policies_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'published'::text, 'retired'::text]))),
+    CONSTRAINT portfolio_policies_version_check CHECK ((version >= 1))
+);
+
+
+--
+-- Name: portfolio_policies_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.portfolio_policies_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: portfolio_policies_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.portfolio_policies_id_seq OWNED BY public.portfolio_policies.id;
+
+
+--
+-- Name: portfolios; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.portfolios (
+    id bigint NOT NULL,
+    owner_id text NOT NULL,
+    name text NOT NULL,
+    base_currency text DEFAULT 'KRW'::text NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    created_by text NOT NULL,
+    reason text NOT NULL,
+    CONSTRAINT portfolios_base_currency_check CHECK ((base_currency = ANY (ARRAY['KRW'::text, 'BTC'::text, 'USDT'::text]))),
+    CONSTRAINT portfolios_created_by_check CHECK ((created_by <> ''::text)),
+    CONSTRAINT portfolios_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT portfolios_status_check CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text])))
+);
+
+
+--
+-- Name: portfolios_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.portfolios_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: portfolios_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.portfolios_id_seq OWNED BY public.portfolios.id;
+
+
+--
+-- Name: position_projections; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.position_projections (
+    id bigint NOT NULL,
+    portfolio_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    quantity numeric(38,18) DEFAULT 0 NOT NULL,
+    average_entry_price numeric(38,18),
+    realized_pnl numeric(38,18) DEFAULT 0 NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    source_fill_id bigint,
+    CONSTRAINT position_projections_average_entry_price_check CHECK (((average_entry_price IS NULL) OR (average_entry_price >= (0)::numeric)))
+);
+
+
+--
+-- Name: position_projections_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.position_projections_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: position_projections_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.position_projections_id_seq OWNED BY public.position_projections.id;
+
+
+--
 -- Name: raw_response_samples; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3219,6 +3697,97 @@ CREATE TABLE public.realtime_connection_sessions (
     CONSTRAINT realtime_connection_sessions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'closed'::text, 'disconnected'::text, 'failed'::text]))),
     CONSTRAINT realtime_connection_sessions_subscription_generation_check CHECK ((subscription_generation >= 0))
 );
+
+
+--
+-- Name: risk_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.risk_events (
+    id bigint NOT NULL,
+    order_intent_id bigint,
+    bot_instance_id bigint,
+    scope_type text NOT NULL,
+    scope_key text NOT NULL,
+    event_type text NOT NULL,
+    severity text NOT NULL,
+    fingerprint text NOT NULL,
+    risk_policy_version integer,
+    message text NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    occurred_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT risk_events_event_type_check CHECK ((event_type = ANY (ARRAY['policy_approved'::text, 'limit_rejected'::text, 'kill_switch_rejected'::text, 'reconciliation_mismatch'::text, 'outcome_unknown'::text]))),
+    CONSTRAINT risk_events_evidence_check CHECK ((jsonb_typeof(evidence) = 'object'::text)),
+    CONSTRAINT risk_events_message_check CHECK ((message <> ''::text)),
+    CONSTRAINT risk_events_risk_policy_version_check CHECK (((risk_policy_version IS NULL) OR (risk_policy_version >= 1))),
+    CONSTRAINT risk_events_scope_key_check CHECK ((scope_key <> ''::text)),
+    CONSTRAINT risk_events_scope_type_check CHECK ((scope_type = ANY (ARRAY['global'::text, 'portfolio'::text, 'bot'::text, 'instrument'::text]))),
+    CONSTRAINT risk_events_severity_check CHECK ((severity = ANY (ARRAY['info'::text, 'warning'::text, 'critical'::text])))
+);
+
+
+--
+-- Name: risk_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.risk_events_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: risk_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.risk_events_id_seq OWNED BY public.risk_events.id;
+
+
+--
+-- Name: risk_limits; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.risk_limits (
+    id bigint NOT NULL,
+    scope_type text NOT NULL,
+    scope_key text NOT NULL,
+    limit_type text NOT NULL,
+    version integer NOT NULL,
+    limit_value numeric(38,18) NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_id text NOT NULL,
+    reason text NOT NULL,
+    CONSTRAINT risk_limits_actor_id_check CHECK ((actor_id <> ''::text)),
+    CONSTRAINT risk_limits_limit_type_check CHECK ((limit_type = ANY (ARRAY['max_order_notional'::text, 'max_daily_loss'::text, 'max_position_notional'::text, 'max_drawdown'::text, 'max_open_orders'::text]))),
+    CONSTRAINT risk_limits_limit_value_check CHECK ((limit_value >= (0)::numeric)),
+    CONSTRAINT risk_limits_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT risk_limits_scope_key_check CHECK ((scope_key <> ''::text)),
+    CONSTRAINT risk_limits_scope_type_check CHECK ((scope_type = ANY (ARRAY['global'::text, 'portfolio'::text, 'bot'::text, 'instrument'::text]))),
+    CONSTRAINT risk_limits_status_check CHECK ((status = ANY (ARRAY['active'::text, 'retired'::text]))),
+    CONSTRAINT risk_limits_version_check CHECK ((version >= 1))
+);
+
+
+--
+-- Name: risk_limits_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.risk_limits_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: risk_limits_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.risk_limits_id_seq OWNED BY public.risk_limits.id;
 
 
 --
@@ -3626,6 +4195,97 @@ ALTER TABLE public.trade_events ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY
 
 
 --
+-- Name: bot_definitions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bot_definitions ALTER COLUMN id SET DEFAULT nextval('public.bot_definitions_id_seq'::regclass);
+
+
+--
+-- Name: bot_instances id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bot_instances ALTER COLUMN id SET DEFAULT nextval('public.bot_instances_id_seq'::regclass);
+
+
+--
+-- Name: bot_state_transitions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bot_state_transitions ALTER COLUMN id SET DEFAULT nextval('public.bot_state_transitions_id_seq'::regclass);
+
+
+--
+-- Name: capital_allocations id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.capital_allocations ALTER COLUMN id SET DEFAULT nextval('public.capital_allocations_id_seq'::regclass);
+
+
+--
+-- Name: exchange_orders id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.exchange_orders ALTER COLUMN id SET DEFAULT nextval('public.exchange_orders_id_seq'::regclass);
+
+
+--
+-- Name: kill_switches id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.kill_switches ALTER COLUMN id SET DEFAULT nextval('public.kill_switches_id_seq'::regclass);
+
+
+--
+-- Name: order_fills id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_fills ALTER COLUMN id SET DEFAULT nextval('public.order_fills_id_seq'::regclass);
+
+
+--
+-- Name: order_intents id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_intents ALTER COLUMN id SET DEFAULT nextval('public.order_intents_id_seq'::regclass);
+
+
+--
+-- Name: portfolio_policies id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portfolio_policies ALTER COLUMN id SET DEFAULT nextval('public.portfolio_policies_id_seq'::regclass);
+
+
+--
+-- Name: portfolios id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portfolios ALTER COLUMN id SET DEFAULT nextval('public.portfolios_id_seq'::regclass);
+
+
+--
+-- Name: position_projections id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.position_projections ALTER COLUMN id SET DEFAULT nextval('public.position_projections_id_seq'::regclass);
+
+
+--
+-- Name: risk_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.risk_events ALTER COLUMN id SET DEFAULT nextval('public.risk_events_id_seq'::regclass);
+
+
+--
+-- Name: risk_limits id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.risk_limits ALTER COLUMN id SET DEFAULT nextval('public.risk_limits_id_seq'::regclass);
+
+
+--
 -- Name: audit_logs audit_logs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3770,6 +4430,46 @@ ALTER TABLE ONLY public.backtest_trades
 
 
 --
+-- Name: bot_definitions bot_definitions_owner_id_name_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bot_definitions
+    ADD CONSTRAINT bot_definitions_owner_id_name_key UNIQUE (owner_id, name);
+
+
+--
+-- Name: bot_definitions bot_definitions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bot_definitions
+    ADD CONSTRAINT bot_definitions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: bot_instances bot_instances_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bot_instances
+    ADD CONSTRAINT bot_instances_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: bot_state_transitions bot_state_transitions_bot_instance_id_request_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bot_state_transitions
+    ADD CONSTRAINT bot_state_transitions_bot_instance_id_request_id_key UNIQUE (bot_instance_id, request_id);
+
+
+--
+-- Name: bot_state_transitions bot_state_transitions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bot_state_transitions
+    ADD CONSTRAINT bot_state_transitions_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: candidate_universe_entries candidate_universe_entries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3863,6 +4563,22 @@ ALTER TABLE ONLY public.candle_rollups
 
 ALTER TABLE ONLY public.candle_rollups
     ADD CONSTRAINT candle_rollups_revision_uk UNIQUE NULLS NOT DISTINCT (instrument_id, candle_unit, candle_start_at, calculation_version, input_content_hash, coverage_snapshot_hash, source_revision_through_id, quality_event_through_id);
+
+
+--
+-- Name: capital_allocations capital_allocations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.capital_allocations
+    ADD CONSTRAINT capital_allocations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: capital_allocations capital_allocations_portfolio_policy_id_scope_type_scope_ke_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.capital_allocations
+    ADD CONSTRAINT capital_allocations_portfolio_policy_id_scope_type_scope_ke_key UNIQUE (portfolio_policy_id, scope_type, scope_key);
 
 
 --
@@ -4202,6 +4918,22 @@ ALTER TABLE ONLY public.dataset_versions
 
 
 --
+-- Name: exchange_orders exchange_orders_order_intent_id_simulated_order_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.exchange_orders
+    ADD CONSTRAINT exchange_orders_order_intent_id_simulated_order_key_key UNIQUE (order_intent_id, simulated_order_key);
+
+
+--
+-- Name: exchange_orders exchange_orders_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.exchange_orders
+    ADD CONSTRAINT exchange_orders_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: fetch_manifests fetch_manifests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4359,6 +5091,22 @@ ALTER TABLE ONLY public.instruments
 
 ALTER TABLE ONLY public.instruments
     ADD CONSTRAINT instruments_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: kill_switches kill_switches_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.kill_switches
+    ADD CONSTRAINT kill_switches_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: kill_switches kill_switches_scope_type_scope_key_sequence_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.kill_switches
+    ADD CONSTRAINT kill_switches_scope_type_scope_key_sequence_key UNIQUE (scope_type, scope_key, sequence);
 
 
 --
@@ -4530,6 +5278,38 @@ ALTER TABLE ONLY public.notification_events
 
 
 --
+-- Name: order_fills order_fills_exchange_order_id_fill_sequence_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_fills
+    ADD CONSTRAINT order_fills_exchange_order_id_fill_sequence_key UNIQUE (exchange_order_id, fill_sequence);
+
+
+--
+-- Name: order_fills order_fills_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_fills
+    ADD CONSTRAINT order_fills_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: order_intents order_intents_bot_instance_id_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_intents
+    ADD CONSTRAINT order_intents_bot_instance_id_idempotency_key_key UNIQUE (bot_instance_id, idempotency_key);
+
+
+--
+-- Name: order_intents order_intents_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_intents
+    ADD CONSTRAINT order_intents_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: orderbook_snapshot_levels orderbook_snapshot_levels_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4578,6 +5358,54 @@ ALTER TABLE ONLY public.p1_audit_recovery_gate
 
 
 --
+-- Name: portfolio_policies portfolio_policies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portfolio_policies
+    ADD CONSTRAINT portfolio_policies_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: portfolio_policies portfolio_policies_portfolio_id_version_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portfolio_policies
+    ADD CONSTRAINT portfolio_policies_portfolio_id_version_key UNIQUE (portfolio_id, version);
+
+
+--
+-- Name: portfolios portfolios_owner_id_name_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portfolios
+    ADD CONSTRAINT portfolios_owner_id_name_key UNIQUE (owner_id, name);
+
+
+--
+-- Name: portfolios portfolios_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portfolios
+    ADD CONSTRAINT portfolios_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: position_projections position_projections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.position_projections
+    ADD CONSTRAINT position_projections_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: position_projections position_projections_portfolio_id_instrument_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.position_projections
+    ADD CONSTRAINT position_projections_portfolio_id_instrument_id_key UNIQUE (portfolio_id, instrument_id);
+
+
+--
 -- Name: raw_response_samples raw_response_samples_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4607,6 +5435,38 @@ ALTER TABLE ONLY public.realtime_connection_quality_intervals
 
 ALTER TABLE ONLY public.realtime_connection_sessions
     ADD CONSTRAINT realtime_connection_sessions_pkey PRIMARY KEY (connection_id);
+
+
+--
+-- Name: risk_events risk_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.risk_events
+    ADD CONSTRAINT risk_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: risk_events risk_events_scope_type_scope_key_fingerprint_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.risk_events
+    ADD CONSTRAINT risk_events_scope_type_scope_key_fingerprint_key UNIQUE (scope_type, scope_key, fingerprint);
+
+
+--
+-- Name: risk_limits risk_limits_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.risk_limits
+    ADD CONSTRAINT risk_limits_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: risk_limits risk_limits_scope_type_scope_key_limit_type_version_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.risk_limits
+    ADD CONSTRAINT risk_limits_scope_type_scope_key_limit_type_version_key UNIQUE (scope_type, scope_key, limit_type, version);
 
 
 --
@@ -4836,6 +5696,13 @@ CREATE INDEX backtest_runs_worker_lease_idx ON public.backtest_runs USING btree 
 
 
 --
+-- Name: bot_instances_stage_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX bot_instances_stage_idx ON public.bot_instances USING btree (stage, execution_mode);
+
+
+--
 -- Name: candle_rollup_invalidations_range_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4941,6 +5808,13 @@ CREATE INDEX dataset_versions_as_of_idx ON public.dataset_versions USING btree (
 
 
 --
+-- Name: exchange_orders_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX exchange_orders_status_idx ON public.exchange_orders USING btree (status, submitted_at);
+
+
+--
 -- Name: indicator_invalidations_claim_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4952,6 +5826,13 @@ CREATE INDEX indicator_invalidations_claim_idx ON public.indicator_invalidations
 --
 
 CREATE INDEX indicator_materializations_projection_idx ON public.indicator_materializations USING btree (instrument_id, candle_unit, occurred_at, knowledge_at, source_revision_through_id DESC, quality_event_through_id DESC NULLS LAST, id DESC);
+
+
+--
+-- Name: kill_switches_scope_state_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX kill_switches_scope_state_idx ON public.kill_switches USING btree (scope_type, scope_key, state, sequence DESC);
 
 
 --
@@ -5004,6 +5885,13 @@ CREATE INDEX notification_events_status_idx ON public.notification_events USING 
 
 
 --
+-- Name: order_intents_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX order_intents_status_idx ON public.order_intents USING btree (status, created_at);
+
+
+--
 -- Name: orderbook_snapshots_market_occurred_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -5029,6 +5917,13 @@ CREATE INDEX orderbook_summaries_collected_at_idx ON public.orderbook_summaries 
 --
 
 CREATE INDEX orderbook_summaries_instrument_bucket_idx ON public.orderbook_summaries USING btree (instrument_id, bucket_at DESC);
+
+
+--
+-- Name: risk_limits_active_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX risk_limits_active_idx ON public.risk_limits USING btree (scope_type, scope_key, limit_type) WHERE (status = 'active'::text);
 
 
 --
@@ -5211,6 +6106,20 @@ CREATE TRIGGER backtest_trades_append_only_delete BEFORE DELETE ON public.backte
 --
 
 CREATE TRIGGER backtest_trades_append_only_update BEFORE UPDATE ON public.backtest_trades FOR EACH ROW EXECUTE FUNCTION public.reject_backtest_result_mutation();
+
+
+--
+-- Name: bot_state_transitions bot_state_transitions_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER bot_state_transitions_append_only_delete BEFORE DELETE ON public.bot_state_transitions FOR EACH ROW EXECUTE FUNCTION public.reject_p5_append_only_mutation();
+
+
+--
+-- Name: bot_state_transitions bot_state_transitions_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER bot_state_transitions_append_only_update BEFORE UPDATE ON public.bot_state_transitions FOR EACH ROW EXECUTE FUNCTION public.reject_p5_append_only_mutation();
 
 
 --
@@ -5522,6 +6431,20 @@ CREATE TRIGGER indicator_values_append_only BEFORE DELETE OR UPDATE ON public.in
 
 
 --
+-- Name: kill_switches kill_switches_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER kill_switches_append_only_delete BEFORE DELETE ON public.kill_switches FOR EACH ROW EXECUTE FUNCTION public.reject_p5_append_only_mutation();
+
+
+--
+-- Name: kill_switches kill_switches_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER kill_switches_append_only_update BEFORE UPDATE ON public.kill_switches FOR EACH ROW EXECUTE FUNCTION public.reject_p5_append_only_mutation();
+
+
+--
 -- Name: market_statistics market_statistics_append_only; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -5564,6 +6487,20 @@ CREATE TRIGGER microstructure_statistics_append_only BEFORE DELETE OR UPDATE ON 
 
 
 --
+-- Name: order_fills order_fills_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER order_fills_append_only_delete BEFORE DELETE ON public.order_fills FOR EACH ROW EXECUTE FUNCTION public.reject_p5_append_only_mutation();
+
+
+--
+-- Name: order_fills order_fills_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER order_fills_append_only_update BEFORE UPDATE ON public.order_fills FOR EACH ROW EXECUTE FUNCTION public.reject_p5_append_only_mutation();
+
+
+--
 -- Name: orderbook_snapshots orderbook_snapshot_microstructure_invalidation; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -5582,6 +6519,20 @@ CREATE TRIGGER realtime_connection_quality_intervals_append_only BEFORE DELETE O
 --
 
 CREATE TRIGGER realtime_quality_microstructure_invalidation AFTER INSERT ON public.realtime_connection_quality_intervals FOR EACH ROW EXECUTE FUNCTION public.enqueue_quality_microstructure_invalidation();
+
+
+--
+-- Name: risk_events risk_events_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER risk_events_append_only_delete BEFORE DELETE ON public.risk_events FOR EACH ROW EXECUTE FUNCTION public.reject_p5_append_only_mutation();
+
+
+--
+-- Name: risk_events risk_events_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER risk_events_append_only_update BEFORE UPDATE ON public.risk_events FOR EACH ROW EXECUTE FUNCTION public.reject_p5_append_only_mutation();
 
 
 --
@@ -5779,6 +6730,62 @@ ALTER TABLE ONLY public.backtest_trades
 
 
 --
+-- Name: bot_definitions bot_definitions_portfolio_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bot_definitions
+    ADD CONSTRAINT bot_definitions_portfolio_id_fkey FOREIGN KEY (portfolio_id) REFERENCES public.portfolios(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: bot_definitions bot_definitions_strategy_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bot_definitions
+    ADD CONSTRAINT bot_definitions_strategy_version_id_fkey FOREIGN KEY (strategy_version_id) REFERENCES public.strategy_versions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: bot_instances bot_instances_backtest_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bot_instances
+    ADD CONSTRAINT bot_instances_backtest_run_id_fkey FOREIGN KEY (backtest_run_id) REFERENCES public.backtest_runs(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: bot_instances bot_instances_bot_definition_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bot_instances
+    ADD CONSTRAINT bot_instances_bot_definition_id_fkey FOREIGN KEY (bot_definition_id) REFERENCES public.bot_definitions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: bot_instances bot_instances_portfolio_policy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bot_instances
+    ADD CONSTRAINT bot_instances_portfolio_policy_id_fkey FOREIGN KEY (portfolio_policy_id) REFERENCES public.portfolio_policies(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: bot_instances bot_instances_strategy_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bot_instances
+    ADD CONSTRAINT bot_instances_strategy_version_id_fkey FOREIGN KEY (strategy_version_id) REFERENCES public.strategy_versions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: bot_state_transitions bot_state_transitions_bot_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bot_state_transitions
+    ADD CONSTRAINT bot_state_transitions_bot_instance_id_fkey FOREIGN KEY (bot_instance_id) REFERENCES public.bot_instances(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: candidate_universe_entries candidate_universe_entries_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5880,6 +6887,14 @@ ALTER TABLE ONLY public.candle_rollups
 
 ALTER TABLE ONLY public.candle_rollups
     ADD CONSTRAINT candle_rollups_quality_event_through_id_fkey FOREIGN KEY (quality_event_through_id) REFERENCES public.data_quality_events(id);
+
+
+--
+-- Name: capital_allocations capital_allocations_portfolio_policy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.capital_allocations
+    ADD CONSTRAINT capital_allocations_portfolio_policy_id_fkey FOREIGN KEY (portfolio_policy_id) REFERENCES public.portfolio_policies(id) ON DELETE RESTRICT;
 
 
 --
@@ -6443,6 +7458,14 @@ ALTER TABLE ONLY public.dataset_version_series
 
 
 --
+-- Name: exchange_orders exchange_orders_order_intent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.exchange_orders
+    ADD CONSTRAINT exchange_orders_order_intent_id_fkey FOREIGN KEY (order_intent_id) REFERENCES public.order_intents(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: fetch_manifests fetch_manifests_collection_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6875,6 +7898,30 @@ ALTER TABLE ONLY public.missing_ranges
 
 
 --
+-- Name: order_fills order_fills_exchange_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_fills
+    ADD CONSTRAINT order_fills_exchange_order_id_fkey FOREIGN KEY (exchange_order_id) REFERENCES public.exchange_orders(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: order_intents order_intents_bot_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_intents
+    ADD CONSTRAINT order_intents_bot_instance_id_fkey FOREIGN KEY (bot_instance_id) REFERENCES public.bot_instances(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: order_intents order_intents_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.order_intents
+    ADD CONSTRAINT order_intents_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
 -- Name: orderbook_snapshot_levels orderbook_snapshot_levels_snapshot_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6947,6 +7994,38 @@ ALTER TABLE ONLY public.orderbook_summaries
 
 
 --
+-- Name: portfolio_policies portfolio_policies_portfolio_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portfolio_policies
+    ADD CONSTRAINT portfolio_policies_portfolio_id_fkey FOREIGN KEY (portfolio_id) REFERENCES public.portfolios(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: position_projections position_projections_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.position_projections
+    ADD CONSTRAINT position_projections_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: position_projections position_projections_portfolio_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.position_projections
+    ADD CONSTRAINT position_projections_portfolio_id_fkey FOREIGN KEY (portfolio_id) REFERENCES public.portfolios(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: position_projections position_projections_source_fill_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.position_projections
+    ADD CONSTRAINT position_projections_source_fill_id_fkey FOREIGN KEY (source_fill_id) REFERENCES public.order_fills(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: realtime_connection_quality_intervals realtime_connection_quality_intervals_connection_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6960,6 +8039,22 @@ ALTER TABLE ONLY public.realtime_connection_quality_intervals
 
 ALTER TABLE ONLY public.realtime_connection_quality_intervals
     ADD CONSTRAINT realtime_connection_quality_intervals_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
+
+
+--
+-- Name: risk_events risk_events_bot_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.risk_events
+    ADD CONSTRAINT risk_events_bot_instance_id_fkey FOREIGN KEY (bot_instance_id) REFERENCES public.bot_instances(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: risk_events risk_events_order_intent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.risk_events
+    ADD CONSTRAINT risk_events_order_intent_id_fkey FOREIGN KEY (order_intent_id) REFERENCES public.order_intents(id) ON DELETE RESTRICT;
 
 
 --
@@ -7215,4 +8310,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260718000100'),
     ('20260718000200'),
     ('20260718000300'),
-    ('20260718000400');
+    ('20260718000400'),
+    ('20260718000500');

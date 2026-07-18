@@ -28,7 +28,7 @@
 | 영역 | 2026-07-17 기준 | 구현 추적 |
 |---|---|---|
 | 기존 수집·백필·집계, API·Web, Upbit Lab·Gateway | 부분 구현 | Issue #28, #29, #33 |
-| 전략·백테스트·포트폴리오·봇·주문·위험 | P3 전략과 P4-1 순수 백테스트 엔진 구현, 실행 연결 미구현 | Issue #30~#33 |
+| 전략·백테스트·포트폴리오·봇·주문·위험 | P3 전략, P4 백테스트, P5-1 portfolio/bot/order intent/risk DB 계약 구현. paper/shadow 실행 연결은 후속 P5 조각 | Issue #30~#33 |
 | 내부 UTC와 5가지 품질 상태 | 미구현 | Issue #28 |
 | 복구 가능한 내부 WebSocket | P2-7 envelope·cursor·heartbeat·gap 적용 중단, P2-8 REST snapshot 복구·slow consumer 신호 구현 | Issue #29 |
 | Action commit SHA pinning·P8 exact-SHA 잠금 | P0 구현, 배포는 계속 차단 | Issue #27, #35 |
@@ -51,11 +51,11 @@
 | Rollup Worker | 1분·일 원천 개정 기반 11개 주기 UTC 집계와 계보 저장 | PostgreSQL | P2-1 구현 |
 | Indicator Worker | 버전 지표·시장 통계·1분 미시구조 통계의 무효화 처리와 불변 물질화(Materialization) | PostgreSQL | P2-3·P2-4 구현 |
 | Strategy Worker | Typed DAG 검증·평가·설명 이벤트 생성 | PostgreSQL | 미구현 |
-| Backtest Worker | 결정론적 사건 재생, 체결·비용 모델, 성과·산출물 생성 | PostgreSQL | P4-1 순수 엔진 구현, Worker/DB/API/UI 미구현 |
-| Paper/Shadow Worker | 모의 체결 또는 실시간 신호 관찰, 실제 주문 금지 | PostgreSQL | 미구현 |
+| Backtest Worker | 결정론적 사건 재생, 체결·비용 모델, 성과·산출물 생성 | PostgreSQL | P4 구현 |
+| Paper/Shadow Worker | 모의 체결 또는 실시간 신호 관찰, 실제 주문 금지 | PostgreSQL | P5-1 영속화 계약 구현, worker 미구현 |
 | Bot Worker | 승인 버전 실행, 주문 의도 생성, 상태 전이 | PostgreSQL | 미구현 |
 | Reconciliation Worker | REST·private WebSocket·잔고를 주문·체결·포지션과 대사 | PostgreSQL | 미구현 |
-| Risk Worker | 사전 주문·실시간 노출 검사, 위험 이벤트, 긴급 정지 | PostgreSQL | 미구현 |
+| Risk Worker | 사전 주문·실시간 노출 검사, 위험 이벤트, 긴급 정지 | PostgreSQL | P5-1 영속화 계약 구현, worker 미구현 |
 | Operations Worker | 하트비트, 큐·DB·요청 제한·배포 상태와 알림 | PostgreSQL | 부분 구현 |
 
 작업자는 하나의 실행 바이너리에서 역할별 프로세스로 시작할 수 있다. 배포 단위 분리는 처리량·장애 격리 측정으로 결정하며 도메인 계약은 프로세스 배치와 독립적이다.

@@ -423,6 +423,20 @@ class _SeededStrategyRepository:
 
 
 class _SeededBacktestRepository:
+    def create_run(self, **_arguments: object) -> dict[str, object]:
+        return {
+            "backtestRunId": 23,
+            "strategyVersionId": 41,
+            "datasetVersionId": 12,
+            "engineVersion": "backtest-core-v1",
+            "status": "pending",
+            "inputHash": "0" * 64,
+            "resultHash": None,
+            "requestedAt": "2026-07-18T08:00:00Z",
+            "startedAt": None,
+            "finishedAt": None,
+        }
+
     def list_runs(self, *, page_size: int, cursor: str | None) -> dict[str, object]:
         del cursor
         return {

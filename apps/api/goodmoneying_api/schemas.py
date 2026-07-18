@@ -387,6 +387,67 @@ class BacktestArtifactResponse(BaseModel):
     metadata: dict[str, object]
 
 
+BacktestParameterValue = str | int | bool | None
+
+
+class BacktestExecutionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    feeRate: Decimal = Field(ge=0)
+    slippageBps: Decimal = Field(ge=0)
+    latencySeconds: int = Field(ge=0)
+    maxParticipationRate: Decimal = Field(gt=0, le=1)
+
+
+class CreateBacktestRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requestId: str = Field(min_length=1, max_length=200)
+    idempotencyKey: str = Field(min_length=1, max_length=200)
+    actorId: str = Field(min_length=1, max_length=200)
+    requestedAt: datetime
+    reason: str = Field(min_length=1, max_length=500)
+    strategyVersionId: int = Field(gt=0)
+    datasetVersionId: int = Field(gt=0)
+    engineVersion: str = Field(min_length=1, max_length=100)
+    parameters: dict[str, BacktestParameterValue]
+    seed: int
+    initialCash: Decimal
+    execution: BacktestExecutionRequest
+    maxAttempts: int = Field(ge=1, le=10)
+
+    @field_validator("requestedAt")
+    @classmethod
+    def require_utc_requested_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
+            raise ValueError("requestedAt은 UTC timezone-aware datetime이어야 한다.")
+        return value
+
+    @field_validator("requestId", "idempotencyKey", "actorId", "reason", "engineVersion")
+    @classmethod
+    def reject_blank_command_strings(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("백테스트 실행 명령 문자열은 공백일 수 없다.")
+        return stripped
+
+    @field_validator("parameters")
+    @classmethod
+    def reject_blank_parameter_keys(
+        cls, value: dict[str, BacktestParameterValue]
+    ) -> dict[str, BacktestParameterValue]:
+        if any(not key.strip() for key in value):
+            raise ValueError("parameters key는 공백일 수 없다.")
+        return value
+
+    @field_validator("initialCash")
+    @classmethod
+    def require_positive_initial_cash(cls, value: Decimal) -> Decimal:
+        if value <= 0:
+            raise ValueError("initialCash는 0보다 커야 한다.")
+        return value
+
+
 class BacktestRunResponse(BaseModel):
     backtestRunId: int
     strategyVersionId: int

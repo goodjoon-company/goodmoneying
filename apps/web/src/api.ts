@@ -689,6 +689,27 @@ export type BacktestEquityPointsResponse = {
   nextCursor: string | null;
 };
 
+export type BacktestParameterValue = string | number | boolean | null;
+
+export type BacktestExecutionCommand = {
+  feeRate: string;
+  slippageBps: string;
+  latencySeconds: number;
+  maxParticipationRate: string;
+};
+
+export type CreateBacktestRunCommand = ChangeCommandEnvelope & {
+  reason: string;
+  strategyVersionId: number;
+  datasetVersionId: number;
+  engineVersion: string;
+  parameters: Record<string, BacktestParameterValue>;
+  seed: number;
+  initialCash: string;
+  execution: BacktestExecutionCommand;
+  maxAttempts: number;
+};
+
 export type OperationsSnapshot = {
   dashboard: DashboardSummary;
   candidateEntries: CandidateUniverseEntry[];
@@ -1121,6 +1142,12 @@ export async function loadBacktestEquityPoints(options: {
   return getJson<BacktestEquityPointsResponse>(
     `/v1/backtest-runs/${options.backtestRunId}/equity-points?${params.toString()}`
   );
+}
+
+export async function createBacktestRun(
+  command: CreateBacktestRunCommand
+): Promise<BacktestRunSummary> {
+  return sendJson<BacktestRunSummary>("/v1/backtest-runs", "POST", command);
 }
 
 export async function loadInstrumentSnapshot(

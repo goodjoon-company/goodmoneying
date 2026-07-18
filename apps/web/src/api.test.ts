@@ -461,6 +461,72 @@ describe("운영 API 클라이언트", () => {
     );
   });
 
+  it("Backtest Lab은 백테스트 실행 생성 API를 운영 프록시 계약대로 호출한다", async () => {
+    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({
+        backtestRunId: 23,
+        strategyVersionId: 41,
+        datasetVersionId: 12,
+        engineVersion: "backtest-core-v1",
+        status: "pending",
+        inputHash: "e".repeat(64),
+        resultHash: null,
+        requestedAt: "2026-07-18T08:00:00Z",
+        startedAt: null,
+        finishedAt: null
+      })
+    );
+    vi.stubGlobal("fetch", fetch);
+
+    const { createBacktestRun } = await import("./api");
+
+    await expect(
+      createBacktestRun({
+        requestId: "backtest-request-1",
+        idempotencyKey: "backtest-key-1",
+        actorId: "operator:test",
+        requestedAt: "2026-07-18T08:00:00Z",
+        reason: "P4-7 백테스트 실행 생성",
+        strategyVersionId: 41,
+        datasetVersionId: 12,
+        engineVersion: "backtest-core-v1",
+        parameters: { entryQuantity: "0.1" },
+        seed: 42,
+        initialCash: "1000000",
+        execution: {
+          feeRate: "0.0005",
+          slippageBps: "5",
+          latencySeconds: 60,
+          maxParticipationRate: "0.25"
+        },
+        maxAttempts: 3
+      })
+    ).resolves.toMatchObject({
+      backtestRunId: 23,
+      status: "pending",
+      resultHash: null
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/v1/backtest-runs",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "Content-Type": "application/json"
+        })
+      })
+    );
+    expect((fetch.mock.calls[0][1]?.headers as Record<string, string>)["X-Operator-Token"])
+      .toBeUndefined();
+    const body = JSON.parse(String(fetch.mock.calls[0][1]?.body));
+    expect(body.parameters).toEqual({ entryQuantity: "0.1" });
+    expect(body.execution).toEqual({
+      feeRate: "0.0005",
+      slippageBps: "5",
+      latencySeconds: 60,
+      maxParticipationRate: "0.25"
+    });
+  });
+
   it("구버전 대시보드 응답에 새 운영 콘솔 필드가 없어도 첫 화면용 기본값을 채운다", async () => {
     const dashboardWithoutWorkerStatus = { ...dashboard };
     delete (dashboardWithoutWorkerStatus as Partial<typeof dashboard>).workerStatus;

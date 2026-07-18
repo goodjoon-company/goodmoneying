@@ -16,6 +16,7 @@ from goodmoneying_shared.backtest_engine import (
     BacktestResult,
     BacktestTrade,
     ExecutionModel,
+    run_candle_backtest,
 )
 from goodmoneying_shared.backtest_store import (
     BacktestIdempotencyConflictError,
@@ -244,6 +245,129 @@ def test_live_postgres_백테스트_worker는_임대_완료_재시도_dead_lette
     )
     assert dead_state["status"] == "dead_letter"
     assert dead_state["deadLetterReason"] == "ArithmeticError"
+
+
+def test_live_postgres_백테스트_run_생성은_ready_input을_queued로_고정한다() -> None:
+    repository = PostgresOperationsRepository(_database_url())
+    store = PostgresBacktestStore(repository)
+    key = uuid4().hex
+    now = datetime(2026, 7, 18, 12, tzinfo=UTC)
+    dataset_version_id, _dataset_hash = _insert_dataset_version(repository, key, now)
+    strategy_version_id, _strategy_hash = _insert_strategy_version(repository, key, now)
+
+    created = store.create_run(
+        request_id=f"backtest-create-request-{key}",
+        idempotency_key=f"backtest-create-key-{key}",
+        actor_id="operator:test",
+        requested_at=now,
+        reason="P4-7 백테스트 실행 생성 E2E",
+        strategy_version_id=strategy_version_id,
+        dataset_version_id=dataset_version_id,
+        engine_version="backtest-core-v1",
+        parameters={"entryQuantity": "0.1"},
+        seed=42,
+        initial_cash=Decimal("1000000"),
+        execution={
+            "feeRate": Decimal("0.0005"),
+            "slippageBps": Decimal("5"),
+            "latencySeconds": 60,
+            "maxParticipationRate": Decimal("0.25"),
+        },
+        max_attempts=3,
+    )
+    replay = store.create_run(
+        request_id=f"backtest-create-request-{key}",
+        idempotency_key=f"backtest-create-key-{key}",
+        actor_id="operator:test",
+        requested_at=now,
+        reason="P4-7 백테스트 실행 생성 E2E",
+        strategy_version_id=strategy_version_id,
+        dataset_version_id=dataset_version_id,
+        engine_version="backtest-core-v1",
+        parameters={"entryQuantity": "0.1"},
+        seed=42,
+        initial_cash=Decimal("1000000"),
+        execution={
+            "feeRate": Decimal("0.0005"),
+            "slippageBps": Decimal("5"),
+            "latencySeconds": 60,
+            "maxParticipationRate": Decimal("0.25"),
+        },
+        max_attempts=3,
+    )
+
+    assert created["backtestRunId"] == replay["backtestRunId"]
+    assert created["status"] == "pending"
+    assert created["resultHash"] is None
+    assert created["startedAt"] is None
+    assert created["finishedAt"] is None
+
+    with pytest.raises(BacktestIdempotencyConflictError):
+        store.create_run(
+            request_id=f"backtest-create-request-{key}",
+            idempotency_key=f"backtest-create-key-{key}",
+            actor_id="operator:test",
+            requested_at=now,
+            reason="같은 키의 다른 백테스트 실행",
+            strategy_version_id=strategy_version_id,
+            dataset_version_id=dataset_version_id,
+            engine_version="backtest-core-v1",
+            parameters={"entryQuantity": "0.2"},
+            seed=42,
+            initial_cash=Decimal("1000000"),
+            execution={
+                "feeRate": Decimal("0.0005"),
+                "slippageBps": Decimal("5"),
+                "latencySeconds": 60,
+                "maxParticipationRate": Decimal("0.25"),
+            },
+            max_attempts=3,
+        )
+
+    claimed = store.claim_next_run("worker-p4-7", lease_seconds=300)
+
+    assert claimed is not None
+    assert claimed["backtestRunId"] == created["backtestRunId"]
+    assert claimed["status"] == "running"
+    assert claimed["strategyVersionId"] == strategy_version_id
+    assert claimed["datasetVersionId"] == dataset_version_id
+    assert claimed["inputHash"] == created["inputHash"]
+
+    payload = cast(dict[str, object], claimed["inputPayload"])
+    spec_payload = cast(dict[str, object], payload["spec"])
+    execution_payload = cast(dict[str, object], spec_payload["execution"])
+    result = run_candle_backtest(
+        BacktestEngineSpec(
+            dataset_version_id=int(cast(int, spec_payload["datasetVersionId"])),
+            dataset_content_hash=str(spec_payload["datasetContentHash"]),
+            strategy_version_id=int(cast(int, spec_payload["strategyVersionId"])),
+            strategy_graph_hash=str(spec_payload["strategyGraphHash"]),
+            engine_version=str(spec_payload["engineVersion"]),
+            parameter_hash=str(spec_payload["parameterHash"]),
+            seed=int(cast(int, spec_payload["seed"])),
+            initial_cash=Decimal(str(spec_payload["initialCash"])),
+            execution=ExecutionModel(
+                fee_rate=Decimal(str(execution_payload["fee_rate"])),
+                slippage_bps=Decimal(str(execution_payload["slippage_bps"])),
+                latency_seconds=int(cast(int, execution_payload["latency_seconds"])),
+                max_participation_rate=Decimal(
+                    str(execution_payload["max_participation_rate"])
+                ),
+            ),
+        ),
+        candles=(),
+        signals=(),
+    )
+    completed = store.complete_claimed_run(
+        int(cast(int, claimed["backtestRunId"])),
+        "worker-p4-7",
+        int(cast(int, claimed["leaseGeneration"])),
+        result=result,
+        completed_at=now,
+    )
+
+    assert result.input_hash == created["inputHash"]
+    assert completed["status"] == "succeeded"
 
 
 def _database_url() -> str:

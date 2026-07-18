@@ -86,6 +86,80 @@ def test_P4_4_OpenAPI는_백테스트_run_목록과_안정_cursor를_노출한�
     }
 
 
+def test_P4_7_OpenAPI는_백테스트_run_생성_계약을_노출한다() -> None:
+    document = yaml.safe_load(OPENAPI.read_text())
+    paths = document["paths"]
+
+    operation = paths["/v1/backtest-runs"]["post"]
+
+    assert operation["tags"] == ["백테스트(Backtest)"]
+    assert operation["operationId"] == "createBacktestRun"
+    assert operation["security"] == [{"OperatorToken": []}]
+    assert operation["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/CreateBacktestRunRequest"
+    }
+    assert operation["responses"]["202"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/BacktestRunSummary"
+    }
+    assert operation["responses"]["409"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ErrorResponse"
+    }
+    assert operation["responses"]["422"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ErrorResponse"
+    }
+    assert operation["responses"]["401"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ErrorResponse"
+    }
+    assert operation["responses"]["503"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ErrorResponse"
+    }
+
+    schemas = document["components"]["schemas"]
+    assert set(schemas["CreateBacktestRunRequest"]["required"]) == {
+        "requestId",
+        "idempotencyKey",
+        "actorId",
+        "requestedAt",
+        "reason",
+        "strategyVersionId",
+        "datasetVersionId",
+        "engineVersion",
+        "parameters",
+        "seed",
+        "initialCash",
+        "execution",
+        "maxAttempts",
+    }
+    assert schemas["CreateBacktestRunRequest"]["properties"]["parameters"] == {
+        "type": "object",
+        "additionalProperties": {
+            "type": ["string", "integer", "boolean", "null"]
+        },
+    }
+    assert schemas["CreateBacktestExecution"]["required"] == [
+        "feeRate",
+        "slippageBps",
+        "latencySeconds",
+        "maxParticipationRate",
+    ]
+    assert schemas["CreateBacktestExecution"]["properties"]["feeRate"] == {
+        "type": "string",
+        "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+    }
+    assert schemas["CreateBacktestExecution"]["properties"]["slippageBps"] == {
+        "type": "string",
+        "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+    }
+    assert schemas["CreateBacktestExecution"]["properties"]["maxParticipationRate"] == {
+        "type": "string",
+        "pattern": "^(0\\.[0-9]*[1-9][0-9]*|1(\\.0+)?)$",
+    }
+    assert schemas["CreateBacktestRunRequest"]["properties"]["execution"] == {
+        "$ref": "#/components/schemas/CreateBacktestExecution"
+    }
+    assert schemas["CreateBacktestRunRequest"]["properties"]["maxAttempts"]["minimum"] == 1
+
+
 def test_P4_6_OpenAPI는_백테스트_결과_대용량_pagination을_노출한다() -> None:
     document = yaml.safe_load(OPENAPI.read_text())
     paths = document["paths"]

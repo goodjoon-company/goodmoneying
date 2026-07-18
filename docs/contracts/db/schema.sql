@@ -61,7 +61,7 @@ BEGIN
     RAISE EXCEPTION 'backtest_runs is append-only';
   END IF;
 
-  IF OLD.status IN ('succeeded','failed','cancelled') THEN
+  IF OLD.status IN ('succeeded','failed','cancelled','dead_letter') THEN
     RAISE EXCEPTION 'backtest_runs is append-only';
   END IF;
 
@@ -71,6 +71,7 @@ BEGIN
      OR NEW.dataset_content_hash <> OLD.dataset_content_hash
      OR NEW.engine_version <> OLD.engine_version
      OR NEW.input_hash <> OLD.input_hash
+     OR NEW.input_payload <> OLD.input_payload
      OR NEW.parameter_hash <> OLD.parameter_hash
      OR NEW.seed <> OLD.seed
      OR NEW.idempotency_key <> OLD.idempotency_key
@@ -1108,6 +1109,7 @@ CREATE TABLE public.backtest_runs (
     last_error_code text,
     last_error_message text,
     dead_letter_reason text,
+    input_payload jsonb DEFAULT '{}'::jsonb NOT NULL,
     CONSTRAINT backtest_runs_actor_id_check CHECK ((btrim(actor_id) <> ''::text)),
     CONSTRAINT backtest_runs_assumptions_check CHECK ((jsonb_typeof(assumptions) = 'array'::text)),
     CONSTRAINT backtest_runs_attempt_count_check CHECK ((attempt_count >= 0)),
@@ -1116,6 +1118,7 @@ CREATE TABLE public.backtest_runs (
     CONSTRAINT backtest_runs_engine_version_check CHECK ((btrim(engine_version) <> ''::text)),
     CONSTRAINT backtest_runs_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
     CONSTRAINT backtest_runs_input_hash_check CHECK ((input_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT backtest_runs_input_payload_object_check CHECK ((jsonb_typeof(input_payload) = 'object'::text)),
     CONSTRAINT backtest_runs_lease_generation_check CHECK ((lease_generation >= 0)),
     CONSTRAINT backtest_runs_max_attempts_check CHECK ((max_attempts > 0)),
     CONSTRAINT backtest_runs_non_running_lease_check CHECK (((status = 'running'::text) OR ((lease_owner IS NULL) AND (lease_expires_at IS NULL)))),
@@ -7211,4 +7214,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260717001300'),
     ('20260718000100'),
     ('20260718000200'),
-    ('20260718000300');
+    ('20260718000300'),
+    ('20260718000400');

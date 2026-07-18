@@ -14,13 +14,23 @@ from typing import Any, cast
 from psycopg import errors
 from psycopg.types.json import Jsonb
 
-from goodmoneying_shared.backtest_engine import BacktestEngineSpec, BacktestResult
+from goodmoneying_shared.backtest_engine import (
+    BacktestCandleEvent,
+    BacktestEngineSpec,
+    BacktestResult,
+    ExecutionModel,
+    run_candle_backtest,
+)
 
 Row = dict[str, Any]
 
 
 class BacktestIdempotencyConflictError(ValueError):
     """같은 멱등 키가 다른 백테스트 저장 요청 본문을 가리킨다."""
+
+
+class BacktestInputNotReadyError(ValueError):
+    """백테스트 실행 입력으로 쓸 published 전략 또는 sealed 데이터셋이 없다."""
 
 
 class BacktestCursorMismatchError(ValueError):
@@ -40,6 +50,9 @@ _CURSOR_HMAC_SECRET = os.getenv("GOODMONEYING_CURSOR_HMAC_SECRET") or secrets.to
 class PostgresBacktestStore:
     def __init__(self, repository: object) -> None:
         self._repository = repository
+
+    def create_run(self, **arguments: object) -> Row:
+        return create_run(self._repository, **arguments)
 
     def persist_completed_run(self, **arguments: object) -> Row:
         return persist_completed_run(self._repository, **arguments)
@@ -262,6 +275,201 @@ def fail_claimed_run(
         if failed is None:
             raise BacktestLeaseLostError("백테스트 run 실패 전이를 쓸 임대를 잃었다.")
         return _claimed_run_response(failed)
+
+
+def create_run(
+    repository: object,
+    *,
+    request_id: object,
+    idempotency_key: object,
+    actor_id: object,
+    requested_at: object,
+    reason: object,
+    strategy_version_id: object,
+    dataset_version_id: object,
+    engine_version: object,
+    parameters: object,
+    seed: object,
+    initial_cash: object,
+    execution: object,
+    max_attempts: object = 3,
+) -> Row:
+    requested_at_dt = _datetime(requested_at, "requestedAt")
+    command_payload = {
+        "requestId": _non_blank(request_id, "requestId"),
+        "idempotencyKey": _non_blank(idempotency_key, "idempotencyKey"),
+        "actorId": _non_blank(actor_id, "actorId"),
+        "requestedAt": requested_at_dt.isoformat(),
+        "reason": _non_blank(reason, "reason"),
+        "strategyVersionId": _positive_int(strategy_version_id, "strategyVersionId"),
+        "datasetVersionId": _positive_int(dataset_version_id, "datasetVersionId"),
+        "engineVersion": _non_blank(engine_version, "engineVersion"),
+        "parameters": _parameter_payload(parameters),
+        "seed": _seed(seed),
+        "initialCash": _decimal_text(initial_cash, "initialCash"),
+        "execution": _execution_payload(execution),
+        "maxAttempts": _positive_int(max_attempts, "maxAttempts"),
+    }
+    request_hash = _hash(command_payload)
+    parameter_hash = _hash(cast(Mapping[str, object], command_payload["parameters"]))
+    connector = _connector(repository)
+    for attempt in range(3):
+        try:
+            with connector() as connection:
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"backtest-run:{command_payload['idempotencyKey']}",),
+                )
+                existing = connection.execute(
+                    "SELECT id, request_hash FROM backtest_runs WHERE idempotency_key=%s",
+                    (command_payload["idempotencyKey"],),
+                ).fetchone()
+                if existing is not None:
+                    if existing["request_hash"] != request_hash:
+                        raise BacktestIdempotencyConflictError(
+                            "멱등 키의 기존 백테스트 실행 요청과 본문이 다르다."
+                        )
+                    replay = _get_run_summary_with_connection(
+                        connection, int(cast(int, existing["id"]))
+                    )
+                    assert replay is not None
+                    return replay
+
+                material = connection.execute(
+                    """
+                    SELECT
+                      strategy.id AS strategy_version_id,
+                      strategy.graph_hash AS strategy_graph_hash,
+                      version.id AS dataset_version_id,
+                      version.content_hash AS dataset_content_hash,
+                      version.as_of AS dataset_as_of,
+                      version.output_start_at AS dataset_from,
+                      version.end_at AS dataset_to,
+                      version.fill_policy,
+                      version.missing_policy
+                    FROM strategy_versions strategy
+                    JOIN strategy_graphs graph
+                      ON graph.strategy_version_id=strategy.id
+                     AND graph.graph_hash=strategy.graph_hash
+                    CROSS JOIN dataset_versions version
+                    WHERE strategy.id=%s
+                      AND strategy.status='published'
+                      AND version.id=%s
+                      AND version.sealed_at IS NOT NULL
+                    """,
+                    (
+                        command_payload["strategyVersionId"],
+                        command_payload["datasetVersionId"],
+                    ),
+                ).fetchone()
+                if material is None:
+                    raise BacktestInputNotReadyError(
+                        "published 전략 version과 sealed 데이터셋 version만 "
+                        "백테스트 실행에 사용할 수 있다."
+                    )
+
+                execution_payload = cast(
+                    Mapping[str, object],
+                    command_payload["execution"],
+                )
+                spec = BacktestEngineSpec(
+                    dataset_version_id=int(cast(int, material["dataset_version_id"])),
+                    dataset_content_hash=str(material["dataset_content_hash"]),
+                    strategy_version_id=int(cast(int, material["strategy_version_id"])),
+                    strategy_graph_hash=str(material["strategy_graph_hash"]),
+                    engine_version=str(command_payload["engineVersion"]),
+                    parameter_hash=parameter_hash,
+                    seed=int(cast(int, command_payload["seed"])),
+                    initial_cash=Decimal(str(command_payload["initialCash"])),
+                    execution=ExecutionModel(
+                        fee_rate=Decimal(str(execution_payload["feeRate"])),
+                        slippage_bps=Decimal(str(execution_payload["slippageBps"])),
+                        latency_seconds=int(cast(int, execution_payload["latencySeconds"])),
+                        max_participation_rate=Decimal(
+                            str(execution_payload["maxParticipationRate"])
+                        ),
+                    ),
+                )
+                candle_events = _load_candle_events(
+                    connection,
+                    int(cast(int, material["dataset_version_id"])),
+                )
+                preview = run_candle_backtest(spec, candles=candle_events, signals=())
+                input_hash = preview.input_hash
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"backtest-input:{input_hash}",),
+                )
+                input_payload = {
+                    "kind": "backtest-run-input-v1",
+                    "spec": _engine_spec_payload(spec),
+                    "events": [_engine_event_payload(event) for event in candle_events],
+                    "signals": [],
+                    "assumptions": list(preview.assumptions),
+                    "dataset": {
+                        "asOf": _json_time(material["dataset_as_of"]),
+                        "from": _json_time(material["dataset_from"]),
+                        "to": _json_time(material["dataset_to"]),
+                        "fillPolicy": material["fill_policy"],
+                        "missingPolicy": material["missing_policy"],
+                    },
+                }
+                duplicate = connection.execute(
+                    """
+                    SELECT
+                      id, strategy_version_id, dataset_version_id, engine_version,
+                      status, input_hash, result_hash, requested_at, started_at, finished_at
+                    FROM backtest_runs WHERE input_hash=%s
+                    """,
+                    (input_hash,),
+                ).fetchone()
+                if duplicate is not None:
+                    raise BacktestIdempotencyConflictError(
+                        "동일한 백테스트 입력이 이미 다른 멱등 키로 생성됐다."
+                    )
+
+                run = connection.execute(
+                    """
+                    INSERT INTO backtest_runs (
+                      strategy_version_id, strategy_graph_hash,
+                      dataset_version_id, dataset_content_hash,
+                      engine_version, status, input_hash, input_payload, result_hash,
+                      parameter_hash, seed, assumptions, idempotency_key,
+                      request_id, actor_id, requested_at, reason, request_hash,
+                      max_attempts
+                    ) VALUES (
+                      %s,%s,%s,%s,%s,'queued',%s,%s,NULL,
+                      %s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+                    ) RETURNING
+                      id, strategy_version_id, dataset_version_id, engine_version,
+                      status, input_hash, result_hash, requested_at, started_at, finished_at
+                    """,
+                    (
+                        material["strategy_version_id"],
+                        material["strategy_graph_hash"],
+                        material["dataset_version_id"],
+                        material["dataset_content_hash"],
+                        command_payload["engineVersion"],
+                        input_hash,
+                        Jsonb(input_payload),
+                        parameter_hash,
+                        command_payload["seed"],
+                        Jsonb(list(preview.assumptions)),
+                        command_payload["idempotencyKey"],
+                        command_payload["requestId"],
+                        command_payload["actorId"],
+                        requested_at_dt,
+                        command_payload["reason"],
+                        request_hash,
+                        command_payload["maxAttempts"],
+                    ),
+                ).fetchone()
+                assert run is not None
+                return _run_summary_response(run)
+        except errors.SerializationFailure:
+            if attempt == 2:
+                raise
+    raise RuntimeError("백테스트 실행 생성 재시도 한도를 초과했다.")
 
 
 def persist_completed_run(
@@ -554,6 +762,109 @@ def _get_run_with_connection(connection: Any, backtest_run_id: int) -> Row | Non
     }
 
 
+def _get_run_summary_with_connection(connection: Any, backtest_run_id: int) -> Row | None:
+    row = connection.execute(
+        """
+        SELECT
+          id, strategy_version_id, dataset_version_id, engine_version, status,
+          input_hash, result_hash, requested_at, started_at, finished_at
+        FROM backtest_runs WHERE id=%s
+        """,
+        (backtest_run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _run_summary_response(row)
+
+
+def _load_candle_events(
+    connection: Any, dataset_version_id: int
+) -> tuple[BacktestCandleEvent, ...]:
+    rows = connection.execute(
+        """
+        SELECT
+          candle.instrument_id,
+          instrument.market_code,
+          candle.occurred_at,
+          candle.knowledge_at,
+          CASE
+            WHEN candle.source_candle_revision_id IS NOT NULL
+              THEN 'source:' || candle.source_candle_revision_id::text
+            ELSE 'rollup:' || candle.candle_rollup_id::text
+          END AS stable_sequence,
+          COALESCE(revision.open_price, rollup.open_price) AS open_price,
+          COALESCE(revision.high_price, rollup.high_price) AS high_price,
+          COALESCE(revision.low_price, rollup.low_price) AS low_price,
+          COALESCE(revision.close_price, rollup.close_price) AS close_price,
+          COALESCE(revision.trade_volume, rollup.trade_volume) AS trade_volume,
+          candle.quality,
+          candle.content_hash
+        FROM dataset_version_candles candle
+        JOIN instruments instrument ON instrument.id=candle.instrument_id
+        LEFT JOIN source_candle_revisions revision
+          ON revision.id=candle.source_candle_revision_id
+        LEFT JOIN candle_rollups rollup ON rollup.id=candle.candle_rollup_id
+        WHERE candle.dataset_version_id=%s
+        ORDER BY candle.knowledge_at, stable_sequence
+        """,
+        (dataset_version_id,),
+    ).fetchall()
+    return tuple(
+        BacktestCandleEvent(
+            instrument_id=int(cast(int, row["instrument_id"])),
+            market_code=str(row["market_code"]),
+            occurred_at=cast(datetime, row["occurred_at"]),
+            knowledge_at=cast(datetime, row["knowledge_at"]),
+            stable_sequence=str(row["stable_sequence"]),
+            open=cast(Decimal, row["open_price"]),
+            high=cast(Decimal, row["high_price"]),
+            low=cast(Decimal, row["low_price"]),
+            close=cast(Decimal, row["close_price"]),
+            volume=cast(Decimal, row["trade_volume"]),
+            quality=cast(Any, row["quality"]),
+            content_hash=str(row["content_hash"]),
+        )
+        for row in rows
+    )
+
+
+def _engine_spec_payload(spec: BacktestEngineSpec) -> Row:
+    return {
+        "datasetVersionId": spec.dataset_version_id,
+        "datasetContentHash": spec.dataset_content_hash,
+        "strategyVersionId": spec.strategy_version_id,
+        "strategyGraphHash": spec.strategy_graph_hash,
+        "engineVersion": spec.engine_version,
+        "parameterHash": spec.parameter_hash,
+        "seed": spec.seed,
+        "initialCash": str(spec.initial_cash),
+        "execution": {
+            "fee_rate": str(spec.execution.fee_rate),
+            "slippage_bps": str(spec.execution.slippage_bps),
+            "latency_seconds": spec.execution.latency_seconds,
+            "max_participation_rate": str(spec.execution.max_participation_rate),
+        },
+    }
+
+
+def _engine_event_payload(event: BacktestCandleEvent) -> Row:
+    return {
+        "instrumentId": event.instrument_id,
+        "marketCode": event.market_code,
+        "occurredAt": _json_time(event.occurred_at),
+        "knowledgeAt": _json_time(event.knowledge_at),
+        "stableSequence": event.stable_sequence,
+        "sourcePriority": event.source_priority,
+        "open": str(event.open),
+        "high": str(event.high),
+        "low": str(event.low),
+        "close": str(event.close),
+        "volume": str(event.volume),
+        "quality": event.quality,
+        "contentHash": event.content_hash,
+    }
+
+
 def _insert_trades(connection: Any, run_id: int, result: BacktestResult) -> None:
     for index, trade in enumerate(result.trades, start=1):
         connection.execute(
@@ -705,6 +1016,7 @@ def _claimed_run_response(row: Mapping[str, object]) -> Row:
         "engineVersion": row["engine_version"],
         "status": row["status"],
         "inputHash": row["input_hash"],
+        "inputPayload": row["input_payload"],
         "parameterHash": row["parameter_hash"],
         "seed": int(cast(int, row["seed"])),
         "leaseOwner": row["lease_owner"],
@@ -756,6 +1068,61 @@ def _datetime(value: object, field: str) -> datetime:
     if not isinstance(value, datetime):
         raise ValueError(f"{field}는 UTC datetime이어야 한다.")
     return value
+
+
+def _parameter_payload(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise ValueError("parameters는 객체여야 한다.")
+    result: dict[str, object] = {}
+    for key, parameter_value in value.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("parameters key는 공백이 아닌 문자열이어야 한다.")
+        if parameter_value is not None and not isinstance(parameter_value, str | int | bool):
+            raise ValueError(
+                "parameters value는 string, integer, boolean, null만 허용한다."
+            )
+        result[key.strip()] = parameter_value
+    return result
+
+
+def _seed(value: object) -> int:
+    if type(value) is not int:
+        raise ValueError("seed는 정수여야 한다.")
+    return value
+
+
+def _json_time(value: object) -> str:
+    if not isinstance(value, datetime):
+        raise ValueError("백테스트 입력 materialization 시각이 datetime이 아니다.")
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _decimal_text(value: object, field: str) -> str:
+    if not isinstance(value, Decimal):
+        raise ValueError(f"{field}는 Decimal이어야 한다.")
+    return str(value)
+
+
+def _execution_payload(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise ValueError("execution은 객체여야 한다.")
+    fee_rate = value.get("feeRate")
+    slippage_bps = value.get("slippageBps")
+    latency_seconds = value.get("latencySeconds")
+    max_participation_rate = value.get("maxParticipationRate")
+    if not all(
+        isinstance(item, Decimal)
+        for item in (fee_rate, slippage_bps, max_participation_rate)
+    ):
+        raise ValueError("execution feeRate, slippageBps, maxParticipationRate는 Decimal이다.")
+    if type(latency_seconds) is not int or latency_seconds < 0:
+        raise ValueError("execution latencySeconds는 0 이상 정수다.")
+    return {
+        "feeRate": str(fee_rate),
+        "slippageBps": str(slippage_bps),
+        "latencySeconds": latency_seconds,
+        "maxParticipationRate": str(max_participation_rate),
+    }
 
 
 def _hash(payload: Mapping[str, object]) -> str:

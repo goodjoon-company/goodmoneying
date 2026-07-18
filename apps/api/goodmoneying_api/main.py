@@ -37,6 +37,7 @@ from goodmoneying_api.schemas import (
     BacktestEquityPointsResponse,
     BacktestRunResponse,
     BacktestRunsResponse,
+    BacktestRunSummaryResponse,
     BacktestTradesResponse,
     CandidateUniverseResponse,
     CandleSeriesResponse,
@@ -46,6 +47,7 @@ from goodmoneying_api.schemas import (
     CoverageCountsResponse,
     CreateBackfillJobRequest,
     CreateBackfillPlanRequest,
+    CreateBacktestRunRequest,
     CreateDatasetBuildRequest,
     CreateStrategyRequest,
     DashboardAuditLogSummaryResponse,
@@ -90,6 +92,8 @@ from goodmoneying_api.schemas import (
 from goodmoneying_api.service import AnalysisSubscriptionError, OperationsService
 from goodmoneying_shared.backtest_store import (
     BacktestCursorMismatchError,
+    BacktestIdempotencyConflictError,
+    BacktestInputNotReadyError,
     PostgresBacktestStore,
 )
 from goodmoneying_shared.data_foundation import (
@@ -325,6 +329,8 @@ class EmptyDatasetVersionRepository:
 
 
 class BacktestApiRepository(Protocol):
+    def create_run(self, **arguments: object) -> Mapping[str, object]: ...
+
     def list_runs(self, *, page_size: int, cursor: str | None) -> Mapping[str, object]: ...
 
     def get_run(self, backtest_run_id: int) -> Mapping[str, object] | None: ...
@@ -335,6 +341,9 @@ class BacktestApiRepository(Protocol):
 
 
 class EmptyBacktestRepository:
+    def create_run(self, **_arguments: object) -> Mapping[str, object]:
+        raise RuntimeError("백테스트 저장소가 구성되지 않았다.")
+
     def list_runs(self, **_arguments: object) -> Mapping[str, object]:
         return {"items": [], "nextCursor": None}
 
@@ -627,6 +636,51 @@ def create_app(
                 },
             )
         return StrategyVersionResponse.model_validate(result)
+
+    @app.post(
+        "/v1/backtest-runs",
+        response_model=BacktestRunSummaryResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+        dependencies=[Depends(require_operator_token)],
+    )
+    def create_backtest_run(request: CreateBacktestRunRequest) -> BacktestRunSummaryResponse:
+        try:
+            result = backtest_store.create_run(
+                request_id=request.requestId,
+                idempotency_key=request.idempotencyKey,
+                actor_id=request.actorId,
+                requested_at=request.requestedAt,
+                reason=request.reason,
+                strategy_version_id=request.strategyVersionId,
+                dataset_version_id=request.datasetVersionId,
+                engine_version=request.engineVersion,
+                parameters=request.parameters,
+                seed=request.seed,
+                initial_cash=request.initialCash,
+                execution=request.execution.model_dump(),
+                max_attempts=request.maxAttempts,
+            )
+        except BacktestIdempotencyConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "BACKTEST_IDEMPOTENCY_CONFLICT", "message": str(exc)},
+            ) from exc
+        except BacktestInputNotReadyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={"code": "BACKTEST_INPUT_NOT_READY", "message": str(exc)},
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={"code": "INVALID_BACKTEST_RUN", "message": str(exc)},
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"code": "BACKTEST_STORE_UNAVAILABLE", "message": str(exc)},
+            ) from exc
+        return BacktestRunSummaryResponse.model_validate(result)
 
     @app.get("/v1/backtest-runs", response_model=BacktestRunsResponse)
     def list_backtest_runs(

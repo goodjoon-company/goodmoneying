@@ -321,6 +321,7 @@ def _queued_row(
         "engine_version": "backtest-core-v1",
         "status": status,
         "input_hash": "e" * 64,
+        "input_payload": {"kind": "backtest-run-input-v1", "events": [], "signals": []},
         "result_hash": None,
         "parameter_hash": "b" * 64,
         "seed": 42,

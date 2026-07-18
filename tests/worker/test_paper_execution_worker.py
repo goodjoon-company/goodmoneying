@@ -6,7 +6,10 @@ from typing import Any
 
 import pytest
 
-from goodmoneying_shared.portfolio_bot_store import PaperExecutionLeaseLostError
+from goodmoneying_shared.portfolio_bot_store import (
+    PaperExecutionBlockedError,
+    PaperExecutionLeaseLostError,
+)
 from goodmoneying_worker.paper_execution_worker import (
     PaperExecutionFill,
     PaperExecutionWorker,
@@ -56,6 +59,34 @@ def test_paper_execution_worker는_lease_lost를_재시도_오류로_기록하�
     assert store.failed is None
 
 
+def test_paper_execution_worker는_kill_switch_차단을_재시도_오류로_기록하지_않는다() -> None:
+    store = FakePaperExecutionStore(blocked=True)
+    worker = PaperExecutionWorker(
+        store,
+        executor=lambda _claim: PaperExecutionFill(fill_price=Decimal("100")),
+        worker_id="paper-worker-a",
+    )
+
+    processed = worker.run_once()
+
+    assert processed == 0
+    assert store.failed is None
+
+
+def test_paper_execution_worker는_blocked_반환을_처리완료로_세지_않는다() -> None:
+    store = FakePaperExecutionStore(blocked_return=True)
+    worker = PaperExecutionWorker(
+        store,
+        executor=lambda _claim: PaperExecutionFill(fill_price=Decimal("100")),
+        worker_id="paper-worker-a",
+    )
+
+    processed = worker.run_once()
+
+    assert processed == 0
+    assert store.failed is None
+
+
 def test_paper_execution_worker는_시뮬레이터_예외를_fail로_기록하고_전파한다() -> None:
     store = FakePaperExecutionStore()
     worker = PaperExecutionWorker(
@@ -77,8 +108,16 @@ def test_paper_execution_worker는_시뮬레이터_예외를_fail로_기록하�
 
 
 class FakePaperExecutionStore:
-    def __init__(self, *, lease_lost: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        lease_lost: bool = False,
+        blocked: bool = False,
+        blocked_return: bool = False,
+    ) -> None:
         self.lease_lost = lease_lost
+        self.blocked = blocked
+        self.blocked_return = blocked_return
         self.completed: dict[str, Any] | None = None
         self.failed: dict[str, Any] | None = None
 
@@ -93,6 +132,10 @@ class FakePaperExecutionStore:
     def complete_claimed_paper_execution_job(self, **arguments: Any) -> dict[str, Any]:
         if self.lease_lost:
             raise PaperExecutionLeaseLostError("임대가 만료됐다.")
+        if self.blocked:
+            raise PaperExecutionBlockedError("kill switch가 활성화됐다.")
+        if self.blocked_return:
+            return {"paperExecutionJobId": arguments["job_id"], "status": "retry_wait"}
         self.completed = arguments
         return {"paperExecutionJobId": arguments["job_id"], "status": "succeeded"}
 

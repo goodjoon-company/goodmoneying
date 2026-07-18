@@ -313,6 +313,9 @@ def _insert_backtest_run(
     dataset_version_id: int,
     dataset_hash: str,
 ) -> int:
+    input_hash = hashlib.sha256(f"backtest-input-{key}".encode()).hexdigest()
+    result_hash = hashlib.sha256(f"backtest-result-{key}".encode()).hexdigest()
+    parameter_hash = hashlib.sha256(f"backtest-parameter-{key}".encode()).hexdigest()
     with repository._connect() as connection:
         row = connection.execute(
             """
@@ -321,10 +324,10 @@ def _insert_backtest_run(
               dataset_version_id, dataset_content_hash,
               engine_version, status, input_hash, result_hash,
               parameter_hash, seed, assumptions, idempotency_key,
-              request_id, actor_id, requested_at, reason, request_hash
+              request_id, actor_id, requested_at, reason, request_hash, finished_at
             ) VALUES (
               %s,%s,%s,%s,'backtest-core-v1','succeeded',%s,%s,
-              %s,42,'[]'::jsonb,%s,%s,'operator:test',%s,%s,%s
+              %s,42,'[]'::jsonb,%s,%s,'operator:test',%s,%s,%s,%s
             ) RETURNING id
             """,
             (
@@ -332,14 +335,15 @@ def _insert_backtest_run(
                 strategy_hash,
                 dataset_version_id,
                 dataset_hash,
-                "6" * 64,
-                "7" * 64,
-                "8" * 64,
+                input_hash,
+                result_hash,
+                parameter_hash,
                 f"backtest-key-{key}",
                 f"backtest-request-{key}",
                 now,
                 "P5-1 backtest reference",
                 "0" * 64,
+                now,
             ),
         ).fetchone()
     assert row is not None

@@ -127,6 +127,23 @@ services:
       postgres:
         condition: service_healthy
 
+  risk-evaluation-worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    container_name: goodmoneying-risk-evaluation-worker
+    command: ["uv", "run", "--no-sync", "python", "-m", "goodmoneying_worker.risk_evaluation_collection_worker"]
+    environment:
+      TZ: UTC
+      GOODMONEYING_RUNTIME_MODE: production
+      GOODMONEYING_DATABASE_URL: postgresql://goodmoneying:goodmoneying@postgres:5432/goodmoneying
+      GOODMONEYING_RELEASE_SHA: ${GOODMONEYING_RELEASE_SHA:-unapproved}
+      GOODMONEYING_RISK_EVALUATION_POLL_SECONDS: "2"
+      GOODMONEYING_LOG_LEVEL: "INFO"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   web:
     build:
       context: .

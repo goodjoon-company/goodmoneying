@@ -97,6 +97,8 @@ def test_prod_home_profile_has_required_files() -> None:
     assert (profile_dir / "target/app/stop-realtime-collection-worker.sh").is_file()
     assert (profile_dir / "target/app/start-backfill-collection-worker.sh").is_file()
     assert (profile_dir / "target/app/stop-backfill-collection-worker.sh").is_file()
+    assert (profile_dir / "target/app/start-risk-evaluation-worker.sh").is_file()
+    assert (profile_dir / "target/app/stop-risk-evaluation-worker.sh").is_file()
     assert (profile_dir / "target/web/start.sh").is_file()
     assert (profile_dir / "target/web/stop.sh").is_file()
     assert (profile_dir / "README.md").is_file()
@@ -169,6 +171,7 @@ def test_prod_home_compose_files_assign_expected_services() -> None:
         "realtime-collection-worker",
         "backfill-collection-worker",
         "candle-aggregation-worker",
+        "risk-evaluation-worker",
     }
     assert set(services(web)) == {"web"}
 
@@ -191,6 +194,9 @@ def test_prod_home_compose_uses_external_env_files() -> None:
     )
     assert (
         "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["candle-aggregation-worker"]["env_file"]
+    )
+    assert (
+        "${GOODMONEYING_APP_BASE_DIR}/env/app.env" in app["risk-evaluation-worker"]["env_file"]
     )
     assert "${GOODMONEYING_WEB_BASE_DIR}/env/web.env" in web["web"]["env_file"]
 
@@ -222,6 +228,7 @@ def test_prod_home_app_workers_do_not_override_runtime_env_file_values() -> None
         "realtime-collection-worker",
         "backfill-collection-worker",
         "candle-aggregation-worker",
+        "risk-evaluation-worker",
     ):
         environment = app[service_name].get("environment", {})
 
@@ -238,6 +245,7 @@ def test_prod_home_app_services_force_production_and_deployed_release_sha() -> N
         "realtime-collection-worker",
         "backfill-collection-worker",
         "candle-aggregation-worker",
+        "risk-evaluation-worker",
     ):
         environment = app[service_name]["environment"]
         assert environment["GOODMONEYING_RUNTIME_MODE"] == "production"
@@ -246,6 +254,7 @@ def test_prod_home_app_services_force_production_and_deployed_release_sha() -> N
         assert "GOODMONEYING_BACKFILL_POLL_SECONDS" not in environment
         assert "GOODMONEYING_BACKFILL_BATCH_SIZE" not in environment
         assert "GOODMONEYING_AGGREGATION_POLL_SECONDS" not in environment
+        assert "GOODMONEYING_RISK_EVALUATION_POLL_SECONDS" not in environment
         assert "GOODMONEYING_LOG_LEVEL" not in environment
 
 
@@ -304,6 +313,10 @@ def test_prod_home_compose_mounts_data_cache_and_config_dirs_from_host_variables
         "${GOODMONEYING_APP_CANDLE_AGGREGATION_WORKER_DATA_DIR}"
         ":/var/lib/goodmoneying/candle-aggregation-worker"
     ) in app["candle-aggregation-worker"]["volumes"]
+    assert (
+        "${GOODMONEYING_APP_RISK_EVALUATION_WORKER_DATA_DIR}"
+        ":/var/lib/goodmoneying/risk-evaluation-worker"
+    ) in app["risk-evaluation-worker"]["volumes"]
     assert "${GOODMONEYING_WEB_NGINX_CACHE_DIR}:/var/cache/nginx" in web["web"]["volumes"]
     assert "${GOODMONEYING_WEB_CONFIG_DIR}:/etc/goodmoneying:ro" in web["web"]["volumes"]
     for compose_services in (infra, app, web):
@@ -357,6 +370,10 @@ def test_prod_home_compose_uses_fixed_ghcr_image_names() -> None:
         == "ghcr.io/goodjoon-company/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}"
     )
     assert (
+        app["risk-evaluation-worker"]["image"]
+        == "ghcr.io/goodjoon-company/goodmoneying-worker:${GOODMONEYING_IMAGE_TAG}"
+    )
+    assert (
         web["web"]["image"] == "ghcr.io/goodjoon-company/goodmoneying-web:${GOODMONEYING_IMAGE_TAG}"
     )
 
@@ -377,6 +394,8 @@ def test_prod_home_target_local_scripts_use_local_compose_env() -> None:
             "stop-realtime-collection-worker.sh",
             "start-backfill-collection-worker.sh",
             "stop-backfill-collection-worker.sh",
+            "start-risk-evaluation-worker.sh",
+            "stop-risk-evaluation-worker.sh",
         ],
         "web": ["start.sh", "stop.sh"],
     }
@@ -415,6 +434,14 @@ def test_prod_home_target_local_scripts_use_local_compose_env() -> None:
         "stop backfill-collection-worker"
         in (target_dir / "app/stop-backfill-collection-worker.sh").read_text()
     )
+    assert (
+        "up -d risk-evaluation-worker"
+        in (target_dir / "app/start-risk-evaluation-worker.sh").read_text()
+    )
+    assert (
+        "stop risk-evaluation-worker"
+        in (target_dir / "app/stop-risk-evaluation-worker.sh").read_text()
+    )
     migrate_script = (target_dir / "app/migrate.sh").read_text()
     assert "--profile migration run --rm migrate" in migrate_script
     for script_name in (
@@ -422,6 +449,7 @@ def test_prod_home_target_local_scripts_use_local_compose_env() -> None:
         "start-api.sh",
         "start-realtime-collection-worker.sh",
         "start-backfill-collection-worker.sh",
+        "start-risk-evaluation-worker.sh",
     ):
         script = (target_dir / "app" / script_name).read_text()
         assert '"$SCRIPT_DIR/migrate.sh"' in script
@@ -507,6 +535,9 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
     ) in result.stdout
     assert (
         "mkdir -p '/home/goodjoon/project/goodmoneying/app/backfill-collection-worker-data'"
+    ) in result.stdout
+    assert (
+        "mkdir -p '/home/goodjoon/project/goodmoneying/app/risk-evaluation-worker-data'"
     ) in result.stdout
     assert "mkdir -p '/home/goodjoon/project/goodmoneying/app/config'" in result.stdout
     assert "mkdir -p '/home/goodjoon/project/goodmoneying/env'" in result.stdout
@@ -609,6 +640,7 @@ def test_healthcheck_script_dry_run_prints_checks() -> None:
     ) in result.stdout
     assert "goodmoneying-market-sync-worker" in result.stdout
     assert "goodmoneying-candle-aggregation-worker" in result.stdout
+    assert "goodmoneying-risk-evaluation-worker" in result.stdout
 
 
 def test_healthcheck_script_rejects_unknown_profile() -> None:
@@ -630,9 +662,11 @@ def test_healthcheck_script_dry_run_prints_checks_in_order() -> None:
     backfill_worker_index = result.stdout.index("goodmoneying-backfill-collection-worker")
     market_sync_worker_index = result.stdout.index("goodmoneying-market-sync-worker")
     aggregation_worker_index = result.stdout.index("goodmoneying-candle-aggregation-worker")
+    risk_worker_index = result.stdout.index("goodmoneying-risk-evaluation-worker")
     assert api_index < gateway_index < web_index < postgres_index < realtime_worker_index
     assert realtime_worker_index < backfill_worker_index
     assert backfill_worker_index < market_sync_worker_index < aggregation_worker_index
+    assert aggregation_worker_index < risk_worker_index
 
 
 def test_deploy_workflow_builds_and_checks_upbit_gateway() -> None:

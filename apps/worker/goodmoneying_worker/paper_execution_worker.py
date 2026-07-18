@@ -8,7 +8,10 @@ from decimal import Decimal
 from typing import Protocol, cast
 from uuid import uuid4
 
-from goodmoneying_shared.portfolio_bot_store import PaperExecutionLeaseLostError
+from goodmoneying_shared.portfolio_bot_store import (
+    PaperExecutionBlockedError,
+    PaperExecutionLeaseLostError,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +76,7 @@ class PaperExecutionWorker:
         lease_generation = int(cast(int | str, claim["leaseGeneration"]))
         try:
             fill = self._executor(claim)
-            self._store.complete_claimed_paper_execution_job(
+            completed = self._store.complete_claimed_paper_execution_job(
                 job_id=job_id,
                 worker_id=self.worker_id,
                 lease_generation=lease_generation,
@@ -83,7 +86,9 @@ class PaperExecutionWorker:
                 knowledge_at=fill.knowledge_at,
                 evidence=fill.evidence,
             )
-        except PaperExecutionLeaseLostError:
+            if completed.get("status") != "succeeded":
+                return 0
+        except (PaperExecutionBlockedError, PaperExecutionLeaseLostError):
             return 0
         except Exception as exc:
             with suppress(PaperExecutionLeaseLostError):

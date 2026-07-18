@@ -211,6 +211,8 @@ P5-2는 포트폴리오 API 명령 경계를 연다. `20260718000600_p5_portfoli
 
 P5-3은 실제 Upbit 주문 제출 없이 `paper_execution_jobs` 큐만 처리한다. `20260718000700_p5_paper_execution_jobs.sql`은 approved `order_intents`를 `paper` 실행 모드의 임대 가능한 작업으로 연결하고, `FOR UPDATE SKIP LOCKED`, lease owner, lease expiry, lease generation, retry/dead-letter 상태로 중복 실행과 늦은 worker 쓰기를 차단한다. `PaperExecutionWorker`는 claim된 job을 주입된 paper simulator에 전달하고, completion transaction에서 simulated `exchange_orders`, `paper_simulator` fill, `position_projections`, `order_intents.status='paper_filled'`를 함께 기록한다. 이 worker는 private WebSocket, 주문 테스트 API, 실제 주문 submit/cancel/read 경로를 호출하지 않는다.
 
+P5-4 Risk Worker는 새 DB migration 없이 P5-1의 `order_intents`, `risk_limits`, `risk_events`, `kill_switches`와 P5-3의 `paper_execution_jobs` 계약을 소비한다. `RiskEvaluationWorker`는 `created` 주문 의도를 `FOR UPDATE SKIP LOCKED`로 하나만 잠그고 전역·포트폴리오·봇·거래쌍 위험 한도와 전역·포트폴리오·봇 kill switch 최신 sequence를 같은 transaction에서 평가한다. 활성 kill switch가 있거나 적용 가능한 한도를 초과하거나 필요한 계산 증적이 없으면 `risk_rejected`와 `kill_switch_rejected|limit_rejected` 이벤트를 append-only로 남긴다. 승인된 paper 주문 의도는 같은 transaction에서 `approved`, `policy_approved`, `paper_execution_jobs` pending으로 연결한다. `PaperExecutionWorker`의 claim과 completion은 활성 kill switch를 다시 검사해 arm 이후 신규 모의 체결 생성을 막는다. P5-4는 private WebSocket, 주문 테스트 API, 실제 Upbit 주문 submit/cancel/read 경로를 호출하지 않는다.
+
 ## 7. 실시간 envelope
 
 ```json

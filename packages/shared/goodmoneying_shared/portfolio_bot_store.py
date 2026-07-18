@@ -26,6 +26,10 @@ class PaperExecutionLeaseLostError(RuntimeError):
     """paper execution job 임대를 잃어 결과를 기록할 수 없다."""
 
 
+class PaperExecutionBlockedError(RuntimeError):
+    """활성 kill switch 때문에 paper execution을 진행할 수 없다."""
+
+
 class PostgresPortfolioBotStore:
     def __init__(self, repository: object) -> None:
         self._repository = repository
@@ -46,6 +50,11 @@ class PostgresPortfolioBotStore:
 
     def fail_claimed_paper_execution_job(self, **arguments: object) -> Row:
         return fail_claimed_paper_execution_job(self._repository, **arguments)
+
+    def evaluate_next_order_intent_risk(
+        self, worker_id: str
+    ) -> Mapping[str, object] | None:
+        return evaluate_next_order_intent_risk(self._repository, worker_id=worker_id)
 
 
 def create_portfolio(
@@ -176,12 +185,14 @@ def claim_next_paper_execution_job(
 def _claim_next_paper_execution_job(
     connection: Any, worker_id: str, lease_seconds: int
 ) -> Row | None:
+    _lock_kill_switch_table(connection)
     candidate = connection.execute(
         """
         SELECT job.id, job.lease_generation
         FROM paper_execution_jobs job
         JOIN order_intents intent ON intent.id = job.order_intent_id
         JOIN bot_instances instance ON instance.id = intent.bot_instance_id
+        JOIN bot_definitions definition ON definition.id = instance.bot_definition_id
         WHERE (
           job.status='pending'
           OR (job.status='retry_wait' AND job.next_retry_at <= clock_timestamp())
@@ -190,6 +201,24 @@ def _claim_next_paper_execution_job(
         AND intent.status='approved'
         AND instance.stage='paper'
         AND instance.execution_mode='paper'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              ('global', 'global'),
+              ('portfolio', definition.portfolio_id::text),
+              ('bot', instance.id::text)
+          ) AS scope(scope_type, scope_key)
+          JOIN LATERAL (
+            SELECT *
+            FROM kill_switches latest_switch
+            WHERE latest_switch.scope_type=scope.scope_type
+              AND latest_switch.scope_key=scope.scope_key
+            ORDER BY latest_switch.sequence DESC
+            LIMIT 1
+          ) latest_switch ON true
+          WHERE latest_switch.state='armed'
+        )
         ORDER BY job.priority DESC, job.created_at, job.id
         FOR UPDATE SKIP LOCKED
         LIMIT 1
@@ -249,6 +278,21 @@ def complete_claimed_paper_execution_job(
             lease_generation=int(cast(int, lease_generation)),
         )
         intent = _paper_intent_row(connection, int(cast(int, claim["order_intent_id"])))
+        _lock_kill_switch_table(connection)
+        active_switch = _active_kill_switch(
+            connection,
+            _risk_scopes(
+                portfolio_id=int(cast(int, intent["portfolio_id"])),
+                bot_instance_id=int(cast(int, intent["bot_instance_id"])),
+                instrument_id=int(cast(int, intent["instrument_id"])),
+                include_instrument=False,
+            ),
+        )
+        if active_switch is not None:
+            blocked = _defer_paper_job_for_kill_switch(
+                connection, int(cast(int, claim["id"]))
+            )
+            return _paper_execution_job_summary(blocked)
         quantity = _paper_fill_quantity(intent, price, filled_quantity)
         exchange_order = connection.execute(
             """
@@ -403,6 +447,7 @@ def _paper_intent_row(connection: Any, order_intent_id: int) -> Row:
           intent.requested_quantity,
           intent.requested_notional,
           intent.limit_price,
+          instance.id AS bot_instance_id,
           definition.portfolio_id
         FROM order_intents intent
         JOIN bot_instances instance ON instance.id = intent.bot_instance_id
@@ -418,6 +463,328 @@ def _paper_intent_row(connection: Any, order_intent_id: int) -> Row:
     if row is None:
         raise PaperExecutionLeaseLostError("paper 실행 가능한 주문 의도가 없다.")
     return cast(Row, row)
+
+
+def _defer_paper_job_for_kill_switch(connection: Any, job_id: int) -> Row:
+    row = connection.execute(
+        """
+        UPDATE paper_execution_jobs
+        SET status='retry_wait',
+            lease_owner=NULL,
+            lease_expires_at=NULL,
+            next_retry_at=clock_timestamp() + interval '30 seconds',
+            attempt_count=GREATEST(attempt_count - 1, 0),
+            last_error_code='KILL_SWITCH_ARMED',
+            updated_at=clock_timestamp()
+        WHERE id=%s
+        RETURNING *
+        """,
+        (job_id,),
+    ).fetchone()
+    assert row is not None
+    return cast(Row, row)
+
+
+def evaluate_next_order_intent_risk(
+    repository: object, *, worker_id: str
+) -> Row | None:
+    worker = _non_blank(worker_id, "workerId")
+    connector = _connector(repository)
+    with connector() as connection:
+        intent = connection.execute(
+            """
+            SELECT
+              intent.*,
+              instance.stage,
+              instance.execution_mode,
+              instance.id AS bot_instance_id,
+              definition.portfolio_id
+            FROM order_intents intent
+            JOIN bot_instances instance ON instance.id = intent.bot_instance_id
+            JOIN bot_definitions definition ON definition.id = instance.bot_definition_id
+            WHERE intent.status='created'
+              AND instance.stage IN ('paper','shadow')
+              AND instance.execution_mode IN ('paper','shadow')
+            ORDER BY intent.created_at, intent.id
+            FOR UPDATE OF intent SKIP LOCKED
+            LIMIT 1
+            """
+        ).fetchone()
+        if intent is None:
+            return None
+        scopes = _risk_scopes(
+            portfolio_id=int(cast(int, intent["portfolio_id"])),
+            bot_instance_id=int(cast(int, intent["bot_instance_id"])),
+            instrument_id=int(cast(int, intent["instrument_id"])),
+            include_instrument=True,
+        )
+        _lock_kill_switch_table(connection)
+        for scope_type, scope_key in scopes:
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"risk-scope:{scope_type}:{scope_key}",),
+            )
+        decision = _risk_decision(connection, cast(Row, intent), scopes)
+        connection.execute(
+            """
+            UPDATE order_intents
+            SET status=%s,
+                risk_policy_version=%s,
+                risk_decision_reason=%s
+            WHERE id=%s
+            """,
+            (
+                decision["status"],
+                decision["riskPolicyVersion"],
+                decision["reason"],
+                intent["id"],
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO risk_events (
+              order_intent_id, bot_instance_id, scope_type, scope_key, event_type,
+              severity, fingerprint, risk_policy_version, message, evidence
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                intent["id"],
+                intent["bot_instance_id"],
+                decision["scopeType"],
+                decision["scopeKey"],
+                decision["eventType"],
+                decision["severity"],
+                f"risk-evaluation-v1:{intent['id']}",
+                decision["riskPolicyVersion"],
+                decision["message"],
+                Jsonb(
+                    {
+                        "workerId": worker,
+                        "decisionInputHash": intent["decision_input_hash"],
+                        "orderNotional": str(decision["orderNotional"])
+                        if decision["orderNotional"] is not None
+                        else None,
+                        "riskEvidence": decision["evidence"],
+                    }
+                ),
+            ),
+        )
+        if (
+            decision["status"] == "approved"
+            and str(intent["execution_mode"]) == "paper"
+        ):
+            connection.execute(
+                """
+                INSERT INTO paper_execution_jobs (order_intent_id)
+                VALUES (%s)
+                ON CONFLICT (order_intent_id) DO NOTHING
+                """,
+                (intent["id"],),
+            )
+        return {
+            "orderIntentId": int(cast(int, intent["id"])),
+            "status": decision["status"],
+            "eventType": decision["eventType"],
+            "riskPolicyVersion": decision["riskPolicyVersion"],
+            "reason": decision["reason"],
+        }
+
+
+def _lock_kill_switch_table(connection: Any) -> None:
+    connection.execute("LOCK TABLE kill_switches IN SHARE MODE")
+
+
+def _risk_scopes(
+    *,
+    portfolio_id: int,
+    bot_instance_id: int,
+    instrument_id: int,
+    include_instrument: bool,
+) -> list[tuple[str, str]]:
+    scopes = [
+        ("global", "global"),
+        ("portfolio", str(portfolio_id)),
+        ("bot", str(bot_instance_id)),
+    ]
+    if include_instrument:
+        scopes.append(("instrument", str(instrument_id)))
+    return scopes
+
+
+def _risk_decision(
+    connection: Any, intent: Row, scopes: list[tuple[str, str]]
+) -> Row:
+    active_switch = _active_kill_switch(connection, scopes[:3])
+    limits = _active_risk_limits(connection, scopes)
+    policy_version = max(
+        [int(cast(int, limit["version"])) for limit in limits],
+        default=1,
+    )
+    order_notional = _order_notional(intent)
+    if active_switch is not None:
+        scope_type = str(active_switch["scope_type"])
+        scope_key = str(active_switch["scope_key"])
+        return {
+            "status": "risk_rejected",
+            "eventType": "kill_switch_rejected",
+            "severity": "critical",
+            "scopeType": scope_type,
+            "scopeKey": scope_key,
+            "riskPolicyVersion": policy_version,
+            "reason": f"kill switch armed: {scope_type}:{scope_key}",
+            "message": "활성 kill switch가 신규 주문 의도를 차단했다.",
+            "orderNotional": order_notional,
+            "evidence": {
+                "killSwitchId": int(cast(int, active_switch["id"])),
+                "sequence": int(cast(int, active_switch["sequence"])),
+            },
+        }
+    for limit in limits:
+        if limit["limit_type"] != "max_order_notional":
+            return _limit_rejected_decision(
+                limit,
+                policy_version,
+                order_notional,
+                "P5-4는 해당 위험 한도 계산 증적을 아직 갖고 있지 않다.",
+            )
+        if order_notional is None:
+            return _limit_rejected_decision(
+                limit,
+                policy_version,
+                order_notional,
+                "주문 명목 금액을 계산할 수 없다.",
+            )
+        limit_value = _decimal(limit["limit_value"], "limitValue")
+        if order_notional > limit_value:
+            return _limit_rejected_decision(
+                limit,
+                policy_version,
+                order_notional,
+                "주문 명목 금액이 max_order_notional 한도를 초과했다.",
+            )
+    execution_mode = str(intent["execution_mode"])
+    return {
+        "status": "approved",
+        "eventType": "policy_approved",
+        "severity": "info",
+        "scopeType": "bot",
+        "scopeKey": str(intent["bot_instance_id"]),
+        "riskPolicyVersion": policy_version,
+        "reason": f"risk approved for {execution_mode}",
+        "message": f"{execution_mode} 주문 의도를 위험 정책이 승인했다.",
+        "orderNotional": order_notional,
+        "evidence": {
+            "limitCount": len(limits),
+            "executionMode": execution_mode,
+        },
+    }
+
+
+def _limit_rejected_decision(
+    limit: Mapping[str, object],
+    policy_version: int,
+    order_notional: Decimal | None,
+    message: str,
+) -> Row:
+    return {
+        "status": "risk_rejected",
+        "eventType": "limit_rejected",
+        "severity": "warning",
+        "scopeType": limit["scope_type"],
+        "scopeKey": limit["scope_key"],
+        "riskPolicyVersion": policy_version,
+        "reason": f"risk limit rejected: {limit['limit_type']}",
+        "message": message,
+        "orderNotional": order_notional,
+        "evidence": {
+            "limitId": int(cast(int, limit["id"])),
+            "limitType": limit["limit_type"],
+            "limitValue": str(limit["limit_value"]),
+        },
+    }
+
+
+def _active_kill_switch(
+    connection: Any, scopes: list[tuple[str, str]]
+) -> Row | None:
+    row = connection.execute(
+        """
+        WITH scope(scope_type, scope_key, priority) AS (
+          VALUES (%s,%s,1), (%s,%s,2), (%s,%s,3)
+        )
+        SELECT latest_switch.*
+        FROM scope
+        JOIN LATERAL (
+          SELECT *
+          FROM kill_switches latest_switch
+          WHERE latest_switch.scope_type=scope.scope_type
+            AND latest_switch.scope_key=scope.scope_key
+          ORDER BY latest_switch.sequence DESC
+          LIMIT 1
+        ) latest_switch ON true
+        WHERE latest_switch.state='armed'
+        ORDER BY scope.priority
+        LIMIT 1
+        """,
+        (
+            scopes[0][0],
+            scopes[0][1],
+            scopes[1][0],
+            scopes[1][1],
+            scopes[2][0],
+            scopes[2][1],
+        ),
+    ).fetchone()
+    return cast(Row | None, row)
+
+
+def _active_risk_limits(connection: Any, scopes: list[tuple[str, str]]) -> list[Row]:
+    rows = connection.execute(
+        """
+        WITH scope(scope_type, scope_key, priority) AS (
+          VALUES (%s,%s,1), (%s,%s,2), (%s,%s,3), (%s,%s,4)
+        )
+        SELECT DISTINCT ON (risk_limit.scope_type, risk_limit.scope_key, risk_limit.limit_type)
+          risk_limit.*
+        FROM scope
+        JOIN risk_limits risk_limit
+          ON risk_limit.scope_type=scope.scope_type
+         AND risk_limit.scope_key=scope.scope_key
+        WHERE risk_limit.status='active'
+        ORDER BY
+          risk_limit.scope_type,
+          risk_limit.scope_key,
+          risk_limit.limit_type,
+          risk_limit.version DESC,
+          risk_limit.id DESC
+        """,
+        (
+            scopes[0][0],
+            scopes[0][1],
+            scopes[1][0],
+            scopes[1][1],
+            scopes[2][0],
+            scopes[2][1],
+            scopes[3][0],
+            scopes[3][1],
+        ),
+    ).fetchall()
+    return [cast(Row, row) for row in rows]
+
+
+def _order_notional(intent: Mapping[str, object]) -> Decimal | None:
+    if intent["requested_quantity"] is None or intent["limit_price"] is None:
+        if intent["requested_notional"] is not None:
+            return _positive_decimal(intent["requested_notional"], "requestedNotional")
+        return None
+    requested_quantity = _positive_decimal(intent["requested_quantity"], "requestedQuantity")
+    limit_price = _positive_decimal(intent["limit_price"], "limitPrice")
+    computed_notional = requested_quantity * limit_price
+    if intent["requested_notional"] is not None:
+        requested_notional = _positive_decimal(intent["requested_notional"], "requestedNotional")
+        if requested_notional != computed_notional:
+            return None
+    return computed_notional
 
 
 def _paper_fill_quantity(

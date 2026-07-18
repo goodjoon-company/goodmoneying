@@ -7,7 +7,7 @@
 | 서버 | 역할 | 서비스 |
 |---|---|---|
 | Mac Mini M4 | infra, 배포 제어 | postgres, GitHub Actions runner |
-| APP SERVER 01 | application | api, 업비트 API 게이트웨이(Upbit API Gateway), realtime-collection-worker, backfill-collection-worker, candle-aggregation-worker |
+| APP SERVER 01 | application | api, 업비트 API 게이트웨이(Upbit API Gateway), realtime-collection-worker, backfill-collection-worker, candle-aggregation-worker, risk-evaluation-worker |
 | bmax-ubuntu | web | web |
 
 ## 배포 실행 흐름
@@ -52,6 +52,7 @@
 | APP SERVER 01 | `GOODMONEYING_APP_REALTIME_COLLECTION_WORKER_DATA_DIR` | `/home/goodjoon/project/goodmoneying/app/realtime-collection-worker-data` | `/var/lib/goodmoneying/realtime-collection-worker` |
 | APP SERVER 01 | `GOODMONEYING_APP_BACKFILL_COLLECTION_WORKER_DATA_DIR` | `/home/goodjoon/project/goodmoneying/app/backfill-collection-worker-data` | `/var/lib/goodmoneying/backfill-collection-worker` |
 | APP SERVER 01 | `GOODMONEYING_APP_CANDLE_AGGREGATION_WORKER_DATA_DIR` | `/home/goodjoon/project/goodmoneying/app/candle-aggregation-worker-data` | `/var/lib/goodmoneying/candle-aggregation-worker` |
+| APP SERVER 01 | `GOODMONEYING_APP_RISK_EVALUATION_WORKER_DATA_DIR` | `/home/goodjoon/project/goodmoneying/app/risk-evaluation-worker-data` | `/var/lib/goodmoneying/risk-evaluation-worker` |
 | APP SERVER 01 | `GOODMONEYING_APP_CONFIG_DIR` | `/home/goodjoon/project/goodmoneying/app/config` | `/etc/goodmoneying` |
 | bmax-ubuntu | `GOODMONEYING_WEB_BASE_DIR` | `/home/goodjoon/applications/goodmoneying` | compose/env 파일 위치 |
 | bmax-ubuntu | `GOODMONEYING_WEB_NGINX_CACHE_DIR` | `/home/goodjoon/applications/goodmoneying/web/nginx-cache` | `/var/cache/nginx` |
@@ -177,6 +178,8 @@ cd /home/goodjoon/project/goodmoneying
 ./stop-realtime-collection-worker.sh
 ./start-backfill-collection-worker.sh
 ./stop-backfill-collection-worker.sh
+./start-risk-evaluation-worker.sh
+./stop-risk-evaluation-worker.sh
 ```
 
 bmax-ubuntu:

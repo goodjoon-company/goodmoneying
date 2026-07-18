@@ -518,6 +518,55 @@ $$;
 
 
 --
+-- Name: p6_base32lower_no_padding(bytea); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.p6_base32lower_no_padding(value bytea) RETURNS text
+    LANGUAGE plpgsql IMMUTABLE STRICT
+    AS $$
+DECLARE
+  alphabet TEXT := 'abcdefghijklmnopqrstuvwxyz234567';
+  output TEXT := '';
+  buffer BIGINT := 0;
+  bit_count INTEGER := 0;
+  byte_value INTEGER;
+  index_value INTEGER;
+  byte_index INTEGER;
+BEGIN
+  FOR byte_index IN 0..length(value) - 1 LOOP
+    byte_value := get_byte(value, byte_index);
+    buffer := (buffer << 8) | byte_value;
+    bit_count := bit_count + 8;
+    WHILE bit_count >= 5 LOOP
+      index_value := (buffer >> (bit_count - 5)) & 31;
+      output := output || substr(alphabet, index_value + 1, 1);
+      bit_count := bit_count - 5;
+      buffer := buffer & ((1::BIGINT << bit_count) - 1);
+    END LOOP;
+  END LOOP;
+  IF bit_count > 0 THEN
+    index_value := (buffer << (5 - bit_count)) & 31;
+    output := output || substr(alphabet, index_value + 1, 1);
+  END IF;
+  RETURN output;
+END;
+$$;
+
+
+--
+-- Name: p6_upbit_live_order_identifier(text, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.p6_upbit_live_order_identifier(account_stable_id text, idempotency_key text) RETURNS text
+    LANGUAGE sql IMMUTABLE STRICT
+    AS $$
+  SELECT 'gm1_' || p6_base32lower_no_padding(
+    sha256(convert_to(account_stable_id || ':' || idempotency_key, 'UTF8'))
+  );
+$$;
+
+
+--
 -- Name: prepare_realtime_source_receipt(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -658,6 +707,19 @@ $$;
 
 
 --
+-- Name: reject_p6_order_test_run_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_p6_order_test_run_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'Upbit order-test run evidence is append-only';
+END;
+$$;
+
+
+--
 -- Name: reject_sealed_dataset_version_child_insert(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -697,6 +759,96 @@ CREATE FUNCTION public.reject_strategy_version_mutation() RETURNS trigger
     AS $$
 BEGIN
   RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END;
+$$;
+
+
+--
+-- Name: reserve_p6_live_order_identifier(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reserve_p6_live_order_identifier() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  PERFORM reserve_p6_upbit_order_identifier(
+    NEW.exchange_account_id,
+    NEW.identifier,
+    'live_order_identifiers',
+    'identifier',
+    NEW.id
+  );
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: reserve_p6_order_test_identifier(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reserve_p6_order_test_identifier() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  PERFORM reserve_p6_upbit_order_identifier(
+    NEW.exchange_account_id,
+    NEW.response_uuid,
+    'upbit_order_test_runs',
+    'response_uuid',
+    NEW.id
+  );
+
+  IF NEW.response_identifier IS DISTINCT FROM NEW.response_uuid THEN
+    PERFORM reserve_p6_upbit_order_identifier(
+      NEW.exchange_account_id,
+      NEW.response_identifier,
+      'upbit_order_test_runs',
+      'response_identifier',
+      NEW.id
+    );
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: reserve_p6_upbit_order_identifier(bigint, text, text, text, bigint); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reserve_p6_upbit_order_identifier(exchange_account_id_value bigint, identifier_value text, source_table_value text, source_column_value text, source_id_value bigint) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF identifier_value IS NULL OR identifier_value = '' THEN
+    RETURN;
+  END IF;
+
+  INSERT INTO upbit_order_identifier_reservations (
+    exchange_account_id,
+    identifier,
+    source_table,
+    source_column,
+    source_id
+  ) VALUES (
+    exchange_account_id_value,
+    identifier_value,
+    source_table_value,
+    source_column_value,
+    source_id_value
+  )
+  ON CONFLICT (exchange_account_id, identifier) DO UPDATE
+    SET reserved_at = upbit_order_identifier_reservations.reserved_at
+    WHERE upbit_order_identifier_reservations.source_table = source_table_value
+      AND upbit_order_identifier_reservations.source_column = source_column_value
+      AND upbit_order_identifier_reservations.source_id = source_id_value;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Upbit order identifier is already reserved for another source';
+  END IF;
 END;
 $$;
 
@@ -851,6 +1003,81 @@ BEGIN
      OR NEW.source_as_of IS DISTINCT FROM source_as_of THEN
     RAISE EXCEPTION 'typed dataset member 내용 또는 인과 시각이 원천과 다르다';
   END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: validate_p6_live_order_identifier(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.validate_p6_live_order_identifier() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  actual_idempotency_key TEXT;
+  account_stable_id_value TEXT;
+  expected_identifier TEXT;
+BEGIN
+  SELECT intent.idempotency_key, account.account_stable_id
+    INTO actual_idempotency_key, account_stable_id_value
+  FROM order_intents intent
+  JOIN exchange_accounts account ON account.id = NEW.exchange_account_id
+  WHERE intent.id = NEW.order_intent_id;
+
+  IF actual_idempotency_key IS NULL THEN
+    RAISE EXCEPTION 'live order identifier references missing account or order intent';
+  END IF;
+  IF NEW.idempotency_key <> actual_idempotency_key THEN
+    RAISE EXCEPTION 'live order identifier idempotency_key must match order_intents.idempotency_key';
+  END IF;
+
+  expected_identifier := p6_upbit_live_order_identifier(
+    account_stable_id_value,
+    actual_idempotency_key
+  );
+  IF NEW.identifier <> expected_identifier THEN
+    RAISE EXCEPTION 'live order identifier must be derived from account_stable_id and order intent idempotency_key';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM upbit_order_test_runs test_run
+    WHERE test_run.exchange_account_id = NEW.exchange_account_id
+      AND NEW.identifier IN (
+        test_run.response_uuid,
+        test_run.response_identifier
+      )
+  ) THEN
+    RAISE EXCEPTION 'order-test response identifier cannot be reserved as a live order identifier';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: validate_p6_order_test_identifier_not_live(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.validate_p6_order_test_identifier_not_live() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM live_order_identifiers live_identifier
+    WHERE live_identifier.exchange_account_id = NEW.exchange_account_id
+      AND live_identifier.identifier IN (
+        NEW.response_uuid,
+        NEW.response_identifier
+      )
+  ) THEN
+    RAISE EXCEPTION 'live order identifier cannot be recorded as an order-test response identifier';
+  END IF;
+
   RETURN NEW;
 END;
 $$;
@@ -2484,6 +2711,47 @@ ALTER TABLE public.dataset_versions ALTER COLUMN id ADD GENERATED ALWAYS AS IDEN
 
 
 --
+-- Name: exchange_accounts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.exchange_accounts (
+    id bigint NOT NULL,
+    exchange text NOT NULL,
+    account_stable_id text NOT NULL,
+    label text NOT NULL,
+    status text DEFAULT 'live_disabled'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    created_by text NOT NULL,
+    reason text NOT NULL,
+    CONSTRAINT exchange_accounts_account_stable_id_check CHECK ((account_stable_id ~ '^[A-Za-z0-9:_-]{3,128}$'::text)),
+    CONSTRAINT exchange_accounts_created_by_check CHECK ((created_by <> ''::text)),
+    CONSTRAINT exchange_accounts_exchange_check CHECK ((exchange = 'upbit'::text)),
+    CONSTRAINT exchange_accounts_label_check CHECK ((label <> ''::text)),
+    CONSTRAINT exchange_accounts_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT exchange_accounts_status_check CHECK ((status = ANY (ARRAY['live_disabled'::text, 'live_ready'::text, 'live_enabled'::text, 'revoked'::text])))
+);
+
+
+--
+-- Name: exchange_accounts_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.exchange_accounts_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: exchange_accounts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.exchange_accounts_id_seq OWNED BY public.exchange_accounts.id;
+
+
+--
 -- Name: exchange_orders; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2841,6 +3109,47 @@ CREATE SEQUENCE public.kill_switches_id_seq
 --
 
 ALTER SEQUENCE public.kill_switches_id_seq OWNED BY public.kill_switches.id;
+
+
+--
+-- Name: live_order_identifiers; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.live_order_identifiers (
+    id bigint NOT NULL,
+    exchange_account_id bigint NOT NULL,
+    order_intent_id bigint NOT NULL,
+    idempotency_key text NOT NULL,
+    identifier text NOT NULL,
+    status text DEFAULT 'reserved'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    created_by text NOT NULL,
+    reason text NOT NULL,
+    CONSTRAINT live_order_identifiers_created_by_check CHECK ((created_by <> ''::text)),
+    CONSTRAINT live_order_identifiers_idempotency_key_check CHECK ((idempotency_key <> ''::text)),
+    CONSTRAINT live_order_identifiers_identifier_check CHECK ((identifier ~ '^gm1_[a-z2-7]{52}$'::text)),
+    CONSTRAINT live_order_identifiers_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT live_order_identifiers_status_check CHECK ((status = ANY (ARRAY['reserved'::text, 'submitted'::text, 'outcome_unknown'::text, 'retired'::text])))
+);
+
+
+--
+-- Name: live_order_identifiers_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.live_order_identifiers_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: live_order_identifiers_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.live_order_identifiers_id_seq OWNED BY public.live_order_identifiers.id;
 
 
 --
@@ -4300,6 +4609,93 @@ ALTER TABLE public.trade_events ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY
 
 
 --
+-- Name: upbit_order_identifier_reservations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.upbit_order_identifier_reservations (
+    id bigint NOT NULL,
+    exchange_account_id bigint NOT NULL,
+    identifier text NOT NULL,
+    source_table text NOT NULL,
+    source_column text NOT NULL,
+    source_id bigint NOT NULL,
+    reserved_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT upbit_order_identifier_reservations_identifier_check CHECK ((identifier <> ''::text)),
+    CONSTRAINT upbit_order_identifier_reservations_source_column_check CHECK ((source_column = ANY (ARRAY['identifier'::text, 'response_uuid'::text, 'response_identifier'::text]))),
+    CONSTRAINT upbit_order_identifier_reservations_source_table_check CHECK ((source_table = ANY (ARRAY['live_order_identifiers'::text, 'upbit_order_test_runs'::text])))
+);
+
+
+--
+-- Name: upbit_order_identifier_reservations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.upbit_order_identifier_reservations_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: upbit_order_identifier_reservations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.upbit_order_identifier_reservations_id_seq OWNED BY public.upbit_order_identifier_reservations.id;
+
+
+--
+-- Name: upbit_order_test_runs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.upbit_order_test_runs (
+    id bigint NOT NULL,
+    exchange_account_id bigint NOT NULL,
+    request_id text NOT NULL,
+    actor_id text NOT NULL,
+    reason text NOT NULL,
+    requested_at timestamp with time zone NOT NULL,
+    request_parameters jsonb NOT NULL,
+    response_status_code integer NOT NULL,
+    response_uuid text,
+    response_identifier text,
+    response_body jsonb NOT NULL,
+    lookup_allowed boolean DEFAULT false NOT NULL,
+    cancel_allowed boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT upbit_order_test_runs_actor_id_check CHECK ((actor_id <> ''::text)),
+    CONSTRAINT upbit_order_test_runs_cancel_allowed_check CHECK ((cancel_allowed = false)),
+    CONSTRAINT upbit_order_test_runs_check CHECK ((created_at >= requested_at)),
+    CONSTRAINT upbit_order_test_runs_lookup_allowed_check CHECK ((lookup_allowed = false)),
+    CONSTRAINT upbit_order_test_runs_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT upbit_order_test_runs_request_id_check CHECK ((request_id <> ''::text)),
+    CONSTRAINT upbit_order_test_runs_request_parameters_check CHECK ((jsonb_typeof(request_parameters) = 'object'::text)),
+    CONSTRAINT upbit_order_test_runs_response_body_check CHECK ((jsonb_typeof(response_body) = 'object'::text)),
+    CONSTRAINT upbit_order_test_runs_response_status_code_check CHECK (((response_status_code >= 100) AND (response_status_code <= 599)))
+);
+
+
+--
+-- Name: upbit_order_test_runs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.upbit_order_test_runs_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: upbit_order_test_runs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.upbit_order_test_runs_id_seq OWNED BY public.upbit_order_test_runs.id;
+
+
+--
 -- Name: bot_definitions id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -4328,6 +4724,13 @@ ALTER TABLE ONLY public.capital_allocations ALTER COLUMN id SET DEFAULT nextval(
 
 
 --
+-- Name: exchange_accounts id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.exchange_accounts ALTER COLUMN id SET DEFAULT nextval('public.exchange_accounts_id_seq'::regclass);
+
+
+--
 -- Name: exchange_orders id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -4339,6 +4742,13 @@ ALTER TABLE ONLY public.exchange_orders ALTER COLUMN id SET DEFAULT nextval('pub
 --
 
 ALTER TABLE ONLY public.kill_switches ALTER COLUMN id SET DEFAULT nextval('public.kill_switches_id_seq'::regclass);
+
+
+--
+-- Name: live_order_identifiers id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.live_order_identifiers ALTER COLUMN id SET DEFAULT nextval('public.live_order_identifiers_id_seq'::regclass);
 
 
 --
@@ -4402,6 +4812,20 @@ ALTER TABLE ONLY public.risk_events ALTER COLUMN id SET DEFAULT nextval('public.
 --
 
 ALTER TABLE ONLY public.risk_limits ALTER COLUMN id SET DEFAULT nextval('public.risk_limits_id_seq'::regclass);
+
+
+--
+-- Name: upbit_order_identifier_reservations id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_identifier_reservations ALTER COLUMN id SET DEFAULT nextval('public.upbit_order_identifier_reservations_id_seq'::regclass);
+
+
+--
+-- Name: upbit_order_test_runs id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_test_runs ALTER COLUMN id SET DEFAULT nextval('public.upbit_order_test_runs_id_seq'::regclass);
 
 
 --
@@ -5037,6 +5461,22 @@ ALTER TABLE ONLY public.dataset_versions
 
 
 --
+-- Name: exchange_accounts exchange_accounts_exchange_account_stable_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.exchange_accounts
+    ADD CONSTRAINT exchange_accounts_exchange_account_stable_id_key UNIQUE (exchange, account_stable_id);
+
+
+--
+-- Name: exchange_accounts exchange_accounts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.exchange_accounts
+    ADD CONSTRAINT exchange_accounts_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: exchange_orders exchange_orders_order_intent_id_simulated_order_key_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5226,6 +5666,30 @@ ALTER TABLE ONLY public.kill_switches
 
 ALTER TABLE ONLY public.kill_switches
     ADD CONSTRAINT kill_switches_scope_type_scope_key_sequence_key UNIQUE (scope_type, scope_key, sequence);
+
+
+--
+-- Name: live_order_identifiers live_order_identifiers_exchange_account_id_identifier_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.live_order_identifiers
+    ADD CONSTRAINT live_order_identifiers_exchange_account_id_identifier_key UNIQUE (exchange_account_id, identifier);
+
+
+--
+-- Name: live_order_identifiers live_order_identifiers_order_intent_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.live_order_identifiers
+    ADD CONSTRAINT live_order_identifiers_order_intent_id_key UNIQUE (order_intent_id);
+
+
+--
+-- Name: live_order_identifiers live_order_identifiers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.live_order_identifiers
+    ADD CONSTRAINT live_order_identifiers_pkey PRIMARY KEY (id);
 
 
 --
@@ -5805,6 +6269,46 @@ ALTER TABLE ONLY public.trade_events
 
 
 --
+-- Name: upbit_order_identifier_reservations upbit_order_identifier_reserv_exchange_account_id_identifie_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_identifier_reservations
+    ADD CONSTRAINT upbit_order_identifier_reserv_exchange_account_id_identifie_key UNIQUE (exchange_account_id, identifier);
+
+
+--
+-- Name: upbit_order_identifier_reservations upbit_order_identifier_reserv_source_table_source_column_so_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_identifier_reservations
+    ADD CONSTRAINT upbit_order_identifier_reserv_source_table_source_column_so_key UNIQUE (source_table, source_column, source_id);
+
+
+--
+-- Name: upbit_order_identifier_reservations upbit_order_identifier_reservations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_identifier_reservations
+    ADD CONSTRAINT upbit_order_identifier_reservations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: upbit_order_test_runs upbit_order_test_runs_exchange_account_id_request_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_test_runs
+    ADD CONSTRAINT upbit_order_test_runs_exchange_account_id_request_id_key UNIQUE (exchange_account_id, request_id);
+
+
+--
+-- Name: upbit_order_test_runs upbit_order_test_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_test_runs
+    ADD CONSTRAINT upbit_order_test_runs_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: audit_logs_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -5984,6 +6488,13 @@ CREATE INDEX indicator_materializations_projection_idx ON public.indicator_mater
 --
 
 CREATE INDEX kill_switches_scope_state_idx ON public.kill_switches USING btree (scope_type, scope_key, state, sequence DESC);
+
+
+--
+-- Name: live_order_identifiers_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX live_order_identifiers_status_idx ON public.live_order_identifiers USING btree (status, created_at, id);
 
 
 --
@@ -6194,6 +6705,13 @@ CREATE INDEX trade_events_instrument_time_idx ON public.trade_events USING btree
 --
 
 CREATE UNIQUE INDEX trade_events_source_receipt_uk ON public.trade_events USING btree (source_receipt_id) WHERE (source_receipt_id IS NOT NULL);
+
+
+--
+-- Name: upbit_order_test_runs_requested_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX upbit_order_test_runs_requested_idx ON public.upbit_order_test_runs USING btree (exchange_account_id, requested_at DESC, id DESC);
 
 
 --
@@ -6617,6 +7135,20 @@ CREATE TRIGGER kill_switches_append_only_update BEFORE UPDATE ON public.kill_swi
 
 
 --
+-- Name: live_order_identifiers live_order_identifiers_reserve_identifier; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER live_order_identifiers_reserve_identifier AFTER INSERT OR UPDATE ON public.live_order_identifiers FOR EACH ROW EXECUTE FUNCTION public.reserve_p6_live_order_identifier();
+
+
+--
+-- Name: live_order_identifiers live_order_identifiers_validate_identity; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER live_order_identifiers_validate_identity BEFORE INSERT OR UPDATE ON public.live_order_identifiers FOR EACH ROW EXECUTE FUNCTION public.validate_p6_live_order_identifier();
+
+
+--
 -- Name: market_statistics market_statistics_append_only; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -6817,6 +7349,27 @@ CREATE TRIGGER trade_event_microstructure_invalidation AFTER INSERT ON public.tr
 --
 
 CREATE TRIGGER trade_events_conflicting_duplicate_guard BEFORE INSERT ON public.trade_events FOR EACH ROW EXECUTE FUNCTION public.reject_conflicting_trade_event();
+
+
+--
+-- Name: upbit_order_test_runs upbit_order_test_runs_reject_live_identifier; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_order_test_runs_reject_live_identifier BEFORE INSERT OR UPDATE ON public.upbit_order_test_runs FOR EACH ROW EXECUTE FUNCTION public.validate_p6_order_test_identifier_not_live();
+
+
+--
+-- Name: upbit_order_test_runs upbit_order_test_runs_reject_mutation; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_order_test_runs_reject_mutation BEFORE DELETE OR UPDATE ON public.upbit_order_test_runs FOR EACH ROW EXECUTE FUNCTION public.reject_p6_order_test_run_mutation();
+
+
+--
+-- Name: upbit_order_test_runs upbit_order_test_runs_reserve_identifiers; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_order_test_runs_reserve_identifiers AFTER INSERT ON public.upbit_order_test_runs FOR EACH ROW EXECUTE FUNCTION public.reserve_p6_order_test_identifier();
 
 
 --
@@ -7804,6 +8357,22 @@ ALTER TABLE ONLY public.indicator_values
 
 
 --
+-- Name: live_order_identifiers live_order_identifiers_exchange_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.live_order_identifiers
+    ADD CONSTRAINT live_order_identifiers_exchange_account_id_fkey FOREIGN KEY (exchange_account_id) REFERENCES public.exchange_accounts(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: live_order_identifiers live_order_identifiers_order_intent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.live_order_identifiers
+    ADD CONSTRAINT live_order_identifiers_order_intent_id_fkey FOREIGN KEY (order_intent_id) REFERENCES public.order_intents(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: market_statistics market_statistics_current_rollup_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -8484,6 +9053,22 @@ ALTER TABLE ONLY public.trade_events
 
 
 --
+-- Name: upbit_order_identifier_reservations upbit_order_identifier_reservations_exchange_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_identifier_reservations
+    ADD CONSTRAINT upbit_order_identifier_reservations_exchange_account_id_fkey FOREIGN KEY (exchange_account_id) REFERENCES public.exchange_accounts(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_order_test_runs upbit_order_test_runs_exchange_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_test_runs
+    ADD CONSTRAINT upbit_order_test_runs_exchange_account_id_fkey FOREIGN KEY (exchange_account_id) REFERENCES public.exchange_accounts(id) ON DELETE RESTRICT;
+
+
+--
 -- PostgreSQL database dump complete
 --
 
@@ -8516,4 +9101,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260718000500'),
     ('20260718000600'),
     ('20260718000700'),
-    ('20260718000800');
+    ('20260718000800'),
+    ('20260718000900');

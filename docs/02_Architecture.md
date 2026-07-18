@@ -28,7 +28,7 @@
 | 영역 | 2026-07-18 기준 | 구현 추적 |
 |---|---|---|
 | 기존 수집·백필·집계, API·Web, Upbit Lab·Gateway | 부분 구현 | Issue #28, #29, #33 |
-| 전략·백테스트·포트폴리오·봇·주문·위험 | P3 전략, P4 백테스트, P5-1 portfolio/bot/order intent/risk DB 계약, P5-2 portfolio API/Store, P5-3 paper execution queue/worker, P5-4 risk evaluation worker와 kill switch 차단, P5-5 paper/shadow 내부 reconciliation 증적과 projection 갱신, P5-6 Bot Workshop UI 구현 | Issue #30~#33 |
+| 전략·백테스트·포트폴리오·봇·주문·위험 | P3 전략, P4 백테스트, P5-1 portfolio/bot/order intent/risk DB 계약, P5-2 portfolio API/Store, P5-3 paper execution queue/worker, P5-4 risk evaluation worker와 kill switch 차단, P5-5 paper/shadow 내부 reconciliation 증적과 projection 갱신, P5-6 Bot Workshop UI, P6-2 order-test 증적과 live 주문 identifier 분리 구현 | Issue #30~#33 |
 | 내부 UTC와 5가지 품질 상태 | 미구현 | Issue #28 |
 | 복구 가능한 내부 WebSocket | P2-7 envelope·cursor·heartbeat·gap 적용 중단, P2-8 REST snapshot 복구·slow consumer 신호 구현 | Issue #29 |
 | Action commit SHA pinning·P8 exact-SHA 잠금 | P0 구현, 배포는 계속 차단 | Issue #27, #35 |

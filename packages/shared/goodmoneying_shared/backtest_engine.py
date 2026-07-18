@@ -12,6 +12,9 @@ BacktestQuality = Literal["available", "no_trade", "missing", "unavailable", "un
 BacktestSide = Literal["buy", "sell"]
 BacktestRunStatus = Literal["succeeded", "failed"]
 BacktestTradeStatus = Literal["filled", "partially_filled", "rejected"]
+BacktestArtifactType = Literal[
+    "walk_forward_summary", "sensitivity_summary", "bootstrap_summary"
+]
 
 _ORDERBOOK_ABSENT_ASSUMPTION = "orderbook_absent_uses_candle_close"
 _PARTIAL_FILL_ASSUMPTION = "partial_fill_by_candle_volume_participation"
@@ -98,6 +101,30 @@ class BacktestResult:
     metrics: Mapping[str, Decimal]
     golden_replay_signals: tuple[BacktestSignal, ...]
     errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class WalkForwardFold:
+    fold_index: int
+    train_start_at: datetime
+    train_end_at: datetime
+    test_start_at: datetime
+    test_end_at: datetime
+    metrics: Mapping[str, Decimal]
+
+
+@dataclass(frozen=True, slots=True)
+class SensitivityPoint:
+    parameter_name: str
+    parameter_value: CanonicalValue
+    metrics: Mapping[str, Decimal]
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapSample:
+    sample_index: int
+    seed: int
+    metrics: Mapping[str, Decimal]
 
 
 def run_candle_backtest(
@@ -207,6 +234,64 @@ def run_candle_backtest(
         metrics=metrics,
         golden_replay_signals=golden_replay_signals,
     )
+
+
+def build_performance_artifacts(
+    result: BacktestResult,
+    *,
+    walk_forward_folds: Iterable[WalkForwardFold] = (),
+    sensitivity_points: Iterable[SensitivityPoint] = (),
+    bootstrap_samples: Iterable[BootstrapSample] = (),
+) -> tuple[dict[str, object], ...]:
+    """성과 분석 산출물을 Backtest Store artifact 입력 형태로 만든다."""
+
+    artifacts: list[dict[str, object]] = []
+    folds = tuple(sorted(walk_forward_folds, key=lambda fold: fold.fold_index))
+    if folds:
+        metadata: dict[str, CanonicalValue] = {
+            "schemaVersion": "backtest-artifact-walk-forward-v1",
+            "inputHash": result.input_hash,
+            "resultHash": result.result_hash,
+            "folds": [_walk_forward_payload(fold) for fold in folds],
+            "summary": _final_equity_summary([fold.metrics for fold in folds], "foldCount"),
+        }
+        artifacts.append(_store_artifact("walk_forward_summary", metadata))
+
+    sensitivity = tuple(
+        sorted(
+            sensitivity_points,
+            key=lambda point: (
+                point.parameter_name,
+                canonical_payload_hash(point.parameter_value),
+            ),
+        )
+    )
+    if sensitivity:
+        metadata = {
+            "schemaVersion": "backtest-artifact-sensitivity-v1",
+            "inputHash": result.input_hash,
+            "resultHash": result.result_hash,
+            "points": [_sensitivity_payload(point) for point in sensitivity],
+            "summary": _final_equity_summary(
+                [point.metrics for point in sensitivity], "pointCount"
+            ),
+        }
+        artifacts.append(_store_artifact("sensitivity_summary", metadata))
+
+    samples = tuple(sorted(bootstrap_samples, key=lambda sample: sample.sample_index))
+    if samples:
+        metadata = {
+            "schemaVersion": "backtest-artifact-bootstrap-v1",
+            "inputHash": result.input_hash,
+            "resultHash": result.result_hash,
+            "samples": [_bootstrap_payload(sample) for sample in samples],
+            "summary": _final_equity_summary(
+                [sample.metrics for sample in samples], "sampleCount"
+            ),
+        }
+        artifacts.append(_store_artifact("bootstrap_summary", metadata))
+
+    return tuple(artifacts)
 
 
 def _result(
@@ -432,4 +517,64 @@ def _equity_payload(point: BacktestEquityPoint) -> dict[str, CanonicalValue]:
         "cash": point.cash,
         "basePosition": point.base_position,
         "equity": point.equity,
+    }
+
+
+def _walk_forward_payload(fold: WalkForwardFold) -> dict[str, CanonicalValue]:
+    return {
+        "foldIndex": fold.fold_index,
+        "trainStartAt": cast(CanonicalValue, fold.train_start_at),
+        "trainEndAt": cast(CanonicalValue, fold.train_end_at),
+        "testStartAt": cast(CanonicalValue, fold.test_start_at),
+        "testEndAt": cast(CanonicalValue, fold.test_end_at),
+        "metrics": _metrics_payload(fold.metrics),
+    }
+
+
+def _sensitivity_payload(point: SensitivityPoint) -> dict[str, CanonicalValue]:
+    return {
+        "parameterName": point.parameter_name,
+        "parameterValue": point.parameter_value,
+        "metrics": _metrics_payload(point.metrics),
+    }
+
+
+def _bootstrap_payload(sample: BootstrapSample) -> dict[str, CanonicalValue]:
+    return {
+        "sampleIndex": sample.sample_index,
+        "seed": sample.seed,
+        "metrics": _metrics_payload(sample.metrics),
+    }
+
+
+def _metrics_payload(metrics: Mapping[str, Decimal]) -> dict[str, CanonicalValue]:
+    return dict(sorted(metrics.items()))
+
+
+def _final_equity_summary(
+    metrics_rows: Sequence[Mapping[str, Decimal]],
+    count_key: str,
+) -> dict[str, CanonicalValue]:
+    final_equities = [row["finalEquity"] for row in metrics_rows if "finalEquity" in row]
+    summary: dict[str, CanonicalValue] = {count_key: len(metrics_rows)}
+    if final_equities:
+        summary["finalEquityMin"] = min(final_equities)
+        summary["finalEquityMax"] = max(final_equities)
+        summary["finalEquityMean"] = sum(final_equities, Decimal("0")) / Decimal(
+            len(final_equities)
+        )
+    return summary
+
+
+def _store_artifact(
+    artifact_type: BacktestArtifactType,
+    metadata: Mapping[str, CanonicalValue],
+) -> dict[str, object]:
+    content_hash = canonical_payload_hash(cast(CanonicalValue, metadata))
+    return {
+        "artifactType": artifact_type,
+        "contentHash": content_hash,
+        "mediaType": "application/json",
+        "storageUri": None,
+        "metadata": dict(metadata),
     }

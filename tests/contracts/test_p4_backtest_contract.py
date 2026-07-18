@@ -34,3 +34,17 @@ def test_P4_1_도메인_아키텍처는_golden_replay_동등성을_요구한다(
     assert "golden replay" in text
     assert "공통 전략 평가기" in text
     assert "신호 동등성" in text
+
+
+def test_P4_8_백테스트_계약은_성과_artifact_스키마를_명시한다() -> None:
+    text = CONTRACT.read_text()
+    domain = DOMAIN.read_text()
+
+    assert "walk_forward_summary" in text
+    assert "sensitivity_summary" in text
+    assert "bootstrap_summary" in text
+    assert "backtest-artifact-walk-forward-v1" in text
+    assert "backtest-artifact-sensitivity-v1" in text
+    assert "backtest-artifact-bootstrap-v1" in text
+    assert "contentHash" in text
+    assert "P4-8" in domain

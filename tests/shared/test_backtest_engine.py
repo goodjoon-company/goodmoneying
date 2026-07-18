@@ -9,7 +9,11 @@ from goodmoneying_shared.backtest_engine import (
     BacktestCandleEvent,
     BacktestEngineSpec,
     BacktestSignal,
+    BootstrapSample,
     ExecutionModel,
+    SensitivityPoint,
+    WalkForwardFold,
+    build_performance_artifacts,
     run_candle_backtest,
 )
 
@@ -129,6 +133,79 @@ def test_P4_1_golden_replay_신호는_입력_신호와_동일하다() -> None:
     assert result.golden_replay_signals == signals
     assert result.trades[0].side == "buy"
     assert result.trades[1].side == "sell"
+
+
+def test_P4_8_성과_artifact는_결정론적_hash와_store_payload를_생성한다() -> None:
+    result = run_candle_backtest(
+        _spec(), candles=[_candle(0), _candle(1), _candle(2)], signals=()
+    )
+    folds = (
+        WalkForwardFold(
+            fold_index=2,
+            train_start_at=_at(0),
+            train_end_at=_at(1),
+            test_start_at=_at(1),
+            test_end_at=_at(2),
+            metrics={"finalEquity": Decimal("1010")},
+        ),
+        WalkForwardFold(
+            fold_index=1,
+            train_start_at=_at(0),
+            train_end_at=_at(1),
+            test_start_at=_at(1),
+            test_end_at=_at(2),
+            metrics={"finalEquity": Decimal("1005")},
+        ),
+    )
+    sensitivity = (
+        SensitivityPoint(
+            parameter_name="threshold",
+            parameter_value=Decimal("0.2"),
+            metrics={"finalEquity": Decimal("1008")},
+        ),
+        SensitivityPoint(
+            parameter_name="threshold",
+            parameter_value=Decimal("0.1"),
+            metrics={"finalEquity": Decimal("1004")},
+        ),
+    )
+    bootstrap = (
+        BootstrapSample(sample_index=2, seed=102, metrics={"finalEquity": Decimal("1003")}),
+        BootstrapSample(sample_index=1, seed=101, metrics={"finalEquity": Decimal("1001")}),
+    )
+
+    artifacts = build_performance_artifacts(
+        result,
+        walk_forward_folds=folds,
+        sensitivity_points=sensitivity,
+        bootstrap_samples=bootstrap,
+    )
+    repeated = build_performance_artifacts(
+        result,
+        walk_forward_folds=reversed(folds),
+        sensitivity_points=reversed(sensitivity),
+        bootstrap_samples=reversed(bootstrap),
+    )
+
+    assert artifacts == repeated
+    assert [artifact["artifactType"] for artifact in artifacts] == [
+        "walk_forward_summary",
+        "sensitivity_summary",
+        "bootstrap_summary",
+    ]
+    assert all(len(str(artifact["contentHash"])) == 64 for artifact in artifacts)
+    assert all(artifact["mediaType"] == "application/json" for artifact in artifacts)
+    assert all(artifact["storageUri"] is None for artifact in artifacts)
+    walk_forward = artifacts[0]["metadata"]
+    assert isinstance(walk_forward, dict)
+    assert walk_forward["schemaVersion"] == "backtest-artifact-walk-forward-v1"
+    assert [fold["foldIndex"] for fold in walk_forward["folds"]] == [1, 2]
+    assert walk_forward["summary"] == {
+        "foldCount": 2,
+        "finalEquityMin": Decimal("1005"),
+        "finalEquityMax": Decimal("1010"),
+        "finalEquityMean": Decimal("1007.5"),
+    }
 
 
 def _spec(max_participation_rate: Decimal = Decimal("1")) -> BacktestEngineSpec:

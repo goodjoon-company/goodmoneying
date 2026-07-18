@@ -202,6 +202,8 @@ P4-6 Backtest Result pagination은 단건 run 상세의 호환 payload를 유지
 
 P4-7 Backtest 실행 생성 API는 `POST /v1/backtest-runs` 명령을 운영 토큰으로 보호하고 `202 Accepted`와 `BacktestRunSummary`를 반환한다. 생성은 published 전략 version과 sealed 데이터셋 version만 허용하며, 같은 transaction에서 strategy graph hash, dataset content hash, dataset as-of·범위·fill/missing policy, engine version, canonical parameters hash, initial cash, execution model, deterministic seed, materialized candle events를 `backtest-run-input-v1` payload로 고정한다. `input_hash`는 이 payload를 사용한 백테스트 엔진 input hash와 같아야 하며, payload는 `backtest_runs.input_payload`에 보존해 Worker claim이 동일 입력을 재구성할 수 있게 한다. 새 run은 내부 상태 `queued`, 외부 상태 `pending`, `result_hash=NULL`로 저장되고 기존 Worker lease 흐름의 입력이 된다. 같은 idempotency key와 같은 본문은 기존 run을 재생하고, 같은 key의 다른 본문은 `BACKTEST_IDEMPOTENCY_CONFLICT`로 거부한다. 같은 semantic input hash가 이미 있으면 다른 idempotency key의 중복 생성으로 보고 409로 거부한다.
 
+P4-8 Backtest 성과 artifact는 `walk_forward_summary`, `sensitivity_summary`, `bootstrap_summary`를 Backtest Store의 기존 `backtest_artifacts` 입력 형태로 생성한다. 각 artifact metadata는 schema version(`backtest-artifact-walk-forward-v1`, `backtest-artifact-sensitivity-v1`, `backtest-artifact-bootstrap-v1`), `inputHash`, `resultHash`, 정렬된 분석 행, `finalEquity` min/max/mean 요약을 포함한다. `contentHash`는 metadata 정규 JSON SHA-256으로 계산해 입력 순서와 dictionary 삽입 순서가 결과 식별자에 영향을 주지 않게 한다.
+
 ## 7. 실시간 envelope
 
 ```json

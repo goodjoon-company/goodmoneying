@@ -14,3 +14,8 @@ wheel 배포본은 같은 내용을 `apps/upbit_gateway/goodmoneying_upbit_gatew
 cp docs/contracts/upbit/upbit-api-catalog.yaml apps/upbit_gateway/goodmoneying_upbit_gateway/data/upbit-api-catalog.yaml
 uv run pytest -q tests/contracts/test_upbit_gateway_contract.py
 ```
+
+## P6 private 주문 대사 계약
+
+- [`myorder-event.md`](myorder-event.md): private `myOrder` WebSocket event를 내부 대사 입력으로 해석하는 계약이다. initial snapshot 없음, 무이벤트 정상 처리, SMP 필드 보존, 재주문 금지를 고정한다.
+- [`rest-order-reconciliation.md`](rest-order-reconciliation.md): 주문조회 권한이 있는 Upbit REST 주문 snapshot을 내부 대사 원장 입력으로 정규화하는 계약이다. 실제 REST 호출 없이 이미 수신한 snapshot만 처리하며 terminal snapshot만 기존 원장에 적용한다.

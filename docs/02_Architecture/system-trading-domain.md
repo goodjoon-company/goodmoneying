@@ -170,6 +170,10 @@ P6-2는 위 식별자 경계를 먼저 DB와 shared utility로 고정한다. `20
 
 P6-3은 `trading_capabilities`를 append-only PostgreSQL 권위 로그로 추가한다. 최신 global 행만 평가하며 행 없음, DB 조회 실패, `deployment_sha` 불일치, `expires_at` 만료, 명시 `live_disabled`는 모두 `live_disabled`로 닫는다. `ci:`, `ai:`, `service:` actor는 DB 제약으로 capability 기록을 만들 수 없다. 이 단계는 live 활성화 API나 실제 주문 제출을 만들지 않고, 후속 주문 adapter가 사용할 fail-closed guardrail만 제공한다.
 
+P6-4는 private `myOrder` WebSocket event를 내부 대사 입력으로 정규화한다. Upbit `myOrder`는 initial snapshot 없이 실제 주문·체결 event만 보내므로 무이벤트는 정상 관측이며 REST snapshot 대사를 요구한다. `prevented_volume`, `prevented_locked`, nullable `trade_fee`, nullable `is_maker`를 보존하고, `state=trade`와 잔량이 있는 관측은 부분 체결로 분류한다. 모든 `myOrder` 대사 계획은 동일 주문 재제출을 금지한다.
+
+P6-5는 주문조회 권한 기반 REST snapshot을 기존 내부 원장 대사 입력으로 변환한다. `GET /v1/order`, `GET /v1/orders/open`, `GET /v1/orders/closed`, `GET /v1/orders/uuids` 응답은 `docs/contracts/upbit/rest-order-reconciliation.md` 계약으로 정규화한다. `done|cancel|prevented|rejected` terminal snapshot만 기존 `reconcile_exchange_order()`에 적용하고, `wait|watch|trade` 진행 중 snapshot은 observe-only로 남긴다. 이 단계는 실제 REST client, 주문 제출·취소, private WebSocket 연결, live execution mode 확장을 만들지 않는다. live 주문 UUID·identifier와 내부 `exchange_orders` 결합은 후속 안전 주문 adapter 계약에서 추가한다.
+
 ## 5. 전략 그래프 계약
 
 그래프는 `schema_version`, `nodes`, `edges`, `outputs`를 가진다. 노드는 `id`, `type`, `config`, `input_ports`, `output_ports`를 가진다. edge는 `(from_node, from_port, to_node, to_port)`이며 자료형과 시간 주기가 호환돼야 한다.

@@ -50,6 +50,24 @@ $$;
 
 
 --
+-- Name: enforce_dataset_version_seal(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enforce_dataset_version_seal() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'UPDATE'
+     AND OLD.sealed_at IS NULL AND NEW.sealed_at IS NOT NULL
+     AND (to_jsonb(NEW) - 'sealed_at') = (to_jsonb(OLD) - 'sealed_at') THEN
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END;
+$$;
+
+
+--
 -- Name: enqueue_completed_rollup_indicator_invalidation(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -540,6 +558,19 @@ $$;
 
 
 --
+-- Name: reject_dataset_version_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_dataset_version_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END;
+$$;
+
+
+--
 -- Name: reject_indicator_immutable_mutation(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -558,6 +589,24 @@ CREATE FUNCTION public.reject_microstructure_immutable_mutation() RETURNS trigge
     LANGUAGE plpgsql
     AS $$
 BEGIN RAISE EXCEPTION '% is append-only', TG_TABLE_NAME; END;
+$$;
+
+
+--
+-- Name: reject_sealed_dataset_version_child_insert(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_sealed_dataset_version_child_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  PERFORM 1 FROM dataset_versions
+  WHERE id=NEW.dataset_version_id AND sealed_at IS NULL FOR KEY SHARE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION '게시된 dataset version child는 append-only immutable이다';
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 
@@ -581,6 +630,123 @@ $$;
 CREATE FUNCTION public.source_candle_content_hash(p_open numeric, p_high numeric, p_low numeric, p_close numeric, p_volume numeric, p_trade_amount numeric) RETURNS text
     LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
     RETURN encode(sha256(convert_to(concat_ws('|'::text, (trim_scale(p_open))::text, (trim_scale(p_high))::text, (trim_scale(p_low))::text, (trim_scale(p_close))::text, (trim_scale(p_volume))::text, (trim_scale(p_trade_amount))::text), 'UTF8'::name)), 'hex'::text);
+
+
+--
+-- Name: validate_dataset_version_typed_member(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.validate_dataset_version_typed_member() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  parent dataset_version_series%ROWTYPE;
+  source_instrument BIGINT;
+  source_unit TEXT;
+  source_occurred TIMESTAMPTZ;
+  source_calculation TEXT;
+  source_definition TEXT;
+  source_content_hash TEXT;
+  source_knowledge_at TIMESTAMPTZ;
+  source_as_of TIMESTAMPTZ;
+  source_id BIGINT;
+  source_ceiling BIGINT;
+  parent_as_of TIMESTAMPTZ;
+BEGIN
+  SELECT * INTO parent FROM dataset_version_series
+  WHERE dataset_version_id=NEW.dataset_version_id AND id=NEW.dataset_version_series_id;
+  IF NOT FOUND OR parent.instrument_id <> NEW.instrument_id OR parent.unit <> NEW.unit THEN
+    RAISE EXCEPTION 'typed dataset member identity가 parent series와 다르다';
+  END IF;
+  SELECT version.as_of INTO parent_as_of
+  FROM dataset_versions version WHERE version.id=NEW.dataset_version_id;
+  IF TG_TABLE_NAME='dataset_version_candles' THEN
+    IF parent.data_kind <> 'candle' THEN RAISE EXCEPTION 'typed dataset member kind 불일치'; END IF;
+    IF NEW.source_candle_revision_id IS NOT NULL THEN
+      source_id := NEW.source_candle_revision_id;
+      source_ceiling := parent.source_revision_through_id;
+      SELECT revision.instrument_id, revision.candle_unit, revision.candle_start_at,
+             revision.input_content_hash, revision.knowledge_at, revision.source_as_of
+        INTO source_instrument, source_unit, source_occurred, source_content_hash,
+             source_knowledge_at, source_as_of
+      FROM source_candle_revisions revision WHERE revision.id=NEW.source_candle_revision_id;
+      source_calculation := 'source-candle-v1';
+    ELSE
+      source_id := NEW.candle_rollup_id;
+      source_ceiling := parent.candle_rollup_through_id;
+      SELECT rollup.instrument_id, rollup.candle_unit, rollup.candle_start_at,
+             rollup.calculation_version, rollup.result_content_hash,
+             rollup.knowledge_at, rollup.source_as_of
+        INTO source_instrument, source_unit, source_occurred, source_calculation,
+             source_content_hash, source_knowledge_at, source_as_of
+      FROM candle_rollups rollup WHERE rollup.id=NEW.candle_rollup_id;
+    END IF;
+  ELSIF TG_TABLE_NAME='dataset_version_indicators' THEN
+    IF parent.data_kind <> 'indicator' THEN RAISE EXCEPTION 'typed dataset member kind 불일치'; END IF;
+    source_id := NEW.indicator_materialization_id;
+    source_ceiling := parent.indicator_materialization_through_id;
+    SELECT materialization.instrument_id, materialization.candle_unit,
+           materialization.occurred_at, materialization.definition_set_hash,
+           materialization.content_hash, materialization.knowledge_at,
+           materialization.source_as_of
+      INTO source_instrument, source_unit, source_occurred, source_definition,
+           source_content_hash, source_knowledge_at, source_as_of
+    FROM indicator_materializations materialization
+    WHERE materialization.id=NEW.indicator_materialization_id;
+    source_calculation := 'indicator-v1';
+  ELSIF TG_TABLE_NAME='dataset_version_market_statistics' THEN
+    IF parent.data_kind <> 'market_statistic' THEN RAISE EXCEPTION 'typed dataset member kind 불일치'; END IF;
+    source_id := NEW.market_statistic_id;
+    source_ceiling := parent.market_statistic_through_id;
+    SELECT statistic.instrument_id, statistic.interval, statistic.occurred_at,
+           statistic.calculation_version, statistic.content_hash,
+           statistic.knowledge_at, statistic.source_as_of
+      INTO source_instrument, source_unit, source_occurred, source_calculation,
+           source_content_hash, source_knowledge_at, source_as_of
+    FROM market_statistics statistic WHERE statistic.id=NEW.market_statistic_id;
+  ELSE
+    IF parent.data_kind <> 'microstructure' THEN RAISE EXCEPTION 'typed dataset member kind 불일치'; END IF;
+    source_id := NEW.microstructure_materialization_id;
+    source_ceiling := parent.microstructure_materialization_through_id;
+    SELECT materialization.instrument_id, '1m', materialization.bucket_start_at,
+           definition.calculation_version, definition.definition_hash,
+           statistic.content_hash, materialization.knowledge_at,
+           materialization.source_as_of
+      INTO source_instrument, source_unit, source_occurred,
+           source_calculation, source_definition, source_content_hash,
+           source_knowledge_at, source_as_of
+    FROM microstructure_materializations materialization
+    JOIN microstructure_definition_versions definition
+      ON definition.id=materialization.definition_version_id
+    JOIN microstructure_statistics statistic
+      ON statistic.materialization_id=materialization.id
+    WHERE materialization.id=NEW.microstructure_materialization_id;
+  END IF;
+  IF source_ceiling IS NULL OR source_id > source_ceiling THEN
+    RAISE EXCEPTION 'typed dataset member가 고정된 원천 frontier를 넘는다';
+  END IF;
+  IF source_knowledge_at > parent_as_of THEN
+    RAISE EXCEPTION 'typed dataset member knowledge_at이 dataset version asOf를 넘는다';
+  END IF;
+  IF source_instrument IS NULL OR source_instrument <> NEW.instrument_id
+     OR source_unit <> NEW.unit OR source_occurred <> NEW.occurred_at THEN
+    RAISE EXCEPTION 'typed dataset member source 자연키가 다르다';
+  END IF;
+  IF parent.definition_set_hash IS DISTINCT FROM source_definition THEN
+    RAISE EXCEPTION 'typed dataset member definition 자연키가 다르다';
+  END IF;
+  IF parent.calculation_version <> 'daily-source-preferred-v1'
+     AND parent.calculation_version IS DISTINCT FROM source_calculation THEN
+    RAISE EXCEPTION 'typed dataset member calculation version이 다르다';
+  END IF;
+  IF NEW.content_hash IS DISTINCT FROM source_content_hash
+     OR NEW.knowledge_at IS DISTINCT FROM source_knowledge_at
+     OR NEW.source_as_of IS DISTINCT FROM source_as_of THEN
+    RAISE EXCEPTION 'typed dataset member 내용 또는 인과 시각이 원천과 다르다';
+  END IF;
+  RETURN NEW;
+END;
+$$;
 
 
 SET default_tablespace = '';
@@ -1388,6 +1554,436 @@ CREATE TABLE public.data_quality_events (
 
 ALTER TABLE public.data_quality_events ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
     SEQUENCE NAME public.data_quality_events_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: dataset_build_coverage_snapshots; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dataset_build_coverage_snapshots (
+    id bigint NOT NULL,
+    dataset_build_id bigint NOT NULL,
+    dataset_build_series_id bigint NOT NULL,
+    source_data_quality_event_id bigint,
+    exchange text NOT NULL,
+    market_code text NOT NULL,
+    data_kind text NOT NULL,
+    unit text NOT NULL,
+    definition_set_hash text,
+    calculation_version text NOT NULL,
+    range_start_at timestamp with time zone NOT NULL,
+    range_end_at timestamp with time zone NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    status text NOT NULL,
+    observed_count integer NOT NULL,
+    expected_count integer NOT NULL,
+    evidence_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dataset_build_coverage_snapshots_check CHECK ((range_start_at < range_end_at)),
+    CONSTRAINT dataset_build_coverage_snapshots_data_kind_check CHECK ((data_kind = ANY (ARRAY['candle'::text, 'indicator'::text, 'market_statistic'::text, 'microstructure'::text]))),
+    CONSTRAINT dataset_build_coverage_snapshots_definition_set_hash_check CHECK (((definition_set_hash IS NULL) OR (definition_set_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT dataset_build_coverage_snapshots_evidence_hash_check CHECK ((evidence_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dataset_build_coverage_snapshots_expected_count_check CHECK ((expected_count >= 0)),
+    CONSTRAINT dataset_build_coverage_snapshots_observed_count_check CHECK ((observed_count >= 0)),
+    CONSTRAINT dataset_build_coverage_snapshots_status_check CHECK ((status = ANY (ARRAY['available'::text, 'no_trade'::text, 'missing'::text, 'unavailable'::text, 'unverified'::text])))
+);
+
+
+--
+-- Name: dataset_build_coverage_snapshots_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.dataset_build_coverage_snapshots ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.dataset_build_coverage_snapshots_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: dataset_build_market_status_snapshots; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dataset_build_market_status_snapshots (
+    id bigint NOT NULL,
+    dataset_build_id bigint NOT NULL,
+    source_market_status_history_id bigint NOT NULL,
+    market_id bigint NOT NULL,
+    exchange text NOT NULL,
+    market_code text NOT NULL,
+    trading_status text NOT NULL,
+    market_warning text NOT NULL,
+    market_event jsonb NOT NULL,
+    source_payload_checksum text NOT NULL,
+    valid_from timestamp with time zone NOT NULL,
+    valid_to timestamp with time zone,
+    observed_at timestamp with time zone NOT NULL,
+    snapshot_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dataset_build_market_status_snapshots_check CHECK (((valid_to IS NULL) OR (valid_from < valid_to))),
+    CONSTRAINT dataset_build_market_status_snapshots_snapshot_hash_check CHECK ((snapshot_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+
+--
+-- Name: dataset_build_market_status_snapshots_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.dataset_build_market_status_snapshots ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.dataset_build_market_status_snapshots_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: dataset_build_series; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dataset_build_series (
+    id bigint NOT NULL,
+    dataset_build_id bigint NOT NULL,
+    market_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    data_kind text NOT NULL,
+    unit text NOT NULL,
+    definition_set_hash text,
+    calculation_version text NOT NULL,
+    fill_policy text NOT NULL,
+    source_revision_through_id bigint,
+    candle_rollup_through_id bigint,
+    quality_event_through_id bigint,
+    indicator_materialization_through_id bigint,
+    market_statistic_through_id bigint,
+    microstructure_materialization_through_id bigint,
+    market_status_history_through_id bigint,
+    orderbook_snapshot_through_id bigint,
+    trade_event_through_id bigint,
+    source_receipt_through_id bigint,
+    connection_quality_through_id bigint,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dataset_build_series_check CHECK (((fill_policy = 'none'::text) OR (data_kind = 'candle'::text))),
+    CONSTRAINT dataset_build_series_data_kind_check CHECK ((data_kind = ANY (ARRAY['candle'::text, 'indicator'::text, 'market_statistic'::text, 'microstructure'::text]))),
+    CONSTRAINT dataset_build_series_definition_set_hash_check CHECK (((definition_set_hash IS NULL) OR (definition_set_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT dataset_build_series_fill_policy_check CHECK ((fill_policy = ANY (ARRAY['none'::text, 'no_trade_carry_forward_v1'::text]))),
+    CONSTRAINT dataset_build_series_unit_check CHECK ((unit <> ''::text))
+);
+
+
+--
+-- Name: dataset_build_series_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.dataset_build_series ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.dataset_build_series_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: dataset_builds; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dataset_builds (
+    id bigint NOT NULL,
+    idempotency_key text NOT NULL,
+    request_id text NOT NULL,
+    actor_id text NOT NULL,
+    requested_at timestamp with time zone NOT NULL,
+    reason text NOT NULL,
+    frozen_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    request_hash text NOT NULL,
+    schema_version text NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    input_start_at timestamp with time zone NOT NULL,
+    output_start_at timestamp with time zone NOT NULL,
+    end_at timestamp with time zone NOT NULL,
+    fill_policy text NOT NULL,
+    missing_policy text NOT NULL,
+    ordering_policy text NOT NULL,
+    request_payload jsonb NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    lease_owner text,
+    lease_expires_at timestamp with time zone,
+    lease_generation integer DEFAULT 0 NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    max_attempts integer DEFAULT 3 NOT NULL,
+    next_retry_at timestamp with time zone,
+    last_error_code text,
+    last_error_message text,
+    dead_letter_reason text,
+    dataset_version_id bigint,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    started_at timestamp with time zone,
+    finished_at timestamp with time zone,
+    CONSTRAINT dataset_builds_attempt_count_check CHECK ((attempt_count >= 0)),
+    CONSTRAINT dataset_builds_check CHECK (((input_start_at <= output_start_at) AND (output_start_at < end_at) AND (end_at <= as_of))),
+    CONSTRAINT dataset_builds_check1 CHECK (((status = 'running'::text) = ((lease_owner IS NOT NULL) AND (lease_expires_at IS NOT NULL)))),
+    CONSTRAINT dataset_builds_check2 CHECK (((status = 'retry_wait'::text) = (next_retry_at IS NOT NULL))),
+    CONSTRAINT dataset_builds_check3 CHECK (((status = 'dead_letter'::text) = (dead_letter_reason IS NOT NULL))),
+    CONSTRAINT dataset_builds_check4 CHECK (((status = 'succeeded'::text) = (dataset_version_id IS NOT NULL))),
+    CONSTRAINT dataset_builds_fill_policy_check CHECK ((fill_policy = ANY (ARRAY['none'::text, 'no_trade_carry_forward_v1'::text]))),
+    CONSTRAINT dataset_builds_lease_generation_check CHECK ((lease_generation >= 0)),
+    CONSTRAINT dataset_builds_max_attempts_check CHECK ((max_attempts > 0)),
+    CONSTRAINT dataset_builds_missing_policy_check CHECK ((missing_policy = ANY (ARRAY['fail'::text, 'null'::text, 'drop'::text]))),
+    CONSTRAINT dataset_builds_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dataset_builds_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'running'::text, 'retry_wait'::text, 'succeeded'::text, 'failed'::text, 'dead_letter'::text, 'cancelled'::text])))
+);
+
+
+--
+-- Name: dataset_builds_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.dataset_builds ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.dataset_builds_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: dataset_version_candles; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dataset_version_candles (
+    dataset_version_id bigint NOT NULL,
+    dataset_version_series_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    unit text NOT NULL,
+    occurred_at timestamp with time zone NOT NULL,
+    source_candle_revision_id bigint,
+    candle_rollup_id bigint,
+    quality text NOT NULL,
+    content_hash text NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    source_as_of timestamp with time zone NOT NULL,
+    CONSTRAINT dataset_version_candles_check CHECK (((((source_candle_revision_id IS NOT NULL))::integer + ((candle_rollup_id IS NOT NULL))::integer) = 1)),
+    CONSTRAINT dataset_version_candles_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dataset_version_candles_quality_check CHECK ((quality = ANY (ARRAY['available'::text, 'no_trade'::text, 'missing'::text, 'unavailable'::text, 'unverified'::text])))
+);
+
+
+--
+-- Name: dataset_version_coverage_snapshots; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dataset_version_coverage_snapshots (
+    dataset_version_id bigint NOT NULL,
+    source_build_coverage_snapshot_id bigint NOT NULL,
+    dataset_version_series_id bigint NOT NULL,
+    source_data_quality_event_id bigint,
+    exchange text NOT NULL,
+    market_code text NOT NULL,
+    data_kind text NOT NULL,
+    unit text NOT NULL,
+    definition_set_hash text,
+    calculation_version text NOT NULL,
+    range_start_at timestamp with time zone NOT NULL,
+    range_end_at timestamp with time zone NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    status text NOT NULL,
+    observed_count integer NOT NULL,
+    expected_count integer NOT NULL,
+    evidence_hash text NOT NULL,
+    CONSTRAINT dataset_version_coverage_snapshots_definition_set_hash_check CHECK (((definition_set_hash IS NULL) OR (definition_set_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT dataset_version_coverage_snapshots_evidence_hash_check CHECK ((evidence_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dataset_version_coverage_snapshots_expected_count_check CHECK ((expected_count >= 0)),
+    CONSTRAINT dataset_version_coverage_snapshots_observed_count_check CHECK ((observed_count >= 0)),
+    CONSTRAINT dataset_version_coverage_snapshots_status_check CHECK ((status = ANY (ARRAY['available'::text, 'no_trade'::text, 'missing'::text, 'unavailable'::text, 'unverified'::text])))
+);
+
+
+--
+-- Name: dataset_version_indicators; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dataset_version_indicators (
+    dataset_version_id bigint NOT NULL,
+    dataset_version_series_id bigint NOT NULL,
+    indicator_materialization_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    unit text NOT NULL,
+    occurred_at timestamp with time zone NOT NULL,
+    quality text NOT NULL,
+    content_hash text NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    source_as_of timestamp with time zone NOT NULL,
+    CONSTRAINT dataset_version_indicators_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dataset_version_indicators_quality_check CHECK ((quality = ANY (ARRAY['available'::text, 'no_trade'::text, 'missing'::text, 'unavailable'::text, 'unverified'::text])))
+);
+
+
+--
+-- Name: dataset_version_market_statistics; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dataset_version_market_statistics (
+    dataset_version_id bigint NOT NULL,
+    dataset_version_series_id bigint NOT NULL,
+    market_statistic_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    unit text NOT NULL,
+    occurred_at timestamp with time zone NOT NULL,
+    quality text NOT NULL,
+    content_hash text NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    source_as_of timestamp with time zone NOT NULL,
+    CONSTRAINT dataset_version_market_statistics_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dataset_version_market_statistics_quality_check CHECK ((quality = ANY (ARRAY['available'::text, 'no_trade'::text, 'missing'::text, 'unavailable'::text, 'unverified'::text])))
+);
+
+
+--
+-- Name: dataset_version_market_status_snapshots; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dataset_version_market_status_snapshots (
+    dataset_version_id bigint NOT NULL,
+    source_build_snapshot_id bigint NOT NULL,
+    source_market_status_history_id bigint NOT NULL,
+    market_id bigint NOT NULL,
+    exchange text NOT NULL,
+    market_code text NOT NULL,
+    trading_status text NOT NULL,
+    market_warning text NOT NULL,
+    market_event jsonb NOT NULL,
+    source_payload_checksum text NOT NULL,
+    valid_from timestamp with time zone NOT NULL,
+    valid_to timestamp with time zone,
+    observed_at timestamp with time zone NOT NULL,
+    snapshot_hash text NOT NULL,
+    CONSTRAINT dataset_version_market_status_snapshots_snapshot_hash_check CHECK ((snapshot_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+
+--
+-- Name: dataset_version_microstructures; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dataset_version_microstructures (
+    dataset_version_id bigint NOT NULL,
+    dataset_version_series_id bigint NOT NULL,
+    microstructure_materialization_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    unit text NOT NULL,
+    occurred_at timestamp with time zone NOT NULL,
+    quality text NOT NULL,
+    content_hash text NOT NULL,
+    knowledge_at timestamp with time zone NOT NULL,
+    source_as_of timestamp with time zone NOT NULL,
+    CONSTRAINT dataset_version_microstructures_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dataset_version_microstructures_quality_check CHECK ((quality = ANY (ARRAY['available'::text, 'no_trade'::text, 'missing'::text, 'unavailable'::text, 'unverified'::text]))),
+    CONSTRAINT dataset_version_microstructures_unit_check CHECK ((unit = '1m'::text))
+);
+
+
+--
+-- Name: dataset_version_series; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dataset_version_series (
+    id bigint NOT NULL,
+    dataset_version_id bigint NOT NULL,
+    source_build_series_id bigint NOT NULL,
+    market_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    data_kind text NOT NULL,
+    unit text NOT NULL,
+    definition_set_hash text,
+    calculation_version text NOT NULL,
+    source_revision_through_id bigint,
+    candle_rollup_through_id bigint,
+    quality_event_through_id bigint,
+    indicator_materialization_through_id bigint,
+    market_statistic_through_id bigint,
+    microstructure_materialization_through_id bigint,
+    market_status_history_through_id bigint,
+    orderbook_snapshot_through_id bigint,
+    trade_event_through_id bigint,
+    source_receipt_through_id bigint,
+    connection_quality_through_id bigint,
+    member_count integer NOT NULL,
+    members_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dataset_version_series_data_kind_check CHECK ((data_kind = ANY (ARRAY['candle'::text, 'indicator'::text, 'market_statistic'::text, 'microstructure'::text]))),
+    CONSTRAINT dataset_version_series_definition_set_hash_check CHECK (((definition_set_hash IS NULL) OR (definition_set_hash ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT dataset_version_series_member_count_check CHECK ((member_count >= 0)),
+    CONSTRAINT dataset_version_series_members_hash_check CHECK ((members_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+
+--
+-- Name: dataset_version_series_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.dataset_version_series ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.dataset_version_series_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: dataset_versions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dataset_versions (
+    id bigint NOT NULL,
+    schema_version text NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    input_start_at timestamp with time zone NOT NULL,
+    output_start_at timestamp with time zone NOT NULL,
+    end_at timestamp with time zone NOT NULL,
+    fill_policy text NOT NULL,
+    missing_policy text NOT NULL,
+    ordering_policy text NOT NULL,
+    selection_hash text NOT NULL,
+    manifest_hash text NOT NULL,
+    market_status_hash text NOT NULL,
+    coverage_hash text NOT NULL,
+    content_hash text NOT NULL,
+    sealed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dataset_versions_check CHECK (((input_start_at <= output_start_at) AND (output_start_at < end_at) AND (end_at <= as_of))),
+    CONSTRAINT dataset_versions_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dataset_versions_coverage_hash_check CHECK ((coverage_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dataset_versions_fill_policy_check CHECK ((fill_policy = ANY (ARRAY['none'::text, 'no_trade_carry_forward_v1'::text]))),
+    CONSTRAINT dataset_versions_manifest_hash_check CHECK ((manifest_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dataset_versions_market_status_hash_check CHECK ((market_status_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT dataset_versions_missing_policy_check CHECK ((missing_policy = ANY (ARRAY['fail'::text, 'null'::text, 'drop'::text]))),
+    CONSTRAINT dataset_versions_selection_hash_check CHECK ((selection_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+
+--
+-- Name: dataset_versions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.dataset_versions ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.dataset_versions_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -2893,6 +3489,158 @@ ALTER TABLE ONLY public.data_quality_events
 
 
 --
+-- Name: dataset_build_coverage_snapshots dataset_build_coverage_snapsh_dataset_build_series_id_range_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_coverage_snapshots
+    ADD CONSTRAINT dataset_build_coverage_snapsh_dataset_build_series_id_range_key UNIQUE (dataset_build_series_id, range_start_at, range_end_at);
+
+
+--
+-- Name: dataset_build_coverage_snapshots dataset_build_coverage_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_coverage_snapshots
+    ADD CONSTRAINT dataset_build_coverage_snapshots_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: dataset_build_market_status_snapshots dataset_build_market_status_s_dataset_build_id_source_marke_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_market_status_snapshots
+    ADD CONSTRAINT dataset_build_market_status_s_dataset_build_id_source_marke_key UNIQUE (dataset_build_id, source_market_status_history_id);
+
+
+--
+-- Name: dataset_build_market_status_snapshots dataset_build_market_status_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_market_status_snapshots
+    ADD CONSTRAINT dataset_build_market_status_snapshots_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: dataset_build_series dataset_build_series_dataset_build_id_instrument_id_data_ki_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_dataset_build_id_instrument_id_data_ki_key UNIQUE NULLS NOT DISTINCT (dataset_build_id, instrument_id, data_kind, unit, definition_set_hash, calculation_version);
+
+
+--
+-- Name: dataset_build_series dataset_build_series_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: dataset_builds dataset_builds_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_builds
+    ADD CONSTRAINT dataset_builds_idempotency_key_key UNIQUE (idempotency_key);
+
+
+--
+-- Name: dataset_builds dataset_builds_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_builds
+    ADD CONSTRAINT dataset_builds_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: dataset_version_candles dataset_version_candles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_candles
+    ADD CONSTRAINT dataset_version_candles_pkey PRIMARY KEY (dataset_version_id, dataset_version_series_id, occurred_at);
+
+
+--
+-- Name: dataset_version_coverage_snapshots dataset_version_coverage_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_coverage_snapshots
+    ADD CONSTRAINT dataset_version_coverage_snapshots_pkey PRIMARY KEY (dataset_version_id, source_build_coverage_snapshot_id);
+
+
+--
+-- Name: dataset_version_indicators dataset_version_indicators_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_indicators
+    ADD CONSTRAINT dataset_version_indicators_pkey PRIMARY KEY (dataset_version_id, dataset_version_series_id, occurred_at);
+
+
+--
+-- Name: dataset_version_market_statistics dataset_version_market_statistics_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_market_statistics
+    ADD CONSTRAINT dataset_version_market_statistics_pkey PRIMARY KEY (dataset_version_id, dataset_version_series_id, occurred_at);
+
+
+--
+-- Name: dataset_version_market_status_snapshots dataset_version_market_status_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_market_status_snapshots
+    ADD CONSTRAINT dataset_version_market_status_snapshots_pkey PRIMARY KEY (dataset_version_id, source_build_snapshot_id);
+
+
+--
+-- Name: dataset_version_microstructures dataset_version_microstructures_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_microstructures
+    ADD CONSTRAINT dataset_version_microstructures_pkey PRIMARY KEY (dataset_version_id, dataset_version_series_id, occurred_at);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_dataset_version_id_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_dataset_version_id_id_key UNIQUE (dataset_version_id, id);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_dataset_version_id_instrument_id_dat_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_dataset_version_id_instrument_id_dat_key UNIQUE NULLS NOT DISTINCT (dataset_version_id, instrument_id, data_kind, unit, definition_set_hash, calculation_version);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: dataset_versions dataset_versions_content_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_versions
+    ADD CONSTRAINT dataset_versions_content_hash_key UNIQUE (content_hash);
+
+
+--
+-- Name: dataset_versions dataset_versions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_versions
+    ADD CONSTRAINT dataset_versions_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: fetch_manifests fetch_manifests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3509,6 +4257,20 @@ CREATE INDEX coverage_intervals_target_time_idx ON public.coverage_intervals USI
 
 
 --
+-- Name: dataset_builds_claim_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX dataset_builds_claim_idx ON public.dataset_builds USING btree (COALESCE(next_retry_at, created_at), id) WHERE (status = ANY (ARRAY['pending'::text, 'running'::text, 'retry_wait'::text]));
+
+
+--
+-- Name: dataset_versions_as_of_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX dataset_versions_as_of_idx ON public.dataset_versions USING btree (as_of, id);
+
+
+--
 -- Name: indicator_invalidations_claim_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3737,6 +4499,237 @@ CREATE TRIGGER candle_rollups_append_only_update BEFORE UPDATE ON public.candle_
 --
 
 CREATE TRIGGER completed_rollup_indicator_invalidation AFTER UPDATE OF status ON public.candle_rollup_recompute_jobs FOR EACH ROW EXECUTE FUNCTION public.enqueue_completed_rollup_indicator_invalidation();
+
+
+--
+-- Name: dataset_build_coverage_snapshots dataset_build_coverage_snapshots_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_build_coverage_snapshots_append_only_delete BEFORE DELETE ON public.dataset_build_coverage_snapshots FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_build_coverage_snapshots dataset_build_coverage_snapshots_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_build_coverage_snapshots_append_only_update BEFORE UPDATE ON public.dataset_build_coverage_snapshots FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_build_series dataset_build_series_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_build_series_append_only_delete BEFORE DELETE ON public.dataset_build_series FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_build_series dataset_build_series_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_build_series_append_only_update BEFORE UPDATE ON public.dataset_build_series FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_build_market_status_snapshots dataset_build_status_snapshots_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_build_status_snapshots_append_only_delete BEFORE DELETE ON public.dataset_build_market_status_snapshots FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_build_market_status_snapshots dataset_build_status_snapshots_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_build_status_snapshots_append_only_update BEFORE UPDATE ON public.dataset_build_market_status_snapshots FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_version_candles dataset_version_candles_a_sealed_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_candles_a_sealed_insert BEFORE INSERT ON public.dataset_version_candles FOR EACH ROW EXECUTE FUNCTION public.reject_sealed_dataset_version_child_insert();
+
+
+--
+-- Name: dataset_version_candles dataset_version_candles_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_candles_append_only_delete BEFORE DELETE ON public.dataset_version_candles FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_version_candles dataset_version_candles_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_candles_append_only_update BEFORE UPDATE ON public.dataset_version_candles FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_version_candles dataset_version_candles_identity; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_candles_identity BEFORE INSERT ON public.dataset_version_candles FOR EACH ROW EXECUTE FUNCTION public.validate_dataset_version_typed_member();
+
+
+--
+-- Name: dataset_version_coverage_snapshots dataset_version_coverage_snapshots_a_sealed_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_coverage_snapshots_a_sealed_insert BEFORE INSERT ON public.dataset_version_coverage_snapshots FOR EACH ROW EXECUTE FUNCTION public.reject_sealed_dataset_version_child_insert();
+
+
+--
+-- Name: dataset_version_coverage_snapshots dataset_version_coverage_snapshots_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_coverage_snapshots_append_only_delete BEFORE DELETE ON public.dataset_version_coverage_snapshots FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_version_coverage_snapshots dataset_version_coverage_snapshots_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_coverage_snapshots_append_only_update BEFORE UPDATE ON public.dataset_version_coverage_snapshots FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_version_indicators dataset_version_indicators_a_sealed_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_indicators_a_sealed_insert BEFORE INSERT ON public.dataset_version_indicators FOR EACH ROW EXECUTE FUNCTION public.reject_sealed_dataset_version_child_insert();
+
+
+--
+-- Name: dataset_version_indicators dataset_version_indicators_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_indicators_append_only_delete BEFORE DELETE ON public.dataset_version_indicators FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_version_indicators dataset_version_indicators_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_indicators_append_only_update BEFORE UPDATE ON public.dataset_version_indicators FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_version_indicators dataset_version_indicators_identity; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_indicators_identity BEFORE INSERT ON public.dataset_version_indicators FOR EACH ROW EXECUTE FUNCTION public.validate_dataset_version_typed_member();
+
+
+--
+-- Name: dataset_version_market_statistics dataset_version_market_statistics_a_sealed_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_market_statistics_a_sealed_insert BEFORE INSERT ON public.dataset_version_market_statistics FOR EACH ROW EXECUTE FUNCTION public.reject_sealed_dataset_version_child_insert();
+
+
+--
+-- Name: dataset_version_market_statistics dataset_version_market_statistics_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_market_statistics_append_only_delete BEFORE DELETE ON public.dataset_version_market_statistics FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_version_market_statistics dataset_version_market_statistics_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_market_statistics_append_only_update BEFORE UPDATE ON public.dataset_version_market_statistics FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_version_market_statistics dataset_version_market_statistics_identity; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_market_statistics_identity BEFORE INSERT ON public.dataset_version_market_statistics FOR EACH ROW EXECUTE FUNCTION public.validate_dataset_version_typed_member();
+
+
+--
+-- Name: dataset_version_market_status_snapshots dataset_version_market_status_snapshots_a_sealed_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_market_status_snapshots_a_sealed_insert BEFORE INSERT ON public.dataset_version_market_status_snapshots FOR EACH ROW EXECUTE FUNCTION public.reject_sealed_dataset_version_child_insert();
+
+
+--
+-- Name: dataset_version_market_status_snapshots dataset_version_market_status_snapshots_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_market_status_snapshots_append_only_delete BEFORE DELETE ON public.dataset_version_market_status_snapshots FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_version_market_status_snapshots dataset_version_market_status_snapshots_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_market_status_snapshots_append_only_update BEFORE UPDATE ON public.dataset_version_market_status_snapshots FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_version_microstructures dataset_version_microstructures_a_sealed_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_microstructures_a_sealed_insert BEFORE INSERT ON public.dataset_version_microstructures FOR EACH ROW EXECUTE FUNCTION public.reject_sealed_dataset_version_child_insert();
+
+
+--
+-- Name: dataset_version_microstructures dataset_version_microstructures_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_microstructures_append_only_delete BEFORE DELETE ON public.dataset_version_microstructures FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_version_microstructures dataset_version_microstructures_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_microstructures_append_only_update BEFORE UPDATE ON public.dataset_version_microstructures FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_version_microstructures dataset_version_microstructures_identity; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_microstructures_identity BEFORE INSERT ON public.dataset_version_microstructures FOR EACH ROW EXECUTE FUNCTION public.validate_dataset_version_typed_member();
+
+
+--
+-- Name: dataset_version_series dataset_version_series_a_sealed_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_series_a_sealed_insert BEFORE INSERT ON public.dataset_version_series FOR EACH ROW EXECUTE FUNCTION public.reject_sealed_dataset_version_child_insert();
+
+
+--
+-- Name: dataset_version_series dataset_version_series_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_series_append_only_delete BEFORE DELETE ON public.dataset_version_series FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_version_series dataset_version_series_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_version_series_append_only_update BEFORE UPDATE ON public.dataset_version_series FOR EACH ROW EXECUTE FUNCTION public.reject_dataset_version_mutation();
+
+
+--
+-- Name: dataset_versions dataset_versions_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_versions_append_only_delete BEFORE DELETE ON public.dataset_versions FOR EACH ROW EXECUTE FUNCTION public.enforce_dataset_version_seal();
+
+
+--
+-- Name: dataset_versions dataset_versions_seal_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER dataset_versions_seal_update BEFORE UPDATE ON public.dataset_versions FOR EACH ROW EXECUTE FUNCTION public.enforce_dataset_version_seal();
 
 
 --
@@ -4131,6 +5124,462 @@ ALTER TABLE ONLY public.data_quality_events
 
 ALTER TABLE ONLY public.data_quality_events
     ADD CONSTRAINT data_quality_events_target_spec_id_fkey FOREIGN KEY (target_spec_id) REFERENCES public.collection_target_specs(id);
+
+
+--
+-- Name: dataset_build_coverage_snapshots dataset_build_coverage_snapsh_source_data_quality_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_coverage_snapshots
+    ADD CONSTRAINT dataset_build_coverage_snapsh_source_data_quality_event_id_fkey FOREIGN KEY (source_data_quality_event_id) REFERENCES public.data_quality_events(id);
+
+
+--
+-- Name: dataset_build_coverage_snapshots dataset_build_coverage_snapshots_dataset_build_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_coverage_snapshots
+    ADD CONSTRAINT dataset_build_coverage_snapshots_dataset_build_id_fkey FOREIGN KEY (dataset_build_id) REFERENCES public.dataset_builds(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_build_coverage_snapshots dataset_build_coverage_snapshots_dataset_build_series_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_coverage_snapshots
+    ADD CONSTRAINT dataset_build_coverage_snapshots_dataset_build_series_id_fkey FOREIGN KEY (dataset_build_series_id) REFERENCES public.dataset_build_series(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_build_market_status_snapshots dataset_build_market_status_s_source_market_status_history_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_market_status_snapshots
+    ADD CONSTRAINT dataset_build_market_status_s_source_market_status_history_fkey FOREIGN KEY (source_market_status_history_id) REFERENCES public.market_status_history(id);
+
+
+--
+-- Name: dataset_build_market_status_snapshots dataset_build_market_status_snapshots_dataset_build_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_market_status_snapshots
+    ADD CONSTRAINT dataset_build_market_status_snapshots_dataset_build_id_fkey FOREIGN KEY (dataset_build_id) REFERENCES public.dataset_builds(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_build_market_status_snapshots dataset_build_market_status_snapshots_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_market_status_snapshots
+    ADD CONSTRAINT dataset_build_market_status_snapshots_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
+
+
+--
+-- Name: dataset_build_series dataset_build_series_candle_rollup_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_candle_rollup_through_id_fkey FOREIGN KEY (candle_rollup_through_id) REFERENCES public.candle_rollups(id);
+
+
+--
+-- Name: dataset_build_series dataset_build_series_connection_quality_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_connection_quality_through_id_fkey FOREIGN KEY (connection_quality_through_id) REFERENCES public.realtime_connection_quality_intervals(id);
+
+
+--
+-- Name: dataset_build_series dataset_build_series_dataset_build_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_dataset_build_id_fkey FOREIGN KEY (dataset_build_id) REFERENCES public.dataset_builds(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_build_series dataset_build_series_indicator_materialization_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_indicator_materialization_through_id_fkey FOREIGN KEY (indicator_materialization_through_id) REFERENCES public.indicator_materializations(id);
+
+
+--
+-- Name: dataset_build_series dataset_build_series_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_build_series dataset_build_series_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_build_series dataset_build_series_market_statistic_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_market_statistic_through_id_fkey FOREIGN KEY (market_statistic_through_id) REFERENCES public.market_statistics(id);
+
+
+--
+-- Name: dataset_build_series dataset_build_series_market_status_history_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_market_status_history_through_id_fkey FOREIGN KEY (market_status_history_through_id) REFERENCES public.market_status_history(id);
+
+
+--
+-- Name: dataset_build_series dataset_build_series_microstructure_materialization_throug_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_microstructure_materialization_throug_fkey FOREIGN KEY (microstructure_materialization_through_id) REFERENCES public.microstructure_materializations(id);
+
+
+--
+-- Name: dataset_build_series dataset_build_series_orderbook_snapshot_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_orderbook_snapshot_through_id_fkey FOREIGN KEY (orderbook_snapshot_through_id) REFERENCES public.orderbook_snapshots(id);
+
+
+--
+-- Name: dataset_build_series dataset_build_series_quality_event_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_quality_event_through_id_fkey FOREIGN KEY (quality_event_through_id) REFERENCES public.data_quality_events(id);
+
+
+--
+-- Name: dataset_build_series dataset_build_series_source_receipt_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_source_receipt_through_id_fkey FOREIGN KEY (source_receipt_through_id) REFERENCES public.source_receipts(id);
+
+
+--
+-- Name: dataset_build_series dataset_build_series_source_revision_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_source_revision_through_id_fkey FOREIGN KEY (source_revision_through_id) REFERENCES public.source_candle_revisions(id);
+
+
+--
+-- Name: dataset_build_series dataset_build_series_trade_event_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_build_series
+    ADD CONSTRAINT dataset_build_series_trade_event_through_id_fkey FOREIGN KEY (trade_event_through_id) REFERENCES public.trade_events(id);
+
+
+--
+-- Name: dataset_builds dataset_builds_version_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_builds
+    ADD CONSTRAINT dataset_builds_version_fk FOREIGN KEY (dataset_version_id) REFERENCES public.dataset_versions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_version_candles dataset_version_candles_candle_rollup_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_candles
+    ADD CONSTRAINT dataset_version_candles_candle_rollup_id_fkey FOREIGN KEY (candle_rollup_id) REFERENCES public.candle_rollups(id);
+
+
+--
+-- Name: dataset_version_candles dataset_version_candles_dataset_version_id_dataset_version_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_candles
+    ADD CONSTRAINT dataset_version_candles_dataset_version_id_dataset_version_fkey FOREIGN KEY (dataset_version_id, dataset_version_series_id) REFERENCES public.dataset_version_series(dataset_version_id, id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_version_candles dataset_version_candles_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_candles
+    ADD CONSTRAINT dataset_version_candles_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: dataset_version_candles dataset_version_candles_source_candle_revision_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_candles
+    ADD CONSTRAINT dataset_version_candles_source_candle_revision_id_fkey FOREIGN KEY (source_candle_revision_id) REFERENCES public.source_candle_revisions(id);
+
+
+--
+-- Name: dataset_version_coverage_snapshots dataset_version_coverage_snap_dataset_version_id_dataset_v_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_coverage_snapshots
+    ADD CONSTRAINT dataset_version_coverage_snap_dataset_version_id_dataset_v_fkey FOREIGN KEY (dataset_version_id, dataset_version_series_id) REFERENCES public.dataset_version_series(dataset_version_id, id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_version_coverage_snapshots dataset_version_coverage_snap_source_build_coverage_snapsh_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_coverage_snapshots
+    ADD CONSTRAINT dataset_version_coverage_snap_source_build_coverage_snapsh_fkey FOREIGN KEY (source_build_coverage_snapshot_id) REFERENCES public.dataset_build_coverage_snapshots(id);
+
+
+--
+-- Name: dataset_version_coverage_snapshots dataset_version_coverage_snap_source_data_quality_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_coverage_snapshots
+    ADD CONSTRAINT dataset_version_coverage_snap_source_data_quality_event_id_fkey FOREIGN KEY (source_data_quality_event_id) REFERENCES public.data_quality_events(id);
+
+
+--
+-- Name: dataset_version_coverage_snapshots dataset_version_coverage_snapshots_dataset_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_coverage_snapshots
+    ADD CONSTRAINT dataset_version_coverage_snapshots_dataset_version_id_fkey FOREIGN KEY (dataset_version_id) REFERENCES public.dataset_versions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_version_indicators dataset_version_indicators_dataset_version_id_dataset_vers_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_indicators
+    ADD CONSTRAINT dataset_version_indicators_dataset_version_id_dataset_vers_fkey FOREIGN KEY (dataset_version_id, dataset_version_series_id) REFERENCES public.dataset_version_series(dataset_version_id, id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_version_indicators dataset_version_indicators_indicator_materialization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_indicators
+    ADD CONSTRAINT dataset_version_indicators_indicator_materialization_id_fkey FOREIGN KEY (indicator_materialization_id) REFERENCES public.indicator_materializations(id);
+
+
+--
+-- Name: dataset_version_indicators dataset_version_indicators_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_indicators
+    ADD CONSTRAINT dataset_version_indicators_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: dataset_version_market_statistics dataset_version_market_statis_dataset_version_id_dataset_v_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_market_statistics
+    ADD CONSTRAINT dataset_version_market_statis_dataset_version_id_dataset_v_fkey FOREIGN KEY (dataset_version_id, dataset_version_series_id) REFERENCES public.dataset_version_series(dataset_version_id, id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_version_market_statistics dataset_version_market_statistics_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_market_statistics
+    ADD CONSTRAINT dataset_version_market_statistics_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: dataset_version_market_statistics dataset_version_market_statistics_market_statistic_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_market_statistics
+    ADD CONSTRAINT dataset_version_market_statistics_market_statistic_id_fkey FOREIGN KEY (market_statistic_id) REFERENCES public.market_statistics(id);
+
+
+--
+-- Name: dataset_version_market_status_snapshots dataset_version_market_status_sna_source_build_snapshot_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_market_status_snapshots
+    ADD CONSTRAINT dataset_version_market_status_sna_source_build_snapshot_id_fkey FOREIGN KEY (source_build_snapshot_id) REFERENCES public.dataset_build_market_status_snapshots(id);
+
+
+--
+-- Name: dataset_version_market_status_snapshots dataset_version_market_status_snapshots_dataset_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_market_status_snapshots
+    ADD CONSTRAINT dataset_version_market_status_snapshots_dataset_version_id_fkey FOREIGN KEY (dataset_version_id) REFERENCES public.dataset_versions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_version_market_status_snapshots dataset_version_market_status_snapshots_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_market_status_snapshots
+    ADD CONSTRAINT dataset_version_market_status_snapshots_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
+
+
+--
+-- Name: dataset_version_market_status_snapshots dataset_version_market_status_source_market_status_history_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_market_status_snapshots
+    ADD CONSTRAINT dataset_version_market_status_source_market_status_history_fkey FOREIGN KEY (source_market_status_history_id) REFERENCES public.market_status_history(id);
+
+
+--
+-- Name: dataset_version_microstructures dataset_version_microstructur_dataset_version_id_dataset_v_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_microstructures
+    ADD CONSTRAINT dataset_version_microstructur_dataset_version_id_dataset_v_fkey FOREIGN KEY (dataset_version_id, dataset_version_series_id) REFERENCES public.dataset_version_series(dataset_version_id, id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_version_microstructures dataset_version_microstructur_microstructure_materializati_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_microstructures
+    ADD CONSTRAINT dataset_version_microstructur_microstructure_materializati_fkey FOREIGN KEY (microstructure_materialization_id) REFERENCES public.microstructure_materializations(id);
+
+
+--
+-- Name: dataset_version_microstructures dataset_version_microstructures_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_microstructures
+    ADD CONSTRAINT dataset_version_microstructures_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_candle_rollup_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_candle_rollup_through_id_fkey FOREIGN KEY (candle_rollup_through_id) REFERENCES public.candle_rollups(id);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_connection_quality_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_connection_quality_through_id_fkey FOREIGN KEY (connection_quality_through_id) REFERENCES public.realtime_connection_quality_intervals(id);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_dataset_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_dataset_version_id_fkey FOREIGN KEY (dataset_version_id) REFERENCES public.dataset_versions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_version_series dataset_version_series_indicator_materialization_through_i_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_indicator_materialization_through_i_fkey FOREIGN KEY (indicator_materialization_through_id) REFERENCES public.indicator_materializations(id);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_instrument_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES public.instruments(id);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_market_statistic_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_market_statistic_through_id_fkey FOREIGN KEY (market_statistic_through_id) REFERENCES public.market_statistics(id);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_market_status_history_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_market_status_history_through_id_fkey FOREIGN KEY (market_status_history_through_id) REFERENCES public.market_status_history(id);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_microstructure_materialization_thro_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_microstructure_materialization_thro_fkey FOREIGN KEY (microstructure_materialization_through_id) REFERENCES public.microstructure_materializations(id);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_orderbook_snapshot_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_orderbook_snapshot_through_id_fkey FOREIGN KEY (orderbook_snapshot_through_id) REFERENCES public.orderbook_snapshots(id);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_quality_event_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_quality_event_through_id_fkey FOREIGN KEY (quality_event_through_id) REFERENCES public.data_quality_events(id);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_source_build_series_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_source_build_series_id_fkey FOREIGN KEY (source_build_series_id) REFERENCES public.dataset_build_series(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: dataset_version_series dataset_version_series_source_receipt_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_source_receipt_through_id_fkey FOREIGN KEY (source_receipt_through_id) REFERENCES public.source_receipts(id);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_source_revision_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_source_revision_through_id_fkey FOREIGN KEY (source_revision_through_id) REFERENCES public.source_candle_revisions(id);
+
+
+--
+-- Name: dataset_version_series dataset_version_series_trade_event_through_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dataset_version_series
+    ADD CONSTRAINT dataset_version_series_trade_event_through_id_fkey FOREIGN KEY (trade_event_through_id) REFERENCES public.trade_events(id);
 
 
 --
@@ -4869,4 +6318,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260717000900'),
     ('20260717001000'),
     ('20260717001100'),
-    ('20260717001200');
+    ('20260717001200'),
+    ('20260717001300');

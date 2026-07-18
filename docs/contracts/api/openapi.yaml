@@ -499,6 +499,165 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TickerSnapshotsResponse"
+  /v1/dataset-builds:
+    post:
+      tags: [연구 데이터셋(Dataset)]
+      summary: 불변 데이터셋 버전 생성 작업 접수
+      operationId: createDatasetBuild
+      security:
+        - OperatorToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDatasetBuildRequest"
+      responses:
+        "202":
+          description: 선택 프런티어를 고정하고 접수한 비동기 생성 작업
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatasetBuild"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: 같은 멱등 키에 다른 명령 내용이 존재함
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/dataset-builds/{buildId}:
+    get:
+      tags: [연구 데이터셋(Dataset)]
+      summary: 데이터셋 생성 작업 조회
+      operationId: getDatasetBuild
+      parameters:
+        - name: buildId
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        "200":
+          description: 생성 작업 상태와 완료 데이터셋 버전 식별자
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatasetBuild"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/dataset-versions:
+    get:
+      tags: [연구 데이터셋(Dataset)]
+      summary: 불변 데이터셋 버전 목록 조회
+      operationId: listDatasetVersions
+      parameters:
+        - name: pageSize
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+        - name: cursor
+          in: query
+          required: false
+          description: 최초 데이터셋 버전 ID 상한과 마지막 정렬 키를 고정한 불투명 커서
+          schema: {type: [string, "null"]}
+      responses:
+        "200":
+          description: 신규 버전 삽입이 진행 중인 페이지에 섞이지 않는 저장 전용 목록
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatasetVersionsResponse"
+        "409":
+          description: 커서의 무결성이 깨졌거나 다른 목록 조회 문맥에서 생성됨
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/dataset-versions/{datasetVersionId}:
+    get:
+      tags: [연구 데이터셋(Dataset)]
+      summary: 불변 데이터셋 버전 조회
+      operationId: getDatasetVersion
+      parameters:
+        - $ref: "#/components/parameters/DatasetVersionId"
+      responses:
+        "200":
+          description: 내용 해시·인과성·채움·결측 정책이 고정된 데이터셋 버전
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatasetVersion"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/dataset-versions/{datasetVersionId}/coverage:
+    get:
+      tags: [연구 데이터셋(Dataset)]
+      summary: 불변 데이터셋 커버리지 조회
+      operationId: getDatasetVersionCoverage
+      parameters:
+        - $ref: "#/components/parameters/DatasetVersionId"
+      responses:
+        "200":
+          description: 생성 시점에 고정한 5상태 커버리지 스냅숏
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatasetCoverage"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/dataset-versions/{datasetVersionId}/series:
+    get:
+      tags: [연구 데이터셋(Dataset)]
+      summary: 불변 데이터셋 시계열 조회
+      operationId: getDatasetVersionSeries
+      parameters:
+        - name: datasetVersionId
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+        - name: seriesId
+          in: query
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+        - name: from
+          in: query
+          required: true
+          schema: {type: string, format: date-time}
+        - name: to
+          in: query
+          required: true
+          schema: {type: string, format: date-time}
+        - name: pageSize
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 500, default: 500}
+        - name: cursor
+          in: query
+          required: false
+          description: 데이터셋 버전·series·최초 멤버 ID 상한·조회 범위를 고정한 불투명 커서
+          schema: {type: [string, "null"]}
+      responses:
+        "200":
+          description: null·drop·carry-forward를 합성하지 않고 정확한 저장 member만 반환하는 버전 고정 시계열 페이지
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatasetSeriesResponse"
+        "409":
+          description: 커서의 무결성이 깨졌거나 다른 버전·series·범위에서 생성됨
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
   /v1/instruments/{instrumentId}/orderbook-summaries:
     get:
       tags:
@@ -707,6 +866,14 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
   parameters:
+    DatasetVersionId:
+      name: datasetVersionId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
     InstrumentId:
       name: instrumentId
       in: path
@@ -781,6 +948,211 @@ components:
         missing: { type: integer, minimum: 0 }
         unavailable: { type: integer, minimum: 0 }
         unverified: { type: integer, minimum: 0 }
+    DatasetSeriesSelection:
+      description: 데이터셋 버전에 포함할 상품별 저장 시계열 선택.
+      type: object
+      additionalProperties: false
+      required: [instrumentId, dataKind, unit, definitionSetHash, calculationVersion]
+      properties:
+        instrumentId: {type: integer, format: int64, minimum: 1}
+        dataKind:
+          type: string
+          enum: [candle, indicator, market_statistic, microstructure]
+        unit:
+          type: string
+          enum: [1m, 3m, 5m, 10m, 15m, 30m, 1h, 4h, 1d, 1w, 1M]
+        definitionSetHash:
+          type: [string, "null"]
+          pattern: "^[0-9a-f]{64}$"
+        calculationVersion:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 100
+    DatasetSelection:
+      description: 생성 접수 트랜잭션에서 프런티어를 고정할 UTC 반개방 범위와 시계열.
+      type: object
+      additionalProperties: false
+      required: [asOf, from, to, series]
+      properties:
+        asOf:
+          type: string
+          format: date-time
+          description: UTC 지식 시각 상한이며 명령 requestedAt 이후일 수 없다.
+        from: {type: string, format: date-time, description: 포함하는 UTC 범위 시작.}
+        to: {type: string, format: date-time, description: 제외하는 UTC 범위 끝.}
+        series:
+          type: array
+          minItems: 1
+          maxItems: 200
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/DatasetSeriesSelection"
+    DatasetPolicies:
+      description: 미래 참조와 분석 계층 채움·결측 처리를 고정하는 버전 정책.
+      type: object
+      additionalProperties: false
+      required: [availabilityPolicy, fillPolicy, missingPolicy]
+      properties:
+        availabilityPolicy:
+          type: string
+          const: point_in_time_v1
+        fillPolicy:
+          type: string
+          enum: [none, no_trade_carry_forward_v1]
+          description: P2는 정책만 고정하며 P3/P4 소비자가 확정 no_trade candle에 적용한다. series GET은 합성하지 않는다.
+        missingPolicy:
+          type: string
+          enum: [fail, "null", drop]
+          description: fail은 P2 게시를 차단하고 null·drop은 P3/P4 소비 의미를 고정한다. series GET은 placeholder를 만들거나 member를 제거하지 않는다.
+    CreateDatasetBuildRequest:
+      description: 운영자가 불변 데이터셋 버전 생성을 접수하는 멱등 명령.
+      type: object
+      additionalProperties: false
+      required: [requestId, idempotencyKey, actorId, requestedAt, reason, selection, policies]
+      properties:
+        requestId: {type: string, minLength: 1, maxLength: 200, pattern: ".*\\S.*"}
+        idempotencyKey: {type: string, minLength: 1, maxLength: 200, pattern: ".*\\S.*"}
+        actorId: {type: string, minLength: 1, maxLength: 200, pattern: ".*\\S.*"}
+        requestedAt: {type: string, format: date-time, description: UTC 명령 요청 시각.}
+        reason: {type: string, minLength: 1, maxLength: 500, pattern: ".*\\S.*"}
+        selection:
+          $ref: "#/components/schemas/DatasetSelection"
+        policies:
+          $ref: "#/components/schemas/DatasetPolicies"
+    DatasetBuild:
+      description: 선택 프런티어가 접수 시점에 고정된 데이터셋 생성 작업.
+      type: object
+      additionalProperties: false
+      required: [buildId, requestId, idempotencyKey, actorId, requestedAt, frozenAt, status, attemptCount, maxAttempts, nextRetryAt, deadLetterReason, datasetVersionId, errorCode, errorMessage]
+      properties:
+        buildId: {type: integer, format: int64, minimum: 1}
+        requestId: {type: string}
+        idempotencyKey: {type: string}
+        actorId: {type: string}
+        requestedAt: {type: string, format: date-time}
+        frozenAt: {type: string, format: date-time}
+        status:
+          type: string
+          enum: [pending, running, retry_wait, succeeded, failed, dead_letter, cancelled]
+        attemptCount: {type: integer, minimum: 0}
+        maxAttempts: {type: integer, minimum: 1}
+        nextRetryAt: {type: [string, "null"], format: date-time}
+        deadLetterReason: {type: [string, "null"]}
+        datasetVersionId: {type: [integer, "null"], format: int64, minimum: 1}
+        errorCode: {type: [string, "null"]}
+        errorMessage: {type: [string, "null"]}
+    DatasetVersionSeries:
+      description: 버전이 고정한 시계열과 계산 의미.
+      type: object
+      additionalProperties: false
+      required: [seriesId, instrumentId, dataKind, unit, definitionSetHash, calculationVersion]
+      properties:
+        seriesId: {type: integer, format: int64, minimum: 1}
+        instrumentId: {type: integer, format: int64, minimum: 1}
+        dataKind:
+          type: string
+          enum: [candle, indicator, market_statistic, microstructure]
+        unit: {type: string}
+        definitionSetHash: {type: [string, "null"], pattern: "^[0-9a-f]{64}$"}
+        calculationVersion: {type: [string, "null"]}
+    DatasetVersion:
+      description: 내용·인과성·채움·결측 정책을 수정할 수 없는 연구 데이터셋 버전.
+      type: object
+      additionalProperties: false
+      required: [datasetVersionId, schemaVersion, asOf, from, to, contentHash, availabilityPolicy, fillPolicy, missingPolicy, createdAt, series]
+      properties:
+        datasetVersionId: {type: integer, format: int64, minimum: 1}
+        schemaVersion: {type: string, const: dataset-v1}
+        asOf: {type: string, format: date-time}
+        from: {type: string, format: date-time}
+        to: {type: string, format: date-time}
+        contentHash: {type: string, pattern: "^[0-9a-f]{64}$"}
+        availabilityPolicy: {type: string, const: point_in_time_v1}
+        fillPolicy: {type: string, enum: [none, no_trade_carry_forward_v1]}
+        missingPolicy: {type: string, enum: [fail, "null", drop]}
+        createdAt: {type: string, format: date-time}
+        series:
+          type: array
+          items:
+            $ref: "#/components/schemas/DatasetVersionSeries"
+    DatasetVersionsResponse:
+      description: 최초 데이터셋 버전 ID 상한에 고정된 저장 전용 목록 페이지.
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DatasetVersion"
+        nextCursor: {type: [string, "null"]}
+    DatasetCoverageItem:
+      description: 데이터셋 생성 시점에 고정한 series별 반개방 품질 구간.
+      type: object
+      additionalProperties: false
+      required: [seriesId, rangeStartAt, rangeEndAt, knowledgeAt, status, bucketCount]
+      properties:
+        seriesId: {type: integer, format: int64, minimum: 1}
+        rangeStartAt: {type: string, format: date-time}
+        rangeEndAt: {type: string, format: date-time}
+        knowledgeAt:
+          type: string
+          format: date-time
+          description: 품질 상태를 알게 된 UTC 시각.
+        status:
+          type: string
+          enum: [available, no_trade, missing, unavailable, unverified]
+        bucketCount: {type: integer, minimum: 0}
+    DatasetCoverage:
+      description: 요청 범위와 시점 기준 거래 가능 범위를 함께 보존하는 커버리지 스냅숏.
+      type: object
+      additionalProperties: false
+      required: [datasetVersionId, snapshotHash, requestedBucketCount, eligibleBucketCount, usableRatio, counts, items]
+      properties:
+        datasetVersionId: {type: integer, format: int64, minimum: 1}
+        snapshotHash: {type: string, pattern: "^[0-9a-f]{64}$"}
+        requestedBucketCount: {type: integer, minimum: 0}
+        eligibleBucketCount: {type: integer, minimum: 0}
+        usableRatio:
+          $ref: "#/components/schemas/DecimalString"
+        counts:
+          $ref: "#/components/schemas/CoverageCounts"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DatasetCoverageItem"
+    DatasetSeriesPoint:
+      description: 평가 시각 인과성과 고정 내용 해시를 가진 데이터셋 시계열 한 점.
+      type: object
+      additionalProperties: false
+      required: [occurredAt, knowledgeAt, quality, contentHash, values]
+      properties:
+        occurredAt: {type: string, format: date-time}
+        knowledgeAt: {type: string, format: date-time}
+        quality:
+          type: string
+          enum: [available, no_trade, missing, unavailable, unverified]
+        contentHash: {type: string, pattern: "^[0-9a-f]{64}$"}
+        values:
+          type: object
+          additionalProperties: true
+    DatasetSeriesResponse:
+      description: 데이터셋 버전과 최초 멤버 상한에 고정된 저장 전용 시계열 페이지.
+      type: object
+      additionalProperties: false
+      required: [datasetVersionId, seriesId, dataKind, unit, items, nextCursor]
+      properties:
+        datasetVersionId: {type: integer, format: int64, minimum: 1}
+        seriesId: {type: integer, format: int64, minimum: 1}
+        dataKind:
+          type: string
+          enum: [candle, indicator, market_statistic, microstructure]
+        unit: {type: string}
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DatasetSeriesPoint"
+        nextCursor: {type: [string, "null"]}
     DataFoundationMarket:
       description: 공식 시장 상태, 자동 수집 정책과 품질 구간을 합친 시장 행.
       type: object

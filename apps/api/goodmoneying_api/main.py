@@ -14,6 +14,7 @@ from fastapi import (
     FastAPI,
     Header,
     HTTPException,
+    Path,
     Query,
     Request,
     WebSocket,
@@ -38,6 +39,7 @@ from goodmoneying_api.schemas import (
     CoverageCountsResponse,
     CreateBackfillJobRequest,
     CreateBackfillPlanRequest,
+    CreateDatasetBuildRequest,
     DashboardAuditLogSummaryResponse,
     DashboardCollectionActivityResponse,
     DashboardCoverageResponse,
@@ -51,6 +53,11 @@ from goodmoneying_api.schemas import (
     DataFoundationMarketResponse,
     DataFoundationResponse,
     DataFoundationSummaryResponse,
+    DatasetBuildResponse,
+    DatasetCoverageResponse,
+    DatasetSeriesResponse,
+    DatasetVersionResponse,
+    DatasetVersionsResponse,
     HealthResponse,
     IndicatorSeriesResponse,
     InstrumentDetailResponse,
@@ -74,6 +81,11 @@ from goodmoneying_shared.data_foundation import (
 from goodmoneying_shared.data_foundation_repository import (
     IdempotencyConflictError,
     PostgresDataFoundationRepository,
+)
+from goodmoneying_shared.dataset_version_store import (
+    DatasetCursorMismatchError,
+    DatasetIdempotencyConflictError,
+    PostgresDatasetVersionStore,
 )
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
 from goodmoneying_shared.repository import OperationsRepository
@@ -124,6 +136,64 @@ class DataFoundationApiRepository(Protocol):
     ) -> datetime: ...
 
 
+DatasetApiIdempotencyConflictError = DatasetIdempotencyConflictError
+
+
+class DatasetVersionApiRepository(Protocol):
+    def create_build(
+        self,
+        *,
+        request_id: str,
+        idempotency_key: str,
+        actor_id: str,
+        requested_at: datetime,
+        reason: str,
+        selection: Mapping[str, object],
+        policies: Mapping[str, object],
+    ) -> Mapping[str, object]: ...
+
+    def get_build(self, build_id: int) -> Mapping[str, object] | None: ...
+
+    def get_version(self, dataset_version_id: int) -> Mapping[str, object] | None: ...
+
+    def list_versions(
+        self, *, page_size: int, cursor: str | None
+    ) -> Mapping[str, object]: ...
+
+    def get_coverage(self, dataset_version_id: int) -> Mapping[str, object] | None: ...
+
+    def get_series(
+        self,
+        *,
+        dataset_version_id: int,
+        series_id: int,
+        from_at: datetime,
+        to_at: datetime,
+        page_size: int,
+        cursor: str | None,
+    ) -> Mapping[str, object] | None: ...
+
+
+class EmptyDatasetVersionRepository:
+    def create_build(self, **_arguments: object) -> Mapping[str, object]:
+        raise RuntimeError("데이터셋 버전 저장소가 구성되지 않았다.")
+
+    def get_build(self, _build_id: int) -> Mapping[str, object] | None:
+        return None
+
+    def get_version(self, _dataset_version_id: int) -> Mapping[str, object] | None:
+        return None
+
+    def list_versions(self, **_arguments: object) -> Mapping[str, object]:
+        return {"items": [], "nextCursor": None}
+
+    def get_coverage(self, _dataset_version_id: int) -> Mapping[str, object] | None:
+        return None
+
+    def get_series(self, **_arguments: object) -> Mapping[str, object] | None:
+        return None
+
+
 class EmptyDataFoundationRepository:
     def overview(self) -> DataFoundationOverview:
         from goodmoneying_shared.data_foundation import DEFAULT_KRW_START_AT
@@ -165,6 +235,7 @@ def create_app(
     repository: OperationsRepository | None = None,
     *,
     data_foundation_repository: DataFoundationApiRepository | None = None,
+    dataset_version_repository: DatasetVersionApiRepository | None = None,
 ) -> FastAPI:
     repo = repository or create_repository_from_environment()
     foundation_repository = data_foundation_repository
@@ -177,6 +248,12 @@ def create_app(
         else:
             foundation_repository = EmptyDataFoundationRepository()
     operator_token = os.getenv("GOODMONEYING_OPERATOR_TOKEN", "local-dev-token")
+    if dataset_version_repository is not None:
+        dataset_repository = dataset_version_repository
+    elif isinstance(repo, PostgresOperationsRepository):
+        dataset_repository = PostgresDatasetVersionStore(repo)
+    else:
+        dataset_repository = EmptyDatasetVersionRepository()
     service = OperationsService(repo, load_dashboard_refresh_seconds())
     app = FastAPI(title="goodmoneying 시스템 트레이딩 운영 API", version="0.2.0")
     app.add_middleware(
@@ -211,6 +288,159 @@ def create_app(
     @app.get("/health", response_model=HealthResponse)
     def get_health() -> HealthResponse:
         return HealthResponse(status="ok", checkedAt=now_kst())
+
+    @app.post(
+        "/v1/dataset-builds",
+        response_model=DatasetBuildResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+        dependencies=[Depends(require_operator_token)],
+    )
+    def create_dataset_build(request: CreateDatasetBuildRequest) -> DatasetBuildResponse:
+        try:
+            result = dataset_repository.create_build(
+                request_id=request.requestId,
+                idempotency_key=request.idempotencyKey,
+                actor_id=request.actorId,
+                requested_at=request.requestedAt,
+                reason=request.reason,
+                selection=request.selection.model_dump(by_alias=True),
+                policies=request.policies.model_dump(),
+            )
+        except DatasetApiIdempotencyConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "DATASET_IDEMPOTENCY_CONFLICT", "message": str(exc)},
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={"code": "INVALID_DATASET_BUILD", "message": str(exc)},
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"code": "DATASET_STORE_UNAVAILABLE", "message": str(exc)},
+            ) from exc
+        return DatasetBuildResponse.model_validate(result)
+
+    @app.get("/v1/dataset-builds/{buildId}", response_model=DatasetBuildResponse)
+    def get_dataset_build(buildId: Annotated[int, Path(gt=0)]) -> DatasetBuildResponse:
+        result = dataset_repository.get_build(buildId)
+        if result is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "DATASET_BUILD_NOT_FOUND", "message": "생성 작업이 없습니다."},
+            )
+        return DatasetBuildResponse.model_validate(result)
+
+    @app.get(
+        "/v1/dataset-versions",
+        response_model=DatasetVersionsResponse,
+    )
+    def list_dataset_versions(
+        pageSize: Annotated[int, Query(ge=1, le=100)] = 50,
+        cursor: str | None = None,
+    ) -> DatasetVersionsResponse:
+        try:
+            result = dataset_repository.list_versions(page_size=pageSize, cursor=cursor)
+        except DatasetCursorMismatchError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "DATASET_CURSOR_CONTEXT_MISMATCH",
+                    "message": str(exc),
+                },
+            ) from exc
+        return DatasetVersionsResponse.model_validate(result)
+
+    @app.get(
+        "/v1/dataset-versions/{datasetVersionId}",
+        response_model=DatasetVersionResponse,
+    )
+    def get_dataset_version(
+        datasetVersionId: Annotated[int, Path(gt=0)],
+    ) -> DatasetVersionResponse:
+        result = dataset_repository.get_version(datasetVersionId)
+        if result is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": "DATASET_VERSION_NOT_FOUND",
+                    "message": "데이터셋 버전이 없습니다.",
+                },
+            )
+        return DatasetVersionResponse.model_validate(result)
+
+    @app.get(
+        "/v1/dataset-versions/{datasetVersionId}/coverage",
+        response_model=DatasetCoverageResponse,
+    )
+    def get_dataset_coverage(
+        datasetVersionId: Annotated[int, Path(gt=0)],
+    ) -> DatasetCoverageResponse:
+        result = dataset_repository.get_coverage(datasetVersionId)
+        if result is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": "DATASET_VERSION_NOT_FOUND",
+                    "message": "데이터셋 버전이 없습니다.",
+                },
+            )
+        return DatasetCoverageResponse.model_validate(result)
+
+    @app.get(
+        "/v1/dataset-versions/{datasetVersionId}/series",
+        response_model=DatasetSeriesResponse,
+    )
+    def get_dataset_series(
+        datasetVersionId: Annotated[int, Path(gt=0)],
+        seriesId: Annotated[int, Query(gt=0)],
+        from_: Annotated[datetime, Query(alias="from")],
+        to: datetime,
+        pageSize: Annotated[int, Query(ge=1, le=500)] = 500,
+        cursor: str | None = None,
+    ) -> DatasetSeriesResponse:
+        if (
+            from_.tzinfo is None
+            or from_.utcoffset() != UTC.utcoffset(from_)
+            or to.tzinfo is None
+            or to.utcoffset() != UTC.utcoffset(to)
+            or from_ >= to
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "code": "INVALID_DATASET_SERIES_RANGE",
+                    "message": "series 범위는 UTC의 from < to 반개방 구간이어야 한다.",
+                },
+            )
+        try:
+            result = dataset_repository.get_series(
+                dataset_version_id=datasetVersionId,
+                series_id=seriesId,
+                from_at=from_,
+                to_at=to,
+                page_size=pageSize,
+                cursor=cursor,
+            )
+        except DatasetCursorMismatchError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "DATASET_CURSOR_CONTEXT_MISMATCH",
+                    "message": str(exc),
+                },
+            ) from exc
+        if result is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": "DATASET_VERSION_NOT_FOUND",
+                    "message": "데이터셋 series가 없습니다.",
+                },
+            )
+        return DatasetSeriesResponse.model_validate(result)
 
     @app.get("/v1/data-foundation", response_model=DataFoundationResponse)
     def get_data_foundation() -> DataFoundationResponse:

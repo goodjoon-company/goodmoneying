@@ -1910,7 +1910,7 @@ class PostgresOperationsRepository:
             rows = conn.execute(
                 """
                 SELECT * FROM source_candles
-                WHERE instrument_id = %s AND candle_start_at >= %s AND candle_start_at <= %s
+                WHERE instrument_id = %s AND candle_start_at >= %s AND candle_start_at < %s
                 ORDER BY candle_start_at
                 """,
                 (instrument_id, start_at, end_at),
@@ -1922,7 +1922,11 @@ class PostgresOperationsRepository:
             rollups = self.candle_rollups(instrument_id, unit, start_at, end_at)
             if rollups:
                 return rollups
-        return _derive_candles(unit, source)
+        return [
+            item
+            for item in _derive_candles(unit, source)
+            if start_at <= item.started_at < end_at
+        ]
 
     def candle_page(
         self,

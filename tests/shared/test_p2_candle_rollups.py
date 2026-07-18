@@ -7,13 +7,19 @@ from decimal import Decimal
 import pytest
 
 from goodmoneying_shared import aggregation as aggregation_module
+from goodmoneying_shared import postgres_repository as postgres_repository_module
 from goodmoneying_shared.aggregation import (
     AGGREGATION_UNITS,
     aggregate_candles,
     rollup_bucket_start,
 )
 from goodmoneying_shared.models import SourceCandle
-from goodmoneying_shared.postgres_repository import _derive_candles as derive_postgres_candles
+from goodmoneying_shared.postgres_repository import (
+    PostgresOperationsRepository,
+)
+from goodmoneying_shared.postgres_repository import (
+    _derive_candles as derive_postgres_candles,
+)
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_shared.time import KST
 
@@ -61,6 +67,52 @@ def test_legacy_repository_derivation_preserves_lineage_metadata() -> None:
         assert candles[0].source_as_of == source[-1].collected_at
         assert candles[0].knowledge_at == source[-1].collected_at
         assert len(candles[0].input_content_hash) == 64
+
+
+@pytest.mark.parametrize(
+    ("unit", "start_at"),
+    [
+        ("1w", datetime(2026, 7, 15, tzinfo=UTC)),
+        ("1M", datetime(2026, 7, 15, tzinfo=UTC)),
+    ],
+)
+def test_postgres_원천_폴백은_요청_시작보다_앞으로_내림된_주월_버킷을_제외한다(
+    monkeypatch: pytest.MonkeyPatch, unit: str, start_at: datetime
+) -> None:
+    source = SourceCandle(
+        **{
+            **_candle(0, "100").__dict__,
+            "candle_start_at": start_at,
+            "collected_at": start_at + timedelta(seconds=5),
+        }
+    )
+
+    class Connection:
+        def __enter__(self) -> Connection:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def execute(self, _query: str, _parameters: object) -> Connection:
+            return self
+
+        def fetchall(self) -> list[SourceCandle]:
+            return [source]
+
+    repository = PostgresOperationsRepository("postgresql://unused")
+    monkeypatch.setattr(repository, "_connect", Connection)
+    monkeypatch.setattr(repository, "candle_rollups", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(postgres_repository_module, "_candle", lambda row: row)
+
+    result = repository.candles(
+        instrument_id=1,
+        unit=unit,
+        start_at=start_at,
+        end_at=start_at + timedelta(days=10),
+    )
+
+    assert result == []
 
 
 def test_same_decimal_inputs_and_calculation_version_have_same_content_hash() -> None:

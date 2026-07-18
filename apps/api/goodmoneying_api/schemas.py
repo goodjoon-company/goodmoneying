@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ErrorResponse(BaseModel):
@@ -22,6 +22,192 @@ class CoverageCountsResponse(BaseModel):
     missing: int
     unavailable: int
     unverified: int
+
+
+DatasetDataKind = Literal["candle", "indicator", "market_statistic", "microstructure"]
+DatasetFillPolicy = Literal["none", "no_trade_carry_forward_v1"]
+DatasetMissingPolicy = Literal["fail", "null", "drop"]
+DatasetQuality = Literal["available", "no_trade", "missing", "unavailable", "unverified"]
+
+
+class DatasetSeriesSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    instrumentId: int = Field(gt=0)
+    dataKind: DatasetDataKind
+    unit: Literal["1m", "3m", "5m", "10m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"]
+    definitionSetHash: str | None = Field(pattern="^[0-9a-f]{64}$")
+    calculationVersion: str | None = Field(min_length=1, max_length=100)
+
+
+class DatasetSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asOf: datetime
+    from_: datetime = Field(alias="from")
+    to: datetime
+    series: tuple[DatasetSeriesSelectionRequest, ...] = Field(min_length=1, max_length=200)
+
+    @field_validator("asOf", "from_", "to")
+    @classmethod
+    def require_utc_selection_time(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
+            raise ValueError("데이터셋 선택 시각은 UTC timezone-aware datetime이어야 한다.")
+        return value
+
+    @model_validator(mode="after")
+    def validate_range_and_uniqueness(self) -> DatasetSelectionRequest:
+        if self.from_ >= self.to:
+            raise ValueError("데이터셋 범위는 from < to인 반개방 구간이어야 한다.")
+        if self.to > self.asOf:
+            raise ValueError("데이터셋 범위 끝은 asOf 이후일 수 없다.")
+        natural_keys = [
+            (
+                item.instrumentId,
+                item.dataKind,
+                item.unit,
+                item.definitionSetHash,
+                item.calculationVersion,
+            )
+            for item in self.series
+        ]
+        if len(natural_keys) != len(set(natural_keys)):
+            raise ValueError("데이터셋 series 선택은 중복될 수 없다.")
+        return self
+
+
+class DatasetPoliciesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    availabilityPolicy: Literal["point_in_time_v1"]
+    fillPolicy: DatasetFillPolicy
+    missingPolicy: DatasetMissingPolicy
+
+
+class CreateDatasetBuildRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requestId: str = Field(min_length=1, max_length=200)
+    idempotencyKey: str = Field(min_length=1, max_length=200)
+    actorId: str = Field(min_length=1, max_length=200)
+    requestedAt: datetime
+    reason: str = Field(min_length=1, max_length=500)
+    selection: DatasetSelectionRequest
+    policies: DatasetPoliciesRequest
+
+    @field_validator("requestedAt")
+    @classmethod
+    def require_utc_requested_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
+            raise ValueError("requestedAt은 UTC timezone-aware datetime이어야 한다.")
+        return value
+
+    @field_validator("requestId", "idempotencyKey", "actorId", "reason")
+    @classmethod
+    def reject_blank_command_strings(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("명령 문자열은 공백일 수 없다.")
+        return stripped
+
+    @model_validator(mode="after")
+    def validate_fill_policy(self) -> CreateDatasetBuildRequest:
+        if self.selection.asOf > self.requestedAt:
+            raise ValueError("selection.asOf는 requestedAt 이후일 수 없다.")
+        if self.policies.fillPolicy == "no_trade_carry_forward_v1" and any(
+            item.dataKind != "candle" for item in self.selection.series
+        ):
+            raise ValueError("no_trade_carry_forward_v1 채움은 candle series에만 허용한다.")
+        return self
+
+
+class DatasetBuildResponse(BaseModel):
+    buildId: int
+    requestId: str
+    idempotencyKey: str
+    actorId: str
+    requestedAt: datetime
+    frozenAt: datetime
+    status: Literal[
+        "pending",
+        "running",
+        "retry_wait",
+        "succeeded",
+        "failed",
+        "dead_letter",
+        "cancelled",
+    ]
+    attemptCount: int = Field(ge=0)
+    maxAttempts: int = Field(gt=0)
+    nextRetryAt: datetime | None
+    deadLetterReason: str | None
+    datasetVersionId: int | None
+    errorCode: str | None
+    errorMessage: str | None
+
+
+class DatasetVersionSeriesResponse(BaseModel):
+    seriesId: int
+    instrumentId: int
+    dataKind: DatasetDataKind
+    unit: str
+    definitionSetHash: str | None
+    calculationVersion: str | None
+
+
+class DatasetVersionResponse(BaseModel):
+    datasetVersionId: int
+    schemaVersion: Literal["dataset-v1"]
+    asOf: datetime
+    from_: datetime = Field(alias="from")
+    to: datetime
+    contentHash: str = Field(pattern="^[0-9a-f]{64}$")
+    availabilityPolicy: Literal["point_in_time_v1"]
+    fillPolicy: DatasetFillPolicy
+    missingPolicy: DatasetMissingPolicy
+    createdAt: datetime
+    series: list[DatasetVersionSeriesResponse]
+
+
+class DatasetVersionsResponse(BaseModel):
+    items: list[DatasetVersionResponse]
+    nextCursor: str | None
+
+
+class DatasetCoverageItemResponse(BaseModel):
+    seriesId: int
+    rangeStartAt: datetime
+    rangeEndAt: datetime
+    knowledgeAt: datetime
+    status: DatasetQuality
+    bucketCount: int = Field(ge=0)
+
+
+class DatasetCoverageResponse(BaseModel):
+    datasetVersionId: int
+    snapshotHash: str = Field(pattern="^[0-9a-f]{64}$")
+    requestedBucketCount: int = Field(ge=0)
+    eligibleBucketCount: int = Field(ge=0)
+    usableRatio: str
+    counts: CoverageCountsResponse
+    items: list[DatasetCoverageItemResponse]
+
+
+class DatasetSeriesPointResponse(BaseModel):
+    occurredAt: datetime
+    knowledgeAt: datetime
+    quality: DatasetQuality
+    contentHash: str = Field(pattern="^[0-9a-f]{64}$")
+    values: dict[str, str | int | bool | None]
+
+
+class DatasetSeriesResponse(BaseModel):
+    datasetVersionId: int
+    seriesId: int
+    dataKind: DatasetDataKind
+    unit: str
+    items: list[DatasetSeriesPointResponse]
+    nextCursor: str | None
 
 
 class DataFoundationSummaryResponse(BaseModel):

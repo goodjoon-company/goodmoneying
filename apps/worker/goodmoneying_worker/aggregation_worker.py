@@ -5,6 +5,9 @@ import threading
 import uuid
 from collections.abc import Callable
 
+from goodmoneying_shared.dataset_version_store import (
+    publish_next_build as publish_next_dataset_build,
+)
 from goodmoneying_shared.indicator_store import run_next_indicator_invalidation
 from goodmoneying_shared.microstructure_store import run_next_microstructure_invalidation
 from goodmoneying_shared.models import CollectionWorkerHeartbeatStatus
@@ -94,7 +97,12 @@ class CandleAggregationWorker:
             indicator_rows = run_next_indicator_invalidation(self._repository, self._worker_id)
             if indicator_rows > 0:
                 return indicator_rows
-            return run_next_microstructure_invalidation(self._repository, self._worker_id)
+            microstructure_rows = run_next_microstructure_invalidation(
+                self._repository, self._worker_id
+            )
+            if microstructure_rows > 0:
+                return microstructure_rows
+            return publish_next_dataset_build(self._repository, self._worker_id)
         completed = 0
         for target in self._repository.candle_aggregation_job_targets(job.id):
             self._repository.mark_candle_aggregation_target(

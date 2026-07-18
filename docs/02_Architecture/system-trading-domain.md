@@ -49,7 +49,10 @@
 | 미시구조 결과 | `microstructure_materializations` | 상품·1분 구간·원천 프런티어·지식 시각·입력 계보 해시, 추가 전용 부모 계보 |
 | 미시구조 값 | `microstructure_statistics` | 물질화당 하나, 계산 상태와 5단계 호가·체결 품질 분리, 원천 캔들 대사 계보 |
 | 미시구조 작업 | `microstructure_invalidations` | 상품별 닫힌 1분 범위 병합, DB 임대·세대 fencing·재시도·dead-letter |
-| 연구 | `dataset_versions` | content hash 불변·고유 |
+| 데이터셋 빌드 | `dataset_builds`, `dataset_build_series` | 요청 트랜잭션에서 선택 hash·asOf·원천/품질/물질화/시장 상태 ceiling 고정, 멱등 키 충돌 차단, 임대 heartbeat·세대 fencing·제한 재시도·dead-letter |
+| 연구 | `dataset_versions`, `dataset_version_series` | 대리키를 제외한 canonical content hash 불변·고유, 입력/출력 반개방 범위와 정책 고정, 게시 전 child 완성 뒤 원자적 봉인 |
+| 데이터셋 입력 | `dataset_version_candles`, `dataset_version_indicators`, `dataset_version_market_statistics`, `dataset_version_microstructures` | 정확한 불변 입력 FK, 자연키·내용 해시·지식 시각 보존 |
+| 데이터셋 시점 상태 | `dataset_version_market_status_snapshots` | 생성 프런티어의 시장 상태·거래 가능 구간과 coverage 의미 복제 |
 | 전략 | `strategy_definitions` | `(owner_id, name)` |
 | 전략 | `strategy_versions` | `(strategy_id, version)`, graph hash 불변 |
 | 전략 | `strategy_graphs` | `strategy_version_id`당 하나, 순환 금지 |

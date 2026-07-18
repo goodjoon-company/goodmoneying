@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 
+from goodmoneying_shared import sqlite_repository as sqlite_repository_module
 from goodmoneying_shared.data_foundation import CollectionSubscriptionDesire
 from goodmoneying_shared.models import RealtimeSourceFrame
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
@@ -76,7 +77,9 @@ def test_upbit_websocket_subscription_uses_exact_codes_for_each_selected_type() 
     ]
 
 
-def test_realtime_stream_buffer_flushes_websocket_messages_to_repository() -> None:
+def test_realtime_stream_buffer_flushes_websocket_messages_to_repository(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     repository = SQLiteOperationsRepository()
     seed_repository(repository, FixtureUpbitClient())
     target = repository.list_active_targets()[0]
@@ -144,6 +147,11 @@ def test_realtime_stream_buffer_flushes_websocket_messages_to_repository() -> No
         "1m",
         candle_start - timedelta(minutes=1),
         collected_at + timedelta(seconds=1),
+    )
+    monkeypatch.setattr(
+        sqlite_repository_module,
+        "now_kst",
+        lambda: collected_at + timedelta(seconds=1),
     )
     heatmap = repository.dashboard_realtime_heatmap()[0]
     assert heatmap.hourly_buckets[-1].trade_count == 1

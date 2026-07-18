@@ -542,6 +542,24 @@ def test_live_postgres_long_units_prefer_daily_and_fill_dates_from_minutes() -> 
         10,
         None,
     )
+    legacy_unaligned_weekly = repository.candles(
+        instrument.id,
+        "1w",
+        started_at + timedelta(days=1),
+        started_at + timedelta(days=7),
+    )
+    legacy_unaligned_monthly = repository.candles(
+        instrument.id,
+        "1M",
+        started_at + timedelta(days=1),
+        started_at.replace(month=2),
+    )
+    legacy_end_exclusive = repository.candles(
+        instrument.id,
+        "1m",
+        started_at,
+        started_at + timedelta(days=1),
+    )
 
     assert [(item.started_at, item.close) for item in first_daily] == [
         (started_at, Decimal("200"))
@@ -573,6 +591,11 @@ def test_live_postgres_long_units_prefer_daily_and_fill_dates_from_minutes() -> 
     assert monthly_cursor is None
     assert unaligned_weekly == []
     assert unaligned_monthly == []
+    assert legacy_unaligned_weekly == []
+    assert legacy_unaligned_monthly == []
+    assert [(item.started_at, item.close) for item in legacy_end_exclusive] == [
+        (started_at, Decimal("100"))
+    ]
 
 
 def test_live_postgres_heartbeat_저장소의_statement_timeout이_pg_sleep를_중단한다() -> None:

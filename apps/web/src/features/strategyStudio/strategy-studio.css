@@ -1,0 +1,14 @@
+.strategy-studio { min-width: 0; display: grid; gap: 16px; }
+.strategy-studio-heading h2 { margin: 0; }
+.strategy-studio-heading p { margin: 6px 0 0; color: var(--muted, #9aa4b2); }
+.strategy-studio-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.strategy-card { min-width: 0; padding: 16px; border: 1px solid #334155; border-radius: 12px; background: #111827; display: grid; gap: 10px; }
+.pointer-graph { display: grid; gap: 8px; padding: 12px; border: 1px dashed #64748b; border-radius: 8px; }
+.pointer-graph div { display: flex; justify-content: space-between; gap: 8px; }
+.pointer-edge { overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+.strategy-card table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.strategy-card th, .strategy-card td { padding: 6px; border-bottom: 1px solid #334155; text-align: left; overflow-wrap: anywhere; }
+.strategy-card input, .strategy-card button { max-width: 100%; }
+.strategy-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.published-version code { overflow-wrap: anywhere; }
+@media (max-width: 640px) { .strategy-studio-grid { grid-template-columns: minmax(0, 1fr); } .strategy-card { padding: 12px; } }

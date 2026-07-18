@@ -169,6 +169,18 @@ describe("데이터 수집관리 화면", () => {
     expect(screen.getByText("A/B 1 · candle · 1m")).toBeInTheDocument();
   });
 
+  it("Strategy Studio 전용 메뉴에서 전략 graph 편집기와 키보드 대체 편집기를 연다", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Strategy Studio" }));
+
+    expect(await screen.findByRole("heading", { name: "Strategy Studio" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "전략 그래프 포인터 뷰" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "키보드 대체 편집기" })).toBeInTheDocument();
+    expect(screen.getByText("REST validation")).toBeInTheDocument();
+  });
+
   it("운영 상태는 코인별 실시간 수집과 수집 범위를 동적인 숫자로 표시한다", async () => {
     const user = userEvent.setup();
     render(<App />);

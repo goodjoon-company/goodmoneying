@@ -10,6 +10,7 @@ export type SectionId =
   | "markets"
   | "analysis"
   | "data-lab"
+  | "strategy-studio"
   | "system"
   | "upbit-api-test";
 

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { StrategyGraph } from "./api";
 
 const dashboard = {
   status: "normal",
@@ -228,6 +229,126 @@ describe("운영 API 클라이언트", () => {
     const body = JSON.parse(String(fetch.mock.calls[0][1]?.body));
     expect(body.selection.series).toHaveLength(1);
     expect(body.selection.asOf).toBe("2026-07-17T05:00:00Z");
+  });
+
+  it("Strategy Studio는 검증·정의 생성·불변 version 게시 API를 REST 계약대로 호출한다", async () => {
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (url === "/api/v1/strategy-graphs/validate") {
+        expect(init?.method).toBe("POST");
+        expect(body.graph.schema_version).toBe("strategy-graph-v1");
+        return Response.json({
+          valid: true,
+          errors: [],
+          graphHash: "a".repeat(64)
+        });
+      }
+      if (url === "/api/v1/strategies") {
+        expect(init?.method).toBe("POST");
+        expect(body).toMatchObject({
+          actorId: "operator:strategy-studio",
+          ownerId: "operator:strategy-studio",
+          name: "KRW BTC momentum"
+        });
+        return Response.json(
+          {
+            strategyId: 31,
+            ownerId: "operator:strategy-studio",
+            name: "KRW BTC momentum",
+            createdAt: "2026-07-18T08:00:00Z"
+          },
+          { status: 201 }
+        );
+      }
+      if (url === "/api/v1/strategies/31/versions") {
+        expect(init?.method).toBe("POST");
+        expect(body.graph.outputs[0].port).toBe("enter_long");
+        return Response.json(
+          {
+            strategyVersionId: 41,
+            strategyId: 31,
+            version: 1,
+            schemaVersion: "strategy-graph-v1",
+            status: "published",
+            graphHash: "a".repeat(64),
+            validation: { valid: true, errors: [], graphHash: "a".repeat(64) },
+            graph: body.graph,
+            actorId: "operator:strategy-studio",
+            requestedAt: "2026-07-18T08:00:00Z",
+            publishedAt: "2026-07-18T08:00:01Z",
+            createdAt: "2026-07-18T08:00:01Z"
+          },
+          { status: 201 }
+        );
+      }
+      return new Response(`unexpected ${url}`, { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const {
+      createStrategy,
+      publishStrategyVersion,
+      validateStrategyGraph
+    } = await import("./api");
+    const graph: StrategyGraph = {
+      schema_version: "strategy-graph-v1",
+      nodes: [
+        {
+          id: "market",
+          type: "market_input",
+          input_ports: [],
+          output_ports: [{ name: "close", dataType: "decimal", timeframe: "1m" }],
+          config: { market: "KRW-BTC" }
+        },
+        {
+          id: "signal",
+          type: "threshold_signal",
+          input_ports: [{ name: "price", dataType: "decimal", timeframe: "1m" }],
+          output_ports: [{ name: "enter_long", dataType: "boolean", timeframe: "1m" }],
+          config: { operator: "gt", threshold: "100" }
+        }
+      ],
+      edges: [
+        {
+          from_node: "market",
+          from_port: "close",
+          to_node: "signal",
+          to_port: "price"
+        }
+      ],
+      outputs: [{ node: "signal", port: "enter_long" }]
+    };
+
+    await expect(validateStrategyGraph(graph)).resolves.toMatchObject({
+      valid: true,
+      graphHash: "a".repeat(64)
+    });
+    const strategy = await createStrategy({
+      requestId: "strategy-request-1",
+      idempotencyKey: "strategy-key-1",
+      actorId: "operator:strategy-studio",
+      requestedAt: "2026-07-18T08:00:00Z",
+      reason: "Strategy Studio 신규 전략",
+      ownerId: "operator:strategy-studio",
+      name: "KRW BTC momentum"
+    });
+    await expect(
+      publishStrategyVersion(strategy.strategyId, {
+        requestId: "strategy-version-request-1",
+        idempotencyKey: "strategy-version-key-1",
+        actorId: "operator:strategy-studio",
+        requestedAt: "2026-07-18T08:00:00Z",
+        reason: "Strategy Studio 불변 version 게시",
+        graph
+      })
+    ).resolves.toMatchObject({
+      strategyVersionId: 41,
+      version: 1,
+      status: "published",
+      graphHash: "a".repeat(64)
+    });
+    expect((fetch.mock.calls[0][1]?.headers as Record<string, string>)["X-Operator-Token"])
+      .toBeUndefined();
   });
 
   it("구버전 대시보드 응답에 새 운영 콘솔 필드가 없어도 첫 화면용 기본값을 채운다", async () => {

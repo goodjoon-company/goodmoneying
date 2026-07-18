@@ -31,6 +31,83 @@ export type ChangeCommandEnvelope = {
   requestedAt: string;
 };
 
+export type StrategyGraphPort = {
+  name: string;
+  dataType: string;
+  timeframe?: string | null;
+};
+
+export type StrategyGraphNode = {
+  id: string;
+  type: string;
+  input_ports: StrategyGraphPort[];
+  output_ports: StrategyGraphPort[];
+  config: Record<string, unknown>;
+};
+
+export type StrategyGraphEdge = {
+  from_node: string;
+  from_port: string;
+  to_node: string;
+  to_port: string;
+};
+
+export type StrategyGraphOutput = {
+  node: string;
+  port: string;
+};
+
+export type StrategyGraph = {
+  schema_version: "strategy-graph-v1";
+  nodes: StrategyGraphNode[];
+  edges: StrategyGraphEdge[];
+  outputs: StrategyGraphOutput[];
+};
+
+export type StrategyValidationError = {
+  code: string;
+  message: string;
+  nodeId: string | null;
+  edgeIndex: number | null;
+};
+
+export type StrategyValidationResponse = {
+  valid: boolean;
+  errors: StrategyValidationError[];
+  graphHash: string;
+};
+
+export type CreateStrategyCommand = ChangeCommandEnvelope & {
+  reason: string;
+  ownerId: string;
+  name: string;
+};
+
+export type StrategyDefinition = {
+  strategyId: number;
+  ownerId: string;
+  name: string;
+  createdAt: string;
+};
+
+export type PublishStrategyVersionCommand = ChangeCommandEnvelope & {
+  reason: string;
+  graph: StrategyGraph;
+};
+
+export type StrategyVersion = {
+  strategyVersionId: number;
+  strategyId: number;
+  version: number;
+  schemaVersion: "strategy-graph-v1";
+  status: "draft" | "validated" | "published" | "retired";
+  graphHash: string;
+  validation: StrategyValidationResponse;
+  graph: StrategyGraph;
+  createdAt: string;
+  publishedAt: string | null;
+};
+
 export type DataFoundationMarket = {
   instrumentId: number;
   marketCode: string;
@@ -868,6 +945,23 @@ export async function createDatasetBuild(
   command: CreateDatasetBuildCommand
 ): Promise<DatasetBuild> {
   return sendJson<DatasetBuild>("/v1/dataset-builds", "POST", command);
+}
+
+export async function validateStrategyGraph(
+  graph: StrategyGraph
+): Promise<StrategyValidationResponse> {
+  return sendJson<StrategyValidationResponse>("/v1/strategy-graphs/validate", "POST", { graph });
+}
+
+export async function createStrategy(command: CreateStrategyCommand): Promise<StrategyDefinition> {
+  return sendJson<StrategyDefinition>("/v1/strategies", "POST", command);
+}
+
+export async function publishStrategyVersion(
+  strategyId: number,
+  command: PublishStrategyVersionCommand
+): Promise<StrategyVersion> {
+  return sendJson<StrategyVersion>(`/v1/strategies/${strategyId}/versions`, "POST", command);
 }
 
 export async function loadDatasetVersions(options: {

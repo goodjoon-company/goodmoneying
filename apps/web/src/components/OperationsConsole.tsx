@@ -6,6 +6,7 @@ import { formatCurrencyAmount, formatFreshness } from "../operationsDisplay";
 import { formatKstDateTime } from "../displayFormat";
 import { useOperationsConsole, type SectionId } from "../useOperationsConsole";
 import { DataLab } from "../features/dataLab/DataLab";
+import { StrategyStudio } from "../features/strategyStudio/StrategyStudio";
 import { InstrumentName } from "./common";
 import { Dashboard } from "./Dashboard";
 import { CoinAnalysis } from "./CoinAnalysis";
@@ -35,7 +36,8 @@ const menuGroups: {
 const primaryMenuItems: { id: SectionId; label: string; badge: string }[] = [
   { id: "markets", label: "관심종목", badge: "MVP" },
   { id: "analysis", label: "코인 분석", badge: "NEW" },
-  { id: "data-lab", label: "Data Lab", badge: "P2-6" }
+  { id: "data-lab", label: "Data Lab", badge: "P2-6" },
+  { id: "strategy-studio", label: "Strategy Studio", badge: "P3-2" }
 ];
 
 const upbitWorkbenchMenuItems: { id: WorkbenchModuleId; label: string; badge: string }[] = [
@@ -80,6 +82,12 @@ const sectionMeta: Record<SectionId, { crumb: string; milestone: string; title: 
     milestone: "P2-6 · 연구 데이터",
     title: "Data Lab",
     desc: "불변 데이터셋 build와 version, coverage, exact member를 고정된 REST 계약으로 탐색합니다."
+  },
+  "strategy-studio": {
+    crumb: "goodmoneying / Strategy Studio / P3-2",
+    milestone: "P3-2 · 전략 설계",
+    title: "전략 그래프 편집",
+    desc: "전략 graph를 검증하고 불변 version으로 게시합니다."
   },
   system: {
     crumb: "goodmoneying / 시스템 관리 / P2.1",
@@ -230,7 +238,7 @@ export function OperationsConsole() {
           <div className="runtime-pills" aria-label="화면 갱신 기준">
             <span>표시 KST</span>
             <span>저장 UTC</span>
-            <span>{activeSection === "analysis" || activeSection === "system" ? "WebSocket 실시간" : activeSection === "upbit-api-test" ? "게이트웨이 격리 조회" : activeSection === "data-lab" ? "REST polling" : "SSE 실시간"}</span>
+            <span>{activeSection === "strategy-studio" ? "REST validation" : activeSection === "analysis" || activeSection === "system" ? "WebSocket 실시간" : activeSection === "upbit-api-test" ? "게이트웨이 격리 조회" : activeSection === "data-lab" ? "REST polling" : "SSE 실시간"}</span>
             <span>마지막 갱신 {formatFreshness(snapshot.dashboard.refreshedAt)}</span>
           </div>
         </section>
@@ -253,6 +261,7 @@ export function OperationsConsole() {
           <CoinAnalysis rows={favoriteCoinRows} onOpenWatchlist={() => setActiveSection("targets")} />
         ) : null}
         {activeSection === "data-lab" ? <DataLab /> : null}
+        {activeSection === "strategy-studio" ? <StrategyStudio /> : null}
         {activeSection === "system" ? <SystemManagement /> : null}
         {activeSection === "upbit-api-test" ? <UpbitApiTest moduleId={activeWorkbenchModule}
           market={workbenchMarket} onMarketChange={setWorkbenchMarket} /> : null}

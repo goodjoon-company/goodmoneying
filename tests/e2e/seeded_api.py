@@ -24,6 +24,7 @@ from goodmoneying_shared.data_foundation import (
 from goodmoneying_shared.models import SourceCandle
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
+from goodmoneying_shared.strategy_graph import validate_strategy_graph
 from goodmoneying_shared.time import now_kst
 from goodmoneying_upbit_gateway.catalog import load_catalog, rest_endpoint_by_id
 from goodmoneying_worker.collector import seed_repository
@@ -341,6 +342,85 @@ class _SeededDatasetVersionRepository:
         }
 
 
+class _SeededStrategyRepository:
+    def __init__(self) -> None:
+        self._strategies: list[dict[str, object]] = []
+        self._versions: list[dict[str, object]] = []
+
+    def validate_graph(self, *, graph: Mapping[str, object]) -> dict[str, object]:
+        return validate_strategy_graph(graph).to_api()
+
+    def create_strategy(
+        self,
+        *,
+        request_id: str,
+        idempotency_key: str,
+        actor_id: str,
+        requested_at: datetime,
+        reason: str,
+        owner_id: str,
+        name: str,
+    ) -> dict[str, object]:
+        del request_id, idempotency_key, actor_id, requested_at, reason
+        strategy = {
+            "strategyId": len(self._strategies) + 1,
+            "ownerId": owner_id,
+            "name": name,
+            "createdAt": now_kst().astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        }
+        self._strategies.append(strategy)
+        return strategy
+
+    def publish_version(
+        self,
+        *,
+        strategy_id: int,
+        request_id: str,
+        idempotency_key: str,
+        actor_id: str,
+        requested_at: datetime,
+        reason: str,
+        graph: Mapping[str, object],
+    ) -> dict[str, object]:
+        del request_id, idempotency_key, reason
+        validation = self.validate_graph(graph=graph)
+        if not validation["valid"]:
+            raise ValueError("검증을 통과한 전략 graph만 게시할 수 있다.")
+        now = now_kst().astimezone(UTC).isoformat().replace("+00:00", "Z")
+        version = {
+            "strategyVersionId": len(self._versions) + 1,
+            "strategyId": strategy_id,
+            "version": 1 + sum(item["strategyId"] == strategy_id for item in self._versions),
+            "schemaVersion": "strategy-graph-v1",
+            "status": "published",
+            "graphHash": validation["graphHash"],
+            "validation": validation,
+            "graph": dict(graph),
+            "actorId": actor_id,
+            "requestedAt": requested_at.isoformat().replace("+00:00", "Z"),
+            "createdAt": now,
+            "publishedAt": now,
+        }
+        self._versions.append(version)
+        return version
+
+    def list_versions(
+        self, *, strategy_id: int, page_size: int, cursor: str | None
+    ) -> dict[str, object]:
+        del cursor
+        return {
+            "items": [item for item in self._versions if item["strategyId"] == strategy_id][
+                :page_size
+            ],
+            "nextCursor": None,
+        }
+
+    def get_version(self, strategy_version_id: int) -> dict[str, object] | None:
+        return next(
+            (item for item in self._versions if item["strategyVersionId"] == strategy_version_id),
+            None,
+        )
+
 def _analysis_history_candles(
     first_instrument_id: int, second_instrument_id: int
 ) -> list[SourceCandle]:
@@ -422,6 +502,7 @@ def create_seeded_e2e_app() -> FastAPI:
         serialized_repository,
         data_foundation_repository=_SeededDataFoundationRepository(),
         dataset_version_repository=_SeededDatasetVersionRepository(),
+        strategy_repository=_SeededStrategyRepository(),
     )
     catalog = load_catalog()
 

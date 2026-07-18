@@ -1,6 +1,6 @@
 # 시스템 트레이딩 도메인 설계(Module Design)
 
-상태: 승인된 목표 설계(Accepted Target), P1·P2-1·P2-2·P2-3·P2-4·P2-5·P2-6 기계 계약 구현됨
+상태: 승인된 목표 설계(Accepted Target), P1·P2-1·P2-2·P2-3·P2-4·P2-5·P2-6·P2-7 기계 계약 구현됨
 버전: 1.4.1
 날짜: 2026-07-18
 
@@ -52,6 +52,7 @@
 | 데이터셋 빌드 | `dataset_builds`, `dataset_build_series` | 요청 트랜잭션에서 선택 hash·asOf·원천/품질/물질화/시장 상태 ceiling 고정, 멱등 키 충돌 차단, 임대 heartbeat·세대 fencing·제한 재시도·dead-letter |
 | 연구 | `dataset_versions`, `dataset_version_series` | 대리키를 제외한 canonical content hash 불변·고유, 입력/출력 반개방 범위와 정책 고정, 게시 전 child 완성 뒤 원자적 봉인 |
 | 연구 UI | Data Lab | `/v1/data-foundation`의 `instrumentId`로 KRW 시장을 선택하고 `/v1/dataset-builds`, `/v1/dataset-versions`, coverage, series REST 계약만 읽어 build 생성·복제·비교를 수행 |
+| 내부 스트림 | `internal-realtime-stream.schema.json`, `realtime_stream.py`, `realtimeStream.ts` | topic·scope별 sequence, 서명 cursor, heartbeat, snapshot_required, 클라이언트 gap 적용 중단 |
 | 데이터셋 입력 | `dataset_version_candles`, `dataset_version_indicators`, `dataset_version_market_statistics`, `dataset_version_microstructures` | 정확한 불변 입력 FK, 자연키·내용 해시·지식 시각 보존 |
 | 데이터셋 시점 상태 | `dataset_version_market_status_snapshots` | 생성 프런티어의 시장 상태·거래 가능 구간과 coverage 의미 복제 |
 | 전략 | `strategy_definitions` | `(owner_id, name)` |
@@ -203,7 +204,9 @@ run은 dataset content hash, strategy graph hash, engine semantic version, param
 }
 ```
 
-`message_type`은 `subscribed|event|heartbeat|snapshot_required|slow_consumer|error`다. subscribe·unsubscribe 명령은 topic, scope, resume cursor를 가진다. `event_id`는 dedup key이며 sequence는 topic·권한 scope 안에서 서버 재시작 후에도 단조 증가한다. cursor는 snapshot version과 마지막 sequence를 서명한 opaque value이며 최소 24시간 보존한다. 클라이언트가 gap·cursor expiry를 감지하면 REST snapshot을 읽기 전까지 이후 event를 적용하지 않는다. heartbeat는 마지막 sequence와 server time을 포함한다. 지원 schema major가 다르면 연결을 거부하고 minor·patch는 backward-compatible field 추가만 허용한다.
+`message_type`은 `subscribed|event|heartbeat|snapshot_required|slow_consumer|error`다. subscribe·unsubscribe 명령은 topic, scope, resume cursor를 가진다. `event_id`는 dedup key이며 sequence는 topic·권한 scope 안에서 단조 증가한다. cursor는 snapshot version과 마지막 sequence를 서명한 opaque value이며 최소 24시간 보존한다. 클라이언트가 gap·cursor expiry를 감지하면 REST snapshot을 읽기 전까지 이후 event를 적용하지 않는다. heartbeat는 마지막 sequence와 server time을 포함한다. 지원 schema major가 다르면 연결을 거부하고 minor·patch는 backward-compatible field 추가만 허용한다.
+
+P2-7 구현은 `/v1/realtime/analysis/stream` 분석 스트림에 이 envelope를 적용하고 전환기 호환 alias로 `/v1/realtime/analysis`와 legacy top-level field를 유지한다. 새 구독은 `analysis.instrument:{instrumentId}:{unit}:{rangeDays}` topic의 `subscribed` sequence 1에서 시작하고 이후 `event`가 1씩 증가한다. `heartbeat`는 마지막 sequence를 반복한다. 유효한 resume cursor가 있으면 해당 sequence 이후부터 이어서 발행하고, 위변조·문맥 불일치·만료 cursor는 `snapshot_required`를 반환한다. 브라우저는 중복·역순 event를 reducer에 전달하지 않고, gap 이후 event 적용을 멈춘다. REST snapshot endpoint, cursor 만료 후 자동 재동기화, slow consumer backpressure는 P2-8에서 닫는다.
 
 ## 8. Upbit 공식 제약
 

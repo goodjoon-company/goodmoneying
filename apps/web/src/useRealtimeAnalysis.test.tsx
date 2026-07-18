@@ -1,5 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { RealtimeStreamEnvelope } from "./realtimeStream";
 import { useRealtimeAnalysis } from "./useRealtimeAnalysis";
 
 class FakeWebSocket {
@@ -47,6 +48,25 @@ class FakeWebSocket {
     this.currentReadyState = 3;
     this.onclose?.();
   }
+}
+
+function streamEnvelope(
+  sequence: number,
+  payload: Record<string, unknown>,
+  messageType: RealtimeStreamEnvelope["message_type"] = "event"
+): RealtimeStreamEnvelope<Record<string, unknown>> {
+  return {
+    schema_version: "1.0",
+    topic: "analysis.instrument:1:1d:365",
+    scope: "operator:local",
+    event_id: `evt-${sequence}`,
+    sequence,
+    cursor: `cursor-${sequence}`,
+    occurred_at: "2026-07-18T06:30:00Z",
+    published_at: "2026-07-18T06:30:00Z",
+    message_type: messageType,
+    payload
+  };
 }
 
 describe("코인 분석 WebSocket 구독", () => {
@@ -403,5 +423,51 @@ describe("코인 분석 WebSocket 구독", () => {
 
     expect(result.current.connectionStatus).toBe("offline");
     expect(result.current.instrument).toBeNull();
+  });
+
+  it("P2 envelope sequence gap 이후에는 snapshot 복구 전까지 event를 반영하지 않는다", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const { result } = renderHook(() => useRealtimeAnalysis(1, "1d", 365));
+    const socket = FakeWebSocket.instances[0];
+
+    act(() => {
+      socket.open();
+      socket.receive(streamEnvelope(0, { type: "analysis.session", subscriptionId: "p2-sub" }, "subscribed"));
+      socket.receive(streamEnvelope(1, {
+        type: "analysis.instrument",
+        instrument: {
+          id: 1,
+          marketCode: "KRW-BTC",
+          baseAsset: "BTC",
+          quoteCurrency: "KRW",
+          displayName: "비트코인"
+        }
+      }));
+      socket.receive(streamEnvelope(3, {
+        type: "analysis.market",
+        ticker: { tradePrice: "100", accTradePrice24h: "1000", changeRate: "0.01", collectedAt: "2026-07-18T06:30:00Z" },
+        orderbook: {
+          bestBidPrice: "99", bestBidSize: "1", bestAskPrice: "101", bestAskSize: "1",
+          spread: "2", bidDepth10: "10", askDepth10: "10", imbalance10: "0",
+          collectedAt: "2026-07-18T06:30:00Z"
+        },
+        tradeSummary: { tradeCount: 99, buyVolume: "9", sellVolume: "1", lastTradeAt: null }
+      }));
+      socket.receive(streamEnvelope(4, {
+        type: "analysis.instrument",
+        instrument: {
+          id: 1,
+          marketCode: "KRW-STALE",
+          baseAsset: "STALE",
+          quoteCurrency: "KRW",
+          displayName: "누락 뒤 프레임"
+        }
+      }));
+    });
+
+    expect(result.current.instrument?.marketCode).toBe("KRW-BTC");
+    expect(result.current.market).toBeNull();
+    expect(result.current.streamRecoveryStatus).toBe("snapshot_required");
+    expect(result.current.error).toContain("REST snapshot 복구");
   });
 });

@@ -1,7 +1,7 @@
 # 시스템 트레이딩 UI 사양(UI Spec)
 
 상태: Accepted Target
-구현 상태: P2-6 Data Lab 구현됨
+구현 상태: P2-7 내부 WebSocket envelope와 P2-6 Data Lab 구현됨
 추적: GitHub Issue #28~#34
 
 ## 1. 디자인 방향
@@ -46,7 +46,7 @@ P2-6 Data Lab은 이 원칙을 다음 범위로 적용한다.
 - build 생성 form은 시장, 작업자 ID, 사유, 시작 KST, 종료 KST label을 제공하고 UTC wire 변환은 클라이언트 모델 테스트로 고정한다.
 - build, version, exact member의 다음 page는 cursor 기반 더 보기로 명시 탐색한다.
 - coverage heatmap은 긴 범위에서도 viewport 가로 overflow를 만들지 않도록 wrap한다.
-- 화면 갱신 기준은 `REST polling`으로 표시하며 P2-7 내부 WebSocket을 선행하지 않는다.
+- 화면 갱신 기준은 Data Lab에서는 `REST polling`, Coin Analysis에서는 `P2 envelope WebSocket`으로 분리해 표시한다.
 
 ## 4. 상호작용
 
@@ -54,7 +54,7 @@ P2-6 Data Lab은 이 원칙을 다음 범위로 적용한다.
 - destructive·live 관련 action은 icon만 두지 않고 동사·대상·영향을 표시한다.
 - kill switch arm은 대상·진행 주문 정책·사유를 확인하고 release보다 시각 우선순위가 높다.
 - live-disabled는 성공 green이 아니라 안전 잠금 상태로 표현한다.
-- WebSocket gap·stale data는 마지막 정상 시각과 snapshot 복구 상태를 표시한다.
+- WebSocket gap·stale data는 마지막 정상 cursor와 `snapshot_required` 복구 상태를 표시한다. P2-7은 event 적용 중단까지 보장하고, snapshot 재동기화 UI는 P2-8에서 연결한다.
 - drag는 keyboard move·connect·delete command와 동등해야 한다.
 
 ## 5. motion·성능

@@ -89,6 +89,13 @@ from goodmoneying_shared.dataset_version_store import (
     PostgresDatasetVersionStore,
 )
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
+from goodmoneying_shared.realtime_stream import (
+    CursorExpiredError,
+    RealtimeEnvelopeBuilder,
+    StreamCursorError,
+    StreamMessageType,
+    decode_stream_cursor,
+)
 from goodmoneying_shared.repository import OperationsRepository
 from goodmoneying_shared.sqlite_repository import SQLiteOperationsRepository
 from goodmoneying_shared.time import now_kst
@@ -117,6 +124,19 @@ def create_repository_from_environment() -> OperationsRepository:
             "운영 모드는 연결 가능한 PostgreSQL GOODMONEYING_DATABASE_URL을 필요로 한다."
         )
     return SQLiteOperationsRepository()
+
+
+def _stream_cursor_secret() -> str:
+    return os.getenv("GOODMONEYING_STREAM_CURSOR_SECRET", "local-dev-stream-cursor-secret")
+
+
+def _analysis_stream_topic(subscription: Mapping[str, object]) -> str:
+    return (
+        "analysis.instrument:"
+        f"{int(cast(int | str, subscription['instrumentId']))}:"
+        f"{str(subscription['unit'])}:"
+        f"{int(cast(int | str, subscription['rangeDays']))}"
+    )
 
 
 class DataFoundationApiRepository(Protocol):
@@ -668,6 +688,7 @@ def create_app(
 
         return StreamingResponse(events(), media_type="text/event-stream")
 
+    @app.websocket("/v1/realtime/analysis/stream")
     @app.websocket("/v1/realtime/analysis")
     async def stream_coin_analysis(websocket: WebSocket) -> None:
         await websocket.accept()
@@ -675,11 +696,74 @@ def create_app(
         latest_candle: dict[str, object] | None = None
         latest_indicator_points: list[object] = []
         latest_microstructure_points: list[object] = []
+        emit_snapshot_heartbeat = False
+        stream_builder = RealtimeEnvelopeBuilder(
+            topic="analysis.control",
+            scope="operator:local",
+            cursor_secret=_stream_cursor_secret(),
+        )
 
-        async def send_message(message_type: str, **payload: object) -> None:
-            await websocket.send_json(
-                {"version": "1", "type": message_type, "sentAt": now_kst().isoformat(), **payload}
+        async def send_message(
+            message_type: str,
+            *,
+            stream_message_type: str = "event",
+            **payload: object,
+        ) -> None:
+            sent_at = now_kst()
+            legacy_payload = {
+                "version": "1",
+                "type": message_type,
+                "sentAt": sent_at.isoformat(),
+                **payload,
+            }
+            envelope = stream_builder.make(
+                message_type=cast(StreamMessageType, stream_message_type),
+                payload=legacy_payload,
+                now=sent_at,
             )
+            await websocket.send_json({**legacy_payload, **envelope})
+
+        async def send_heartbeat() -> None:
+            sent_at = now_kst()
+            payload: dict[str, object] = {
+                "version": "1",
+                "type": "stream.heartbeat",
+                "sentAt": sent_at.isoformat(),
+                "lastSequence": stream_builder.sequence,
+                "serverTime": sent_at.isoformat(),
+            }
+            envelope = stream_builder.make(
+                message_type="heartbeat",
+                payload=payload,
+                now=sent_at,
+                increment_sequence=False,
+            )
+            await websocket.send_json({**payload, **envelope})
+
+        async def send_snapshot_required(topic: str, message: str, code: str) -> None:
+            nonlocal stream_builder
+            stream_builder = RealtimeEnvelopeBuilder(
+                topic=topic,
+                scope="operator:local",
+                cursor_secret=_stream_cursor_secret(),
+            )
+            sent_at = now_kst()
+            payload: dict[str, object] = {
+                "version": "1",
+                "type": "analysis.snapshot_required",
+                "sentAt": sent_at.isoformat(),
+                "code": code,
+                "message": message,
+                "lastSequence": stream_builder.sequence,
+                "snapshotTopic": topic,
+            }
+            envelope = stream_builder.make(
+                message_type="snapshot_required",
+                payload=payload,
+                now=sent_at,
+                increment_sequence=False,
+            )
+            await websocket.send_json({**payload, **envelope})
 
         async def send_snapshot(subscription: dict[str, object]) -> None:
             nonlocal latest_candle, latest_indicator_points, latest_microstructure_points
@@ -690,11 +774,20 @@ def create_app(
                     int(cast(int | str, subscription["rangeDays"])),
                 )
             except AnalysisSubscriptionError as exc:
-                await send_message("analysis.error", code=exc.code, message=str(exc))
+                await send_message(
+                    "analysis.error",
+                    stream_message_type="error",
+                    code=exc.code,
+                    message=str(exc),
+                )
                 return
             candles = cast(list[object], snapshot["candles"])
             chunk_count = max(1, (len(candles) + 499) // 500)
-            await send_message("analysis.session", subscriptionId=str(uuid4()))
+            await send_message(
+                "analysis.session",
+                stream_message_type="subscribed",
+                subscriptionId=str(uuid4()),
+            )
             await send_message("analysis.instrument", instrument=snapshot["instrument"])
             for chunk_index in range(chunk_count):
                 await send_message(
@@ -722,7 +815,15 @@ def create_app(
                     chunkCount=microstructure_chunk_count,
                     points=microstructure_points[chunk_index * 500 : (chunk_index + 1) * 500],
                 )
-            await send_message("analysis.market", **cast(dict[str, object], snapshot["market"]))
+            market_payload = cast(Mapping[str, object], snapshot["market"])
+            await send_message(
+                "analysis.market",
+                ticker=market_payload["ticker"],
+                orderbook=market_payload["orderbook"],
+                tradeSummary=market_payload["tradeSummary"],
+            )
+            if emit_snapshot_heartbeat:
+                await send_heartbeat()
             latest_candle = cast(dict[str, object], candles[-1]) if candles else None
             latest_indicator_points = indicator_points
             latest_microstructure_points = microstructure_points
@@ -800,28 +901,80 @@ def create_app(
                                 )
                             latest_microstructure_points = microstructure_points
                         market = cast(dict[str, object], snapshot["market"])
-                        await send_message("analysis.market", **market)
+                        await send_message(
+                            "analysis.market",
+                            ticker=market["ticker"],
+                            orderbook=market["orderbook"],
+                            tradeSummary=market["tradeSummary"],
+                        )
+                        await send_heartbeat()
                     continue
-                if not isinstance(message, dict) or message.get("type") != "analysis.subscribe":
+                is_legacy_subscribe = message.get("type") == "analysis.subscribe"
+                is_stream_subscribe = (
+                    message.get("schema_version") == "1.0"
+                    and message.get("message_type") == "subscribe"
+                )
+                if not isinstance(message, dict) or not (
+                    is_legacy_subscribe or is_stream_subscribe
+                ):
                     await send_message(
                         "analysis.error",
+                        stream_message_type="error",
                         code="INVALID_MESSAGE",
                         message="analysis.subscribe 메시지가 필요합니다.",
                     )
                     continue
                 try:
+                    emit_snapshot_heartbeat = is_stream_subscribe
+                    command_payload = (
+                        cast(Mapping[str, object], message["payload"])
+                        if isinstance(message.get("payload"), Mapping)
+                        else message
+                    )
                     latest_subscription = {
-                        "instrumentId": int(cast(int | str, message["instrumentId"])),
-                        "unit": str(message["unit"]),
-                        "rangeDays": int(cast(int | str, message["rangeDays"])),
+                        "instrumentId": int(cast(int | str, command_payload["instrumentId"])),
+                        "unit": str(command_payload["unit"]),
+                        "rangeDays": int(cast(int | str, command_payload["rangeDays"])),
                     }
                 except KeyError, TypeError, ValueError:
                     await send_message(
                         "analysis.error",
+                        stream_message_type="error",
                         code="INVALID_MESSAGE",
                         message="instrumentId, unit, rangeDays를 올바르게 입력해야 합니다.",
                     )
                     continue
+                topic = _analysis_stream_topic(latest_subscription)
+                stream_builder = RealtimeEnvelopeBuilder(
+                    topic=topic,
+                    scope="operator:local",
+                    cursor_secret=_stream_cursor_secret(),
+                )
+                resume_cursor = message.get("resumeCursor") or message.get("resume_cursor")
+                if resume_cursor is not None:
+                    try:
+                        cursor_context = decode_stream_cursor(
+                            str(resume_cursor),
+                            _stream_cursor_secret(),
+                            topic=topic,
+                            scope="operator:local",
+                            now=now_kst(),
+                        )
+                    except CursorExpiredError as exc:
+                        await send_snapshot_required(
+                            topic,
+                            f"{exc} REST snapshot 복구가 필요합니다.",
+                            "CURSOR_EXPIRED",
+                        )
+                        continue
+                    except StreamCursorError as exc:
+                        await send_snapshot_required(
+                            topic,
+                            f"{exc} REST snapshot 복구가 필요합니다.",
+                            "CURSOR_INVALID",
+                        )
+                        continue
+                    stream_builder.resume_from(cursor_context)
                 await send_snapshot(latest_subscription)
         except WebSocketDisconnect:
             return
@@ -1113,7 +1266,6 @@ def _classify_microstructure_stream_update(
     """저장된 1분 미시구조 시계열의 최신 갱신과 과거 정정을 구분한다."""
 
     return _classify_indicator_stream_update(previous, current, latest_candle)
-
 
 def _coverage_counts_response(
     counts: Mapping[CoverageState, int],

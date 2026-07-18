@@ -556,7 +556,7 @@ export const JANUARY_2026_BACKFILL_END = "2026-02-01T00:00:00+09:00";
 export function analysisWebSocketUrl(): string {
   const apiUrl = new URL(API_BASE_URL, window.location.origin);
   apiUrl.protocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";
-  apiUrl.pathname = `${apiUrl.pathname.replace(/\/$/, "")}/v1/realtime/analysis`;
+  apiUrl.pathname = `${apiUrl.pathname.replace(/\/$/, "")}/v1/realtime/analysis/stream`;
   return apiUrl.toString();
 }
 

@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goodmoneying.local/contracts/internal-realtime-stream.schema.json",
+  "title": "P2 내부 실시간 스트림 envelope",
+  "description": "WebSocket event를 순번, resume cursor, heartbeat, snapshot_required 신호로 감싸는 내부 envelope 계약이다.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "topic",
+    "scope",
+    "event_id",
+    "sequence",
+    "cursor",
+    "occurred_at",
+    "published_at",
+    "message_type",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^1\\.\\d+$" },
+    "topic": { "type": "string", "minLength": 1 },
+    "scope": { "type": "string", "minLength": 1 },
+    "event_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "cursor": { "type": "string", "minLength": 16 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "published_at": { "type": "string", "format": "date-time" },
+    "message_type": {
+      "enum": ["subscribed", "event", "heartbeat", "snapshot_required", "slow_consumer", "error"]
+    },
+    "payload": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "message_type": { "const": "subscribed" } }, "required": ["message_type"] },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": ["subscriptionId"],
+            "properties": {
+              "type": { "const": "analysis.session" },
+              "subscriptionId": { "type": "string" },
+              "lastSequence": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "message_type": { "const": "heartbeat" } }, "required": ["message_type"] },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": ["lastSequence", "serverTime"],
+            "properties": {
+              "type": { "const": "stream.heartbeat" },
+              "lastSequence": { "type": "integer", "minimum": 0 },
+              "serverTime": { "type": "string", "format": "date-time" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "message_type": { "const": "snapshot_required" } }, "required": ["message_type"] },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": ["code"],
+            "properties": {
+              "type": { "const": "analysis.snapshot_required" },
+              "code": { "type": "string" },
+              "lastSequence": { "type": "integer", "minimum": 0 },
+              "message": { "type": "string" },
+              "snapshotTopic": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "message_type": { "const": "error" } }, "required": ["message_type"] },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "type": { "const": "analysis.error" },
+              "code": { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "message_type": { "const": "event" } }, "required": ["message_type"] },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": { "type": "string", "pattern": "^analysis\\." }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

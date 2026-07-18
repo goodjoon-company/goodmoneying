@@ -30,7 +30,7 @@
 | 기존 수집·백필·집계, API·Web, Upbit Lab·Gateway | 부분 구현 | Issue #28, #29, #33 |
 | 전략·백테스트·포트폴리오·봇·주문·위험 | 미구현 | Issue #30~#33 |
 | 내부 UTC와 5가지 품질 상태 | 미구현 | Issue #28 |
-| 복구 가능한 내부 WebSocket | 미구현 | Issue #29 |
+| 복구 가능한 내부 WebSocket | P2-7 envelope·cursor·heartbeat·gap 적용 중단 구현, P2-8 REST snapshot 복구 대기 | Issue #29 |
 | Action commit SHA pinning·P8 exact-SHA 잠금 | P0 구현, 배포는 계속 차단 | Issue #27, #35 |
 | branch protection·prod 승인·승격 자동화 | 미구현, 배포 차단 | Issue #35 |
 | 운영 DB 백업·복원 rehearsal·forward recovery | 미구현, 배포 차단 | Issue #34, #35 |
@@ -97,7 +97,9 @@ P2-4 미시구조 계층은 체결·호가 receipt와 정규화 원천을 직접
 
 P2-5 데이터셋 계층은 변경 가능한 빌드 수명주기와 게시 후 불변인 내용 주소 버전을 분리한다. 생성 요청 수락 시 반복 읽기 트랜잭션에서 `asOf`와 원천·품질·물질화·시장 상태 ceiling을 고정하고, worker는 그 프런티어 안의 정확한 candle·지표·시장 통계·미시구조 member와 시점별 시장 상태를 원자적으로 게시한다. 게시 작업은 임시 스테이징과 4,096행 서버 커서 증분 해시, 집합 기반 삽입으로 메모리를 제한하며 별도 연결 heartbeat와 소유자·세대·만료 시각 fencing으로 긴 작업의 단일 소유권을 보장한다. 실패는 제한된 지수 지연 재시도 뒤 dead-letter로 격리한다. canonical content hash는 DB 대리키 대신 시장 자연키·범위·정책·계산 버전·정렬된 member 내용으로 계산한다. 이후 늦은 과거 정정과 신규 수집은 기존 version을 바꾸지 않는다. 채움은 분석 계층의 `none` 또는 확정 `no_trade` candle 전용 정책이며 원천을 변경하지 않는다. REST는 저장된 build/version/coverage/series만 읽는다.
 
-P2-6 Data Lab은 P2-5 REST 계약을 전용 화면으로 소비한다. 화면은 브라우저가 운영 토큰을 보관하지 않는 동일 출처 프록시를 사용하고, `/v1/data-foundation`의 `instrumentId`로 KRW 시장을 선택해 새 dataset build 명령을 만든다. build 목록은 `/v1/dataset-builds`를 5초 REST polling으로 재발견하며, version 목록·coverage heatmap·exact member 표와 차트·A/B 비교는 저장된 version과 series만 읽는다. Data Lab은 P2-7 내부 스트림을 선행하지 않고, 스트림 gap·cursor 계약은 후속 단계에서 별도 구현한다.
+P2-6 Data Lab은 P2-5 REST 계약을 전용 화면으로 소비한다. 화면은 브라우저가 운영 토큰을 보관하지 않는 동일 출처 프록시를 사용하고, `/v1/data-foundation`의 `instrumentId`로 KRW 시장을 선택해 새 dataset build 명령을 만든다. build 목록은 `/v1/dataset-builds`를 5초 REST polling으로 재발견하며, version 목록·coverage heatmap·exact member 표와 차트·A/B 비교는 저장된 version과 series만 읽는다.
+
+P2-7 내부 분석 WebSocket은 신규 `/v1/realtime/analysis/stream` payload를 `P2 envelope v1`로 감싼다. 기존 `/v1/realtime/analysis`는 전환기 호환 alias다. 각 frame은 `topic`, `scope`, `event_id`, `sequence`, 서명된 `cursor`, `message_type`, `payload`를 포함하며, 전환기 호환을 위해 legacy `version/type/sentAt` top-level 필드도 남긴다. 서버는 topic·scope·sequence·snapshot version·만료 시각을 cursor에 서명하고 heartbeat에 마지막 sequence와 server time을 실어 보낸다. Web 클라이언트는 envelope를 우선 해석하고 중복·역순 event를 버리며, sequence gap 또는 서버 `snapshot_required`를 받으면 이후 event를 reducer에 적용하지 않고 복구 필요 상태로 전환한다. P2-8은 이 상태를 REST snapshot+cursor 재동기화와 slow consumer backpressure로 연결한다.
 
 ### 6.4 연구·실행 계층
 
@@ -138,7 +140,7 @@ P2-6 Data Lab은 P2-5 REST 계약을 전용 화면으로 소비한다. 화면은
 
 ## 8. WebSocket 복구 모델
 
-내부 메시지 envelope, 구독 명령, schema 호환성의 목표 의미는 [도메인 설계](02_Architecture/system-trading-domain.md#7-실시간-envelope)가 정의한다. Issue #29가 추가할 JSON Schema가 구현 시점의 필드 단일 기준이다. 연결은 구독 권한을 확인하고 현재 cursor를 회신한다. 클라이언트는 sequence gap 또는 schema 불일치를 감지하면 해당 토픽을 일시 중지하고 REST 스냅숏을 cursor와 함께 다시 받은 뒤 재구독한다.
+내부 메시지 envelope, 구독 명령, schema 호환성의 목표 의미는 [도메인 설계](02_Architecture/system-trading-domain.md#7-실시간-envelope)가 정의한다. 구현 시점의 기계 계약은 `docs/contracts/api/internal-realtime-stream.schema.json`이다. 연결은 구독 권한을 확인하고 현재 cursor를 회신한다. 클라이언트는 sequence gap 또는 schema 불일치를 감지하면 해당 토픽을 일시 중지하고 REST 스냅숏을 cursor와 함께 다시 받은 뒤 재구독한다. P2-7은 gap 감지와 적용 중단까지 구현했고, REST snapshot 재동기화 endpoint와 slow consumer 처리는 P2-8 범위다.
 
 서버는 bounded queue를 사용한다. 느린 소비자는 저우선 이벤트를 합치거나 연결을 명시적 `slow_consumer` 사유로 종료하며 무제한 메모리 적재를 허용하지 않는다. 재연결은 jitter가 있는 지수 백오프를 사용한다.
 

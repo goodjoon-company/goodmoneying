@@ -26,6 +26,7 @@ from goodmoneying_worker.collector import seed_repository
 from goodmoneying_worker.upbit_client import FixtureUpbitClient
 
 REALTIME_ANALYSIS_CONTRACT = Path("docs/contracts/api/realtime-analysis-websocket.schema.json")
+INTERNAL_REALTIME_STREAM_CONTRACT = Path("docs/contracts/api/internal-realtime-stream.schema.json")
 
 
 def seeded_repository_and_client() -> tuple[SQLiteOperationsRepository, TestClient]:
@@ -440,6 +441,64 @@ def test_coin_analysis_websocket_sends_small_messages_for_a_watchlist_coin() -> 
     }
     for message in messages:
         assert list(validator.iter_errors(message)) == []
+
+
+def test_coin_analysis_websocket_emits_p2_envelope_sequence_cursor_and_heartbeat() -> None:
+    repository, client = seeded_repository_and_client()
+    instrument_id = repository.list_active_targets()[0].id
+    validator = Draft202012Validator(
+        json.loads(INTERNAL_REALTIME_STREAM_CONTRACT.read_text()),
+        format_checker=FormatChecker(),
+    )
+
+    with client.websocket_connect("/v1/realtime/analysis") as websocket:
+        websocket.send_json(
+            {
+                "version": "1",
+                "type": "analysis.subscribe",
+                "sentAt": now_kst().isoformat(),
+                "instrumentId": instrument_id,
+                "unit": "1d",
+                "rangeDays": 365,
+            }
+        )
+        messages = [websocket.receive_json() for _ in range(6)]
+        messages.extend(websocket.receive_json() for _ in range(2))
+
+    event_messages = [message for message in messages if message["message_type"] == "event"]
+    heartbeat = next(message for message in messages if message["message_type"] == "heartbeat")
+
+    assert messages[0]["message_type"] == "subscribed"
+    assert messages[0]["payload"]["type"] == "analysis.session"
+    assert [message["sequence"] for message in event_messages[:5]] == [2, 3, 4, 5, 6]
+    assert all(message["cursor"] for message in messages)
+    assert heartbeat["sequence"] == heartbeat["payload"]["lastSequence"]
+    assert heartbeat["payload"]["serverTime"]
+    for message in messages:
+        assert list(validator.iter_errors(message)) == []
+
+
+def test_coin_analysis_websocket_invalid_resume_cursor_requests_snapshot() -> None:
+    repository, client = seeded_repository_and_client()
+    instrument_id = repository.list_active_targets()[0].id
+
+    with client.websocket_connect("/v1/realtime/analysis") as websocket:
+        websocket.send_json(
+            {
+                "version": "1",
+                "type": "analysis.subscribe",
+                "sentAt": now_kst().isoformat(),
+                "instrumentId": instrument_id,
+                "unit": "1d",
+                "rangeDays": 365,
+                "resumeCursor": "invalid-cursor",
+            }
+        )
+        message = websocket.receive_json()
+
+    assert message["message_type"] == "snapshot_required"
+    assert message["payload"]["code"] == "CURSOR_INVALID"
+    assert message["payload"]["snapshotTopic"].startswith("analysis.instrument:")
 
 
 def test_미시구조_REST는_1분_저장_물질화만_조회한다() -> None:

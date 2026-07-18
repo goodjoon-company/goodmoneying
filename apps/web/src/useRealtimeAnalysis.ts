@@ -8,6 +8,12 @@ import {
   type AnalysisState,
   type AnalysisUnit
 } from "./analysisStream";
+import {
+  consumeRealtimeEnvelope,
+  createRealtimeStreamTracker,
+  isRealtimeStreamEnvelope,
+  type RealtimeStreamTracker
+} from "./realtimeStream";
 
 type SubscriptionGate = {
   socket: WebSocket;
@@ -21,18 +27,26 @@ export function useRealtimeAnalysis(
   instrumentId: number | null,
   unit: AnalysisUnit,
   rangeDays: AnalysisRangeDays
-): AnalysisState & { connectionStatus: "connecting" | "live" | "offline" } {
+): AnalysisState & {
+  connectionStatus: "connecting" | "live" | "offline";
+  streamRecoveryStatus: "ready" | "snapshot_required";
+} {
   const [state, setState] = useState<AnalysisState>(initialAnalysisState);
   const [connectionStatus, setConnectionStatus] = useState<"connecting" | "live" | "offline">("offline");
+  const [streamRecoveryStatus, setStreamRecoveryStatus] = useState<"ready" | "snapshot_required">("ready");
   const socketRef = useRef<WebSocket | null>(null);
   const lastSentSubscriptionRef = useRef<{ socket: WebSocket; key: string } | null>(null);
   const subscriptionGateRef = useRef<SubscriptionGate | null>(null);
+  const streamTrackerRef = useRef<RealtimeStreamTracker>(createRealtimeStreamTracker());
   const subscriptionRef = useRef({ instrumentId, unit, rangeDays });
   subscriptionRef.current = { instrumentId, unit, rangeDays };
   const hasSubscription = instrumentId !== null;
 
   useEffect(() => {
-    if (instrumentId === null) setState(initialAnalysisState);
+    if (instrumentId === null) {
+      setState(initialAnalysisState);
+      setStreamRecoveryStatus("ready");
+    }
     const socket = socketRef.current;
     if (instrumentId !== null && isWebSocketOpen(socket)) {
       const sent = sendSubscriptionIfChanged(
@@ -59,6 +73,7 @@ export function useRealtimeAnalysis(
       activeSocket = socket;
       socketRef.current = socket;
       subscriptionGateRef.current = createSubscriptionGate(socket);
+      streamTrackerRef.current = createRealtimeStreamTracker();
       socket.onopen = () => {
         if (disposed || socketRef.current !== socket) return;
         const subscription = subscriptionRef.current;
@@ -74,10 +89,23 @@ export function useRealtimeAnalysis(
       };
       socket.onmessage = (event) => {
         if (disposed || socketRef.current !== socket) return;
-        const message = JSON.parse(String(event.data)) as AnalysisMessage;
+        const parsed = JSON.parse(String(event.data)) as unknown;
+        const streamMessage = consumeAnalysisStreamMessage(streamTrackerRef.current, parsed);
+        if (streamMessage.kind === "heartbeat" || streamMessage.kind === "ignored") {
+          setConnectionStatus("live");
+          return;
+        }
+        if (streamMessage.kind === "snapshot_required") {
+          setStreamRecoveryStatus("snapshot_required");
+          setConnectionStatus("live");
+          setState((previous) => ({ ...previous, error: streamMessage.message }));
+          return;
+        }
+        const message = streamMessage.message;
         if (message.type === "analysis.session") {
           if (acceptSubscriptionGeneration(socket, subscriptionGateRef)) {
             setState(initialAnalysisState);
+            setStreamRecoveryStatus("ready");
             setConnectionStatus("live");
           }
           return;
@@ -123,7 +151,40 @@ export function useRealtimeAnalysis(
     };
   }, [hasSubscription]);
 
-  return { ...state, connectionStatus };
+  return { ...state, connectionStatus, streamRecoveryStatus };
+}
+
+type AnalysisStreamConsumeResult =
+  | { kind: "message"; message: AnalysisMessage }
+  | { kind: "heartbeat" }
+  | { kind: "snapshot_required"; message: string }
+  | { kind: "ignored" };
+
+function consumeAnalysisStreamMessage(
+  tracker: RealtimeStreamTracker,
+  parsed: unknown
+): AnalysisStreamConsumeResult {
+  if (!isRealtimeStreamEnvelope(parsed)) {
+    return { kind: "message", message: parsed as AnalysisMessage };
+  }
+  const consumed = consumeRealtimeEnvelope(tracker, parsed);
+  if (parsed.message_type === "subscribed") {
+    return {
+      kind: "message",
+      message: {
+        type: "analysis.session",
+        subscriptionId: String(
+          (parsed.payload as Record<string, unknown>).subscriptionId ?? parsed.event_id
+        )
+      }
+    };
+  }
+  if (consumed.kind === "payload") {
+    return { kind: "message", message: consumed.payload as AnalysisMessage };
+  }
+  if (consumed.kind === "heartbeat") return { kind: "heartbeat" };
+  if (consumed.kind === "ignored") return { kind: "ignored" };
+  return { kind: "snapshot_required", message: consumed.message };
 }
 
 function sendSubscriptionIfChanged(
@@ -217,8 +278,13 @@ function sendSubscription(
     JSON.stringify({
       version: "1",
       type: "analysis.subscribe",
+      schema_version: "1.0",
+      message_type: "subscribe",
+      topic: `analysis.instrument:${subscription.instrumentId}:${subscription.unit}:${subscription.rangeDays}`,
+      scope: "operator:local",
       sentAt: new Date().toISOString(),
-      ...subscription
+      ...subscription,
+      payload: subscription
     })
   );
 }

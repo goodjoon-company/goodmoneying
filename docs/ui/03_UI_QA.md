@@ -32,3 +32,9 @@
 - 확인 항목: Data Lab route 진입, build 생성, build 상태 재발견, build/version/series cursor 더 보기, version 목록, coverage heatmap, series 선택, exact member 차트·표, A/B 비교, REST polling 표시, 주요 폭의 가로 overflow 없음
 - 브라우저 runtime: console error 0, page error 0
 - 증적: `docs/Test/2026-07-18-P2-6-Data-Lab-검증.md`
+
+## P2-7 내부 WebSocket 확인 결과
+
+- 확인일: 2026-07-18
+- 확인 항목: `P2 envelope v1` 수신, `payload` 기반 reducer 적용, sequence gap 뒤 event 미적용, heartbeat 무해 처리, legacy top-level field 호환
+- 증적: `docs/Test/2026-07-18-P2-7-내부-스트림-검증.md`

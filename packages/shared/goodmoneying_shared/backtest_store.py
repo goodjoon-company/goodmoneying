@@ -7,7 +7,7 @@ import os
 import secrets
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, cast
 
@@ -27,6 +27,10 @@ class BacktestCursorMismatchError(ValueError):
     """백테스트 목록 cursor가 현재 조회 문맥과 맞지 않는다."""
 
 
+class BacktestLeaseLostError(RuntimeError):
+    """백테스트 run 임대가 만료됐거나 다른 worker로 이동했다."""
+
+
 _LIST_CURSOR_KIND = "backtest-run-list-v1"
 _CURSOR_HMAC_SECRET = os.getenv("GOODMONEYING_CURSOR_HMAC_SECRET") or secrets.token_hex(32)
 
@@ -43,6 +47,213 @@ class PostgresBacktestStore:
 
     def list_runs(self, **arguments: object) -> Row:
         return list_runs(self._repository, **arguments)
+
+    def claim_next_run(self, worker_id: str, lease_seconds: int = 120) -> Row | None:
+        return claim_next_run(
+            self._repository,
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+        )
+
+    def complete_claimed_run(
+        self,
+        backtest_run_id: int,
+        worker_id: str,
+        lease_generation: int,
+        *,
+        result: BacktestResult,
+        artifacts: object = (),
+        completed_at: object | None = None,
+    ) -> Row:
+        return complete_claimed_run(
+            self._repository,
+            backtest_run_id=backtest_run_id,
+            worker_id=worker_id,
+            lease_generation=lease_generation,
+            result=result,
+            artifacts=artifacts,
+            completed_at=completed_at,
+        )
+
+    def fail_claimed_run(
+        self,
+        backtest_run_id: int,
+        worker_id: str,
+        lease_generation: int,
+        *,
+        error_code: str,
+        message: str,
+    ) -> Row:
+        return fail_claimed_run(
+            self._repository,
+            backtest_run_id=backtest_run_id,
+            worker_id=worker_id,
+            lease_generation=lease_generation,
+            error_code=error_code,
+            message=message,
+        )
+
+
+def claim_next_run(
+    repository: object,
+    *,
+    worker_id: str,
+    lease_seconds: int = 120,
+) -> Row | None:
+    owner = _non_blank(worker_id, "workerId")
+    if not isinstance(lease_seconds, int) or lease_seconds < 1:
+        raise ValueError("leaseSeconds는 1 이상 정수여야 한다.")
+    with _connector(repository)() as connection:
+        connection.execute(
+            """
+            UPDATE backtest_runs SET status='dead_letter', lease_owner=NULL,
+              lease_expires_at=NULL, next_retry_at=NULL,
+              dead_letter_reason='retry_attempts_exhausted',
+              finished_at=clock_timestamp()
+            WHERE status='running' AND lease_expires_at <= clock_timestamp()
+              AND attempt_count >= max_attempts
+            """
+        )
+        run = connection.execute(
+            """
+            SELECT * FROM backtest_runs
+            WHERE attempt_count < max_attempts AND (
+              status='queued'
+              OR (status='retry_wait' AND next_retry_at <= clock_timestamp())
+              OR (status='running' AND lease_expires_at <= clock_timestamp())
+            )
+            ORDER BY requested_at, id FOR UPDATE SKIP LOCKED LIMIT 1
+            """
+        ).fetchone()
+        if run is None:
+            return None
+        generation = int(cast(int, run["lease_generation"])) + 1
+        claimed = connection.execute(
+            """
+            UPDATE backtest_runs SET status='running', lease_owner=%s,
+              lease_expires_at=clock_timestamp() + make_interval(secs => %s),
+              lease_generation=%s, attempt_count=attempt_count+1,
+              next_retry_at=NULL, dead_letter_reason=NULL,
+              started_at=COALESCE(started_at, clock_timestamp()), finished_at=NULL
+            WHERE id=%s AND lease_generation=%s
+            RETURNING *
+            """,
+            (owner, lease_seconds, generation, run["id"], run["lease_generation"]),
+        ).fetchone()
+        if claimed is None:
+            return None
+        return _claimed_run_response(claimed)
+
+
+def complete_claimed_run(
+    repository: object,
+    *,
+    backtest_run_id: int,
+    worker_id: str,
+    lease_generation: int,
+    result: BacktestResult,
+    artifacts: object = (),
+    completed_at: object | None = None,
+) -> Row:
+    owner = _non_blank(worker_id, "workerId")
+    if not isinstance(backtest_run_id, int) or backtest_run_id < 1:
+        raise ValueError("backtestRunId는 1 이상 정수여야 한다.")
+    if not isinstance(lease_generation, int) or lease_generation < 1:
+        raise ValueError("leaseGeneration은 1 이상 정수여야 한다.")
+    if not isinstance(result, BacktestResult):
+        raise ValueError("백테스트 result가 필요하다.")
+    artifact_rows = _artifact_inputs(artifacts)
+    completed_at_dt = (
+        _datetime(completed_at, "completedAt")
+        if completed_at is not None
+        else datetime.now(UTC)
+    )
+    with _connector(repository)() as connection:
+        run = connection.execute(
+            """
+            SELECT * FROM backtest_runs
+            WHERE id=%s AND status='running' AND lease_owner=%s
+              AND lease_generation=%s AND lease_expires_at > clock_timestamp()
+            FOR UPDATE
+            """,
+            (backtest_run_id, owner, lease_generation),
+        ).fetchone()
+        if run is None:
+            raise BacktestLeaseLostError("백테스트 run 임대가 현재 worker에 속하지 않는다.")
+        if run["input_hash"] != result.input_hash:
+            raise ValueError("백테스트 result input_hash가 임대 run과 다르다.")
+
+        _insert_trades(connection, backtest_run_id, result)
+        _insert_equity_points(connection, backtest_run_id, result)
+        _insert_metrics(connection, backtest_run_id, result)
+        _insert_artifacts(connection, backtest_run_id, artifact_rows)
+        completed = connection.execute(
+            """
+            UPDATE backtest_runs SET status=%s, result_hash=%s, assumptions=%s,
+              lease_owner=NULL, lease_expires_at=NULL, finished_at=%s
+            WHERE id=%s AND status='running' AND lease_owner=%s
+              AND lease_generation=%s AND lease_expires_at > clock_timestamp()
+            RETURNING *
+            """,
+            (
+                result.status,
+                result.result_hash,
+                Jsonb(list(result.assumptions)),
+                completed_at_dt,
+                backtest_run_id,
+                owner,
+                lease_generation,
+            ),
+        ).fetchone()
+        if completed is None:
+            raise BacktestLeaseLostError("백테스트 run 완료 전 임대를 잃었다.")
+        saved = _get_run_with_connection(connection, backtest_run_id)
+        assert saved is not None
+        return saved
+
+
+def fail_claimed_run(
+    repository: object,
+    *,
+    backtest_run_id: int,
+    worker_id: str,
+    lease_generation: int,
+    error_code: str,
+    message: str,
+) -> Row:
+    owner = _non_blank(worker_id, "workerId")
+    code = _non_blank(error_code, "errorCode")
+    failure_message = _non_blank(message, "message")
+    if not isinstance(backtest_run_id, int) or backtest_run_id < 1:
+        raise ValueError("backtestRunId는 1 이상 정수여야 한다.")
+    if not isinstance(lease_generation, int) or lease_generation < 1:
+        raise ValueError("leaseGeneration은 1 이상 정수여야 한다.")
+    with _connector(repository)() as connection:
+        failed = connection.execute(
+            """
+            UPDATE backtest_runs SET
+              status=CASE WHEN attempt_count >= max_attempts
+                          THEN 'dead_letter' ELSE 'retry_wait' END,
+              lease_owner=NULL, lease_expires_at=NULL,
+              next_retry_at=CASE WHEN attempt_count >= max_attempts THEN NULL
+                ELSE clock_timestamp() + make_interval(
+                  secs => LEAST(300, power(2, attempt_count)::integer)
+                ) END,
+              last_error_code=%s,
+              last_error_message=%s,
+              dead_letter_reason=CASE WHEN attempt_count >= max_attempts
+                THEN %s ELSE NULL END,
+              finished_at=CASE WHEN attempt_count >= max_attempts
+                THEN clock_timestamp() ELSE NULL END
+            WHERE id=%s AND status='running' AND lease_owner=%s
+              AND lease_generation=%s AND lease_expires_at > clock_timestamp()
+            RETURNING *
+            """,
+            (code, failure_message, code, backtest_run_id, owner, lease_generation),
+        ).fetchone()
+        if failed is None:
+            raise BacktestLeaseLostError("백테스트 run 실패 전이를 쓸 임대를 잃었다.")
+        return _claimed_run_response(failed)
 
 
 def persist_completed_run(
@@ -359,9 +570,34 @@ def _run_summary_response(row: Mapping[str, object]) -> Row:
     }
 
 
+def _claimed_run_response(row: Mapping[str, object]) -> Row:
+    return {
+        "backtestRunId": int(cast(int, row["id"])),
+        "strategyVersionId": int(cast(int, row["strategy_version_id"])),
+        "strategyGraphHash": row["strategy_graph_hash"],
+        "datasetVersionId": int(cast(int, row["dataset_version_id"])),
+        "datasetContentHash": row["dataset_content_hash"],
+        "engineVersion": row["engine_version"],
+        "status": row["status"],
+        "inputHash": row["input_hash"],
+        "parameterHash": row["parameter_hash"],
+        "seed": int(cast(int, row["seed"])),
+        "leaseOwner": row["lease_owner"],
+        "leaseGeneration": int(cast(int, row["lease_generation"])),
+        "attemptCount": int(cast(int, row["attempt_count"])),
+        "maxAttempts": int(cast(int, row["max_attempts"])),
+        "nextRetryAt": row["next_retry_at"],
+        "lastErrorCode": row["last_error_code"],
+        "lastErrorMessage": row["last_error_message"],
+        "deadLetterReason": row["dead_letter_reason"],
+    }
+
+
 def _run_status(value: object) -> object:
-    if value == "queued":
+    if value in {"queued", "retry_wait"}:
         return "pending"
+    if value == "dead_letter":
+        return "failed"
     return value
 
 

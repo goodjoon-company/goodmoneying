@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -18,6 +19,7 @@ from goodmoneying_shared.backtest_engine import (
 )
 from goodmoneying_shared.backtest_store import (
     BacktestIdempotencyConflictError,
+    BacktestLeaseLostError,
     PostgresBacktestStore,
 )
 from goodmoneying_shared.postgres_repository import PostgresOperationsRepository
@@ -110,6 +112,126 @@ def test_live_postgres_백테스트_run과_결과는_멱등_불변으로_저장�
         )
 
 
+def test_live_postgres_백테스트_worker는_임대_완료_재시도_dead_letter를_보호한다() -> None:
+    repository = PostgresOperationsRepository(_database_url())
+    store = PostgresBacktestStore(repository)
+    key = uuid4().hex
+    now = datetime(2026, 7, 18, 11, tzinfo=UTC)
+    dataset_version_id, dataset_hash = _insert_dataset_version(repository, key, now)
+    strategy_version_id, strategy_hash = _insert_strategy_version(
+        key=key,
+        now=now,
+        repository=repository,
+    )
+
+    success_result = _result(input_hash="6" * 64, result_hash="7" * 64)
+    success_run_id = _insert_queued_backtest_run(
+        repository,
+        key=f"{key}-success",
+        now=now,
+        strategy_version_id=strategy_version_id,
+        strategy_hash=strategy_hash,
+        dataset_version_id=dataset_version_id,
+        dataset_hash=dataset_hash,
+        input_hash=success_result.input_hash,
+        parameter_hash="8" * 64,
+        max_attempts=3,
+    )
+
+    claimed = store.claim_next_run("worker-a", lease_seconds=300)
+    assert claimed is not None
+    assert claimed["backtestRunId"] == success_run_id
+    assert claimed["attemptCount"] == 1
+    assert claimed["leaseGeneration"] == 1
+
+    with pytest.raises(BacktestLeaseLostError):
+        store.complete_claimed_run(
+            success_run_id,
+            "stale-worker",
+            1,
+            result=success_result,
+            artifacts=(
+                {
+                    "artifactType": "late_write",
+                    "contentHash": "9" * 64,
+                    "metadata": {"shouldWrite": False},
+                },
+            ),
+        )
+
+    completed = store.complete_claimed_run(
+        success_run_id,
+        "worker-a",
+        1,
+        result=success_result,
+        artifacts=(
+            {
+                "artifactType": "worker_summary",
+                "contentHash": "a" * 64,
+                "metadata": {"rows": 1},
+            },
+        ),
+        completed_at=now,
+    )
+
+    assert completed["status"] == "succeeded"
+    assert completed["resultHash"] == success_result.result_hash
+    assert [artifact["artifactType"] for artifact in completed["artifacts"]] == [
+        "worker_summary"
+    ]
+
+    retry_result = _result(input_hash="b" * 64, result_hash="c" * 64)
+    retry_run_id = _insert_queued_backtest_run(
+        repository,
+        key=f"{key}-retry",
+        now=now,
+        strategy_version_id=strategy_version_id,
+        strategy_hash=strategy_hash,
+        dataset_version_id=dataset_version_id,
+        dataset_hash=dataset_hash,
+        input_hash=retry_result.input_hash,
+        parameter_hash="d" * 64,
+        max_attempts=2,
+    )
+    retry_claim = store.claim_next_run("worker-a")
+    assert retry_claim is not None
+    assert retry_claim["backtestRunId"] == retry_run_id
+    retry_state = store.fail_claimed_run(
+        retry_run_id,
+        "worker-a",
+        int(retry_claim["leaseGeneration"]),
+        error_code="ArithmeticError",
+        message="계산 실패",
+    )
+    assert retry_state["status"] == "retry_wait"
+
+    dead_result = _result(input_hash="1" * 64, result_hash="2" * 64)
+    dead_run_id = _insert_queued_backtest_run(
+        repository,
+        key=f"{key}-dead",
+        now=now,
+        strategy_version_id=strategy_version_id,
+        strategy_hash=strategy_hash,
+        dataset_version_id=dataset_version_id,
+        dataset_hash=dataset_hash,
+        input_hash=dead_result.input_hash,
+        parameter_hash="3" * 64,
+        max_attempts=1,
+    )
+    dead_claim = store.claim_next_run("worker-a")
+    assert dead_claim is not None
+    assert dead_claim["backtestRunId"] == dead_run_id
+    dead_state = store.fail_claimed_run(
+        dead_run_id,
+        "worker-a",
+        int(dead_claim["leaseGeneration"]),
+        error_code="ArithmeticError",
+        message="계산 실패",
+    )
+    assert dead_state["status"] == "dead_letter"
+    assert dead_state["deadLetterReason"] == "ArithmeticError"
+
+
 def _database_url() -> str:
     if os.getenv("GOODMONEYING_LIVE_POSTGRES_TEST") != "1":
         pytest.skip("실제 PostgreSQL 검증에서만 실행한다")
@@ -119,7 +241,7 @@ def _database_url() -> str:
 def _insert_dataset_version(
     repository: PostgresOperationsRepository, key: str, now: datetime
 ) -> tuple[int, str]:
-    content_hash = "d" * 64
+    content_hash = hashlib.sha256(f"dataset-{key}".encode()).hexdigest()
     with repository._connect() as connection:
         row = connection.execute(
             """
@@ -210,11 +332,58 @@ def _insert_strategy_version(
     return int(cast(int, version["id"])), graph_hash
 
 
-def _result(result_hash: str = "f" * 64) -> BacktestResult:
+def _insert_queued_backtest_run(
+    repository: PostgresOperationsRepository,
+    *,
+    key: str,
+    now: datetime,
+    strategy_version_id: int,
+    strategy_hash: str,
+    dataset_version_id: int,
+    dataset_hash: str,
+    input_hash: str,
+    parameter_hash: str,
+    max_attempts: int,
+) -> int:
+    with repository._connect() as connection:
+        row = connection.execute(
+            """
+            INSERT INTO backtest_runs (
+              strategy_version_id, strategy_graph_hash,
+              dataset_version_id, dataset_content_hash,
+              engine_version, status, input_hash, result_hash,
+              parameter_hash, seed, assumptions, idempotency_key,
+              request_id, actor_id, requested_at, reason, request_hash,
+              max_attempts
+            ) VALUES (
+              %s,%s,%s,%s,'backtest-core-v1','queued',%s,NULL,
+              %s,42,'[]'::jsonb,%s,%s,'operator:test',%s,%s,%s,%s
+            ) RETURNING id
+            """,
+            (
+                strategy_version_id,
+                strategy_hash,
+                dataset_version_id,
+                dataset_hash,
+                input_hash,
+                parameter_hash,
+                f"backtest-worker-key-{key}",
+                f"backtest-worker-request-{key}",
+                now,
+                "P4-5 백테스트 worker E2E",
+                "0" * 64,
+                max_attempts,
+            ),
+        ).fetchone()
+        assert row is not None
+        return int(cast(int, row["id"]))
+
+
+def _result(input_hash: str = "e" * 64, result_hash: str = "f" * 64) -> BacktestResult:
     at = datetime(2026, 7, 18, 0, tzinfo=UTC)
     return BacktestResult(
         status="succeeded",
-        input_hash="e" * 64,
+        input_hash=input_hash,
         result_hash=result_hash,
         assumptions=(
             "orderbook_absent_uses_candle_close",

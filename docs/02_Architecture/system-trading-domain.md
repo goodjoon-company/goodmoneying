@@ -196,6 +196,8 @@ P4-2 Backtest Store는 `backtest_runs`에 `input_hash`, `result_hash`, dataset c
 
 P4-4 Backtest Store 목록은 offset 대신 ID 기반 keyset pagination을 사용한다. 첫 페이지에서 `backtest_runs.id`의 최대값을 `ceiling`으로 고정하고, 다음 페이지는 `id <= ceiling AND id < lastId ORDER BY id DESC` 조건으로 읽는다. cursor는 `backtest-run-list-v1` 문맥, `ceiling`, `lastId`, HMAC digest를 담은 불투명 값이며 변조·문맥 불일치는 `BACKTEST_CURSOR_CONTEXT_MISMATCH`로 수렴한다. 목록 API는 `BacktestRunSummary`만 반환하고 체결·equity·metric payload와 artifact 상세는 단건 조회 또는 후속 대용량 pagination 계약으로 분리한다.
 
+P4-5 Backtest Worker는 저장된 `backtest_runs`의 worker queue 상태만 처리한다. `PostgresBacktestStore.claim_next_run()`은 `FOR UPDATE SKIP LOCKED`와 `lease_generation`으로 run 하나를 임대하고, `complete_claimed_run()`과 `fail_claimed_run()`은 owner·generation·미만료 lease를 검증해 늦은 worker의 결과·artifact 쓰기를 차단한다. 실패는 시도 예산이 남으면 `retry_wait`, 소진하면 `dead_letter`로 전이한다. `BacktestWorker`는 claim된 run을 주입된 executor에 전달하고, executor가 반환한 `BacktestResult`와 artifact를 같은 DB transaction 경계 안에서 terminal 결과로 저장한다. P4-5는 실행 생성 API와 strategy/dataset replay materialization을 확장하지 않는다.
+
 ## 7. 실시간 envelope
 
 ```json

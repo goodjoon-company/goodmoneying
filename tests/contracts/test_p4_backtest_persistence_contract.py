@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 MIGRATION = Path("docs/contracts/db/migrations/20260718000200_p4_backtest_runs.sql")
+WORKER_MIGRATION = Path(
+    "docs/contracts/db/migrations/20260718000300_p4_backtest_worker_leases.sql"
+)
 DB_README = Path("docs/contracts/db/README.md")
 DOMAIN = Path("docs/02_Architecture/system-trading-domain.md")
 STORE = Path("packages/shared/goodmoneying_shared/backtest_store.py")
@@ -66,3 +69,38 @@ def test_P4_4_Backtest_Store는_목록_cursor_무결성과_상한을_계약으�
     assert "ceiling" in source
     assert "lastId" in source
     assert "digest" in source
+
+
+def test_P4_5_migration은_백테스트_worker_lease와_retry_계약을_추가한다() -> None:
+    sql = WORKER_MIGRATION.read_text()
+
+    for column in (
+        "attempt_count",
+        "max_attempts",
+        "next_retry_at",
+        "lease_owner",
+        "lease_expires_at",
+        "lease_generation",
+        "last_error_code",
+        "last_error_message",
+        "dead_letter_reason",
+    ):
+        assert column in sql
+
+    assert "retry_wait" in sql
+    assert "dead_letter" in sql
+    assert "backtest_runs_worker_lease_idx" in sql
+    assert "lease_generation >= 0" in sql
+
+
+def test_P4_5_Backtest_Store는_generation_fencing과_retry_wait를_구현한다() -> None:
+    source = STORE.read_text()
+
+    assert "class BacktestLeaseLostError" in source
+    assert "def claim_next_run(" in source
+    assert "def complete_claimed_run(" in source
+    assert "def fail_claimed_run(" in source
+    assert "FOR UPDATE SKIP LOCKED" in source
+    assert "lease_generation=%s" in source
+    assert "lease_expires_at > clock_timestamp()" in source
+    assert "CASE WHEN attempt_count >= max_attempts" in source

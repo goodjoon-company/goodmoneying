@@ -1099,23 +1099,38 @@ CREATE TABLE public.backtest_runs (
     started_at timestamp with time zone,
     finished_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    max_attempts integer DEFAULT 3 NOT NULL,
+    next_retry_at timestamp with time zone,
+    lease_owner text,
+    lease_expires_at timestamp with time zone,
+    lease_generation integer DEFAULT 0 NOT NULL,
+    last_error_code text,
+    last_error_message text,
+    dead_letter_reason text,
     CONSTRAINT backtest_runs_actor_id_check CHECK ((btrim(actor_id) <> ''::text)),
     CONSTRAINT backtest_runs_assumptions_check CHECK ((jsonb_typeof(assumptions) = 'array'::text)),
-    CONSTRAINT backtest_runs_check CHECK (((status <> 'running'::text) OR (started_at IS NOT NULL))),
-    CONSTRAINT backtest_runs_check1 CHECK (((status <> 'queued'::text) OR ((started_at IS NULL) AND (finished_at IS NULL)))),
-    CONSTRAINT backtest_runs_check2 CHECK (((status <> ALL (ARRAY['succeeded'::text, 'failed'::text, 'cancelled'::text])) OR (finished_at IS NOT NULL))),
-    CONSTRAINT backtest_runs_check3 CHECK (((status <> 'succeeded'::text) OR (result_hash IS NOT NULL))),
+    CONSTRAINT backtest_runs_attempt_count_check CHECK ((attempt_count >= 0)),
     CONSTRAINT backtest_runs_dataset_content_hash_check CHECK ((dataset_content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT backtest_runs_dead_letter_reason_check CHECK (((status <> 'dead_letter'::text) OR (btrim(COALESCE(dead_letter_reason, ''::text)) <> ''::text))),
     CONSTRAINT backtest_runs_engine_version_check CHECK ((btrim(engine_version) <> ''::text)),
     CONSTRAINT backtest_runs_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
     CONSTRAINT backtest_runs_input_hash_check CHECK ((input_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT backtest_runs_lease_generation_check CHECK ((lease_generation >= 0)),
+    CONSTRAINT backtest_runs_max_attempts_check CHECK ((max_attempts > 0)),
+    CONSTRAINT backtest_runs_non_running_lease_check CHECK (((status = 'running'::text) OR ((lease_owner IS NULL) AND (lease_expires_at IS NULL)))),
     CONSTRAINT backtest_runs_parameter_hash_check CHECK ((parameter_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT backtest_runs_queued_check CHECK (((status <> 'queued'::text) OR ((started_at IS NULL) AND (finished_at IS NULL) AND (next_retry_at IS NULL)))),
     CONSTRAINT backtest_runs_reason_check CHECK ((btrim(reason) <> ''::text)),
     CONSTRAINT backtest_runs_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT backtest_runs_request_id_check CHECK ((btrim(request_id) <> ''::text)),
     CONSTRAINT backtest_runs_result_hash_check CHECK (((result_hash IS NULL) OR (result_hash ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT backtest_runs_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'succeeded'::text, 'failed'::text, 'cancelled'::text]))),
-    CONSTRAINT backtest_runs_strategy_graph_hash_check CHECK ((strategy_graph_hash ~ '^[0-9a-f]{64}$'::text))
+    CONSTRAINT backtest_runs_retry_wait_check CHECK (((status <> 'retry_wait'::text) OR ((next_retry_at IS NOT NULL) AND (finished_at IS NULL)))),
+    CONSTRAINT backtest_runs_running_lease_check CHECK (((status <> 'running'::text) OR ((started_at IS NOT NULL) AND (finished_at IS NULL) AND (btrim(COALESCE(lease_owner, ''::text)) <> ''::text) AND (lease_expires_at IS NOT NULL)))),
+    CONSTRAINT backtest_runs_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'retry_wait'::text, 'succeeded'::text, 'failed'::text, 'cancelled'::text, 'dead_letter'::text]))),
+    CONSTRAINT backtest_runs_strategy_graph_hash_check CHECK ((strategy_graph_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT backtest_runs_succeeded_result_check CHECK (((status <> 'succeeded'::text) OR (result_hash IS NOT NULL))),
+    CONSTRAINT backtest_runs_terminal_finished_check CHECK (((status <> ALL (ARRAY['succeeded'::text, 'failed'::text, 'cancelled'::text, 'dead_letter'::text])) OR (finished_at IS NOT NULL)))
 );
 
 
@@ -4811,6 +4826,13 @@ CREATE INDEX backtest_runs_strategy_dataset_idx ON public.backtest_runs USING bt
 
 
 --
+-- Name: backtest_runs_worker_lease_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX backtest_runs_worker_lease_idx ON public.backtest_runs USING btree (status, next_retry_at, lease_expires_at, requested_at, id);
+
+
+--
 -- Name: candle_rollup_invalidations_range_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -7188,4 +7210,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260717001200'),
     ('20260717001300'),
     ('20260718000100'),
-    ('20260718000200');
+    ('20260718000200'),
+    ('20260718000300');

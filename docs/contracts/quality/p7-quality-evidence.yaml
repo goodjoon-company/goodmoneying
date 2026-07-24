@@ -23,12 +23,12 @@ gates:
     evidence_path: docs/Test/2026-07-25-P7-실시간-event-반영-검증.md
   - id: accessibility.wcag_2_2_aa
     label: 접근성 WCAG 2.2 AA
-    status: planned
+    status: passed
     command: npm run p7:accessibility
     evidence_path: docs/Test/2026-07-25-P7-WCAG-2-2-AA-검증.md
   - id: accessibility.viewports
     label: 전체 viewport와 입력 대안(viewport and input alternatives)
-    status: planned
+    status: passed
     command: npm run p7:viewports
     evidence_path: docs/Test/2026-07-25-P7-viewports-검증.md
   - id: security.dependencies

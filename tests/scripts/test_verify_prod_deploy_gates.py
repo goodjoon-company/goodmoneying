@@ -15,6 +15,7 @@ def run_gate(
     approved_sha: str = SHA,
     sha: str = SHA,
     gh_mode: str = "ok",
+    check_run_count: int = 1,
 ) -> subprocess.CompletedProcess[str]:
     fake_gh = tmp_path / "gh"
     fake_gh.write_text(
@@ -26,7 +27,7 @@ def run_gate(
         "  *branches/main/protection*) printf 'ok\\n' ;;\n"
         "  *branches/release/protection*) printf 'ok\\n' ;;\n"
         "  *environments/prod*) printf 'ok\\n' ;;\n"
-        "  *check-runs*) printf '1\\n' ;;\n"
+        "  *check-runs*) printf '%s\\n' \"$FAKE_CHECK_RUN_COUNT\" ;;\n"
         "  *) exit 2 ;;\n"
         "esac\n"
     )
@@ -41,6 +42,7 @@ def run_gate(
         "APPROVED_SHA": approved_sha,
         "DEPLOY_ENABLE_SHA": sha,
         "FAKE_GH_MODE": gh_mode,
+        "FAKE_CHECK_RUN_COUNT": str(check_run_count),
     }
     return subprocess.run(
         [str(SCRIPT)], cwd=ROOT, env=env, text=True, capture_output=True, check=False
@@ -58,6 +60,12 @@ def test_gate_script_uses_bash_3_2_compatible_sha_comparison() -> None:
     script = SCRIPT.read_text()
 
     assert ",," not in script
+
+
+def test_gate_accepts_multiple_successful_verify_check_runs(tmp_path: Path) -> None:
+    result = run_gate(tmp_path, check_run_count=2)
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_gate_rejects_invalid_or_different_sha_before_github_calls(tmp_path: Path) -> None:

@@ -39,7 +39,13 @@ require_api_truth() {
   local description="$3"
   local result
   result="$(gh api "${endpoint}" --jq "${expression}")" || fail "${description} GitHub API 증명에 실패했습니다."
-  [[ "${result}" == "true" || "${result}" == "ok" || "${result}" == "1" ]] || fail "${description} 조건이 충족되지 않았습니다."
+  if [[ "${result}" == "true" || "${result}" == "ok" ]]; then
+    return 0
+  fi
+  if [[ "${result}" =~ ^[0-9]+$ && "${result}" -gt 0 ]]; then
+    return 0
+  fi
+  fail "${description} 조건이 충족되지 않았습니다."
 }
 
 protection_expression='(.required_status_checks.strict == true) and (.required_status_checks.contexts | index("verify") != null) and (.enforce_admins.enabled == true) and (.required_pull_request_reviews.required_approving_review_count >= 1) and (.allow_force_pushes.enabled == false) and (.allow_deletions.enabled == false)'

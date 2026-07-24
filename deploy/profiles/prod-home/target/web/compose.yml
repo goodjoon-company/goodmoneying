@@ -5,6 +5,9 @@ services:
     restart: unless-stopped
     env_file:
       - ${GOODMONEYING_WEB_BASE_DIR}/env/web.env
+    environment:
+      GOODMONEYING_API_INTERNAL_URL: http://100.115.38.59:8000
+      GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL: http://100.115.38.59:8001
     volumes:
       - ${GOODMONEYING_WEB_NGINX_CACHE_DIR}:/var/cache/nginx
       - ${GOODMONEYING_WEB_CONFIG_DIR}:/etc/goodmoneying:ro

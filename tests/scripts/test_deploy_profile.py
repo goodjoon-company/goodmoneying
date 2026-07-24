@@ -338,6 +338,16 @@ def test_prod_home_compose_binds_ports_to_tailscale_ips() -> None:
     assert web["web"]["ports"] == ["100.68.208.102:8080:8080"]
 
 
+def test_prod_home_web_compose_forces_cross_host_proxy_urls() -> None:
+    web = services(load_compose("web"))["web"]
+
+    assert web["environment"]["GOODMONEYING_API_INTERNAL_URL"] == "http://100.115.38.59:8000"
+    assert (
+        web["environment"]["GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL"]
+        == "http://100.115.38.59:8001"
+    )
+
+
 def test_prod_home_compose_uses_fixed_ghcr_image_names() -> None:
     app = services(load_compose("app"))
     web = services(load_compose("web"))

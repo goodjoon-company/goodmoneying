@@ -88,6 +88,7 @@ def test_prod_home_profile_has_required_files() -> None:
     assert (profile_dir / "target/infra/stop.sh").is_file()
     assert (profile_dir / "target/app/start.sh").is_file()
     assert (profile_dir / "target/app/migrate.sh").is_file()
+    assert (profile_dir / "target/app/ensure-db-url-sslmode.sh").is_file()
     assert (profile_dir / "target/app/stop.sh").is_file()
     assert (profile_dir / "target/app/start-api.sh").is_file()
     assert (profile_dir / "target/app/stop-api.sh").is_file()
@@ -607,10 +608,68 @@ def test_deploy_script_dry_run_prints_remote_commands() -> None:
     assert "compose.web.yml" in result.stdout
     assert result.stdout.index("ssh Mac-Mini-M4.local") < result.stdout.index("ssh app-server01")
     assert result.stdout.index("ssh app-server01") < result.stdout.index("ssh bmax-ubuntu")
+    app_sslmode = result.stdout.index("./ensure-db-url-sslmode.sh")
     app_pull = result.stdout.index("compose.app.yml' --profile migration pull")
     app_migrate = result.stdout.index("compose.app.yml' --profile migration run --rm migrate")
     app_up = result.stdout.index("compose.app.yml' up -d")
-    assert app_pull < app_migrate < app_up
+    assert app_sslmode < app_pull < app_migrate < app_up
+
+
+def test_app_db_url_sslmode_script_disables_tls_without_printing_secret(
+    tmp_path: Path,
+) -> None:
+    script = ROOT / "deploy/profiles/prod-home/target/app/ensure-db-url-sslmode.sh"
+    app_env = tmp_path / "app.env"
+    app_env.write_text(
+        "GOODMONEYING_DATABASE_URL="
+        "postgresql://goodmoneying:super-secret@100.107.98.22:5432/goodmoneying\n"
+        "GOODMONEYING_OPERATOR_TOKEN=also-secret\n"
+    )
+
+    result = subprocess.run(
+        ["bash", str(script)],
+        check=False,
+        capture_output=True,
+        env={**os.environ, "GOODMONEYING_APP_ENV_FILE": str(app_env)},
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert (
+        "GOODMONEYING_DATABASE_URL="
+        "postgresql://goodmoneying:super-secret@100.107.98.22:5432/goodmoneying"
+        "?sslmode=disable"
+    ) in app_env.read_text()
+    assert "super-secret" not in result.stdout
+    assert "super-secret" not in result.stderr
+
+
+def test_app_db_url_sslmode_script_replaces_required_tls_without_printing_secret(
+    tmp_path: Path,
+) -> None:
+    script = ROOT / "deploy/profiles/prod-home/target/app/ensure-db-url-sslmode.sh"
+    app_env = tmp_path / "app.env"
+    app_env.write_text(
+        "GOODMONEYING_DATABASE_URL="
+        "postgresql://goodmoneying:super-secret@100.107.98.22:5432/goodmoneying"
+        "?connect_timeout=10&sslmode=require\n"
+    )
+
+    result = subprocess.run(
+        ["bash", str(script)],
+        check=False,
+        capture_output=True,
+        env={**os.environ, "GOODMONEYING_APP_ENV_FILE": str(app_env)},
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert (
+        "postgresql://goodmoneying:super-secret@100.107.98.22:5432/goodmoneying"
+        "?connect_timeout=10&sslmode=disable"
+    ) in app_env.read_text()
+    assert "super-secret" not in result.stdout
+    assert "super-secret" not in result.stderr
 
 
 def test_healthcheck_script_dry_run_prints_checks() -> None:

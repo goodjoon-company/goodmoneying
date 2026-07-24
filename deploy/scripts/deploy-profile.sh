@@ -106,6 +106,9 @@ print_remote_compose() {
       "$script_name"
   done
   if [[ "$target_role" == "app" ]]; then
+    printf 'ssh %s "cd '\''%s'\'' && ./ensure-db-url-sslmode.sh"\n' \
+      "$host" \
+      "$base_dir"
     printf 'ssh %s "cd '\''%s'\'' && DOCKER_CONFIG='\''%s'\'' PATH=%s docker compose --env-file '\''%s'\'' -f '\''%s'\'' --profile migration pull"\n' \
       "$host" \
       "$base_dir" \
@@ -172,6 +175,7 @@ run_remote_compose() {
     ssh "$host" "chmod +x '$base_dir/$script_name'"
   done
   if [[ "$target_role" == "app" ]]; then
+    ssh "$host" "cd '$base_dir' && ./ensure-db-url-sslmode.sh"
     ssh "$host" "cd '$base_dir' && DOCKER_CONFIG='$docker_config' PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH docker compose --env-file '$remote_compose_env' -f '$remote_compose_file' --profile migration pull"
     ssh "$host" "cd '$base_dir' && DOCKER_CONFIG='$docker_config' PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH docker compose --env-file '$remote_compose_env' -f '$remote_compose_file' --profile migration run --rm migrate"
   else

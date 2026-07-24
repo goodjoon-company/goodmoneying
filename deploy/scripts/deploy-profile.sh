@@ -6,6 +6,7 @@ PROFILE="${1:-}"
 IMAGE_TAG="${2:-}"
 DRY_RUN="${GOODMONEYING_DEPLOY_DRY_RUN:-0}"
 REMOTE_DOCKER_PATH="/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH"
+APP_SERVICES="api upbit-gateway realtime-collection-worker market-sync-worker backfill-collection-worker candle-aggregation-worker risk-evaluation-worker"
 
 fail() {
   printf '오류: %s\n' "$*" >&2
@@ -106,6 +107,14 @@ print_remote_compose() {
       "$script_name"
   done
   if [[ "$target_role" == "app" ]]; then
+    printf 'ssh %s "cd '\''%s'\'' && DOCKER_CONFIG='\''%s'\'' PATH=%s docker compose --env-file '\''%s'\'' -f '\''%s'\'' stop %s || true"\n' \
+      "$host" \
+      "$base_dir" \
+      "$docker_config" \
+      "$REMOTE_DOCKER_PATH" \
+      "$remote_compose_env" \
+      "$remote_compose_file" \
+      "$APP_SERVICES"
     printf 'ssh %s "cd '\''%s'\'' && ./ensure-db-url-sslmode.sh"\n' \
       "$host" \
       "$base_dir"
@@ -175,6 +184,7 @@ run_remote_compose() {
     ssh "$host" "chmod +x '$base_dir/$script_name'"
   done
   if [[ "$target_role" == "app" ]]; then
+    ssh "$host" "cd '$base_dir' && DOCKER_CONFIG='$docker_config' PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH docker compose --env-file '$remote_compose_env' -f '$remote_compose_file' stop $APP_SERVICES || true"
     ssh "$host" "cd '$base_dir' && ./ensure-db-url-sslmode.sh"
     ssh "$host" "cd '$base_dir' && DOCKER_CONFIG='$docker_config' PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH docker compose --env-file '$remote_compose_env' -f '$remote_compose_file' --profile migration pull"
     ssh "$host" "cd '$base_dir' && DOCKER_CONFIG='$docker_config' PATH=/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:\$PATH docker compose --env-file '$remote_compose_env' -f '$remote_compose_file' --profile migration run --rm migrate"

@@ -33,23 +33,23 @@ gates:
     evidence_path: docs/Test/2026-07-25-P7-viewports-검증.md
   - id: security.dependencies
     label: 의존성 보안(dependency security)
-    status: planned
-    command: uv run python scripts/verify_p7_quality_gates.py --mode readiness --manifest docs/contracts/quality/p7-quality-evidence.yaml
+    status: passed
+    command: npm run p7:dependency-security
     evidence_path: docs/Test/2026-07-25-P7-dependency-보안-검증.md
   - id: security.images
     label: 이미지 보안(image security)
-    status: planned
-    command: docker build -f apps/api/Dockerfile -t goodmoneying-api:p7 .
+    status: passed
+    command: npm run p7:image-security
     evidence_path: docs/Test/2026-07-25-P7-image-보안-검증.md
   - id: security.secrets
     label: 비밀 노출 검사(secret scan)
-    status: planned
-    command: uv run python scripts/verify_p7_quality_gates.py --mode readiness --manifest docs/contracts/quality/p7-quality-evidence.yaml
+    status: passed
+    command: npm run p7:secret-scan
     evidence_path: docs/Test/2026-07-25-P7-secret-검증.md
   - id: security.auth_input
     label: 인증·입력 경계(auth and input boundary)
-    status: planned
-    command: uv run pytest tests/upbit_gateway/test_auth.py tests/upbit_gateway/test_websocket_security.py tests/api -q
+    status: passed
+    command: npm run p7:auth-input
     evidence_path: docs/Test/2026-07-25-P7-auth-input-검증.md
   - id: resilience.load
     label: 부하(load)

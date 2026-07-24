@@ -14,7 +14,11 @@
     "p7:first-shell": "playwright test tests/e2e/p7-performance.spec.ts --grep \"첫 유용 셸\"",
     "p7:realtime-event": "playwright test tests/e2e/p7-performance.spec.ts --grep \"실시간 event\"",
     "p7:accessibility": "playwright test tests/e2e/p7-accessibility.spec.ts --grep \"WCAG\"",
-    "p7:viewports": "playwright test tests/e2e/p7-accessibility.spec.ts --grep \"7개 viewport\""
+    "p7:viewports": "playwright test tests/e2e/p7-accessibility.spec.ts --grep \"7개 viewport\"",
+    "p7:dependency-security": "uv run python scripts/verify_p7_security_gates.py dependencies",
+    "p7:image-security": "uv run python scripts/verify_p7_security_gates.py images",
+    "p7:secret-scan": "uv run python scripts/verify_p7_security_gates.py secrets",
+    "p7:auth-input": "uv run python scripts/verify_p7_security_gates.py auth-input"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",

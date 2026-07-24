@@ -2,7 +2,8 @@ FROM python:3.14-slim
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends tzdata \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  && useradd --create-home --uid 10001 --shell /usr/sbin/nologin app
 
 WORKDIR /app
 COPY pyproject.toml uv.lock* ./
@@ -10,8 +11,11 @@ COPY apps ./apps
 COPY packages ./packages
 COPY docs ./docs
 RUN pip install --no-cache-dir uv \
-  && uv sync --frozen --no-dev
+  && uv sync --frozen --no-dev \
+  && chown -R app:app /app
 
 ENV TZ=UTC
 ENV PYTHONPATH=/app/apps/api:/app/apps/worker:/app/packages/shared
-CMD ["uv", "run", "--no-sync", "python", "-m", "goodmoneying_worker.realtime_collection_worker"]
+ENV PATH=/app/.venv/bin:$PATH
+USER app
+CMD ["python", "-m", "goodmoneying_worker.realtime_collection_worker"]

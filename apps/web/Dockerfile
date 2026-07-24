@@ -17,9 +17,11 @@ FROM nginx:1.29-alpine
 ENV TZ=UTC
 ENV GOODMONEYING_API_INTERNAL_URL=http://api:8000
 ENV GOODMONEYING_UPBIT_GATEWAY_INTERNAL_URL=http://upbit-gateway:8001
-ENV GOODMONEYING_OPERATOR_TOKEN=local-dev-token
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 COPY apps/web/nginx.conf.template /etc/nginx/templates/default.conf.template
 RUN apk add --no-cache tzdata \
-  && command -v envsubst >/dev/null
-EXPOSE 80
+  && command -v envsubst >/dev/null \
+  && touch /run/nginx.pid \
+  && chown -R nginx:nginx /etc/nginx/conf.d /usr/share/nginx/html /var/cache/nginx /run /var/run
+EXPOSE 8080
+USER nginx

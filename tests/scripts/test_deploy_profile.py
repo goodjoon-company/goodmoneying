@@ -108,7 +108,8 @@ def test_worker_container_does_not_hide_startup_failure_in_shell_restart_loop() 
     dockerfile = (ROOT / "apps/worker/Dockerfile").read_text()
 
     assert "while true" not in dockerfile
-    assert 'CMD ["uv", "run", "--no-sync", "python", "-m"' in dockerfile
+    assert 'CMD ["python", "-m"' in dockerfile
+    assert "USER app" in dockerfile
 
 
 def test_prod_home_readme_documents_required_env_files() -> None:
@@ -333,7 +334,7 @@ def test_prod_home_compose_binds_ports_to_tailscale_ips() -> None:
     assert infra["postgres"]["ports"] == ["100.107.98.22:5432:5432"]
     assert app["api"]["ports"] == ["100.115.38.59:8000:8000"]
     assert app["upbit-gateway"]["ports"] == ["100.115.38.59:8001:8001"]
-    assert web["web"]["ports"] == ["100.68.208.102:8080:80"]
+    assert web["web"]["ports"] == ["100.68.208.102:8080:8080"]
 
 
 def test_prod_home_compose_uses_fixed_ghcr_image_names() -> None:

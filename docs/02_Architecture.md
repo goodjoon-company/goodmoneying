@@ -33,7 +33,7 @@
 | 복구 가능한 내부 WebSocket | P2-7 envelope·cursor·heartbeat·gap 적용 중단, P2-8 REST snapshot 복구·slow consumer 신호 구현 | Issue #29 |
 | Action commit SHA pinning·P8 exact-SHA 잠금 | P0 구현, 배포는 계속 차단 | Issue #27, #35 |
 | branch protection·prod 승인·승격 자동화 | 미구현, 배포 차단 | Issue #35 |
-| 운영 DB 백업·복원 rehearsal·forward recovery | P7 quality manifest에는 gate로 정의됨, 실제 리허설은 미구현이라 배포 차단 | Issue #34, #35 |
+| 운영 DB 백업·복원 rehearsal·forward recovery | P7 local migration E2E gate는 통과. 운영 DB 백업·복원은 P8 배포 전 운영 증적으로 확인 | Issue #34, #35 |
 | 전체 worker·row delta·WebSocket·SHA health gate | 미구현, 배포 차단 | Issue #35 |
 | 감사 가능한 global `live_disabled` 권위 상태 | P6-3 구현, 운영자 승인 전 live 차단 | Issue #33 |
 

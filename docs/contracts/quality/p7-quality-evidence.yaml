@@ -68,13 +68,13 @@ gates:
     evidence_path: docs/Test/2026-07-25-P7-chaos-검증.md
   - id: recovery.backup_restore
     label: 복구 리허설(restore rehearsal)
-    status: planned
+    status: passed
     command: tests/e2e/run_dbmate_migration_e2e.sh
     evidence_path: docs/Test/2026-07-25-P7-backup-restore-검증.md
   - id: hygiene.unresolved_artifacts
     label: 미해결 TODO·FIXME·목·수동 절차(unresolved artifacts)
-    status: planned
-    command: uv run python scripts/verify_p7_quality_gates.py --mode readiness --manifest docs/contracts/quality/p7-quality-evidence.yaml
+    status: passed
+    command: uv run python scripts/verify_p7_quality_gates.py --mode release --manifest docs/contracts/quality/p7-quality-evidence.yaml
     evidence_path: docs/Test/2026-07-25-P7-unresolved-artifacts-검증.md
 unresolved_artifacts:
   scan_paths:
@@ -86,7 +86,3 @@ unresolved_artifacts:
     - deploy/scripts
     - packages/shared
     - scripts
-  allowed_paths:
-    - apps/worker/goodmoneying_worker/fixtures.py
-    - apps/web/src/features/upbitExchange/testFixtures.ts
-    - apps/web/src/features/upbitWebSocket/harness.tsx

@@ -54,6 +54,12 @@ def test_gate_accepts_same_protected_release_sha_with_successful_ci(tmp_path: Pa
     assert "운영 배포 사전점검 통과" in result.stdout
 
 
+def test_gate_script_uses_bash_3_2_compatible_sha_comparison() -> None:
+    script = SCRIPT.read_text()
+
+    assert ",," not in script
+
+
 def test_gate_rejects_invalid_or_different_sha_before_github_calls(tmp_path: Path) -> None:
     invalid = run_gate(tmp_path, approved_sha="main")
     different = run_gate(tmp_path, approved_sha="b" * 40)

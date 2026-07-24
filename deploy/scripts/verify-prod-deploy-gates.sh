@@ -6,20 +6,27 @@ fail() {
   exit 1
 }
 
+lower_hex() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
 for name in GH_TOKEN GITHUB_REPOSITORY GITHUB_REF GITHUB_SHA APPROVED_SHA; do
   if [[ -z "${!name:-}" ]]; then
     fail "${name} 환경 변수가 비어 있습니다."
   fi
 done
 
-if [[ -z "${DEPLOY_ENABLE_SHA:-}" || "${DEPLOY_ENABLE_SHA,,}" != "${GITHUB_SHA,,}" ]]; then
+github_sha_lower="$(lower_hex "${GITHUB_SHA}")"
+deploy_enable_sha_lower="$(lower_hex "${DEPLOY_ENABLE_SHA:-}")"
+
+if [[ -z "${DEPLOY_ENABLE_SHA:-}" || "${deploy_enable_sha_lower}" != "${github_sha_lower}" ]]; then
   fail "P8 배포 잠금이 해제되지 않았습니다. GOODMONEYING_PROD_DEPLOY_ENABLE_SHA가 실행 SHA와 일치해야 합니다."
 fi
 
 if [[ ! "${APPROVED_SHA}" =~ ^[0-9a-fA-F]{40}$ ]]; then
   fail "approved_sha는 40자리 commit SHA여야 합니다."
 fi
-if [[ "${APPROVED_SHA,,}" != "${GITHUB_SHA,,}" ]]; then
+if [[ "$(lower_hex "${APPROVED_SHA}")" != "${github_sha_lower}" ]]; then
   fail "approved_sha와 workflow commit SHA가 일치하지 않습니다."
 fi
 if [[ "${GITHUB_REF}" != "refs/heads/release" ]]; then

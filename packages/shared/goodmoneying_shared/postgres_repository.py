@@ -4474,15 +4474,22 @@ class PostgresOperationsRepository:
         return int(_expect_row(row)["count"])
 
     def _realtime_collected_row_count_24h(self) -> int:
+        since = now_kst() - timedelta(hours=24)
         with self._connect() as conn:
+            conn.execute("SET LOCAL max_parallel_workers_per_gather = 0")
             row = conn.execute(
                 """
-                SELECT COALESCE(SUM(tcr.rows_written), 0) AS count
-                FROM target_collection_results tcr
-                JOIN collection_runs cr ON cr.id = tcr.collection_run_id
-                WHERE cr.run_type = 'incremental' AND tcr.created_at >= %s
+                SELECT COALESCE(SUM(tcr_counts.rows_written), 0) AS count
+                FROM collection_runs cr
+                JOIN LATERAL (
+                    SELECT COALESCE(SUM(tcr.rows_written), 0) AS rows_written
+                    FROM target_collection_results tcr
+                    WHERE tcr.collection_run_id = cr.id
+                      AND tcr.created_at >= %s
+                ) tcr_counts ON TRUE
+                WHERE cr.run_type = 'incremental' AND cr.started_at >= %s
                 """,
-                (now_kst() - timedelta(hours=24),),
+                (since, since),
             ).fetchone()
         return int(_expect_row(row)["count"])
 

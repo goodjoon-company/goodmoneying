@@ -18,7 +18,10 @@
     "p7:dependency-security": "uv run python scripts/verify_p7_security_gates.py dependencies",
     "p7:image-security": "uv run python scripts/verify_p7_security_gates.py images",
     "p7:secret-scan": "uv run python scripts/verify_p7_security_gates.py secrets",
-    "p7:auth-input": "uv run python scripts/verify_p7_security_gates.py auth-input"
+    "p7:auth-input": "uv run python scripts/verify_p7_security_gates.py auth-input",
+    "p7:load": "uv run python scripts/p7_load_probe.py --profile local",
+    "p7:soak": "uv run python scripts/p7_soak_probe.py --profile local",
+    "p7:chaos": "uv run python scripts/p7_chaos_probe.py --profile local"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",

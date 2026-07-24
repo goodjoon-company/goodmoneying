@@ -164,7 +164,7 @@ P2-7 내부 분석 WebSocket은 신규 `/v1/realtime/analysis/stream` payload를
 
 ## 11. 배포와 운영
 
-CI는 정적 검사, 전체 단위·계약·통합 테스트, 빈 DB와 기존 DB migration E2E, Playwright, P7 품질 readiness gate, Docker 5종 build를 통과해야 한다. P7 readiness gate는 `docs/contracts/quality/p7-quality-evidence.yaml`의 gate ID·명령·증적 경로와 미해결 산출물 스캔 예외를 검증한다. P7 security gate는 `scripts/verify_p7_security_gates.py`로 dependency audit, 런타임 이미지 비root 실행, secret scan, auth/input 회귀 테스트를 반복 가능하게 검증한다. 런타임 Docker 이미지는 비root `USER`를 선언하며, web Nginx는 컨테이너 내부 비특권 포트 8080에서 실행한다. `release` 승격은 같은 40자리 SHA의 성공한 `main` CI run, required status check, 직접·force push 금지, prod required reviewer와 release branch 제한을 API로 확인한 경우에만 허용한다. 확인 실패는 이미지 build 전에 배포를 중단한다. 외부 Action은 commit SHA로 고정하고 workflow는 최소 권한을 사용한다.
+CI는 정적 검사, 전체 단위·계약·통합 테스트, 빈 DB와 기존 DB migration E2E, Playwright, P7 품질 readiness gate, Docker 5종 build를 통과해야 한다. P7 readiness gate는 `docs/contracts/quality/p7-quality-evidence.yaml`의 gate ID·명령·증적 경로와 미해결 산출물 스캔 예외를 검증한다. P7 security gate는 `scripts/verify_p7_security_gates.py`로 dependency audit, 런타임 이미지 비root 실행, secret scan, auth/input 회귀 테스트를 반복 가능하게 검증한다. P7 resilience gate는 `scripts/p7_resilience_probe.py`와 wrapper script로 load, soak, chaos local probe를 실행한다. 런타임 Docker 이미지는 비root `USER`를 선언하며, web Nginx는 컨테이너 내부 비특권 포트 8080에서 실행한다. `release` 승격은 같은 40자리 SHA의 성공한 `main` CI run, required status check, 직접·force push 금지, prod required reviewer와 release branch 제한을 API로 확인한 경우에만 허용한다. 확인 실패는 이미지 build 전에 배포를 중단한다. 외부 Action은 commit SHA로 고정하고 workflow는 최소 권한을 사용한다.
 
 스키마·데이터 변경 전에 PostgreSQL volume과 장애 영역이 분리된 위치에 시점 백업을 만들고 원본 DB·SHA, 완료 시각, 크기, checksum, 보관 기한, 복원 명령을 증적으로 남긴다. 최근 복원 rehearsal이 승인된 RPO·RTO를 만족하지 못하면 migration을 실행하지 않는다.
 

@@ -53,18 +53,18 @@ gates:
     evidence_path: docs/Test/2026-07-25-P7-auth-input-검증.md
   - id: resilience.load
     label: 부하(load)
-    status: planned
-    command: uv run python scripts/p7_load_probe.py --profile local
+    status: passed
+    command: npm run p7:load
     evidence_path: docs/Test/2026-07-25-P7-load-검증.md
   - id: resilience.soak
     label: 장시간(soak)
-    status: planned
-    command: uv run python scripts/p7_soak_probe.py --profile local
+    status: passed
+    command: npm run p7:soak
     evidence_path: docs/Test/2026-07-25-P7-soak-검증.md
   - id: resilience.chaos
     label: 장애 주입(chaos)
-    status: planned
-    command: uv run python scripts/p7_chaos_probe.py --profile local
+    status: passed
+    command: npm run p7:chaos
     evidence_path: docs/Test/2026-07-25-P7-chaos-검증.md
   - id: recovery.backup_restore
     label: 복구 리허설(restore rehearsal)

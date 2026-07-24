@@ -2,7 +2,7 @@
 
 상태: 승인됨(Accepted)
 
-최종 갱신: 2026-07-18
+최종 갱신: 2026-07-25
 
 ## 1. 목적과 경계
 
@@ -28,14 +28,14 @@
 | 영역 | 2026-07-18 기준 | 구현 추적 |
 |---|---|---|
 | 기존 수집·백필·집계, API·Web, Upbit Lab·Gateway | 부분 구현 | Issue #28, #29, #33 |
-| 전략·백테스트·포트폴리오·봇·주문·위험 | P3 전략, P4 백테스트, P5-1 portfolio/bot/order intent/risk DB 계약, P5-2 portfolio API/Store, P5-3 paper execution queue/worker, P5-4 risk evaluation worker와 kill switch 차단, P5-5 paper/shadow 내부 reconciliation 증적과 projection 갱신, P5-6 Bot Workshop UI, P6-2 order-test 증적과 live 주문 identifier 분리 구현 | Issue #30~#33 |
+| 전략·백테스트·포트폴리오·봇·주문·위험 | P3 전략, P4 백테스트, P5 paper·shadow 운영 경계, P6 live-ready 주문 guardrail·identifier·capability·myOrder·REST 대사·outbox·live binding·rehearsal·live reconciliation 적용 경계 구현. 실제 제출·취소·private 연결은 비활성 | Issue #30~#33 |
 | 내부 UTC와 5가지 품질 상태 | 미구현 | Issue #28 |
 | 복구 가능한 내부 WebSocket | P2-7 envelope·cursor·heartbeat·gap 적용 중단, P2-8 REST snapshot 복구·slow consumer 신호 구현 | Issue #29 |
 | Action commit SHA pinning·P8 exact-SHA 잠금 | P0 구현, 배포는 계속 차단 | Issue #27, #35 |
 | branch protection·prod 승인·승격 자동화 | 미구현, 배포 차단 | Issue #35 |
-| 운영 DB 백업·복원 rehearsal·forward recovery | 미구현, 배포 차단 | Issue #34, #35 |
+| 운영 DB 백업·복원 rehearsal·forward recovery | P7 quality manifest에는 gate로 정의됨, 실제 리허설은 미구현이라 배포 차단 | Issue #34, #35 |
 | 전체 worker·row delta·WebSocket·SHA health gate | 미구현, 배포 차단 | Issue #35 |
-| 감사 가능한 global `live_disabled` 권위 상태 | 미구현, live 차단 | Issue #32, #33 |
+| 감사 가능한 global `live_disabled` 권위 상태 | P6-3 구현, 운영자 승인 전 live 차단 | Issue #33 |
 
 ## 4. 목표 시스템 구성
 
@@ -164,7 +164,7 @@ P2-7 내부 분석 WebSocket은 신규 `/v1/realtime/analysis/stream` payload를
 
 ## 11. 배포와 운영
 
-CI는 정적 검사, 전체 단위·계약·통합 테스트, 빈 DB와 기존 DB migration E2E, Playwright, Docker 5종 build를 통과해야 한다. `release` 승격은 같은 40자리 SHA의 성공한 `main` CI run, required status check, 직접·force push 금지, prod required reviewer와 release branch 제한을 API로 확인한 경우에만 허용한다. 확인 실패는 이미지 build 전에 배포를 중단한다. 외부 Action은 commit SHA로 고정하고 workflow는 최소 권한을 사용한다.
+CI는 정적 검사, 전체 단위·계약·통합 테스트, 빈 DB와 기존 DB migration E2E, Playwright, P7 품질 readiness gate, Docker 5종 build를 통과해야 한다. P7 readiness gate는 `docs/contracts/quality/p7-quality-evidence.yaml`의 gate ID·명령·증적 경로와 미해결 산출물 스캔 예외를 검증한다. `release` 승격은 같은 40자리 SHA의 성공한 `main` CI run, required status check, 직접·force push 금지, prod required reviewer와 release branch 제한을 API로 확인한 경우에만 허용한다. 확인 실패는 이미지 build 전에 배포를 중단한다. 외부 Action은 commit SHA로 고정하고 workflow는 최소 권한을 사용한다.
 
 스키마·데이터 변경 전에 PostgreSQL volume과 장애 영역이 분리된 위치에 시점 백업을 만들고 원본 DB·SHA, 완료 시각, 크기, checksum, 보관 기한, 복원 명령을 증적으로 남긴다. 최근 복원 rehearsal이 승인된 RPO·RTO를 만족하지 못하면 migration을 실행하지 않는다.
 

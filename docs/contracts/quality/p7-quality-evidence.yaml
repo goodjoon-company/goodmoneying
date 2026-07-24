@@ -1,0 +1,92 @@
+version: 1
+issue: 34
+milestone: P7
+purpose: >
+  P7 성능·접근성·보안·부하·장시간·장애·백업 복구 품질의 단일 증적
+  매니페스트(Quality Evidence Manifest)다. readiness 모드는 반복 가능한 gate 정의와
+  명시적 예외만 검증하고, release 모드는 모든 gate의 실제 통과 증적을 요구한다.
+gates:
+  - id: performance.web_vitals
+    label: 성능(Web Vitals)
+    status: planned
+    command: npm run p7:web-vitals
+    evidence_path: docs/Test/2026-07-25-P7-성능-Web-Vitals-검증.md
+  - id: performance.first_shell
+    label: 첫 유용 셸(first useful shell)
+    status: planned
+    command: npm run p7:first-shell
+    evidence_path: docs/Test/2026-07-25-P7-첫-유용-셸-검증.md
+  - id: performance.realtime_event
+    label: 실시간 event 반영(realtime event latency)
+    status: planned
+    command: npm run p7:realtime-event
+    evidence_path: docs/Test/2026-07-25-P7-실시간-event-반영-검증.md
+  - id: accessibility.wcag_2_2_aa
+    label: 접근성 WCAG 2.2 AA
+    status: planned
+    command: npm run p7:accessibility
+    evidence_path: docs/Test/2026-07-25-P7-WCAG-2-2-AA-검증.md
+  - id: accessibility.viewports
+    label: 전체 viewport와 입력 대안(viewport and input alternatives)
+    status: planned
+    command: npm run p7:viewports
+    evidence_path: docs/Test/2026-07-25-P7-viewports-검증.md
+  - id: security.dependencies
+    label: 의존성 보안(dependency security)
+    status: planned
+    command: uv run python scripts/verify_p7_quality_gates.py --mode readiness --manifest docs/contracts/quality/p7-quality-evidence.yaml
+    evidence_path: docs/Test/2026-07-25-P7-dependency-보안-검증.md
+  - id: security.images
+    label: 이미지 보안(image security)
+    status: planned
+    command: docker build -f apps/api/Dockerfile -t goodmoneying-api:p7 .
+    evidence_path: docs/Test/2026-07-25-P7-image-보안-검증.md
+  - id: security.secrets
+    label: 비밀 노출 검사(secret scan)
+    status: planned
+    command: uv run python scripts/verify_p7_quality_gates.py --mode readiness --manifest docs/contracts/quality/p7-quality-evidence.yaml
+    evidence_path: docs/Test/2026-07-25-P7-secret-검증.md
+  - id: security.auth_input
+    label: 인증·입력 경계(auth and input boundary)
+    status: planned
+    command: uv run pytest tests/upbit_gateway/test_auth.py tests/upbit_gateway/test_websocket_security.py tests/api -q
+    evidence_path: docs/Test/2026-07-25-P7-auth-input-검증.md
+  - id: resilience.load
+    label: 부하(load)
+    status: planned
+    command: uv run python scripts/p7_load_probe.py --profile local
+    evidence_path: docs/Test/2026-07-25-P7-load-검증.md
+  - id: resilience.soak
+    label: 장시간(soak)
+    status: planned
+    command: uv run python scripts/p7_soak_probe.py --profile local
+    evidence_path: docs/Test/2026-07-25-P7-soak-검증.md
+  - id: resilience.chaos
+    label: 장애 주입(chaos)
+    status: planned
+    command: uv run python scripts/p7_chaos_probe.py --profile local
+    evidence_path: docs/Test/2026-07-25-P7-chaos-검증.md
+  - id: recovery.backup_restore
+    label: 복구 리허설(restore rehearsal)
+    status: planned
+    command: tests/e2e/run_dbmate_migration_e2e.sh
+    evidence_path: docs/Test/2026-07-25-P7-backup-restore-검증.md
+  - id: hygiene.unresolved_artifacts
+    label: 미해결 TODO·FIXME·목·수동 절차(unresolved artifacts)
+    status: planned
+    command: uv run python scripts/verify_p7_quality_gates.py --mode readiness --manifest docs/contracts/quality/p7-quality-evidence.yaml
+    evidence_path: docs/Test/2026-07-25-P7-unresolved-artifacts-검증.md
+unresolved_artifacts:
+  scan_paths:
+    - .github/workflows
+    - apps/api
+    - apps/upbit_gateway
+    - apps/web/src
+    - apps/worker
+    - deploy/scripts
+    - packages/shared
+    - scripts
+  allowed_paths:
+    - apps/worker/goodmoneying_worker/fixtures.py
+    - apps/web/src/features/upbitExchange/testFixtures.ts
+    - apps/web/src/features/upbitWebSocket/harness.tsx

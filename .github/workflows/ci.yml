@@ -60,6 +60,9 @@ jobs:
       - name: Browser E2E
         run: npm run e2e
 
+      - name: P7 quality readiness gate
+        run: uv run python scripts/verify_p7_quality_gates.py --mode readiness --manifest docs/contracts/quality/p7-quality-evidence.yaml
+
       - name: Docker build api
         run: docker build -f apps/api/Dockerfile -t goodmoneying-api:ci .
 

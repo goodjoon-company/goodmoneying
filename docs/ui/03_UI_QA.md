@@ -26,6 +26,10 @@
 
 각 route는 checked viewport, overflow·collision, keyboard·screen reader, contrast, console·network, performance 결과와 수정 내역을 `docs/Test/`에 기록한다. 측정하지 못한 항목은 통과로 표시하지 않고 이유와 후속 Issue를 남긴다.
 
+## P7 품질 gate 연결
+
+P7부터 성능·접근성·보안·부하·장시간·장애·백업 복구 증적은 `docs/contracts/quality/p7-quality-evidence.yaml`에 gate별 명령과 `docs/Test/` 증적 경로를 먼저 등록한다. CI는 readiness mode로 gate 누락과 미해결 산출물 스캔을 확인하고, P7 완료 전 release mode에서 모든 gate가 `passed` 상태와 실제 증적 파일을 가져야 한다.
+
 ## P2-6 Data Lab 확인 결과
 
 - 자동 E2E viewport: 1440, 1280, 1024, 900, 760, 390, 360

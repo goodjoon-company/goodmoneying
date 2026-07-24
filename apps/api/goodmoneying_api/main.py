@@ -151,7 +151,7 @@ def create_repository_from_environment() -> OperationsRepository:
     if os.getenv("GOODMONEYING_DEMO_DATA") == "1":
         raise RuntimeError(
             "fixture demo repository는 더 이상 런타임에서 사용할 수 없다. "
-            "E2E는 test-only HTTP mock helper 또는 명시적으로 주입한 테스트 저장소를 사용해야 한다."
+            "E2E는 test-only HTTP helper 또는 명시적으로 주입한 테스트 저장소를 사용해야 한다."
         )
     if database_url and database_url.startswith(("postgres://", "postgresql://")):
         repository = PostgresOperationsRepository(database_url)

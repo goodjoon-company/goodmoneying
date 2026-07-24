@@ -34,6 +34,10 @@ class ReconciliationIdempotencyConflictError(ValueError):
     """같은 대사 run key가 다른 관측 payload를 가리킨다."""
 
 
+class LiveReconciliationApplicationIdempotencyConflictError(ValueError):
+    """같은 live 대사 적용 멱등 키가 다른 증적 payload를 가리킨다."""
+
+
 class PostgresPortfolioBotStore:
     def __init__(self, repository: object) -> None:
         self._repository = repository
@@ -62,6 +66,22 @@ class PostgresPortfolioBotStore:
 
     def reconcile_exchange_order(self, **arguments: object) -> Row:
         return reconcile_exchange_order(self._repository, **arguments)
+
+    def record_upbit_live_reconciliation_application(
+        self, **arguments: object
+    ) -> Row:
+        return record_upbit_live_reconciliation_application(
+            self._repository,
+            **arguments,
+        )
+
+    def apply_upbit_live_reconciliation_application(
+        self, **arguments: object
+    ) -> Row:
+        return apply_upbit_live_reconciliation_application(
+            self._repository,
+            **arguments,
+        )
 
 
 def create_portfolio(
@@ -457,175 +477,478 @@ def reconcile_exchange_order(
     )
     connector = _connector(repository)
     with connector() as connection:
-        _lock_reconciliation_run_key(connection, order_id, key)
-        existing_run = connection.execute(
-            """
-            SELECT *
-            FROM reconciliation_runs
-            WHERE exchange_order_id=%s AND run_key=%s
-            """,
-            (order_id, key),
-        ).fetchone()
-        if existing_run is not None:
-            if existing_run["request_hash"] != request_hash:
-                raise ReconciliationIdempotencyConflictError(
-                    "같은 대사 run key가 다른 관측 payload로 재사용됐다."
-                )
-            return _reconciliation_run_summary(cast(Row, existing_run))
-        order = _locked_exchange_order_for_reconciliation(connection, order_id)
-        if observed in {"outcome_unknown", "missing"} and not fill_payloads:
-            run = _insert_reconciliation_run(
-                connection,
-                exchange_order_id=order_id,
-                run_key=key,
-                status="outcome_unknown",
-                observed_status=observed,
-                observed_fill_count=0,
-                request_hash=request_hash,
-                actor_id=actor,
-                reason=run_reason,
-                evidence=evidence_payload,
+        return _reconcile_exchange_order_in_connection(
+            connection,
+            order_id=order_id,
+            key=key,
+            actor=actor,
+            run_reason=run_reason,
+            observed=observed,
+            fill_payloads=fill_payloads,
+            evidence_payload=evidence_payload,
+            request_hash=request_hash,
+        )
+
+
+def _reconcile_exchange_order_in_connection(
+    connection: Any,
+    *,
+    order_id: int,
+    key: str,
+    actor: str,
+    run_reason: str,
+    observed: str,
+    fill_payloads: list[Row],
+    evidence_payload: Mapping[str, object],
+    request_hash: str,
+) -> Row:
+    _lock_reconciliation_run_key(connection, order_id, key)
+    existing_run = connection.execute(
+        """
+        SELECT *
+        FROM reconciliation_runs
+        WHERE exchange_order_id=%s AND run_key=%s
+        """,
+        (order_id, key),
+    ).fetchone()
+    if existing_run is not None:
+        if existing_run["request_hash"] != request_hash:
+            raise ReconciliationIdempotencyConflictError(
+                "같은 대사 run key가 다른 관측 payload로 재사용됐다."
             )
-            connection.execute(
-                """
-                UPDATE exchange_orders
-                SET status='outcome_unknown',
-                    reconciled_at=clock_timestamp()
-                WHERE id=%s
-                """,
-                (order_id,),
-            )
-            connection.execute(
-                "UPDATE order_intents SET status='outcome_unknown' WHERE id=%s",
-                (order["order_intent_id"],),
-            )
-            _insert_reconciliation_risk_event(
-                connection,
-                order,
-                run,
-                event_type="outcome_unknown",
-                severity="warning",
-                message="대사 결과 주문 결과가 불명확하다.",
-            )
-            return _reconciliation_run_summary(run)
-        mismatch: Row | None = None
-        existing_fills = {
-            int(cast(int, row["fill_sequence"])): cast(Row, row)
-            for row in connection.execute(
-                """
-                SELECT *
-                FROM order_fills
-                WHERE exchange_order_id=%s
-                FOR UPDATE
-                """,
-                (order_id,),
-            ).fetchall()
-        }
-        seen_sequences: set[int] = set()
-        for fill in fill_payloads:
-            fill_sequence = int(cast(int, fill["fillSequence"]))
-            if fill_sequence in seen_sequences:
-                mismatch = {"fillSequence": fill_sequence, "reason": "duplicate observed fill"}
-                break
-            seen_sequences.add(fill_sequence)
-            existing_fill = existing_fills.get(fill_sequence)
-            if existing_fill is not None:
-                if not _same_fill(existing_fill, fill):
-                    mismatch = {
-                        "fillSequence": fill_sequence,
-                        "existingFillId": int(cast(int, existing_fill["id"])),
-                    }
-                    break
-                continue
-            if any(existing_sequence > fill_sequence for existing_sequence in existing_fills):
-                mismatch = {
-                    "fillSequence": fill_sequence,
-                    "reason": "late fill before existing higher sequence",
-                }
-                break
-        if mismatch is not None:
-            run = _insert_reconciliation_run(
-                connection,
-                exchange_order_id=order_id,
-                run_key=key,
-                status="mismatch",
-                observed_status=observed,
-                observed_fill_count=len(fill_payloads),
-                request_hash=request_hash,
-                actor_id=actor,
-                reason=run_reason,
-                evidence={**evidence_payload, "mismatch": mismatch},
-            )
-            _insert_reconciliation_risk_event(
-                connection,
-                order,
-                run,
-                event_type="reconciliation_mismatch",
-                severity="critical",
-                message="대사 결과 기존 체결과 관측 체결이 불일치한다.",
-            )
-            return _reconciliation_run_summary(run)
-        inserted_fill_count = 0
-        for fill in fill_payloads:
-            if int(cast(int, fill["fillSequence"])) in existing_fills:
-                continue
-            inserted = connection.execute(
-                """
-                INSERT INTO order_fills (
-                  exchange_order_id, fill_sequence, fill_source, side, filled_quantity,
-                  fill_price, fee_paid, occurred_at, knowledge_at, evidence
-                ) VALUES (%s,%s,'reconciliation',%s,%s,%s,%s,%s,%s,%s)
-                RETURNING id
-                """,
-                (
-                    order_id,
-                    fill["fillSequence"],
-                    fill["side"],
-                    fill["filledQuantity"],
-                    fill["fillPrice"],
-                    fill["feePaid"],
-                    fill["occurredAt"],
-                    fill["knowledgeAt"],
-                    Jsonb(fill["evidence"]),
-                ),
-            ).fetchone()
-            assert inserted is not None
-            _upsert_position_projection(
-                connection,
-                portfolio_id=int(cast(int, order["portfolio_id"])),
-                instrument_id=int(cast(int, order["instrument_id"])),
-                side=str(fill["side"]),
-                quantity=cast(Decimal, fill["filledQuantity"]),
-                price=cast(Decimal, fill["fillPrice"]),
-                source_fill_id=int(cast(int, inserted["id"])),
-            )
-            inserted_fill_count += 1
+        return _reconciliation_run_summary(cast(Row, existing_run))
+    order = _locked_exchange_order_for_reconciliation(connection, order_id)
+    if observed in {"outcome_unknown", "missing"} and not fill_payloads:
+        run = _insert_reconciliation_run(
+            connection,
+            exchange_order_id=order_id,
+            run_key=key,
+            status="outcome_unknown",
+            observed_status=observed,
+            observed_fill_count=0,
+            request_hash=request_hash,
+            actor_id=actor,
+            reason=run_reason,
+            evidence=evidence_payload,
+        )
         connection.execute(
             """
             UPDATE exchange_orders
-            SET status='reconciled',
+            SET status='outcome_unknown',
                 reconciled_at=clock_timestamp()
             WHERE id=%s
             """,
             (order_id,),
         )
         connection.execute(
-            "UPDATE order_intents SET status='reconciled' WHERE id=%s",
+            "UPDATE order_intents SET status='outcome_unknown' WHERE id=%s",
             (order["order_intent_id"],),
         )
+        _insert_reconciliation_risk_event(
+            connection,
+            order,
+            run,
+            event_type="outcome_unknown",
+            severity="warning",
+            message="대사 결과 주문 결과가 불명확하다.",
+        )
+        return _reconciliation_run_summary(run)
+    mismatch: Row | None = None
+    existing_fills = {
+        int(cast(int, row["fill_sequence"])): cast(Row, row)
+        for row in connection.execute(
+            """
+            SELECT *
+            FROM order_fills
+            WHERE exchange_order_id=%s
+            FOR UPDATE
+            """,
+            (order_id,),
+        ).fetchall()
+    }
+    seen_sequences: set[int] = set()
+    for fill in fill_payloads:
+        fill_sequence = int(cast(int, fill["fillSequence"]))
+        if fill_sequence in seen_sequences:
+            mismatch = {"fillSequence": fill_sequence, "reason": "duplicate observed fill"}
+            break
+        seen_sequences.add(fill_sequence)
+        existing_fill = existing_fills.get(fill_sequence)
+        if existing_fill is not None:
+            if not _same_fill(existing_fill, fill):
+                mismatch = {
+                    "fillSequence": fill_sequence,
+                    "existingFillId": int(cast(int, existing_fill["id"])),
+                }
+                break
+            continue
+        if any(existing_sequence > fill_sequence for existing_sequence in existing_fills):
+            mismatch = {
+                "fillSequence": fill_sequence,
+                "reason": "late fill before existing higher sequence",
+            }
+            break
+    if mismatch is not None:
         run = _insert_reconciliation_run(
             connection,
             exchange_order_id=order_id,
             run_key=key,
-            status="succeeded",
+            status="mismatch",
             observed_status=observed,
             observed_fill_count=len(fill_payloads),
             request_hash=request_hash,
             actor_id=actor,
             reason=run_reason,
-            evidence={**evidence_payload, "insertedFillCount": inserted_fill_count},
+            evidence={**evidence_payload, "mismatch": mismatch},
+        )
+        _insert_reconciliation_risk_event(
+            connection,
+            order,
+            run,
+            event_type="reconciliation_mismatch",
+            severity="critical",
+            message="대사 결과 기존 체결과 관측 체결이 불일치한다.",
         )
         return _reconciliation_run_summary(run)
+    inserted_fill_count = 0
+    for fill in fill_payloads:
+        if int(cast(int, fill["fillSequence"])) in existing_fills:
+            continue
+        inserted = connection.execute(
+            """
+            INSERT INTO order_fills (
+              exchange_order_id, fill_sequence, fill_source, side, filled_quantity,
+              fill_price, fee_paid, occurred_at, knowledge_at, evidence
+            ) VALUES (%s,%s,'reconciliation',%s,%s,%s,%s,%s,%s,%s)
+            RETURNING id
+            """,
+            (
+                order_id,
+                fill["fillSequence"],
+                fill["side"],
+                fill["filledQuantity"],
+                fill["fillPrice"],
+                fill["feePaid"],
+                fill["occurredAt"],
+                fill["knowledgeAt"],
+                Jsonb(fill["evidence"]),
+            ),
+        ).fetchone()
+        assert inserted is not None
+        _upsert_position_projection(
+            connection,
+            portfolio_id=int(cast(int, order["portfolio_id"])),
+            instrument_id=int(cast(int, order["instrument_id"])),
+            side=str(fill["side"]),
+            quantity=cast(Decimal, fill["filledQuantity"]),
+            price=cast(Decimal, fill["fillPrice"]),
+            source_fill_id=int(cast(int, inserted["id"])),
+        )
+        inserted_fill_count += 1
+    connection.execute(
+        """
+        UPDATE exchange_orders
+        SET status='reconciled',
+            reconciled_at=clock_timestamp()
+        WHERE id=%s
+        """,
+        (order_id,),
+    )
+    connection.execute(
+        "UPDATE order_intents SET status='reconciled' WHERE id=%s",
+        (order["order_intent_id"],),
+    )
+    run = _insert_reconciliation_run(
+        connection,
+        exchange_order_id=order_id,
+        run_key=key,
+        status="succeeded",
+        observed_status=observed,
+        observed_fill_count=len(fill_payloads),
+        request_hash=request_hash,
+        actor_id=actor,
+        reason=run_reason,
+        evidence={**evidence_payload, "insertedFillCount": inserted_fill_count},
+    )
+    return _reconciliation_run_summary(run)
+
+
+def record_upbit_live_reconciliation_application(
+    repository: object,
+    *,
+    exchange_account_id: object,
+    order_intent_id: object,
+    exchange_order_id: object,
+    live_exchange_order_binding_id: object,
+    reconciliation_run_id: object,
+    source: object,
+    source_endpoint: object,
+    observed_upbit_order_uuid: object,
+    observed_upbit_identifier: object,
+    observed_state: object,
+    applied_at: object,
+    can_resubmit: object,
+    actual_request_sent: object,
+    actual_order_cancel_sent: object,
+    evidence: object,
+    actor_id: object,
+    reason: object,
+    request_id: object,
+    idempotency_key: object,
+) -> Row:
+    payload = _live_reconciliation_application_payload(
+        exchange_account_id=exchange_account_id,
+        order_intent_id=order_intent_id,
+        exchange_order_id=exchange_order_id,
+        live_exchange_order_binding_id=live_exchange_order_binding_id,
+        reconciliation_run_id=reconciliation_run_id,
+        source=source,
+        source_endpoint=source_endpoint,
+        observed_upbit_order_uuid=observed_upbit_order_uuid,
+        observed_upbit_identifier=observed_upbit_identifier,
+        observed_state=observed_state,
+        applied_at=applied_at,
+        can_resubmit=can_resubmit,
+        actual_request_sent=actual_request_sent,
+        actual_order_cancel_sent=actual_order_cancel_sent,
+        evidence=evidence,
+        actor_id=actor_id,
+        reason=reason,
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+    )
+    connector = _connector(repository)
+    with connector() as connection:
+        return _record_upbit_live_reconciliation_application_in_connection(
+            connection,
+            payload=payload,
+        )
+
+
+def apply_upbit_live_reconciliation_application(
+    repository: object,
+    *,
+    exchange_account_id: object,
+    order_intent_id: object,
+    exchange_order_id: object,
+    live_exchange_order_binding_id: object,
+    run_key: object,
+    observed_status: object,
+    fills: object,
+    reconciliation_evidence: object,
+    source: object,
+    source_endpoint: object,
+    observed_upbit_order_uuid: object,
+    observed_upbit_identifier: object,
+    observed_state: object,
+    applied_at: object,
+    can_resubmit: object,
+    actual_request_sent: object,
+    actual_order_cancel_sent: object,
+    application_evidence: object,
+    actor_id: object,
+    reason: object,
+    request_id: object,
+    idempotency_key: object,
+) -> Row:
+    order_id = int(cast(int, exchange_order_id))
+    key = _non_blank(run_key, "runKey")
+    actor = _non_blank(actor_id, "actorId")
+    run_reason = _non_blank(reason, "reason")
+    observed = _observed_reconciliation_status(observed_status)
+    fill_payloads = sorted(
+        [
+            _reconciliation_fill_payload(fill)
+            for fill in cast(list[Mapping[str, object]], fills or [])
+        ],
+        key=lambda fill: int(cast(int, fill["fillSequence"])),
+    )
+    reconciliation_evidence_payload = dict(
+        cast(Mapping[str, object], reconciliation_evidence or {})
+    )
+    reconciliation_request_hash = _hash(
+        {
+            "exchangeOrderId": order_id,
+            "runKey": key,
+            "observedStatus": observed,
+            "fills": [_reconciliation_fill_hash_payload(fill) for fill in fill_payloads],
+            "evidence": reconciliation_evidence_payload,
+        }
+    )
+    connector = _connector(repository)
+    with connector() as connection:
+        run = _reconcile_exchange_order_in_connection(
+            connection,
+            order_id=order_id,
+            key=key,
+            actor=actor,
+            run_reason=run_reason,
+            observed=observed,
+            fill_payloads=fill_payloads,
+            evidence_payload=reconciliation_evidence_payload,
+            request_hash=reconciliation_request_hash,
+        )
+        if run["status"] != "succeeded":
+            return {
+                **run,
+                "liveReconciliationApplicationId": None,
+                "liveReconciliationApplicationStatus": "not_recorded",
+            }
+        application_payload = _live_reconciliation_application_payload(
+            exchange_account_id=exchange_account_id,
+            order_intent_id=order_intent_id,
+            exchange_order_id=exchange_order_id,
+            live_exchange_order_binding_id=live_exchange_order_binding_id,
+            reconciliation_run_id=run["reconciliationRunId"],
+            source=source,
+            source_endpoint=source_endpoint,
+            observed_upbit_order_uuid=observed_upbit_order_uuid,
+            observed_upbit_identifier=observed_upbit_identifier,
+            observed_state=observed_state,
+            applied_at=applied_at,
+            can_resubmit=can_resubmit,
+            actual_request_sent=actual_request_sent,
+            actual_order_cancel_sent=actual_order_cancel_sent,
+            evidence=application_evidence,
+            actor_id=actor_id,
+            reason=reason,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+        application = _record_upbit_live_reconciliation_application_in_connection(
+            connection,
+            payload=application_payload,
+        )
+        return {
+            **run,
+            "liveReconciliationApplicationId": application[
+                "liveReconciliationApplicationId"
+            ],
+            "liveReconciliationApplicationStatus": application["status"],
+        }
+
+
+def _live_reconciliation_application_payload(
+    *,
+    exchange_account_id: object,
+    order_intent_id: object,
+    exchange_order_id: object,
+    live_exchange_order_binding_id: object,
+    reconciliation_run_id: object,
+    source: object,
+    source_endpoint: object,
+    observed_upbit_order_uuid: object,
+    observed_upbit_identifier: object,
+    observed_state: object,
+    applied_at: object,
+    can_resubmit: object,
+    actual_request_sent: object,
+    actual_order_cancel_sent: object,
+    evidence: object,
+    actor_id: object,
+    reason: object,
+    request_id: object,
+    idempotency_key: object,
+) -> Row:
+    return {
+        "exchangeAccountId": int(cast(int, exchange_account_id)),
+        "orderIntentId": int(cast(int, order_intent_id)),
+        "exchangeOrderId": int(cast(int, exchange_order_id)),
+        "liveExchangeOrderBindingId": int(cast(int, live_exchange_order_binding_id)),
+        "reconciliationRunId": int(cast(int, reconciliation_run_id)),
+        "source": _non_blank(source, "source"),
+        "sourceEndpoint": _non_blank(source_endpoint, "sourceEndpoint"),
+        "observedUpbitOrderUuid": _non_blank(
+            observed_upbit_order_uuid,
+            "observedUpbitOrderUuid",
+        ),
+        "observedUpbitIdentifier": _non_blank(
+            observed_upbit_identifier,
+            "observedUpbitIdentifier",
+        ),
+        "observedState": _non_blank(observed_state, "observedState"),
+        "appliedAt": _datetime(applied_at, "appliedAt").isoformat(),
+        "canResubmit": _must_be_false(can_resubmit, "canResubmit"),
+        "actualRequestSent": _must_be_false(
+            actual_request_sent,
+            "actualRequestSent",
+        ),
+        "actualOrderCancelSent": _must_be_false(
+            actual_order_cancel_sent,
+            "actualOrderCancelSent",
+        ),
+        "evidence": dict(cast(Mapping[str, object], evidence or {})),
+        "actorId": _non_blank(actor_id, "actorId"),
+        "reason": _non_blank(reason, "reason"),
+        "requestId": _non_blank(request_id, "requestId"),
+        "idempotencyKey": _non_blank(idempotency_key, "idempotencyKey"),
+    }
+
+
+def _record_upbit_live_reconciliation_application_in_connection(
+    connection: Any,
+    *,
+    payload: Mapping[str, object],
+) -> Row:
+    request_hash = _hash(payload)
+    connection.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (
+            "upbit-live-reconciliation-application:"
+            f"{payload['exchangeOrderId']}:{payload['idempotencyKey']}",
+        ),
+    )
+    existing_application = connection.execute(
+        """
+        SELECT *
+        FROM upbit_live_reconciliation_applications
+        WHERE idempotency_key=%s
+        """,
+        (payload["idempotencyKey"],),
+    ).fetchone()
+    if existing_application is not None:
+        if existing_application["request_hash"] != request_hash:
+            raise LiveReconciliationApplicationIdempotencyConflictError(
+                "같은 live 대사 적용 멱등 키가 다른 payload로 재사용됐다."
+            )
+        return _live_reconciliation_application_summary(
+            cast(Row, existing_application)
+        )
+    application = connection.execute(
+        """
+        INSERT INTO upbit_live_reconciliation_applications (
+          exchange_account_id, order_intent_id, exchange_order_id,
+          live_exchange_order_binding_id, reconciliation_run_id,
+          source, source_endpoint, observed_upbit_order_uuid,
+          observed_upbit_identifier, observed_state, applied_at,
+          request_hash, can_resubmit, actual_request_sent,
+          actual_order_cancel_sent, evidence, actor_id, reason,
+          request_id, idempotency_key
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,false,false,false,%s,%s,%s,%s,%s)
+        RETURNING *
+        """,
+        (
+            payload["exchangeAccountId"],
+            payload["orderIntentId"],
+            payload["exchangeOrderId"],
+            payload["liveExchangeOrderBindingId"],
+            payload["reconciliationRunId"],
+            payload["source"],
+            payload["sourceEndpoint"],
+            payload["observedUpbitOrderUuid"],
+            payload["observedUpbitIdentifier"],
+            payload["observedState"],
+            datetime.fromisoformat(str(payload["appliedAt"])),
+            request_hash,
+            Jsonb(payload["evidence"]),
+            payload["actorId"],
+            payload["reason"],
+            payload["requestId"],
+            payload["idempotencyKey"],
+        ),
+    ).fetchone()
+    assert application is not None
+    return _live_reconciliation_application_summary(cast(Row, application))
 
 
 def _locked_claimed_paper_job(
@@ -663,13 +986,13 @@ def _locked_exchange_order_for_reconciliation(connection: Any, exchange_order_id
         JOIN bot_instances instance ON instance.id = intent.bot_instance_id
         JOIN bot_definitions definition ON definition.id = instance.bot_definition_id
         WHERE exchange.id=%s
-          AND exchange.execution_mode IN ('paper','shadow')
+          AND exchange.execution_mode IN ('paper','shadow','live')
         FOR UPDATE OF exchange, intent
         """,
         (exchange_order_id,),
     ).fetchone()
     if row is None:
-        raise PaperExecutionLeaseLostError("대사 가능한 paper/shadow exchange order가 없다.")
+        raise PaperExecutionLeaseLostError("대사 가능한 exchange order가 없다.")
     return cast(Row, row)
 
 
@@ -1212,6 +1535,26 @@ def _reconciliation_run_summary(row: Mapping[str, object]) -> Row:
     }
 
 
+def _live_reconciliation_application_summary(row: Mapping[str, object]) -> Row:
+    return {
+        "liveReconciliationApplicationId": int(cast(int, row["id"])),
+        "exchangeAccountId": int(cast(int, row["exchange_account_id"])),
+        "orderIntentId": int(cast(int, row["order_intent_id"])),
+        "exchangeOrderId": int(cast(int, row["exchange_order_id"])),
+        "liveExchangeOrderBindingId": int(
+            cast(int, row["live_exchange_order_binding_id"])
+        ),
+        "reconciliationRunId": int(cast(int, row["reconciliation_run_id"])),
+        "status": "recorded",
+        "source": row["source"],
+        "sourceEndpoint": row["source_endpoint"],
+        "observedState": row["observed_state"],
+        "observedUpbitOrderUuid": row["observed_upbit_order_uuid"],
+        "observedUpbitIdentifier": row["observed_upbit_identifier"],
+        "appliedAt": row["applied_at"],
+    }
+
+
 def _observed_reconciliation_status(value: object) -> str:
     status = _non_blank(value, "observedStatus")
     allowed = {"done", "cancel", "prevented", "rejected", "outcome_unknown", "missing"}
@@ -1339,6 +1682,12 @@ def _datetime(value: object, field: str) -> datetime:
     if not isinstance(value, datetime):
         raise ValueError(f"{field}는 UTC datetime이어야 한다.")
     return value
+
+
+def _must_be_false(value: object, field: str) -> bool:
+    if value is not False:
+        raise ValueError(f"{field}는 false여야 한다.")
+    return False
 
 
 def _decimal(value: object, field: str) -> Decimal:

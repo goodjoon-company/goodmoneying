@@ -428,7 +428,8 @@ host_port="${host_binding##*:}"
       tests/e2e/test_live_postgres_p6_rest_reconciliation.py \
       tests/e2e/test_live_postgres_p6_safe_order_outbox.py \
       tests/e2e/test_live_postgres_p6_live_order_binding.py \
-      tests/e2e/test_live_postgres_p6_order_submit_rehearsal.py
+      tests/e2e/test_live_postgres_p6_order_submit_rehearsal.py \
+      tests/e2e/test_live_postgres_p6_live_reconciliation.py
 )
 GOODMONEYING_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${host_port}/${POSTGRES_DB}?sslmode=disable" \
 GOODMONEYING_ENV_FILE="$SNAPSHOT_DIR/missing.env" \

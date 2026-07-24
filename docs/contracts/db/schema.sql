@@ -737,6 +737,19 @@ $$;
 
 
 --
+-- Name: reject_p6_live_reconciliation_application_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_p6_live_reconciliation_application_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'Upbit live reconciliation application is append-only';
+END;
+$$;
+
+
+--
 -- Name: reject_p6_order_submit_rehearsal_mutation(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1266,6 +1279,120 @@ BEGIN
       )
   ) THEN
     RAISE EXCEPTION 'order-test response identifier cannot be reserved as a live order identifier';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: validate_p6_live_reconciliation_application(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.validate_p6_live_reconciliation_application() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  binding RECORD;
+  exchange_order RECORD;
+  run RECORD;
+BEGIN
+  SELECT exchange_account_id, order_intent_id, exchange_order_id,
+         upbit_order_uuid, upbit_identifier
+    INTO binding
+  FROM upbit_live_exchange_order_bindings
+  WHERE id = NEW.live_exchange_order_binding_id;
+
+  IF binding IS NULL THEN
+    RAISE EXCEPTION 'live reconciliation application references missing binding';
+  END IF;
+
+  IF binding.exchange_account_id <> NEW.exchange_account_id
+     OR binding.order_intent_id <> NEW.order_intent_id
+     OR binding.exchange_order_id <> NEW.exchange_order_id
+     OR binding.upbit_order_uuid <> NEW.observed_upbit_order_uuid
+     OR binding.upbit_identifier <> NEW.observed_upbit_identifier THEN
+    RAISE EXCEPTION 'live reconciliation application requires matching binding';
+  END IF;
+
+  SELECT order_intent_id, execution_mode, simulated_order_key
+    INTO exchange_order
+  FROM exchange_orders
+  WHERE id = NEW.exchange_order_id;
+
+  IF exchange_order IS NULL THEN
+    RAISE EXCEPTION 'live reconciliation application references missing exchange order';
+  END IF;
+
+  IF exchange_order.execution_mode <> 'live'
+     OR exchange_order.order_intent_id <> NEW.order_intent_id
+     OR exchange_order.simulated_order_key <> NEW.observed_upbit_identifier THEN
+    RAISE EXCEPTION 'live reconciliation application requires live exchange order';
+  END IF;
+
+  SELECT exchange_order_id, status, observed_status, evidence
+    INTO run
+  FROM reconciliation_runs
+  WHERE id = NEW.reconciliation_run_id;
+
+  IF run IS NULL THEN
+    RAISE EXCEPTION 'live reconciliation application references missing reconciliation run';
+  END IF;
+
+  IF run.exchange_order_id <> NEW.exchange_order_id THEN
+    RAISE EXCEPTION 'live reconciliation application run does not match exchange order';
+  END IF;
+
+  IF run.status <> 'succeeded'
+     OR run.observed_status <> NEW.observed_state THEN
+    RAISE EXCEPTION 'live reconciliation application requires succeeded reconciliation run';
+  END IF;
+
+  IF run.evidence->>'source' <> 'upbit-rest-order-snapshot'
+     OR run.evidence->>'sourceEndpoint' <> NEW.source_endpoint
+     OR run.evidence->>'orderUuid' <> NEW.observed_upbit_order_uuid
+     OR run.evidence->>'identifier' <> NEW.observed_upbit_identifier
+     OR run.evidence->>'state' <> NEW.observed_state
+     OR run.evidence->>'canResubmit' <> 'false' THEN
+    RAISE EXCEPTION 'live reconciliation application snapshot must match reconciliation evidence';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: validate_p6_live_reconciliation_run_has_application(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.validate_p6_live_reconciliation_run_has_application() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  exchange_order RECORD;
+BEGIN
+  IF NEW.status <> 'succeeded' THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT execution_mode
+    INTO exchange_order
+  FROM exchange_orders
+  WHERE id = NEW.exchange_order_id;
+
+  IF exchange_order IS NULL OR exchange_order.execution_mode <> 'live' THEN
+    RETURN NEW;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM upbit_live_reconciliation_applications application
+    WHERE application.reconciliation_run_id = NEW.id
+      AND application.exchange_order_id = NEW.exchange_order_id
+  ) THEN
+    RAISE EXCEPTION 'live succeeded reconciliation run requires live application';
   END IF;
 
   RETURN NEW;
@@ -5142,6 +5269,71 @@ ALTER SEQUENCE public.upbit_live_exchange_order_bindings_id_seq OWNED BY public.
 
 
 --
+-- Name: upbit_live_reconciliation_applications; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.upbit_live_reconciliation_applications (
+    id bigint NOT NULL,
+    exchange_account_id bigint NOT NULL,
+    order_intent_id bigint NOT NULL,
+    exchange_order_id bigint NOT NULL,
+    live_exchange_order_binding_id bigint NOT NULL,
+    reconciliation_run_id bigint NOT NULL,
+    source text NOT NULL,
+    source_endpoint text NOT NULL,
+    observed_upbit_order_uuid text NOT NULL,
+    observed_upbit_identifier text NOT NULL,
+    observed_state text NOT NULL,
+    applied_at timestamp with time zone NOT NULL,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    request_hash text NOT NULL,
+    can_resubmit boolean DEFAULT false NOT NULL,
+    actual_request_sent boolean DEFAULT false NOT NULL,
+    actual_order_cancel_sent boolean DEFAULT false NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    actor_id text NOT NULL,
+    reason text NOT NULL,
+    request_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    CONSTRAINT upbit_live_reconciliation_appli_observed_upbit_identifier_check CHECK ((observed_upbit_identifier ~ '^gm1_[a-z2-7]{52}$'::text)),
+    CONSTRAINT upbit_live_reconciliation_appli_observed_upbit_order_uuid_check CHECK ((observed_upbit_order_uuid ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)),
+    CONSTRAINT upbit_live_reconciliation_applic_actual_order_cancel_sent_check CHECK ((actual_order_cancel_sent IS FALSE)),
+    CONSTRAINT upbit_live_reconciliation_application_actual_request_sent_check CHECK ((actual_request_sent IS FALSE)),
+    CONSTRAINT upbit_live_reconciliation_applications_actor_id_check CHECK ((actor_id <> ''::text)),
+    CONSTRAINT upbit_live_reconciliation_applications_actor_id_check1 CHECK ((actor_id !~* '^(ci|ai|service):'::text)),
+    CONSTRAINT upbit_live_reconciliation_applications_can_resubmit_check CHECK ((can_resubmit IS FALSE)),
+    CONSTRAINT upbit_live_reconciliation_applications_check CHECK ((applied_at <= recorded_at)),
+    CONSTRAINT upbit_live_reconciliation_applications_evidence_check CHECK ((jsonb_typeof(evidence) = 'object'::text)),
+    CONSTRAINT upbit_live_reconciliation_applications_idempotency_key_check CHECK ((idempotency_key <> ''::text)),
+    CONSTRAINT upbit_live_reconciliation_applications_observed_state_check CHECK ((observed_state = ANY (ARRAY['done'::text, 'cancel'::text, 'prevented'::text, 'rejected'::text]))),
+    CONSTRAINT upbit_live_reconciliation_applications_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT upbit_live_reconciliation_applications_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT upbit_live_reconciliation_applications_request_id_check CHECK ((request_id <> ''::text)),
+    CONSTRAINT upbit_live_reconciliation_applications_source_check CHECK ((source = 'rest_order_snapshot'::text)),
+    CONSTRAINT upbit_live_reconciliation_applications_source_endpoint_check CHECK ((source_endpoint = ANY (ARRAY['GET /v1/order'::text, 'GET /v1/orders/open'::text, 'GET /v1/orders/closed'::text, 'GET /v1/orders/uuids'::text])))
+);
+
+
+--
+-- Name: upbit_live_reconciliation_applications_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.upbit_live_reconciliation_applications_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: upbit_live_reconciliation_applications_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.upbit_live_reconciliation_applications_id_seq OWNED BY public.upbit_live_reconciliation_applications.id;
+
+
+--
 -- Name: upbit_order_identifier_reservations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5495,6 +5687,13 @@ ALTER TABLE ONLY public.upbit_api_key_permission_attestations ALTER COLUMN id SE
 --
 
 ALTER TABLE ONLY public.upbit_live_exchange_order_bindings ALTER COLUMN id SET DEFAULT nextval('public.upbit_live_exchange_order_bindings_id_seq'::regclass);
+
+
+--
+-- Name: upbit_live_reconciliation_applications id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_reconciliation_applications ALTER COLUMN id SET DEFAULT nextval('public.upbit_live_reconciliation_applications_id_seq'::regclass);
 
 
 --
@@ -7078,6 +7277,38 @@ ALTER TABLE ONLY public.upbit_live_exchange_order_bindings
 
 
 --
+-- Name: upbit_live_reconciliation_applications upbit_live_reconciliation_application_reconciliation_run_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_reconciliation_applications
+    ADD CONSTRAINT upbit_live_reconciliation_application_reconciliation_run_id_key UNIQUE (reconciliation_run_id);
+
+
+--
+-- Name: upbit_live_reconciliation_applications upbit_live_reconciliation_applications_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_reconciliation_applications
+    ADD CONSTRAINT upbit_live_reconciliation_applications_idempotency_key_key UNIQUE (idempotency_key);
+
+
+--
+-- Name: upbit_live_reconciliation_applications upbit_live_reconciliation_applications_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_reconciliation_applications
+    ADD CONSTRAINT upbit_live_reconciliation_applications_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: upbit_live_reconciliation_applications upbit_live_reconciliation_applications_request_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_reconciliation_applications
+    ADD CONSTRAINT upbit_live_reconciliation_applications_request_id_key UNIQUE (request_id);
+
+
+--
 -- Name: upbit_order_identifier_reservations upbit_order_identifier_reserv_exchange_account_id_identifie_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -7599,6 +7830,13 @@ CREATE INDEX upbit_api_key_permission_attestations_latest_idx ON public.upbit_ap
 --
 
 CREATE INDEX upbit_live_exchange_order_bindings_observed_idx ON public.upbit_live_exchange_order_bindings USING btree (source, observed_at, id);
+
+
+--
+-- Name: upbit_live_reconciliation_applications_observed_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX upbit_live_reconciliation_applications_observed_idx ON public.upbit_live_reconciliation_applications USING btree (source_endpoint, observed_state, applied_at, id);
 
 
 --
@@ -8155,6 +8393,13 @@ CREATE TRIGGER reconciliation_runs_append_only_update BEFORE UPDATE ON public.re
 
 
 --
+-- Name: reconciliation_runs reconciliation_runs_require_live_application; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE CONSTRAINT TRIGGER reconciliation_runs_require_live_application AFTER INSERT ON public.reconciliation_runs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.validate_p6_live_reconciliation_run_has_application();
+
+
+--
 -- Name: risk_events risk_events_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -8320,6 +8565,27 @@ CREATE TRIGGER upbit_live_exchange_order_bindings_mark_submitted AFTER INSERT ON
 --
 
 CREATE TRIGGER upbit_live_exchange_order_bindings_validate BEFORE INSERT ON public.upbit_live_exchange_order_bindings FOR EACH ROW EXECUTE FUNCTION public.validate_p6_live_exchange_order_binding();
+
+
+--
+-- Name: upbit_live_reconciliation_applications upbit_live_reconciliation_applications_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_live_reconciliation_applications_append_only_delete BEFORE DELETE ON public.upbit_live_reconciliation_applications FOR EACH ROW EXECUTE FUNCTION public.reject_p6_live_reconciliation_application_mutation();
+
+
+--
+-- Name: upbit_live_reconciliation_applications upbit_live_reconciliation_applications_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_live_reconciliation_applications_append_only_update BEFORE UPDATE ON public.upbit_live_reconciliation_applications FOR EACH ROW EXECUTE FUNCTION public.reject_p6_live_reconciliation_application_mutation();
+
+
+--
+-- Name: upbit_live_reconciliation_applications upbit_live_reconciliation_applications_validate; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_live_reconciliation_applications_validate BEFORE INSERT ON public.upbit_live_reconciliation_applications FOR EACH ROW EXECUTE FUNCTION public.validate_p6_live_reconciliation_application();
 
 
 --
@@ -10114,6 +10380,46 @@ ALTER TABLE ONLY public.upbit_live_exchange_order_bindings
 
 
 --
+-- Name: upbit_live_reconciliation_applications upbit_live_reconciliation_app_live_exchange_order_binding__fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_reconciliation_applications
+    ADD CONSTRAINT upbit_live_reconciliation_app_live_exchange_order_binding__fkey FOREIGN KEY (live_exchange_order_binding_id) REFERENCES public.upbit_live_exchange_order_bindings(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_live_reconciliation_applications upbit_live_reconciliation_applicatio_reconciliation_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_reconciliation_applications
+    ADD CONSTRAINT upbit_live_reconciliation_applicatio_reconciliation_run_id_fkey FOREIGN KEY (reconciliation_run_id) REFERENCES public.reconciliation_runs(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_live_reconciliation_applications upbit_live_reconciliation_applications_exchange_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_reconciliation_applications
+    ADD CONSTRAINT upbit_live_reconciliation_applications_exchange_account_id_fkey FOREIGN KEY (exchange_account_id) REFERENCES public.exchange_accounts(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_live_reconciliation_applications upbit_live_reconciliation_applications_exchange_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_reconciliation_applications
+    ADD CONSTRAINT upbit_live_reconciliation_applications_exchange_order_id_fkey FOREIGN KEY (exchange_order_id) REFERENCES public.exchange_orders(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_live_reconciliation_applications upbit_live_reconciliation_applications_order_intent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_live_reconciliation_applications
+    ADD CONSTRAINT upbit_live_reconciliation_applications_order_intent_id_fkey FOREIGN KEY (order_intent_id) REFERENCES public.order_intents(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: upbit_order_identifier_reservations upbit_order_identifier_reservations_exchange_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -10239,4 +10545,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260718001000'),
     ('20260718001100'),
     ('20260718001200'),
-    ('20260718001300');
+    ('20260718001300'),
+    ('20260718001400');

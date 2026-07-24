@@ -1,7 +1,7 @@
 # Upbit REST 주문 snapshot 대사 계약
 
-상태: P6-5 구현 기준
-검증일: 2026-07-18
+상태: P6-9 구현 기준
+검증일: 2026-07-25
 
 ## 목적
 
@@ -32,8 +32,9 @@ SMP(Self-Match Prevention) 필드인 `smp_type`, `prevented_volume`, `prevented_
 - `done|cancel|prevented|rejected` terminal snapshot만 기존 `reconcile_exchange_order()` 입력으로 변환한다.
 - `wait|watch|trade` 진행 중 snapshot은 `observe_only`로 처리하고 기존 terminal 대사 원장을 변경하지 않는다.
 - 모든 plan은 `can_resubmit=false`다. snapshot 확인 후에도 동일 주문을 재주문하지 않는다.
-- 이번 P6-5 adapter는 실제 REST 호출, private WebSocket 연결, 주문 제출, 주문 취소, live execution mode 확장을 포함하지 않는다.
-- 기존 원장 적용은 `paper|shadow` exchange order 경계를 유지한다. live 주문 UUID/identifier와 `exchange_orders`의 영구 결합은 후속 안전 주문 adapter 계약에서 다룬다.
+- 이 adapter는 실제 REST 호출, private WebSocket 연결, 주문 제출, 주문 취소를 포함하지 않는다.
+- `paper|shadow` 주문은 이 계약만으로 기존 대사 원장에 적용한다.
+- `live` 주문은 [Upbit live 주문 대사 적용 계약](live-order-reconciliation.md)에 따라 `upbit_live_exchange_order_bindings`와 REST snapshot UUID·identifier가 일치할 때만 적용 증적을 남긴다.
 
 ## 멱등성과 증거
 

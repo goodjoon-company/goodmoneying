@@ -13,6 +13,7 @@
 | 공식 Upbit 기능·파라미터·안전 정책 | `upbit/upbit-api-catalog.yaml` | 업비트 API 작업대, 게이트웨이 | `tests/contracts/test_upbit_gateway_contract.py` |
 | Upbit myOrder 내부 대사 입력 | `upbit/myorder-event.md` | P6 private 주문 대사 parser | `tests/contracts/test_p6_myorder_contract.py` |
 | Upbit REST 주문 snapshot 대사 | `upbit/rest-order-reconciliation.md` | P6 REST snapshot 대사 adapter | `tests/contracts/test_p6_rest_reconciliation_contract.py` |
+| Upbit live 주문 대사 적용 | `upbit/live-order-reconciliation.md` | P6 live 주문 대사 adapter | `tests/contracts/test_p6_live_reconciliation_contract.py` |
 | 백테스트 엔진 결정론·체결 가정 | `backtest-engine.md` | 공유 도메인 엔진, Backtest Worker, Backtest Lab | `tests/contracts/test_p4_backtest_contract.py` |
 | 코인 분석 실시간 메시지 | `api/realtime-analysis-websocket.schema.json` | 분석 화면, 운영 서버 | API·프론트엔드 메시지 테스트 |
 | 시스템 관리 실시간 메시지 | `api/realtime-system-management-websocket.md` | 시스템 관리 화면, 운영 서버 | API·프론트엔드 메시지 테스트 |

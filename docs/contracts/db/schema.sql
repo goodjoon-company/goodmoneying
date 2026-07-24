@@ -737,6 +737,19 @@ $$;
 
 
 --
+-- Name: reject_p6_order_submit_rehearsal_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_p6_order_submit_rehearsal_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'Upbit order submit rehearsal is append-only';
+END;
+$$;
+
+
+--
 -- Name: reject_p6_order_test_run_mutation(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1253,6 +1266,104 @@ BEGIN
       )
   ) THEN
     RAISE EXCEPTION 'order-test response identifier cannot be reserved as a live order identifier';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: validate_p6_order_submit_rehearsal(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.validate_p6_order_submit_rehearsal() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  live_identifier RECORD;
+  outbox RECORD;
+  permission RECORD;
+BEGIN
+  SELECT exchange_account_id, order_intent_id, identifier, status
+    INTO live_identifier
+  FROM live_order_identifiers
+  WHERE id = NEW.live_order_identifier_id;
+
+  IF live_identifier IS NULL THEN
+    RAISE EXCEPTION 'order submit rehearsal references missing live identifier';
+  END IF;
+
+  SELECT exchange_account_id, order_intent_id, live_order_identifier_id,
+         permission_attestation_id, status, request_payload, request_hash
+    INTO outbox
+  FROM upbit_order_outbox
+  WHERE id = NEW.upbit_order_outbox_id;
+
+  IF outbox IS NULL THEN
+    RAISE EXCEPTION 'order submit rehearsal references missing outbox';
+  END IF;
+
+  IF live_identifier.exchange_account_id <> NEW.exchange_account_id
+     OR live_identifier.order_intent_id <> NEW.order_intent_id THEN
+    RAISE EXCEPTION 'order submit rehearsal live identifier account or intent mismatch';
+  END IF;
+
+  IF outbox.exchange_account_id <> NEW.exchange_account_id
+     OR outbox.order_intent_id <> NEW.order_intent_id
+     OR outbox.live_order_identifier_id <> NEW.live_order_identifier_id THEN
+    RAISE EXCEPTION 'order submit rehearsal outbox account or intent mismatch';
+  END IF;
+
+  IF NEW.request_payload <> outbox.request_payload
+     OR NEW.request_hash <> outbox.request_hash THEN
+    RAISE EXCEPTION 'order submit rehearsal request mismatch';
+  END IF;
+
+  IF NEW.request_payload->>'identifier' <> live_identifier.identifier THEN
+    RAISE EXCEPTION 'order submit rehearsal identifier must match live identifier';
+  END IF;
+
+  IF NEW.rehearsal_status = 'passed' THEN
+    IF outbox.status <> 'ready' THEN
+      RAISE EXCEPTION 'order submit rehearsal requires ready outbox';
+    END IF;
+
+    IF live_identifier.status <> 'reserved' THEN
+      RAISE EXCEPTION 'order submit rehearsal requires reserved live identifier';
+    END IF;
+
+    IF NEW.permission_attestation_id IS NULL
+       OR outbox.permission_attestation_id IS NULL
+       OR NEW.permission_attestation_id <> outbox.permission_attestation_id THEN
+      RAISE EXCEPTION 'order submit rehearsal permission attestation mismatch';
+    END IF;
+
+    SELECT exchange_account_id, expires_at
+      INTO permission
+    FROM upbit_api_key_permission_attestations
+    WHERE id = NEW.permission_attestation_id;
+
+    IF permission IS NULL THEN
+      RAISE EXCEPTION 'order submit rehearsal references missing permission attestation';
+    END IF;
+
+    IF permission.exchange_account_id <> NEW.exchange_account_id THEN
+      RAISE EXCEPTION 'order submit rehearsal permission account mismatch';
+    END IF;
+
+    IF permission.expires_at <= clock_timestamp() THEN
+      RAISE EXCEPTION 'order submit rehearsal permission expired';
+    END IF;
+
+    IF EXISTS (
+      SELECT 1
+      FROM upbit_live_exchange_order_bindings binding
+      WHERE binding.upbit_order_outbox_id = NEW.upbit_order_outbox_id
+         OR binding.live_order_identifier_id = NEW.live_order_identifier_id
+    ) THEN
+      RAISE EXCEPTION 'order submit rehearsal cannot follow live binding';
+    END IF;
   END IF;
 
   RETURN NEW;
@@ -5121,6 +5232,82 @@ ALTER SEQUENCE public.upbit_order_outbox_id_seq OWNED BY public.upbit_order_outb
 
 
 --
+-- Name: upbit_order_submit_rehearsals; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.upbit_order_submit_rehearsals (
+    id bigint NOT NULL,
+    exchange_account_id bigint NOT NULL,
+    order_intent_id bigint NOT NULL,
+    live_order_identifier_id bigint NOT NULL,
+    upbit_order_outbox_id bigint NOT NULL,
+    permission_attestation_id bigint,
+    rehearsal_status text NOT NULL,
+    blocked_reason text,
+    endpoint_key text NOT NULL,
+    http_method text NOT NULL,
+    request_path text NOT NULL,
+    request_payload jsonb NOT NULL,
+    request_hash text NOT NULL,
+    query_string text NOT NULL,
+    query_hash text NOT NULL,
+    actual_request_sent boolean DEFAULT false NOT NULL,
+    would_submit boolean DEFAULT false NOT NULL,
+    can_bind_response boolean DEFAULT false NOT NULL,
+    response_uuid text,
+    response_identifier text,
+    rehearsed_at timestamp with time zone NOT NULL,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    actor_id text NOT NULL,
+    reason text NOT NULL,
+    request_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    CONSTRAINT upbit_order_submit_rehearsals_actor_id_check CHECK ((actor_id <> ''::text)),
+    CONSTRAINT upbit_order_submit_rehearsals_actor_id_check1 CHECK ((actor_id !~* '^(ci|ai|service):'::text)),
+    CONSTRAINT upbit_order_submit_rehearsals_actual_request_sent_check CHECK ((actual_request_sent IS FALSE)),
+    CONSTRAINT upbit_order_submit_rehearsals_blocked_reason_check CHECK (((blocked_reason IS NULL) OR (blocked_reason = ANY (ARRAY['outbox_not_ready'::text, 'permission_expired'::text, 'live_identifier_not_reserved'::text, 'already_bound'::text, 'request_mismatch'::text, 'policy_blocked'::text])))),
+    CONSTRAINT upbit_order_submit_rehearsals_can_bind_response_check CHECK ((can_bind_response IS FALSE)),
+    CONSTRAINT upbit_order_submit_rehearsals_check CHECK ((((rehearsal_status = 'passed'::text) AND (blocked_reason IS NULL)) OR ((rehearsal_status = 'blocked'::text) AND (blocked_reason IS NOT NULL)))),
+    CONSTRAINT upbit_order_submit_rehearsals_check1 CHECK ((rehearsed_at <= recorded_at)),
+    CONSTRAINT upbit_order_submit_rehearsals_endpoint_key_check CHECK ((endpoint_key = 'rest.new-order'::text)),
+    CONSTRAINT upbit_order_submit_rehearsals_evidence_check CHECK ((jsonb_typeof(evidence) = 'object'::text)),
+    CONSTRAINT upbit_order_submit_rehearsals_http_method_check CHECK ((http_method = 'POST'::text)),
+    CONSTRAINT upbit_order_submit_rehearsals_idempotency_key_check CHECK ((idempotency_key <> ''::text)),
+    CONSTRAINT upbit_order_submit_rehearsals_query_hash_check CHECK ((query_hash ~ '^[0-9a-f]{128}$'::text)),
+    CONSTRAINT upbit_order_submit_rehearsals_query_string_check CHECK ((query_string <> ''::text)),
+    CONSTRAINT upbit_order_submit_rehearsals_reason_check CHECK ((reason <> ''::text)),
+    CONSTRAINT upbit_order_submit_rehearsals_rehearsal_status_check CHECK ((rehearsal_status = ANY (ARRAY['passed'::text, 'blocked'::text]))),
+    CONSTRAINT upbit_order_submit_rehearsals_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT upbit_order_submit_rehearsals_request_id_check CHECK ((request_id <> ''::text)),
+    CONSTRAINT upbit_order_submit_rehearsals_request_path_check CHECK ((request_path = '/v1/orders'::text)),
+    CONSTRAINT upbit_order_submit_rehearsals_request_payload_check CHECK ((jsonb_typeof(request_payload) = 'object'::text)),
+    CONSTRAINT upbit_order_submit_rehearsals_response_identifier_check CHECK ((response_identifier IS NULL)),
+    CONSTRAINT upbit_order_submit_rehearsals_response_uuid_check CHECK ((response_uuid IS NULL)),
+    CONSTRAINT upbit_order_submit_rehearsals_would_submit_check CHECK ((would_submit IS FALSE))
+);
+
+
+--
+-- Name: upbit_order_submit_rehearsals_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.upbit_order_submit_rehearsals_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: upbit_order_submit_rehearsals_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.upbit_order_submit_rehearsals_id_seq OWNED BY public.upbit_order_submit_rehearsals.id;
+
+
+--
 -- Name: upbit_order_test_runs; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5322,6 +5509,13 @@ ALTER TABLE ONLY public.upbit_order_identifier_reservations ALTER COLUMN id SET 
 --
 
 ALTER TABLE ONLY public.upbit_order_outbox ALTER COLUMN id SET DEFAULT nextval('public.upbit_order_outbox_id_seq'::regclass);
+
+
+--
+-- Name: upbit_order_submit_rehearsals id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_submit_rehearsals ALTER COLUMN id SET DEFAULT nextval('public.upbit_order_submit_rehearsals_id_seq'::regclass);
 
 
 --
@@ -6940,6 +7134,38 @@ ALTER TABLE ONLY public.upbit_order_outbox
 
 
 --
+-- Name: upbit_order_submit_rehearsals upbit_order_submit_rehearsals_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_submit_rehearsals
+    ADD CONSTRAINT upbit_order_submit_rehearsals_idempotency_key_key UNIQUE (idempotency_key);
+
+
+--
+-- Name: upbit_order_submit_rehearsals upbit_order_submit_rehearsals_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_submit_rehearsals
+    ADD CONSTRAINT upbit_order_submit_rehearsals_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: upbit_order_submit_rehearsals upbit_order_submit_rehearsals_request_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_submit_rehearsals
+    ADD CONSTRAINT upbit_order_submit_rehearsals_request_id_key UNIQUE (request_id);
+
+
+--
+-- Name: upbit_order_submit_rehearsals upbit_order_submit_rehearsals_upbit_order_outbox_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_submit_rehearsals
+    ADD CONSTRAINT upbit_order_submit_rehearsals_upbit_order_outbox_id_key UNIQUE (upbit_order_outbox_id);
+
+
+--
 -- Name: upbit_order_test_runs upbit_order_test_runs_exchange_account_id_request_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -7380,6 +7606,13 @@ CREATE INDEX upbit_live_exchange_order_bindings_observed_idx ON public.upbit_liv
 --
 
 CREATE INDEX upbit_order_outbox_status_idx ON public.upbit_order_outbox USING btree (status, created_at, id);
+
+
+--
+-- Name: upbit_order_submit_rehearsals_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX upbit_order_submit_rehearsals_status_idx ON public.upbit_order_submit_rehearsals USING btree (rehearsal_status, rehearsed_at, id);
 
 
 --
@@ -8108,6 +8341,27 @@ CREATE TRIGGER upbit_order_outbox_append_only_update BEFORE UPDATE ON public.upb
 --
 
 CREATE TRIGGER upbit_order_outbox_validate_consistency BEFORE INSERT ON public.upbit_order_outbox FOR EACH ROW EXECUTE FUNCTION public.validate_p6_upbit_order_outbox_consistency();
+
+
+--
+-- Name: upbit_order_submit_rehearsals upbit_order_submit_rehearsals_append_only_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_order_submit_rehearsals_append_only_delete BEFORE DELETE ON public.upbit_order_submit_rehearsals FOR EACH ROW EXECUTE FUNCTION public.reject_p6_order_submit_rehearsal_mutation();
+
+
+--
+-- Name: upbit_order_submit_rehearsals upbit_order_submit_rehearsals_append_only_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_order_submit_rehearsals_append_only_update BEFORE UPDATE ON public.upbit_order_submit_rehearsals FOR EACH ROW EXECUTE FUNCTION public.reject_p6_order_submit_rehearsal_mutation();
+
+
+--
+-- Name: upbit_order_submit_rehearsals upbit_order_submit_rehearsals_validate; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER upbit_order_submit_rehearsals_validate BEFORE INSERT ON public.upbit_order_submit_rehearsals FOR EACH ROW EXECUTE FUNCTION public.validate_p6_order_submit_rehearsal();
 
 
 --
@@ -9900,6 +10154,46 @@ ALTER TABLE ONLY public.upbit_order_outbox
 
 
 --
+-- Name: upbit_order_submit_rehearsals upbit_order_submit_rehearsals_exchange_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_submit_rehearsals
+    ADD CONSTRAINT upbit_order_submit_rehearsals_exchange_account_id_fkey FOREIGN KEY (exchange_account_id) REFERENCES public.exchange_accounts(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_order_submit_rehearsals upbit_order_submit_rehearsals_live_order_identifier_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_submit_rehearsals
+    ADD CONSTRAINT upbit_order_submit_rehearsals_live_order_identifier_id_fkey FOREIGN KEY (live_order_identifier_id) REFERENCES public.live_order_identifiers(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_order_submit_rehearsals upbit_order_submit_rehearsals_order_intent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_submit_rehearsals
+    ADD CONSTRAINT upbit_order_submit_rehearsals_order_intent_id_fkey FOREIGN KEY (order_intent_id) REFERENCES public.order_intents(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_order_submit_rehearsals upbit_order_submit_rehearsals_permission_attestation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_submit_rehearsals
+    ADD CONSTRAINT upbit_order_submit_rehearsals_permission_attestation_id_fkey FOREIGN KEY (permission_attestation_id) REFERENCES public.upbit_api_key_permission_attestations(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: upbit_order_submit_rehearsals upbit_order_submit_rehearsals_upbit_order_outbox_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.upbit_order_submit_rehearsals
+    ADD CONSTRAINT upbit_order_submit_rehearsals_upbit_order_outbox_id_fkey FOREIGN KEY (upbit_order_outbox_id) REFERENCES public.upbit_order_outbox(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: upbit_order_test_runs upbit_order_test_runs_exchange_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -9944,4 +10238,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260718000900'),
     ('20260718001000'),
     ('20260718001100'),
-    ('20260718001200');
+    ('20260718001200'),
+    ('20260718001300');

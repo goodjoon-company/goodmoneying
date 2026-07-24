@@ -9,7 +9,10 @@
     "dev:web": "npm --workspace apps/web run dev -- --host 127.0.0.1 --port 5173",
     "test": "npm --workspace apps/web run test",
     "build": "npm --workspace apps/web run build",
-    "e2e": "playwright test && node tests/e2e/assert_servers_stopped.mjs"
+    "e2e": "playwright test && node tests/e2e/assert_servers_stopped.mjs",
+    "p7:web-vitals": "playwright test tests/e2e/p7-performance.spec.ts --grep \"Web Vitals\"",
+    "p7:first-shell": "playwright test tests/e2e/p7-performance.spec.ts --grep \"첫 유용 셸\"",
+    "p7:realtime-event": "playwright test tests/e2e/p7-performance.spec.ts --grep \"실시간 event\""
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",

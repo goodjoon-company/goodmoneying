@@ -8,17 +8,17 @@ purpose: >
 gates:
   - id: performance.web_vitals
     label: 성능(Web Vitals)
-    status: planned
+    status: passed
     command: npm run p7:web-vitals
     evidence_path: docs/Test/2026-07-25-P7-성능-Web-Vitals-검증.md
   - id: performance.first_shell
     label: 첫 유용 셸(first useful shell)
-    status: planned
+    status: passed
     command: npm run p7:first-shell
     evidence_path: docs/Test/2026-07-25-P7-첫-유용-셸-검증.md
   - id: performance.realtime_event
     label: 실시간 event 반영(realtime event latency)
-    status: planned
+    status: passed
     command: npm run p7:realtime-event
     evidence_path: docs/Test/2026-07-25-P7-실시간-event-반영-검증.md
   - id: accessibility.wcag_2_2_aa
